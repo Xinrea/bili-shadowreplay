@@ -14,7 +14,7 @@ async function transpile(path) {
 }
 
 /** Load uploads.ts with real timeline and ASS helpers and stubbed app modules. */
-async function loadModule(storage = {}) {
+async function loadModule(storage = {}, invoke = async () => {}) {
   const context = vm.createContext({
     crypto: globalThis.crypto,
     localStorage: { getItem: (key) => storage[key] ?? null, setItem: (key, value) => (storage[key] = value) },
@@ -27,6 +27,7 @@ async function loadModule(storage = {}) {
   async function link(specifier) {
     if (specifier === "svelte/store") return stub({ writable: (value) => ({ set() {}, subscribe() {}, value }) });
     if (specifier === "./interface") return stub({ default_profile: () => structuredClone(DEFAULT_PROFILE) });
+    if (specifier === "./invoker") return stub({ invoke });
     const path = `${specifier.replace("./", "")}.ts`;
     if (!modules.has(path)) modules.set(path, new vm.SourceTextModule(await transpile(path), { context }));
     return modules.get(path);
@@ -80,6 +81,42 @@ test("only projects with visible subtitles carry an ASS document", async () => {
   // From 2 s to 4 s, between the frames before them at 30 FPS, as the editor writes them.
   const ass = api.projectSubtitleAss(project([{ id: "s1", clip_id: "c1", start: 12, end: 14, text: "你好" }]), 30);
   assert.match(ass, /^Dialogue: 0,0:00:01\.98,0:00:03\.98,.*你好$/m);
+});
+
+test("a source's unposted draft is reused, and a new one started once it is posted", async () => {
+  const calls = [];
+  const api = await loadModule({}, async (command, args) => {
+    calls.push({ command, args: plain(args) });
+    return { id: 9 };
+  });
+  const project = { id: 3, room_id: "", title: "切片", profile: "" };
+  const upload = (id, status, source = "project", source_id = 3) => ({ id, status, source, source_id });
+  const pick = { source: "project", item: project };
+
+  assert.equal((await api.draftUpload(pick, [upload(1, "posted"), upload(2, "draft")])).id, 2);
+  assert.equal((await api.draftUpload(pick, [upload(1, "failed")])).id, 1);
+  assert.equal(calls.length, 0);
+
+  // Posted, running, or of another source: none is reused.
+  const others = [
+    upload(1, "posted"),
+    upload(2, "posting"),
+    upload(3, "exporting"),
+    upload(4, "draft", "material"),
+    upload(5, "draft", "project", 8),
+  ];
+  assert.equal((await api.draftUpload(pick, others)).id, 9);
+  assert.deepEqual(calls, [
+    {
+      command: "create_upload",
+      args: { source: "project", sourceId: 3, file: "", profile: { ...DEFAULT_PROFILE, title: "切片" } },
+    },
+  ]);
+
+  // An untitled material is named after its file.
+  calls.length = 0;
+  await api.draftUpload({ source: "material", item: { id: 4, room_id: "", title: "", file: "a/b/录播.mp4" } }, []);
+  assert.equal(calls[0].args.profile.title, "录播");
 });
 
 test("the source description says how the video is found", async () => {

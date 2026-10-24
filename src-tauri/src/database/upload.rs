@@ -114,22 +114,27 @@ impl Database {
         Ok(applied)
     }
 
-    /// Save a draft's account and form. False when it is no longer editable.
+    /// Save a draft's account and form over `base`, the account and form the
+    /// edit started from. False when it is no longer editable, or when another
+    /// editor saved it since.
     pub async fn update_upload_form(
         &self,
         id: i64,
-        uid: &str,
-        profile: &str,
+        (uid, profile): (&str, &str),
+        (base_uid, base_profile): (&str, &str),
         updated_at: &str,
     ) -> Result<bool, DatabaseError> {
         self.apply_upload_update(
             sqlx::query(&format!(
-                "UPDATE uploads SET uid = $1, profile = $2, updated_at = $3 WHERE id = $4 AND {EDITABLE}"
+                "UPDATE uploads SET uid = $1, profile = $2, updated_at = $3
+                 WHERE id = $4 AND uid = $5 AND profile = $6 AND {EDITABLE}"
             ))
             .bind(uid)
             .bind(profile)
             .bind(updated_at)
-            .bind(id),
+            .bind(id)
+            .bind(base_uid)
+            .bind(base_profile),
         )
         .await
     }
@@ -391,11 +396,23 @@ mod tests {
         // A debounced form save landing after the danmaku switch keeps it.
         assert!(db.set_upload_danmu(id, true, "t1").await.unwrap());
         assert!(db
-            .update_upload_form(id, "2", "{\"title\":\"t\"}", "t2")
+            .update_upload_form(id, ("2", "{\"title\":\"t\"}"), ("1", "{}"), "t2")
             .await
             .unwrap());
         let saved = db.get_upload(id).await.unwrap();
         assert_eq!((saved.danmu, saved.uid.as_str()), (true, "2"));
+
+        // A save from a form loaded before that one is refused, not applied
+        // over it.
+        assert!(!db
+            .update_upload_form(id, ("3", "{}"), ("1", "{}"), "t2")
+            .await
+            .unwrap());
+        let saved = db.get_upload(id).await.unwrap();
+        assert_eq!(
+            (saved.uid.as_str(), saved.profile.as_str()),
+            ("2", "{\"title\":\"t\"}")
+        );
 
         // Both covers are saved together, without touching the form.
         assert!(db
@@ -414,7 +431,10 @@ mod tests {
 
         // Once claimed, late saves and deletion are refused and it stays posting.
         assert!(db.claim_upload(id, "t3").await.unwrap());
-        assert!(!db.update_upload_form(id, "3", "{}", "t4").await.unwrap());
+        assert!(!db
+            .update_upload_form(id, ("3", "{}"), ("2", "{\"title\":\"t\"}"), "t4")
+            .await
+            .unwrap());
         assert!(!db.set_upload_danmu(id, false, "t4").await.unwrap());
         assert!(!db
             .set_upload_cover(id, "c.jpg", "c43.jpg", "t4")

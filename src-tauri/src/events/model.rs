@@ -84,12 +84,6 @@ pub enum AppEvent {
         entry: DanmuEntry,
     },
     DataChanged(DataChange),
-    /// A preview window asks the main window to start an upload of a
-    /// `material` or `project`.
-    UploadRequested {
-        source: String,
-        id: i64,
-    },
     /// A preview window asks the main window to show its settings,
     /// scrolled to the option `target` when given.
     SettingsRequested {
@@ -132,10 +126,6 @@ impl AppEvent {
                 (topic.event_name(), payload)
             }
             Self::DataChanged(change) => (change.event_name().into(), Value::Null),
-            Self::UploadRequested { source, id } => (
-                "upload-requested".into(),
-                json!({ "source": source, "id": id }),
-            ),
             Self::SettingsRequested { target } => {
                 ("settings-requested".into(), json!({ "target": target }))
             }

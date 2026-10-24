@@ -55,6 +55,7 @@
     type ProjectTimeline,
     type SubtitleStyle,
     type TimelineClip,
+    type UploadItem,
     type VideoItem,
     type VideoOverlay,
   } from "../../interface";
@@ -129,6 +130,8 @@
   import SubtitleStyleEditor from "../SubtitleStyleEditor.svelte";
   import TaskCenterButton from "../TaskCenterButton.svelte";
   import TitleBar from "../TitleBar.svelte";
+  import UploadEditor from "../upload/UploadEditor.svelte";
+  import { draftUpload, uploadAccounts } from "../../uploads";
   import AudioPanel, { type AudioEntry } from "./AudioPanel.svelte";
   import PowerLiveHotwords from "../PowerLiveHotwords.svelte";
   import PowerLiveSentenceLength from "../PowerLiveSentenceLength.svelte";
@@ -216,7 +219,10 @@
   /** Counts context fills, so only the latest one reports. */
   let aiContextFills = 0;
   let exporting: string | null = $state(null);
-  let requestingUpload = $state(false);
+  let openingUpload = $state(false);
+  /** The draft open in the upload dialog. */
+  let uploadDraft: UploadItem | null = $state(null);
+  let uploadAccountList: { uid: string; name: string }[] = $state([]);
   let saveState: "saved" | "pending" | "saving" | "error" = $state("saved");
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let saving: Promise<void> | null = null;
@@ -1669,20 +1675,37 @@
     }
   }
 
-  /** Continue in the main window, which starts a draft for this project. */
-  async function requestUpload() {
-    if (requestingUpload) return;
-    requestingUpload = true;
+  /** Edit this project's unposted draft, starting one if it has none. */
+  async function openUpload() {
+    if (openingUpload) return;
+    openingUpload = true;
     try {
-      // The draft takes its title from the saved project.
+      // The draft takes its title and form from the saved project.
       await saveAll();
-      await invoke("request_upload", { source: "project", id: projectId });
+      const [item, uploads, accounts] = await Promise.all([
+        invoke<ProjectItem>("get_project", { id: projectId }),
+        invoke<UploadItem[]>("get_uploads"),
+        uploadAccounts(),
+      ]);
+      uploadAccountList = accounts;
+      uploadDraft = await draftUpload({ source: "project", item }, uploads);
     } catch (error) {
       alert("打开投稿失败：" + error);
     } finally {
-      requestingUpload = false;
+      openingUpload = false;
     }
   }
+
+  // Follow the open draft as it posts and as the project changes under it.
+  const uploadRefresh = createStateRefresh(async () => {
+    const id = uploadDraft?.id;
+    if (id === undefined) return;
+    const fresh = await invoke<UploadItem>("get_upload", { id });
+    // Closed, or another draft opened, while it loaded.
+    if (uploadDraft?.id === id) uploadDraft = fresh;
+  });
+
+  onMount(() => watchStateChanges(uploadRefresh, ["uploads-changed", "projects-changed", "videos-changed"]));
 
   // ---- Keyboard ------------------------------------------------------------
 
@@ -1692,7 +1715,7 @@
       showAiModal = false;
       return;
     }
-    if (showStyleEditor || showShortcutHelp || showAiModal) return;
+    if (showStyleEditor || showShortcutHelp || showAiModal || uploadDraft) return;
     const target = event.target instanceof Element ? event.target : null;
     if (target?.closest("input, textarea, select, [contenteditable], [data-hotkey-block]") || event.altKey) {
       return;
@@ -1758,7 +1781,11 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="project-editor fixed inset-0 z-[1000] flex flex-col bg-[#1c1c1e] text-white">
+<!-- Out of reach of focus and clicks while the upload dialog covers it. -->
+<div
+  class="project-editor fixed inset-0 z-[1000] flex flex-col bg-[#1c1c1e] text-white"
+  inert={uploadDraft !== null}
+>
   <TitleBar tone="dark">
     <input
       class="title-input"
@@ -1805,9 +1832,9 @@
       <button
         type="button"
         class="titlebar-button"
-        title="在主窗口为这个切片新建投稿"
-        disabled={requestingUpload || timeline.clips.length === 0}
-        onclick={requestUpload}
+        title="编辑这个切片的投稿草稿，没有未发布的草稿时新建一条投稿记录"
+        disabled={openingUpload || uploadDraft !== null || timeline.clips.length === 0}
+        onclick={openUpload}
       >
         <Upload class="h-3.5 w-3.5" />
         投稿
@@ -2332,6 +2359,17 @@
 />
 
 <ShortcutHelpModal bind:show={showShortcutHelp} />
+
+{#if uploadDraft}
+  {#key uploadDraft.id}
+    <UploadEditor
+      upload={uploadDraft}
+      accounts={uploadAccountList}
+      onChanged={() => uploadRefresh.run()}
+      onClose={() => (uploadDraft = null)}
+    />
+  {/key}
+{/if}
 
 <style>
   .title-input {

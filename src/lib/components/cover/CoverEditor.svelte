@@ -48,6 +48,7 @@
     type TextElement,
     type TextStyle,
   } from "../../cover-elements";
+  import { trapFocus } from "../../focus-trap";
   import { invoke, log } from "../../invoker";
   import ElementToolbar from "./ElementToolbar.svelte";
   import {
@@ -801,6 +802,7 @@
     role="dialog"
     aria-modal="true"
     aria-labelledby="cover-editor-title"
+    use:trapFocus={{ active: show }}
   >
     <div class="ui-modal-header">
       <h3 id="cover-editor-title">封面制作</h3>

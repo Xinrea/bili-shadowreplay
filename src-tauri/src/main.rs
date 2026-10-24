@@ -1098,7 +1098,6 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::upload::update_upload_danmu,
         crate::handlers::upload::delete_upload,
         crate::handlers::upload::post_upload,
-        crate::handlers::upload::request_upload,
         crate::handlers::task::get_tasks,
         crate::handlers::task::delete_task,
         crate::handlers::utils::show_in_folder,

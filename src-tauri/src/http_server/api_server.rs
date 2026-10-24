@@ -59,8 +59,8 @@ use crate::{
         },
         task::{delete_task, get_tasks},
         upload::{
-            create_upload, delete_upload, get_upload, get_uploads, post_upload, request_upload,
-            update_upload, update_upload_cover, update_upload_danmu, UploadView,
+            create_upload, delete_upload, get_upload, get_uploads, post_upload, update_upload,
+            update_upload_cover, update_upload_danmu, UploadView,
         },
         utils::{
             console_log, decode_data_url, get_disk_info, list_folder, sanitize_filename_advanced,
@@ -1245,14 +1245,24 @@ struct UpdateUploadRequest {
     id: i64,
     uid: String,
     profile: serde_json::Value,
+    base_uid: String,
+    base_profile: String,
 }
 
 async fn handler_update_upload(
     state: axum::extract::State<State>,
     Json(param): Json<UpdateUploadRequest>,
-) -> Result<Json<ApiResponse<()>>, ApiError> {
-    update_upload(state.0, param.id, param.uid, param.profile).await?;
-    Ok(Json(ApiResponse::success(())))
+) -> Result<Json<ApiResponse<String>>, ApiError> {
+    let profile = update_upload(
+        state.0,
+        param.id,
+        param.uid,
+        param.profile,
+        param.base_uid,
+        param.base_profile,
+    )
+    .await?;
+    Ok(Json(ApiResponse::success(profile)))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1338,21 +1348,6 @@ struct PostUploadRequest {
     subtitle_ass: Option<String>,
     #[serde(default)]
     overlays: Option<Vec<OverlayImage>>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RequestUploadRequest {
-    source: String,
-    id: i64,
-}
-
-async fn handler_request_upload(
-    state: axum::extract::State<State>,
-    Json(param): Json<RequestUploadRequest>,
-) -> Result<Json<ApiResponse<()>>, ApiError> {
-    request_upload(state.0, param.source, param.id).await?;
-    Ok(Json(ApiResponse::success(())))
 }
 
 async fn handler_post_upload(
@@ -2572,7 +2567,6 @@ pub async fn start_api_server(state: State) {
                 post(handler_delete_cover_sticker),
             )
             .route("/api/post_upload", post(handler_post_upload))
-            .route("/api/request_upload", post(handler_request_upload))
             // Brings the operator's window to the settings, so viewers cannot.
             .route("/api/request_settings", post(handler_request_settings))
             .route("/api/generate_materials", post(handler_generate_materials))

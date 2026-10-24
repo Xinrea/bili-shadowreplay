@@ -44,13 +44,15 @@ function fakeDom() {
   };
   /**
    * Press Tab, and move focus on as the browser would when not prevented.
-   * `handledAbove` is a layer listening earlier that keeps Tab for itself.
+   * `handledAbove` is a layer listening earlier that keeps Tab for itself;
+   * `isComposing`, an input method composing with it.
    */
-  function tab(shiftKey = false, handledAbove = false) {
+  function tab(shiftKey = false, { handledAbove = false, isComposing = false } = {}) {
     let prevented = handledAbove;
     const event = {
       key: "Tab",
       shiftKey,
+      isComposing,
       get defaultPrevented() {
         return prevented;
       },
@@ -106,10 +108,13 @@ test("an open dialog takes focus and keeps Tab within it", async () => {
   assert.equal(tab(), true);
   assert.equal(document.activeElement, first);
 
-  // A layer over every dialog, such as the command palette, keeps its Tab.
+  // A layer over every dialog, such as the command palette, keeps its Tab,
+  // as does an input method composing with it there.
   const palette = new Element();
   palette.focus();
-  tab(true, true);
+  tab(true, { handledAbove: true });
+  assert.equal(document.activeElement, palette);
+  assert.equal(tab(true, { isComposing: true }), false);
   assert.equal(document.activeElement, palette);
 });
 

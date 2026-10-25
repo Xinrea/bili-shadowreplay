@@ -1253,6 +1253,101 @@ export function settleTracks(timeline: ProjectTimeline): ProjectTimeline {
   return settleItems(settleOverlays(timeline), "audio_tracks");
 }
 
+export type TimelineSelection = {
+  clips: string[];
+  subtitles: string[];
+  overlays: string[];
+  audio: string[];
+};
+
+/**
+ * Commit a group drag against the current timeline, not a drag-start snapshot.
+ * `mainIndex` counts only unselected clips. Main clips move together in their
+ * original order; their anchors follow naturally. Other selected, visible items
+ * move by one common delta (the first selected clip's actual offset on reorder).
+ * A secondary-only drag clamps that delta collectively; a reorder that would
+ * require clamping is rejected instead of distorting the group.
+ *
+ * Like moveSubtitle, subtitles remain bound to their destination clip: a cue
+ * crossing an internal cut is clipped there. Its full visible duration is kept
+ * within the main end. Track media retain their visible source trims and may
+ * extend past the main end. Collisions are settled only after every move.
+ */
+export function moveTimelineSelection(
+  timeline: ProjectTimeline,
+  selection: TimelineSelection,
+  delta: number,
+  mainIndex?: number,
+): ProjectTimeline {
+  if (!Number.isFinite(delta) || delta === 0) return timeline;
+  const clipIds = new Set(selection.clips);
+  const selected = placeClips(timeline).filter(({ clip }) => clipIds.has(clip.id));
+  let next = timeline;
+  let shift = delta;
+  if (selected.length > 0) {
+    if (mainIndex === undefined || !Number.isFinite(mainIndex)) return timeline;
+    const clips = timeline.clips.filter((clip) => !clipIds.has(clip.id));
+    clips.splice(clamp(Math.trunc(mainIndex), 0, clips.length), 0, ...selected.map(({ clip }) => clip));
+    if (clips.every((clip, index) => clip === timeline.clips[index])) return timeline;
+    next = { ...timeline, clips };
+    shift = placeClips(next).find(({ clip }) => clip.id === selected[0].clip.id)!.offset - selected[0].offset;
+  }
+
+  // Read all spans before changing any anchors. In particular, do not let a
+  // selected neighbour's old position cause a spurious track collision.
+  const carried = new Set(selected.map(({ clip }) => clip.id));
+  const subtitleIds = new Set(selection.subtitles);
+  const subtitles = visibleSubtitles(timeline).filter(({ subtitle }) =>
+    subtitleIds.has(subtitle.id) && !carried.has(subtitle.clip_id));
+  const entries = (["tracks", "audio_tracks"] as const).map((lane) => {
+    const ids = new Set(lane === "tracks" ? selection.overlays : selection.audio);
+    return { lane, placed: placeItems(timeline, lane).filter(({ item }) => ids.has(item.id) && !carried.has(item.clip_id)) };
+  });
+  if (selected.length === 0 && subtitles.length === 0 && entries.every(({ placed }) => placed.length === 0)) return timeline;
+
+  const total = mainDuration(next);
+  let minShift = Number.NEGATIVE_INFINITY;
+  let maxShift = Number.POSITIVE_INFINITY;
+  for (const { start, end } of subtitles) {
+    minShift = Math.max(minShift, -start);
+    maxShift = Math.min(maxShift, total - Math.max(MIN_SUBTITLE_DURATION, end - start) - start);
+  }
+  for (const { placed } of entries) {
+    for (const { start } of placed) {
+      minShift = Math.max(minShift, -start);
+      maxShift = Math.min(maxShift, total - MIN_OVERLAY_DURATION - start);
+    }
+  }
+  if (minShift > maxShift) return timeline;
+  if (selected.length > 0) {
+    if (shift < minShift - EPSILON || shift > maxShift + EPSILON) return timeline;
+  } else {
+    shift = clamp(shift, minShift, maxShift);
+    if (shift === 0) return timeline;
+  }
+
+  if (shift !== 0 || next !== timeline) {
+    const movedSubtitles = new Map(subtitles.map(({ subtitle, start, end }) => {
+      const anchored = anchorAt(next, start + shift)!;
+      return [subtitle.id, { ...subtitle, ...anchored, end: anchored.start + end - start }] as const;
+    }));
+    if (movedSubtitles.size > 0) {
+      next = { ...next, subtitles: next.subtitles.map((subtitle) => movedSubtitles.get(subtitle.id) ?? subtitle) };
+    }
+    for (const { lane, placed } of entries) {
+      if (placed.length === 0) continue;
+      const moved = new Map(placed.map((entry) => [
+        entry.item.id, reanchor(next, entry, entry.start + shift, entry.end - entry.start)!,
+      ]));
+      next = withTracks(next, lane, tracksOf(next, lane).map((track) =>
+        track.items.some((item) => moved.has(item.id))
+          ? { ...track, items: track.items.map((item) => moved.get(item.id) ?? item) }
+          : track));
+    }
+  }
+  return settleTracks(next);
+}
+
 /**
  * `current` with overlay `id` as it is in `base`: how the timeline was before
  * a drag of that overlay, keeping changes merged in while dragging.

@@ -689,3 +689,192 @@ test("a video overlay dropped on the main track becomes a clip of what it shows"
   assert.deepEqual(plain(next.tracks), []);
   assert.equal(api.overlayToClip(withTracks(t, kinded("s", "sticker", text("x", "a", 6, 1))), "x", 0, 0).clipId, null);
 });
+
+const selection = (more = {}) => ({ clips: [], subtitles: [], overlays: [], audio: [], ...more });
+const subtitleSpans = (t) => plain(api.visibleSubtitles(t).map(({ subtitle, start, end }) => [subtitle.id, start, end]));
+const audioSpans = (t) => plain(api.placeAudio(t).map(({ item, start, end }) => [item.id, start, end]));
+const sound = (id, clip_id, start, duration, source_start = 0) => ({
+  id, clip_id, ...music(start, duration, { source_start }),
+});
+
+test("group secondary movement clamps one shared delta at both ends", () => {
+  const t = {
+    ...withTracks(timeline([clip("a", 1, 0, 20)], [sub("s", "a", 10, 13), sub("unselected", "a", 2, 3)]),
+      track("v", pip("v", "a", 1, 2))),
+    audio_tracks: [track("music", sound("m", "a", 5, 3))],
+    danmu: true,
+  };
+  const chosen = selection({ subtitles: ["s"], overlays: ["v"], audio: ["m"] });
+  const before = plain(t);
+  const left = api.moveTimelineSelection(t, chosen, -100);
+  assert.deepEqual(subtitleSpans(left), [["unselected", 2, 3], ["s", 9, 12]]);
+  assert.deepEqual(spans(left), [["v", 0, 0, 2, 0]]);
+  assert.deepEqual(audioSpans(left), [["m", 4, 7]]);
+  const right = api.moveTimelineSelection(t, chosen, 100);
+  assert.deepEqual(subtitleSpans(right), [["unselected", 2, 3], ["s", 17, 20]]);
+  assert.deepEqual(spans(right), [["v", 0, 8, 10, 0]]);
+  assert.deepEqual(audioSpans(right), [["m", 12, 15]]);
+  assert.equal(right.tracks[0].id, "v");
+  assert.equal(right.audio_tracks[0].id, "music");
+  assert.equal(right.subtitles[1], t.subtitles[1]);
+  assert.equal(right.clips, t.clips);
+  assert.equal(right.danmu, true);
+  assert.equal(right.render_settings, t.render_settings);
+  assert.deepEqual(plain(t), before);
+});
+
+test("track groups limit starts, not ends, to the main track", () => {
+  const t = {
+    ...withTracks(timeline([clip("a", 1, 0, 10)]), track("v", pip("v", "a", 7, 6))),
+    audio_tracks: [track("music", sound("m", "a", 8, 5))],
+  };
+  const moved = api.moveTimelineSelection(t, selection({ overlays: ["v"], audio: ["m"] }), 20);
+  const videoStart = api.placeOverlays(moved)[0].start;
+  const audioStart = api.placeAudio(moved)[0].start;
+  assert.ok(Math.abs(audioStart - (10 - api.MIN_OVERLAY_DURATION)) < 1e-9);
+  assert.ok(Math.abs(videoStart - 8.9) < 1e-9);
+  assert.equal(api.findOverlay(moved, "v").duration, 6);
+  assert.equal(api.findAudio(moved, "m").duration, 5);
+  assert.ok(api.timelineDuration(moved) > 10);
+});
+
+test("selected neighbours move simultaneously before collision settling", () => {
+  const t = {
+    ...withTracks(timeline([clip("a", 1, 0, 20)]),
+      track("stickers", text("x", "a", 1, 2), text("y", "a", 3, 2), text("fixed", "a", 8, 2))),
+    audio_tracks: [track("music", sound("m1", "a", 1, 2), sound("m2", "a", 3, 2), sound("fixed-m", "a", 8, 2))],
+  };
+  const chosen = selection({ overlays: ["x", "y"], audio: ["m1", "m2"] });
+  const moved = api.moveTimelineSelection(t, chosen, 2);
+  assert.equal(moved.tracks.length, 1);
+  assert.equal(moved.audio_tracks.length, 1);
+  assert.equal(moved.tracks[0].id, "stickers");
+  assert.equal(moved.audio_tracks[0].id, "music");
+  assert.deepEqual(spans(moved), [["x", 0, 3, 5, 0], ["y", 0, 5, 7, 0], ["fixed", 0, 8, 10, 0]]);
+  assert.deepEqual(audioSpans(moved), [["m1", 3, 5], ["m2", 5, 7], ["fixed-m", 8, 10]]);
+  const collided = api.moveTimelineSelection(t, chosen, 4);
+  assert.equal(collided.tracks.length, 2);
+  assert.deepEqual(spans(collided), [["x", 0, 5, 7, 0], ["y", 0, 7, 9, 0], ["fixed", 1, 8, 10, 0]]);
+  assert.equal(collided.tracks[0].id, "stickers");
+  assert.equal(collided.audio_tracks.length, 2);
+  assert.deepEqual(audioSpans(collided), [["m1", 5, 7], ["m2", 7, 9], ["fixed-m", 8, 10]]);
+  assert.equal(collided.audio_tracks[1].items[0].id, "fixed-m");
+});
+
+test("batch movement preserves the visible source after head trims", () => {
+  const t = {
+    ...withTracks(timeline([clip("a", 1, 10, 30)], [sub("s", "a", 9, 12)]),
+      track("v", pip("v", "a", 9, 4, 9, 20))),
+    audio_tracks: [track("music", sound("m", "a", 8, 5, 30))],
+  };
+  const moved = api.moveTimelineSelection(t, selection({ subtitles: ["s"], overlays: ["v"], audio: ["m"] }), 4);
+  assert.deepEqual(subtitleSpans(moved), [["s", 4, 6]]);
+  assert.deepEqual(spans(moved), [["v", 0, 4, 7, 0]]);
+  assert.deepEqual(audioSpans(moved), [["m", 4, 7]]);
+  assert.equal(api.findOverlay(moved, "v").source_start, 21);
+  assert.equal(api.findAudio(moved, "m").source_start, 32);
+  assert.equal(api.findAudio(moved, "m").duration, 3);
+  assert.equal(api.findOverlay(t, "v").source_start, 20);
+});
+
+test("secondary groups re-anchor across cuts using current subtitle rules", () => {
+  const t = {
+    ...withTracks(timeline([clip("a", 1, 10, 15), clip("b", 2, 20, 25)], [sub("s", "a", 11, 14)]),
+      track("v", pip("v", "a", 11, 3, 9, 7))),
+    audio_tracks: [track("music", sound("m", "a", 11, 3, 9))],
+  };
+  const chosen = selection({ subtitles: ["s"], overlays: ["v"], audio: ["m"] });
+  const moved = api.moveTimelineSelection(t, chosen, 5);
+  assert.deepEqual(plain(moved.subtitles[0]), sub("s", "b", 21, 24));
+  assert.deepEqual(subtitleSpans(moved), [["s", 6, 9]]);
+  assert.equal(api.findOverlay(moved, "v").clip_id, "b");
+  assert.equal(api.findOverlay(moved, "v").source_start, 7);
+  assert.equal(api.findAudio(moved, "m").clip_id, "b");
+  assert.deepEqual(audioSpans(moved), [["m", 6, 9]]);
+  // The persisted subtitle model is clipped to one anchor clip, unlike media.
+  const acrossCut = api.moveTimelineSelection(t, chosen, 2);
+  assert.deepEqual(subtitleSpans(acrossCut), [["s", 3, 5]]);
+  assert.deepEqual(spans(acrossCut), [["v", 0, 3, 6, 0]]);
+});
+
+test("main selection reorders in original order among unselected clips and carries anchors once", () => {
+  const t = {
+    ...withTracks(timeline([
+      clip("a", 1, 10, 14), clip("b", 2, 20, 23), clip("c", 3, 30, 32), clip("d", 4, 40, 45),
+    ], [sub("attached", "a", 11, 12), sub("follow", "d", 41, 42)]),
+    track("v", pip("attached-v", "c", 30, 1), pip("follow-v", "d", 41, 1))),
+    audio_tracks: [track("music", sound("attached-m", "a", 11, 1), sound("follow-m", "d", 41, 1))],
+  };
+  // mainIndex=1 is between b and d after removing a and c. delta is only a
+  // drag signal here: actual displacement of first selected a is +3, not +99.
+  const chosen = selection({
+    clips: ["c", "a", "a"], subtitles: ["attached", "follow"],
+    overlays: ["attached-v", "follow-v"], audio: ["attached-m", "follow-m"],
+  });
+  const moved = api.moveTimelineSelection(t, chosen, 99, 1);
+  assert.deepEqual(plain(moved.clips.map((c) => c.id)), ["b", "a", "c", "d"]);
+  assert.deepEqual(plain(api.placeClips(moved).map((c) => c.offset)), [0, 3, 7, 9]);
+  assert.equal(api.mainDuration(moved), api.mainDuration(t));
+  assert.deepEqual(subtitleSpans(moved), [["attached", 4, 5], ["follow", 13, 14]]);
+  assert.deepEqual(spans(moved), [["attached-v", 0, 7, 8, 0], ["follow-v", 0, 13, 14, 0]]);
+  assert.deepEqual(audioSpans(moved), [["attached-m", 4, 5], ["follow-m", 13, 14]]);
+  assert.equal(moved.subtitles[0], t.subtitles[0]);
+  assert.equal(api.findOverlay(moved, "attached-v"), api.findOverlay(t, "attached-v"));
+  assert.equal(api.findAudio(moved, "attached-m"), api.findAudio(t, "attached-m"));
+});
+
+test("contiguous main selection keeps its anchors and source trims unchanged", () => {
+  const t = {
+    ...withTracks(timeline([clip("a", 1, 10, 15), clip("b", 2, 20, 24), clip("c", 3, 30, 33)],
+      [sub("s", "a", 11, 12)]), track("v", pip("v", "a", 9, 3, 9, 7))),
+    audio_tracks: [track("music", sound("m", "b", 19, 3, 8))],
+  };
+  const moved = api.moveTimelineSelection(t, selection({ clips: ["b", "a"], subtitles: ["s"], overlays: ["v"], audio: ["m"] }), 1, 1);
+  assert.deepEqual(plain(moved.clips.map((c) => c.id)), ["c", "a", "b"]);
+  assert.deepEqual(plain(api.placeClips(moved).map((c) => c.offset)), [0, 3, 8]);
+  assert.deepEqual(subtitleSpans(moved), [["s", 4, 5]]);
+  assert.deepEqual(spans(moved), [["v", 0, 3, 5, 1]]);
+  assert.deepEqual(audioSpans(moved), [["m", 8, 10]]);
+  assert.equal(moved.tracks, t.tracks);
+  assert.equal(moved.audio_tracks, t.audio_tracks);
+  assert.equal(moved.subtitles, t.subtitles);
+});
+
+test("main reorder rejects out-of-bounds explicit secondary offsets without partial edits", () => {
+  const t = withTracks(timeline([clip("a", 1, 0, 5), clip("b", 2, 0, 5)],
+    [sub("tail", "b", 4, 5)]), track("v", pip("head", "a", 0, 2)));
+  assert.equal(api.moveTimelineSelection(t, selection({ clips: ["a"], subtitles: ["tail"] }), 1, 1), t);
+  assert.equal(api.moveTimelineSelection(t, selection({ clips: ["b"], overlays: ["head"] }), -1, 0), t);
+});
+
+test("secondary anchors elsewhere are restored even when first main offset stays the same", () => {
+  const t = withTracks(timeline([clip("a", 1, 0, 5), clip("b", 2, 0, 5), clip("c", 3, 0, 5)],
+    [sub("s", "b", 1, 2)]), track("v", pip("v", "b", 2, 1)));
+  const moved = api.moveTimelineSelection(t, selection({ clips: ["a", "c"], subtitles: ["s"], overlays: ["v"] }), 1, 0);
+  assert.deepEqual(plain(moved.clips.map((c) => c.id)), ["a", "c", "b"]);
+  assert.deepEqual(subtitleSpans(moved), [["s", 6, 7]]);
+  assert.deepEqual(spans(moved), [["v", 0, 7, 8, 0]]);
+  assert.equal(moved.subtitles[0].clip_id, "c");
+  assert.equal(api.findOverlay(moved, "v").clip_id, "c");
+});
+
+test("batch movement no-ops retain identity and ignore unknown or hidden IDs", () => {
+  const t = withTracks(timeline([clip("a", 1, 10, 20)], [sub("hidden-s", "a", 0, 1)]),
+    track("v", pip("v", "a", 10, 2), pip("hidden-v", "a", 20, 1)));
+  for (const delta of [0, NaN, Infinity, -Infinity]) {
+    assert.equal(api.moveTimelineSelection(t, selection({ overlays: ["v"] }), delta), t);
+  }
+  assert.equal(api.moveTimelineSelection(t, selection(), 2), t);
+  assert.equal(api.moveTimelineSelection(t, selection({ clips: ["missing"], subtitles: ["missing"], overlays: ["missing"], audio: ["missing"] }), 2), t);
+  assert.equal(api.moveTimelineSelection(t, selection({ subtitles: ["hidden-s"], overlays: ["hidden-v"] }), 2), t);
+  assert.equal(api.moveTimelineSelection(t, selection({ overlays: ["v"] }), -10), t);
+  assert.equal(api.moveTimelineSelection(t, selection({ clips: ["a"], overlays: ["v"] }), 2), t);
+  assert.equal(api.moveTimelineSelection(t, selection({ clips: ["a"] }), 2, NaN), t);
+  assert.equal(api.moveTimelineSelection(t, selection({ clips: ["a"] }), 2, 0), t);
+  assert.equal(api.moveTimelineSelection(t, selection({ clips: ["a"] }), 0, 1), t);
+  const empty = api.emptyTimeline();
+  assert.equal(api.moveTimelineSelection(empty, selection({ clips: ["missing"] }), 2), empty);
+  const moved = api.moveTimelineSelection(t, selection({ overlays: ["missing", "v", "v"] }), 2);
+  assert.equal(api.placeOverlays(moved)[0].start, 2);
+  assert.equal(api.findOverlay(moved, "hidden-v"), api.findOverlay(t, "hidden-v"));
+});

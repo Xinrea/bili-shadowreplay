@@ -975,6 +975,26 @@ impl RecorderManager {
         ))
     }
 
+    /// The archive's danmaku with `ts` in milliseconds from the start of the
+    /// recording, the time base of clip ranges. Recorded danmaku carry wall
+    /// clock times; those sent before the recording started are dropped.
+    pub async fn archive_danmus(
+        &self,
+        platform: PlatformType,
+        room_id: &str,
+        live_id: &str,
+    ) -> Result<Vec<DanmuEntry>, RecorderManagerError> {
+        let start = self
+            .first_segment_timestamp(platform, room_id, live_id)
+            .await?;
+        let mut danmus = self.load_danmus(platform, room_id, live_id).await?;
+        for danmu in &mut danmus {
+            danmu.ts -= start;
+        }
+        danmus.retain(|danmu| danmu.ts >= 0);
+        Ok(danmus)
+    }
+
     /// Get related playlists by parent id
     ///
     /// This will return a list of tuples, the first element is the title of the archive,

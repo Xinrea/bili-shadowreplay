@@ -37,6 +37,7 @@ use crate::{
     state::State,
     state_type,
 };
+use recorder::danmu::DanmuEntry;
 
 const PROMPT: &str = r#"
 你是 BiliBili ShadowReplay（BSR）的虚拟助手小轴。你喜欢橘子，并适度使用 emoji。
@@ -349,6 +350,23 @@ impl BsrTool {
         })).collect::<Vec<_>>()})
     }
 
+    /// The archive named by `args`, with danmaku times in milliseconds from
+    /// the start of the recording like the ranges `clip_range` takes.
+    async fn archive_danmus(&self, args: &Value) -> Result<Vec<DanmuEntry>, BsrToolError> {
+        use recorder::platforms::PlatformType;
+        use std::str::FromStr;
+        let platform = PlatformType::from_str(&Self::string_arg(args, "platform")?)
+            .map_err(|e| BsrToolError(e.to_string()))?;
+        self.recorder_manager
+            .archive_danmus(
+                platform,
+                &Self::string_arg(args, "room_id")?,
+                &Self::string_arg(args, "live_id")?,
+            )
+            .await
+            .map_err(|e| BsrToolError(e.to_string()))
+    }
+
     async fn execute(&self, input: BsrToolArgs) -> Result<Value, BsrToolError> {
         let args = &input.args;
         match input.action.as_str() {
@@ -453,21 +471,15 @@ impl BsrTool {
                 Ok(json!({ "subtitle": text }))
             }
             "get_danmu_record" => {
-                use recorder::platforms::PlatformType;
-                use std::str::FromStr;
-                let platform = PlatformType::from_str(&Self::string_arg(args, "platform")?)
-                    .map_err(|e| BsrToolError(e.to_string()))?;
-                let rows = self
-                    .recorder_manager
-                    .load_danmus(
-                        platform,
-                        &Self::string_arg(args, "room_id")?,
-                        &Self::string_arg(args, "live_id")?,
-                    )
-                    .await
-                    .map_err(|e| BsrToolError(e.to_string()))?;
+                let start = args.get("start").and_then(Value::as_f64).unwrap_or(0.0);
+                let end = args.get("end").and_then(Value::as_f64);
+                let rows = self.archive_danmus(args).await?;
                 let records = rows
                     .into_iter()
+                    .filter(|row| {
+                        let seconds = row.ts as f64 / 1000.0;
+                        seconds >= start && end.is_none_or(|end| seconds < end)
+                    })
                     .map(|row| {
                         let mut record = json!({
                             "ts": row.ts as f64 / 1000.0,
@@ -483,45 +495,18 @@ impl BsrTool {
                 Ok(json!({ "danmu_record": records }))
             }
             "analyze_danmu_highlights" => {
-                use recorder::platforms::PlatformType;
-                use std::str::FromStr;
-                let platform = PlatformType::from_str(&Self::string_arg(args, "platform")?)
-                    .map_err(|e| BsrToolError(e.to_string()))?;
                 let window = Self::f64_arg(args, "time_window")?;
-                if window <= 0.0 {
+                if !window.is_finite() || window <= 0.0 {
                     return Err(BsrToolError("time_window must be positive".into()));
                 }
                 let minimum = Self::i64_arg(args, "min_density")?;
                 let minimum = usize::try_from(minimum).map_err(|_| {
                     BsrToolError("min_density must be a non-negative integer".into())
                 })?;
-                let rows = self
-                    .recorder_manager
-                    .load_danmus(
-                        platform,
-                        &Self::string_arg(args, "room_id")?,
-                        &Self::string_arg(args, "live_id")?,
-                    )
-                    .await
-                    .map_err(|e| BsrToolError(e.to_string()))?;
-                let max_ts = rows.iter().map(|row| row.ts).max().unwrap_or(0) as f64 / 1000.0;
-                let highlights = (0..(max_ts / window).ceil() as usize).filter_map(|index| {
-                    let start = index as f64 * window;
-                    let end = ((index + 1) as f64 * window).min(max_ts);
-                    let comments = rows.iter().filter(|row| (row.ts as f64 / 1000.0) >= start && (row.ts as f64 / 1000.0) < end).collect::<Vec<_>>();
-                    (comments.len() >= minimum).then(|| json!({
-                        "start_time": start, "end_time": end, "comment_count": comments.len(),
-                        "density": comments.len() as f64 / window,
-                        "sample_comments": comments.iter().take(5).map(|row| row.content.clone()).collect::<Vec<_>>()
-                    }))
-                }).collect::<Vec<_>>();
-                Ok(json!({ "highlights": highlights }))
+                let rows = self.archive_danmus(args).await?;
+                Ok(json!({ "highlights": danmu_highlights(&rows, window, minimum) }))
             }
             "search_danmu_keywords" => {
-                use recorder::platforms::PlatformType;
-                use std::str::FromStr;
-                let platform = PlatformType::from_str(&Self::string_arg(args, "platform")?)
-                    .map_err(|e| BsrToolError(e.to_string()))?;
                 let keywords = args
                     .get("keywords")
                     .and_then(Value::as_array)
@@ -530,15 +515,7 @@ impl BsrTool {
                     .filter_map(Value::as_str)
                     .collect::<Vec<_>>();
                 let context = Self::f64_arg(args, "context_seconds")?;
-                let rows = self
-                    .recorder_manager
-                    .load_danmus(
-                        platform,
-                        &Self::string_arg(args, "room_id")?,
-                        &Self::string_arg(args, "live_id")?,
-                    )
-                    .await
-                    .map_err(|e| BsrToolError(e.to_string()))?;
+                let rows = self.archive_danmus(args).await?;
                 let matches = rows.iter().flat_map(|row| keywords.iter().filter(move |keyword| row.content.contains(**keyword)).take(1).map(move |keyword| {
                     let timestamp = row.ts as f64 / 1000.0;
                     json!({ "timestamp": timestamp, "content": row.content, "keyword": keyword, "context_start": (timestamp - context).max(0.0), "context_end": timestamp + context })
@@ -696,8 +673,8 @@ impl BsrTool {
             ),
             Self::action_schema(
                 "get_danmu_record",
-                "Load danmu for an archive. Each ts value is seconds from the archive start.",
-                json!({ "platform": platform(), "room_id": string(), "live_id": string() }),
+                "Load danmu for an archive. Each ts value is seconds from the start of the recording, the time base of clip_range ranges. Optionally only those from start (inclusive) to end (exclusive), in the same seconds.",
+                json!({ "platform": platform(), "room_id": string(), "live_id": string(), "start": number(), "end": number() }),
                 &["platform", "room_id", "live_id"],
             ),
             Self::action_schema(
@@ -774,7 +751,7 @@ impl BsrTool {
             ),
             Self::action_schema(
                 "analyze_danmu_highlights",
-                "Find high-engagement time windows from danmu density.",
+                "Find high-engagement time windows from danmu density. Times are seconds from the start of the recording, the time base of clip_range ranges.",
                 json!({ "platform": platform(), "room_id": string(), "live_id": string(), "time_window": number(), "min_density": integer() }),
                 &[
                     "platform",
@@ -786,7 +763,7 @@ impl BsrTool {
             ),
             Self::action_schema(
                 "search_danmu_keywords",
-                "Find keyword matches and timestamps in danmu.",
+                "Find keyword matches and timestamps in danmu. Times are seconds from the start of the recording, the time base of clip_range ranges.",
                 json!({ "platform": platform(), "room_id": string(), "live_id": string(), "keywords": { "type": "array", "items": string() }, "context_seconds": number() }),
                 &[
                     "platform",
@@ -816,6 +793,31 @@ impl BsrTool {
             ),
         ]
     }
+}
+
+/// Windows of `window` seconds from the start of the recording holding at
+/// least `minimum` (and at least one) of `rows`, in order, with up to five of
+/// their messages.
+fn danmu_highlights(rows: &[DanmuEntry], window: f64, minimum: usize) -> Vec<Value> {
+    let mut windows: std::collections::BTreeMap<u64, Vec<&DanmuEntry>> = Default::default();
+    for row in rows {
+        let index = (row.ts.max(0) as f64 / 1000.0 / window).floor() as u64;
+        windows.entry(index).or_default().push(row);
+    }
+    windows
+        .into_iter()
+        .filter(|(_, comments)| comments.len() >= minimum)
+        .map(|(index, comments)| {
+            let start = index as f64 * window;
+            json!({
+                "start_time": start,
+                "end_time": start + window,
+                "comment_count": comments.len(),
+                "density": comments.len() as f64 / window,
+                "sample_comments": comments.iter().take(5).map(|row| row.content.clone()).collect::<Vec<_>>()
+            })
+        })
+        .collect()
 }
 
 /// Reuse the same BSR action schemas for the local MCP server.
@@ -1151,6 +1153,40 @@ pub async fn agent_chat(
 mod tests {
     use super::*;
     use rig_core::message::{DocumentSourceKind, ImageMediaType};
+
+    fn danmu(ts: i64, content: &str) -> DanmuEntry {
+        DanmuEntry {
+            ts,
+            event_type: "danmu".into(),
+            content: content.into(),
+            emoji_content: None,
+            user_name: None,
+            price: None,
+            sc_duration: None,
+        }
+    }
+
+    #[test]
+    fn danmu_highlights_group_recording_times_into_windows() {
+        let rows = [
+            danmu(1_000, "a"),
+            danmu(29_999, "b"),
+            danmu(30_000, "c"),
+            danmu(95_000, "d"),
+            danmu(96_000, "e"),
+        ];
+        let highlights = danmu_highlights(&rows, 30.0, 2);
+        assert_eq!(highlights.len(), 2);
+        assert_eq!(highlights[0]["start_time"], 0.0);
+        assert_eq!(highlights[0]["end_time"], 30.0);
+        assert_eq!(highlights[0]["comment_count"], 2);
+        assert_eq!(highlights[0]["sample_comments"], json!(["a", "b"]));
+        assert_eq!(highlights[1]["start_time"], 90.0);
+        assert_eq!(highlights[1]["comment_count"], 2);
+        // Empty windows are never reported, even without a minimum.
+        assert_eq!(danmu_highlights(&rows, 30.0, 0).len(), 3);
+        assert!(danmu_highlights(&[], 30.0, 0).is_empty());
+    }
 
     #[test]
     fn account_tool_results_omit_all_credentials() {

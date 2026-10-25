@@ -119,7 +119,7 @@
 | `post_upload` | 在后台投稿，切片先生成视频 |
 | `open_project` / `open_clip` | 打开工程编辑窗口 / 素材预览窗口 |
 
-`clip_range` 仍然可用（AI 助手与 MCP 使用），它把所有选区合并为一个素材，同样不再压制弹幕。
+`clip_range` 仍然可用（AI 助手与 MCP 使用），它把所有选区合并为一个素材，弹幕与 `generate_materials` 一样默认保存在素材旁，`danmu` 为 `true` 时压制进素材。MCP 还提供 `generate_materials`、切片的查询与主轨编辑，以及投稿草稿的创建与修改；MCP 只保存草稿，不调用 `post_upload`，草稿由用户在投稿页发布。
 
 ## 旧数据迁移
 

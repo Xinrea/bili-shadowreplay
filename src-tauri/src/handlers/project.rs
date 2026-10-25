@@ -444,6 +444,108 @@ pub async fn update_project_timeline(
     single_project_view(&state, project).await
 }
 
+/// A main-track clip as an external client asks for it: `clip_id` keeps an
+/// existing clip of the same material, with what is anchored to it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClipRequest {
+    #[serde(default)]
+    pub clip_id: Option<String>,
+    pub material_id: i64,
+    /// In point within the material, in seconds.
+    #[serde(default)]
+    pub start: f64,
+    /// Out point within the material; the material's end when absent.
+    #[serde(default)]
+    pub end: Option<f64>,
+    #[serde(default)]
+    pub volume: Option<f64>,
+}
+
+/// Replace the project's main track with `clips`, in order. Clips kept by id
+/// keep their subtitles, overlays and sounds; new clips get their material's
+/// recognized subtitles, as clips of a new project do.
+pub(crate) async fn set_project_clips(
+    state: &State,
+    id: i64,
+    clips: Vec<ClipRequest>,
+) -> Result<ProjectView, String> {
+    if clips.is_empty() {
+        return Err("切片至少需要一个片段".to_string());
+    }
+    let ids: Vec<i64> = clips.iter().map(|clip| clip.material_id).collect();
+    let materials = materials_by_id(state, &ids).await?;
+    let mut requested = Vec::with_capacity(clips.len());
+    for (index, clip) in clips.into_iter().enumerate() {
+        let material = materials
+            .get(&clip.material_id)
+            .ok_or_else(|| format!("第 {} 个片段的素材不存在", index + 1))?;
+        let duration = material_duration(material);
+        if clip
+            .end
+            .is_some_and(|end| duration > 0.0 && end > duration + 0.5)
+        {
+            return Err(format!(
+                "第 {} 个片段超出了素材的长度（{duration:.2} 秒）",
+                index + 1
+            ));
+        }
+        requested.push(TimelineClip {
+            id: clip.clip_id.unwrap_or_default(),
+            material_id: clip.material_id,
+            start: clip.start,
+            end: clip.end.unwrap_or(duration),
+            volume: clip.volume.unwrap_or(1.0),
+        });
+    }
+    // Checked as an export checks it, before anything is saved.
+    Timeline {
+        clips: requested.clone(),
+        ..Timeline::default()
+    }
+    .validate(|id| materials.get(&id).map(material_duration), |_| None)?;
+    let output = output_dir(state).await;
+    let mut cues = HashMap::new();
+    for material in materials.values() {
+        let srt = output.join(&material.file).with_extension("srt");
+        if let Ok(content) = tokio::fs::read_to_string(&srt).await {
+            cues.insert(material.id, srt_cues(&content));
+        }
+    }
+    edit_project_timeline(&state.db, id, |timeline| {
+        let mut used = Vec::new();
+        let clips = requested
+            .iter()
+            .cloned()
+            .map(|mut clip| {
+                let existing = timeline
+                    .clips
+                    .iter()
+                    .any(|old| old.id == clip.id && old.material_id == clip.material_id);
+                if !existing || used.contains(&clip.id) {
+                    clip.id = crate::project::new_id();
+                }
+                used.push(clip.id.clone());
+                clip
+            })
+            .collect();
+        timeline.replace_clips(clips);
+        let bare: Vec<(String, i64)> = timeline
+            .clips
+            .iter()
+            .filter(|clip| !timeline.subtitles.iter().any(|s| s.clip_id == clip.id))
+            .map(|clip| (clip.id.clone(), clip.material_id))
+            .collect();
+        for (clip_id, material_id) in bare {
+            if let Some(cues) = cues.get(&material_id) {
+                timeline.set_clip_subtitles(&clip_id, cues.clone());
+            }
+        }
+        true
+    })
+    .await?;
+    single_project_view(state, state.db.get_project(id).await?).await
+}
+
 /// Turn burning danmaku into the project's exports and uploads on or off.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_project_danmu(

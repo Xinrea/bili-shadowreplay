@@ -33,6 +33,40 @@ pub struct Subtitle {
     lan: String,
 }
 
+/// A new self-made submission with Bilibili's usual settings, matching the
+/// upload form's defaults (`default_profile` in the frontend).
+impl Default for Profile {
+    fn default() -> Self {
+        Self {
+            videos: Vec::new(),
+            cover: String::new(),
+            cover43: None,
+            title: String::new(),
+            copyright: 1,
+            tid: 27,
+            tag: String::new(),
+            desc_format_id: 9999,
+            desc: String::new(),
+            recreate: -1,
+            dynamic: String::new(),
+            interactive: 0,
+            act_reserve_create: 0,
+            no_disturbance: 0,
+            no_reprint: 0,
+            subtitle: Subtitle {
+                open: 0,
+                lan: String::new(),
+            },
+            dolby: 0,
+            lossless_music: 0,
+            up_selection_reply: false,
+            up_close_reply: false,
+            up_close_danmu: false,
+            web_os: 0,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Video {
     pub title: String,

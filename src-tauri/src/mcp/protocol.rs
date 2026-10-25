@@ -237,7 +237,7 @@ async fn message(State(context): State<RpcContext>, headers: HeaderMap, body: By
                 "protocolVersion": if VERSIONS.contains(&requested) { requested } else { VERSIONS[0] },
                 "capabilities": {"tools": {"listChanged": false}},
                 "serverInfo": {"name": "bsr", "version": env!("CARGO_PKG_VERSION"), "title": "BiliBili ShadowReplay"},
-                "instructions": "BSR manages live rooms (Recorder), cached recordings (Archive), and clips (Video). Read archive subtitles and danmu before choosing clip timestamps. State-changing tools execute immediately; obtain the user's approval in your client before calling them."
+                "instructions": "BSR records live rooms (Recorder) into archives, cuts archives into materials (Video), combines materials into projects (切片) and prepares Bilibili uploads (投稿). Workflow: find an archive (get_recorder_list, get_archives); choose times from its subtitles and danmu (get_archive_subtitle, analyze_danmu_highlights, search_danmu_keywords, get_danmu_record), whose times are seconds from the start of the recording, the same base as clip ranges; cut materials (generate_materials or clip_range); arrange them in a project (create_project, set_project_clips); then create an upload draft (create_upload_draft) for a person to review and post in BSR, which this server never does. Long tools return a task_id: poll get_task until success, failed or cancelled; the result is in metadata.result. State-changing tools execute immediately; obtain the user's approval in your client before calling them."
             })
         }
         "ping" => json!({}),

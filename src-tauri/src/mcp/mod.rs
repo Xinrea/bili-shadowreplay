@@ -1,7 +1,24 @@
 //! Optional local MCP service, independent of the desktop/web API servers.
 
+/// The state command handlers take: Tauri's managed state in the desktop
+/// app, the state itself in headless builds.
+macro_rules! command_state {
+    ($state:expr) => {{
+        #[cfg(feature = "gui")]
+        let command_state = {
+            use tauri::Manager;
+            $state.app_handle.state::<$crate::state::State>()
+        };
+        #[cfg(feature = "headless")]
+        let command_state = $state.clone();
+        command_state
+    }};
+}
+
+mod jobs;
 mod protocol;
 mod tools;
+mod workflow;
 
 use std::sync::{atomic::AtomicBool, Arc};
 

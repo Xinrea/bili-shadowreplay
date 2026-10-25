@@ -30,9 +30,12 @@
 
 <script lang="ts">
   import { AudioLines, Captions, Film, Music, Smile, Sticker, Type } from "lucide-svelte";
+  import { onDestroy } from "svelte";
   import type { MaterialPeaks, ProjectTimeline, TrackKind } from "../../interface";
   import {
     canLiftClip,
+    moveTimelineSelection,
+    type TimelineSelection,
     idsAt,
     moveAudio,
     moveClip,
@@ -93,7 +96,8 @@
     onSelectSubtitle: (id: string | null) => void;
     onSelectOverlay: (id: string | null) => void;
     onSelectAudio: (id: string | null) => void;
-    onDropMaterial: (materialId: number, index: number) => void;
+    /** Add at project time: overlay existing picture, or append at the main track's end. */
+    onDropMaterial: (materialId: number, time: number) => void;
     /** A material dropped on the tracks above the main one, to show over it from `time`. */
     onDropOverlay: (materialId: number, time: number, target: OverlayTarget) => void;
     /** A clip dragged off the main track onto a video track, to show there from `time`. */
@@ -158,7 +162,8 @@
   let viewport: HTMLElement = $state();
   let viewportWidth = $state(800);
   let snapTime: number | null = $state(null);
-  let dropIndex: number | null = $state(null);
+  let materialDropTime: number | null = $state(null);
+  let content: HTMLElement = $state();
   let overlayArea: HTMLElement = $state();
   let mainTrack: HTMLElement = $state();
   /** Where a material dragged over the tracks above the main one would go. */
@@ -293,7 +298,7 @@
   // Keep the playhead in view while it moves on its own.
   $effect(() => {
     const x = time * pxPerSecond;
-    if (!viewport || drag) return;
+    if (!viewport || drag || groupDrag || marquee) return;
     const { scrollLeft, clientWidth } = viewport;
     if (x < scrollLeft || x > scrollLeft + clientWidth - 40) {
       viewport.scrollLeft = Math.max(0, x - clientWidth * 0.2);
@@ -379,22 +384,217 @@
     window.addEventListener("pointerup", up);
   }
 
-  function clickEmpty(event: MouseEvent) {
-    if (event.target !== event.currentTarget) return;
+  type SelectionKind = keyof TimelineSelection;
+  const emptySelection = (): TimelineSelection => ({ clips: [], subtitles: [], overlays: [], audio: [] });
+  let selection: TimelineSelection = $state(emptySelection());
+  let selectionCount = $derived(Object.values(selection).reduce((sum, ids) => sum + ids.length, 0));
+  let marquee: { x: number; y: number; width: number; height: number } | null = $state(null);
+  let groupDrag: { pointerTime: number; pointerX: number; mainAnchor: number | null; moved: boolean; delta: number; index?: number } | null = $state(null);
+  let groupPreview: ProjectTimeline | null = $state(null);
+  let cleanupSelectionGesture = () => {};
+
+  // History, deletion or remote updates may remove selected items.
+  $effect(() => {
+    const visible: TimelineSelection = {
+      clips: placed.map((item) => item.clip.id),
+      subtitles: subtitles.map((item) => item.subtitle.id),
+      overlays: overlays.map((item) => item.item.id),
+      audio: audio.map((item) => item.item.id),
+    };
+    const next = emptySelection();
+    let changed = false;
+    for (const kind of Object.keys(next) as SelectionKind[]) {
+      const ids = new Set(visible[kind]);
+      next[kind] = selection[kind].filter((id) => ids.has(id));
+      changed ||= next[kind].length !== selection[kind].length;
+    }
+    if (changed) selection = next;
+  });
+
+  // Selecting something in the inspector or subtitle list exits a box selection.
+  $effect(() => {
+    if (selectionCount > 0 && (selectedClipId || selectedSubtitleId || selectedOverlayId || selectedAudioId)) {
+      selection = emptySelection();
+    }
+  });
+
+  function clearPrimarySelection() {
     onSelectClip(null);
     onSelectSubtitle(null);
     onSelectOverlay(null);
     onSelectAudio(null);
-    onSeek(Math.min(timeAt(event.clientX), duration));
   }
+
+  function selected(kind: SelectionKind, id: string) {
+    return selection[kind].includes(id);
+  }
+
+  /** Include a normal single selection when extending it with a modifier. */
+  function currentSelection(): TimelineSelection {
+    const next: TimelineSelection = {
+      clips: [...selection.clips], subtitles: [...selection.subtitles],
+      overlays: [...selection.overlays], audio: [...selection.audio],
+    };
+    for (const [kind, primary] of [["clips", selectedClipId], ["subtitles", selectedSubtitleId], ["overlays", selectedOverlayId], ["audio", selectedAudioId]] as const) {
+      if (primary && !next[kind].includes(primary)) next[kind].push(primary);
+    }
+    return next;
+  }
+
+  /** Empty track space starts a box; a click still seeks and clears selection. */
+  function startMarquee(event: PointerEvent) {
+    if (event.button !== 0 || (event.target as HTMLElement).closest("[data-item], .ruler")) return;
+    event.preventDefault();
+    cleanupSelectionGesture();
+    const rect = content.getBoundingClientRect();
+    const origin = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    const previous = event.shiftKey || event.ctrlKey || event.metaKey ? currentSelection() : emptySelection();
+    let moved = false;
+    const move = (e: PointerEvent) => {
+      const bounds = content.getBoundingClientRect();
+      const x = e.clientX - bounds.left;
+      const y = e.clientY - bounds.top;
+      if (!moved && Math.hypot(x - origin.x, y - origin.y) < DRAG_THRESHOLD_PX) return;
+      moved = true;
+      clearPrimarySelection();
+      const box = { x: Math.min(origin.x, x), y: Math.min(origin.y, y), width: Math.abs(x - origin.x), height: Math.abs(y - origin.y) };
+      marquee = box;
+      const next: TimelineSelection = { clips: [...previous.clips], subtitles: [...previous.subtitles], overlays: [...previous.overlays], audio: [...previous.audio] };
+      for (const element of content.querySelectorAll<HTMLElement>("[data-item]")) {
+        const item = element.getBoundingClientRect();
+        const left = item.left - bounds.left;
+        const top = item.top - bounds.top;
+        if (left <= box.x + box.width && left + item.width >= box.x &&
+            top <= box.y + box.height && top + item.height >= box.y) {
+          const kind = element.dataset.kind as SelectionKind;
+          const id = element.dataset.item!;
+          if (!next[kind].includes(id)) next[kind].push(id);
+        }
+      }
+      selection = next;
+    };
+    const finish = (e: PointerEvent) => {
+      cleanupSelectionGesture();
+      marquee = null;
+      if (!moved && e.type !== "pointercancel") {
+        selection = emptySelection();
+        clearPrimarySelection();
+        onSeek(Math.min(timeAt(e.clientX), duration));
+      }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+    cleanupSelectionGesture = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+    };
+  }
+
+  /** Multiple selected items move together; single selections retain edge trimming. */
+  function startSelectionDrag(event: PointerEvent, kind: SelectionKind, id: string): boolean {
+    if (event.shiftKey || event.ctrlKey || event.metaKey) {
+      const next = currentSelection();
+      if (next[kind].includes(id)) next[kind] = next[kind].filter((value) => value !== id);
+      else next[kind].push(id);
+      clearPrimarySelection();
+      selection = next;
+      return true;
+    }
+    if (!selected(kind, id) || selectionCount < 2) {
+      selection = emptySelection();
+      return false;
+    }
+    cleanupSelectionGesture();
+    const firstClip = placed.find((item) => selected("clips", item.clip.id));
+    groupDrag = {
+      pointerTime: timeAt(event.clientX), pointerX: event.clientX,
+      mainAnchor: firstClip ? firstClip.offset + firstClip.duration / 2 : null,
+      moved: false, delta: 0,
+    };
+    const move = (e: PointerEvent) => {
+      const state = groupDrag;
+      if (!state) return;
+      if (!state.moved && Math.abs(e.clientX - state.pointerX) < DRAG_THRESHOLD_PX) return;
+      const delta = timeAt(e.clientX) - state.pointerTime;
+      const remaining = placed.filter((item) => !selection.clips.includes(item.clip.id));
+      // Any selected item may be grabbed, including one far from the main clips.
+      // Move the main group's anchor by the pointer delta, not to the pointer itself.
+      const index = state.mainAnchor === null ? undefined : remaining.filter((item) => state.mainAnchor! + delta > item.offset + item.duration / 2).length;
+      // Snap the group as a whole; never snap or clamp its members separately.
+      const spans = [
+        ...subtitles.filter((item) => selected("subtitles", item.subtitle.id)),
+        ...overlays.filter((item) => selected("overlays", item.item.id)),
+        ...audio.filter((item) => selected("audio", item.item.id)),
+      ];
+      const start = Math.min(...spans.map((item) => item.start));
+      const end = Math.max(...spans.map((item) => item.end));
+      const targets = [time, 0, mainLength,
+        ...subtitles.filter((item) => !selected("subtitles", item.subtitle.id)).flatMap((item) => [item.start, item.end]),
+        ...overlays.filter((item) => !selected("overlays", item.item.id)).flatMap((item) => [item.start, item.end]),
+        ...audio.filter((item) => !selected("audio", item.item.id)).flatMap((item) => [item.start, item.end]),
+        ...clipEdges()];
+      const snapped = selection.clips.length || !spans.length ? delta : snapSpan(start + delta, end - start, targets, !e.shiftKey) - start;
+      groupDrag = { ...state, moved: true, delta: snapped, index };
+      groupPreview = moveTimelineSelection(timeline, selection, snapped, index);
+    };
+    const finish = (e: PointerEvent) => {
+      const state = groupDrag;
+      cleanupSelectionGesture();
+      groupDrag = null;
+      groupPreview = null;
+      snapTime = null;
+      if (state?.moved && e.type !== "pointercancel") {
+        onCommit(moveTimelineSelection(timeline, selection, state.delta, state.index), timeline);
+      }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+    cleanupSelectionGesture = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+    };
+    return true;
+  }
+
+  let groupOffsets = $derived.by(() => {
+    const offsets = new Map<string, number>();
+    if (!groupPreview) return offsets;
+    const clips = new Map(placeClips(groupPreview).map((item) => [item.clip.id, item.offset]));
+    const subs = new Map(visibleSubtitles(groupPreview).map((item) => [item.subtitle.id, item.start]));
+    const others = new Map([...placeOverlays(groupPreview), ...placeAudio(groupPreview)].map((item) => [item.item.id, item.start]));
+    for (const item of placed) offsets.set(`clips:${item.clip.id}`, ((clips.get(item.clip.id) ?? item.offset) - item.offset) * pxPerSecond);
+    for (const item of subtitles) offsets.set(`subtitles:${item.subtitle.id}`, ((subs.get(item.subtitle.id) ?? item.start) - item.start) * pxPerSecond);
+    for (const [kind, items] of [["overlays", overlays], ["audio", audio]] as const) {
+      for (const item of items) offsets.set(`${kind}:${item.item.id}`, ((others.get(item.item.id) ?? item.start) - item.start) * pxPerSecond);
+    }
+    return offsets;
+  });
+
+  function cancelSelection(event: KeyboardEvent | FocusEvent) {
+    if (event instanceof KeyboardEvent && event.key !== "Escape") return;
+    cleanupSelectionGesture();
+    groupDrag = null;
+    groupPreview = null;
+    marquee = null;
+    snapTime = null;
+    selection = emptySelection();
+  }
+
+  onDestroy(() => cleanupSelectionGesture());
 
   // Clips: reorder by dragging the body, trim by dragging an edge.
   function startClipDrag(event: PointerEvent, item: PlacedClip) {
     if (event.button !== 0) return;
     event.stopPropagation();
+    if (startSelectionDrag(event, "clips", item.clip.id)) return;
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     const x = event.clientX - rect.left;
-    const edge = x < EDGE_PX ? "start" : rect.width - x < EDGE_PX ? "end" : null;
+    const edgeSize = Math.min(EDGE_PX, rect.width / 3);
+    const edge = x < edgeSize ? "start" : rect.width - x < edgeSize ? "end" : null;
     onSelectClip(item.clip.id);
     onSelectSubtitle(null);
     onSelectOverlay(null);
@@ -549,6 +749,7 @@
   function startSubtitleDrag(event: PointerEvent, item: PlacedSubtitle) {
     if (event.button !== 0) return;
     event.stopPropagation();
+    if (startSelectionDrag(event, "subtitles", item.subtitle.id)) return;
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     const x = event.clientX - rect.left;
     const edgeSize = Math.min(EDGE_PX, rect.width / 3);
@@ -613,6 +814,7 @@
   function startOverlayDrag(event: PointerEvent, item: PlacedOverlay | PlacedAudio, lane: OverlayDrag["lane"]) {
     if (event.button !== 0) return;
     event.stopPropagation();
+    if (startSelectionDrag(event, lane === "audio" ? "audio" : "overlays", item.item.id)) return;
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     const x = event.clientX - rect.left;
     const edgeSize = Math.min(EDGE_PX, rect.width / 3);
@@ -838,16 +1040,19 @@
     if (!event.dataTransfer?.types.includes(MATERIAL_DRAG_TYPE)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
-    dropIndex = insertionIndex(event.clientX);
+    const at = Math.max(0, snap(timeAt(event.clientX), [time, ...clipEdges()], !event.shiftKey));
+    materialDropTime = at < mainLength ? Math.min(at, latestStart) : mainLength;
   }
 
   function drop(event: DragEvent) {
     const id = Number(event.dataTransfer?.getData(MATERIAL_DRAG_TYPE));
-    const index = dropIndex ?? timeline.clips.length;
-    dropIndex = null;
+    const dropTime = materialDropTime ?? timeAt(event.clientX);
+    materialDropTime = null;
+    snapTime = null;
     if (!Number.isFinite(id) || id <= 0) return;
     event.preventDefault();
-    onDropMaterial(id, index);
+    // Like ＋ at the playhead, but at the pointer: overlay, never cut the picture.
+    onDropMaterial(id, dropTime);
   }
 
   function wheel(event: WheelEvent) {
@@ -935,7 +1140,9 @@
   }
 </script>
 
-<div class="timeline">
+<svelte:window onkeydown={cancelSelection} onblur={cancelSelection} ondragend={() => { materialDropTime = null; overlayDrop = null; audioDrop = null; snapTime = null; }} />
+
+<div class="timeline" title="在轨道空白处拖动框选；Ctrl / Cmd / Shift 点击增减选择；拖动选中项一起移动；Esc 取消选择">
   <div class="labels">
     <div class="label ruler-label" style:height="{RULER_HEIGHT}px">时间</div>
     <div class="label" style:height="{subtitleTrackHeight}px" title="字幕轨道，始终在最上层">
@@ -972,7 +1179,14 @@
   <div class="viewport sidebar-scrollbar" bind:this={viewport} onwheel={wheel}>
     <!-- Clips, subtitles and overlays are placed by CSS from the scale here, so
          zooming sets one variable instead of thousands of positions. -->
-    <div class="content" style:width="{contentWidth}px" style:--pps={pxPerSecond}>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="content" bind:this={content} onpointerdown={startMarquee} style:width="{contentWidth}px" style:--pps={pxPerSecond}>
+      {#if selectionCount > 0}
+        <div class="selection-status">已选 {selectionCount} 项 · 拖动一起移动 · Esc 取消</div>
+      {/if}
+      {#if marquee}
+        <div class="selection-box" style:left="{marquee.x}px" style:top="{marquee.y}px" style:width="{marquee.width}px" style:height="{marquee.height}px"></div>
+      {/if}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="ruler" style:height="{RULER_HEIGHT}px" onpointerdown={startScrub}>
         {#each ticks as tick}
@@ -984,7 +1198,7 @@
 
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="track subtitle-track" style:height="{subtitleTrackHeight}px" onclick={clickEmpty}>
+      <div class="track subtitle-track" style:height="{subtitleTrackHeight}px">
         {#if subtitles.length === 0}
           <div class="track-hint">暂无字幕，可在右侧使用 AI 字幕或手动添加</div>
         {/if}
@@ -993,7 +1207,10 @@
           <div
             class="subtitle"
             class:labelled
-            class:selected={selectedSubtitleId === item.subtitle.id}
+            class:selected={selectedSubtitleId === item.subtitle.id || selected("subtitles", item.subtitle.id)}
+            data-kind="subtitles"
+            data-item={item.subtitle.id}
+            style:transform={groupPreview ? `translateX(${groupOffsets.get(`subtitles:${item.subtitle.id}`) ?? 0}px)` : undefined}
             class:active={playingSubtitles.has(item.subtitle.id)}
             role="button"
             tabindex="-1"
@@ -1021,7 +1238,7 @@
         ondrop={overlayDropMaterial}
       >
         <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <div class="track new-track" style:height="{NEW_TRACK_HEIGHT}px" onclick={clickEmpty}>
+        <div class="track new-track" style:height="{NEW_TRACK_HEIGHT}px">
           {#if trackCount === 0}
             <div class="track-hint">从左侧添加文字、贴纸，或把素材、主轨片段拖到这里，叠加在画面上</div>
           {:else if hiddenOverlays > 0}
@@ -1036,7 +1253,6 @@
             class:target={(ghost?.lane === "overlay" && "track" in ghost.target && ghost.target.track === track) ||
               (overlayDrop && "track" in overlayDrop.target && overlayDrop.target.track === track)}
             style:height="{trackHeights[track]}px"
-            onclick={clickEmpty}
           >
             {#each overlays.filter((entry) => entry.track === track) as item (item.item.id)}
               {@const width = (item.end - item.start) * pxPerSecond}
@@ -1045,7 +1261,10 @@
               {@const overlay = item.item}
               <div
                 class="overlay {overlay.kind}"
-                class:selected={selectedOverlayId === overlay.id}
+                class:selected={selectedOverlayId === overlay.id || selected("overlays", overlay.id)}
+                data-kind="overlays"
+                data-item={overlay.id}
+                style:transform={groupPreview ? `translateX(${groupOffsets.get(`overlays:${overlay.id}`) ?? 0}px)` : undefined}
                 class:active={playingOverlays.has(item.item.id)}
                 class:dragging={moving?.id === overlay.id}
                 class:missing={overlay.kind === "video" && !materials.has(overlay.material_id)}
@@ -1115,9 +1334,10 @@
         class:target={moving?.toMain != null}
         bind:this={mainTrack}
         style:height="{MAIN_TRACK_HEIGHT}px"
-        onclick={clickEmpty}
         ondragover={dragOver}
-        ondragleave={() => (dropIndex = null)}
+        ondragleave={(event) => {
+          if (!mainTrack.contains(event.relatedTarget as Node)) { materialDropTime = null; snapTime = null; }
+        }}
         ondrop={drop}
       >
         {#if placed.length === 0}
@@ -1132,7 +1352,10 @@
           <div
             class="clip"
             class:labelled
-            class:selected={selectedClipId === item.clip.id}
+            class:selected={selectedClipId === item.clip.id || selected("clips", item.clip.id)}
+            data-kind="clips"
+            data-item={item.clip.id}
+            style:transform={groupPreview ? `translateX(${groupOffsets.get(`clips:${item.clip.id}`) ?? 0}px)` : undefined}
             class:dragging={drag?.kind === "move" && drag.moved && drag.clipId === item.clip.id}
             class:missing={!material}
             role="button"
@@ -1178,8 +1401,10 @@
         {#if moving?.toMain != null}
           <div class="insert-marker" style:left="{insertionX(moving.toMain)}px"></div>
         {/if}
-        {#if dropIndex !== null}
-          <div class="insert-marker" style:left="{insertionX(dropIndex)}px"></div>
+        {#if materialDropTime !== null}
+          <div class="insert-marker" style:left="{Math.min(materialDropTime, mainLength) * pxPerSecond}px">
+            <span class="drop-label">{mainLength >= MIN_OVERLAY_DURATION && materialDropTime < mainLength ? "叠加视频" : "添加到主轨"} · {formatTimecode(Math.min(materialDropTime, mainLength))}</span>
+          </div>
         {/if}
       </div>
 
@@ -1200,7 +1425,6 @@
             class:target={(ghost?.lane === "audio" && "track" in ghost.target && ghost.target.track === track) ||
               (audioDrop && "track" in audioDrop.target && audioDrop.target.track === track)}
             style:height="{AUDIO_TRACK_HEIGHT}px"
-            onclick={clickEmpty}
           >
             {#each audio.filter((entry) => entry.track === track) as item (item.item.id)}
               {@const width = (item.end - item.start) * pxPerSecond}
@@ -1210,7 +1434,10 @@
                 class="sound"
                 class:labelled={width >= LABEL_MIN_PX}
                 class:of-material={sound.kind === "material"}
-                class:selected={selectedAudioId === sound.id}
+                class:selected={selectedAudioId === sound.id || selected("audio", sound.id)}
+                data-kind="audio"
+                data-item={sound.id}
+                style:transform={groupPreview ? `translateX(${groupOffsets.get(`audio:${sound.id}`) ?? 0}px)` : undefined}
                 class:active={playingAudio.has(sound.id)}
                 class:dragging={moving?.id === sound.id}
                 class:missing={sound.kind === "file" ? !audioFiles.has(sound.audio_id) : !materials.has(sound.material_id)}
@@ -1266,7 +1493,7 @@
           </div>
         {/each}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <div class="track new-track audio-new-track" style:height="{NEW_TRACK_HEIGHT}px" onclick={clickEmpty}>
+        <div class="track new-track audio-new-track" style:height="{NEW_TRACK_HEIGHT}px">
           {#if audioRows.length === 0}
             <div class="track-hint">把音频库里的音乐、配音，或素材拖到这里，只用它的声音</div>
           {:else if hiddenAudio > 0}
@@ -1305,6 +1532,39 @@
 </div>
 
 <style>
+  .selection-box {
+    position: absolute;
+    z-index: 30;
+    border: 1px solid #55b9ff;
+    background: rgb(10 132 255 / 18%);
+    pointer-events: none;
+  }
+
+  .selection-status {
+    position: sticky;
+    left: 8px;
+    top: 0;
+    z-index: 31;
+    width: max-content;
+    height: 0;
+    margin-left: 8px;
+    color: #8dcdff;
+    font-size: 10px;
+    pointer-events: none;
+    transform: translateY(25px);
+  }
+
+  .drop-label {
+    position: absolute;
+    top: -20px;
+    padding: 2px 5px;
+    border-radius: 3px;
+    background: #0a84ff;
+    color: white;
+    white-space: nowrap;
+    font-size: 10px;
+  }
+
   .timeline {
     display: flex;
     max-height: 50vh;

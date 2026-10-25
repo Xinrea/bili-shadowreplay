@@ -118,7 +118,11 @@
     buildSubtitleContext,
     clampSentenceLength,
     MAX_CONTEXT_CHARS,
+    MAX_HOTWORDS,
+    mergeHotwords,
+    roomHotwords,
     SENTENCE_MAX_LENGTH,
+    type HotwordRoom,
   } from "../../powerlive-subtitle";
   import { createStateRefresh, watchStateChanges } from "../../state-refresh";
   import { announceTask, openTaskCenter, settleTask, wasCancelled } from "../../stores/tasks";
@@ -215,7 +219,10 @@
   let aiRunning = $state(false);
   /** Whether recognizing goes through a signed-in PowerLive, which takes hints. */
   let aiPowerLive = $state(false);
-  let aiHotwords: string[] = $state([]);
+  let aiGlobalHotwords: string[] = $state([]);
+  let aiRoomHotwords: string[] = $state([]);
+  let aiRoom: HotwordRoom | undefined = $state();
+  let aiMergedHotwords = $derived(mergeHotwords(aiRoomHotwords, aiGlobalHotwords));
   let aiSentenceLength = $state(SENTENCE_MAX_LENGTH.default);
   let aiContext = $state("");
   let aiContextLoading = $state(false);
@@ -1042,9 +1049,13 @@
    * the lowest video track free there or a new one when all are taken.
    */
   async function addMaterialAtPlayhead(materialId: number) {
-    const at = time;
+    return addMaterialAtTime(materialId, time >= mainLength - MIN_OVERLAY_DURATION ? mainLength : time);
+  }
+
+  /** Share the ＋ behavior with drops, using the pointer's time instead of the playhead. */
+  async function addMaterialAtTime(materialId: number, at: number) {
     // Decided on the main track as it is after each wait, which other edits may have changed.
-    const onMain = () => at >= mainLength - MIN_OVERLAY_DURATION;
+    const onMain = () => !timeline.clips.length || at >= mainLength;
     const info = await loadMaterial(materialId);
     if (!info) return;
     if (onMain()) return addMaterial(materialId);
@@ -1421,7 +1432,9 @@
       aiPowerLive =
         config.subtitle_generator_type === "powerlive" &&
         (!TAURI_ENV || (await invoke<{ logged_in: boolean }>("get_powerlive_status")).logged_in);
-      aiHotwords = config.powerlive_hotwords ?? [];
+      aiGlobalHotwords = config.powerlive_hotwords ?? [];
+      aiRoom = project?.platform && roomId ? { platform: project.platform, roomId } : undefined;
+      aiRoomHotwords = aiRoom ? roomHotwords(config.powerlive_room_hotwords, aiRoom) : [];
       aiSentenceLength = config.powerlive_sentence_max_length ?? SENTENCE_MAX_LENGTH.default;
     } catch (error) {
       console.warn("Failed to load the subtitle settings:", error);
@@ -1500,7 +1513,7 @@
     const powerlive = aiPowerLive
       ? {
           context: aiContext.trim(),
-          hotwords: [...aiHotwords],
+          hotwords: aiMergedHotwords.slice(0, MAX_HOTWORDS),
           sentenceMaxLength: clampSentenceLength(aiSentenceLength),
         }
       : undefined;
@@ -2255,7 +2268,7 @@
       }}
       onSelectOverlay={selectOverlay}
       onSelectAudio={selectAudio}
-      onDropMaterial={(id, index) => void addMaterial(id, index)}
+      onDropMaterial={(id, at) => void addMaterialAtTime(id, at)}
       onDropOverlay={(id, at, target) => void addVideoOverlay(id, at, target)}
       onLiftClip={(id, at, target) => void liftClip(id, at, target)}
       onDropAudio={(source, at, target) => void addSound(source, at, target)}
@@ -2350,11 +2363,34 @@
             </p>
             <div>
               <div class="mb-1.5 flex items-baseline justify-between gap-3">
-                <span class="ui-label">热词</span>
-                <span class="text-[11px] text-fg-muted">全局设置，所有切片共用</span>
+                <span class="ui-label">直播间词库</span>
+                <span class="text-[11px] text-fg-muted">
+                  {aiRoom ? `${platformLabel(aiRoom.platform)} · ${aiRoom.roomId}，仅本直播间使用` : "当前切片未关联直播间"}
+                </span>
               </div>
-              <PowerLiveHotwords bind:hotwords={aiHotwords} />
+              {#if aiRoom}
+                {#key `${aiRoom.platform}:${aiRoom.roomId}`}
+                  <PowerLiveHotwords bind:hotwords={aiRoomHotwords} room={aiRoom} />
+                {/key}
+              {:else}
+                <p class="text-[11px] text-fg-muted">未关联直播间时，仅使用全局词库。</p>
+              {/if}
             </div>
+            <div>
+              <div class="mb-1.5 flex items-baseline justify-between gap-3">
+                <span class="ui-label">全局词库</span>
+                <span class="text-[11px] text-fg-muted">所有直播间共用，与主窗口设置同步</span>
+              </div>
+              <PowerLiveHotwords bind:hotwords={aiGlobalHotwords} />
+            </div>
+            <p class="text-[11px] leading-relaxed {aiMergedHotwords.length > MAX_HOTWORDS ? 'text-warning-fg' : 'text-fg-muted'}">
+              两份词库自动保存，识别时合并去重，优先使用直播间热词。
+              {#if aiMergedHotwords.length > MAX_HOTWORDS}
+                合并后共 {aiMergedHotwords.length} 词，超出上限，本次仅使用前 {MAX_HOTWORDS} 词。
+              {:else}
+                合并后共 {aiMergedHotwords.length} / {MAX_HOTWORDS} 词。
+              {/if}
+            </p>
             <div class="flex items-center justify-between gap-3">
               <label for="ai-subtitle-sentence-length" class="ui-label">
                 每条字幕最多字数

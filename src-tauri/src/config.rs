@@ -1,5 +1,6 @@
 use chrono::Local;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{self, AtomicU64};
@@ -26,6 +27,9 @@ pub struct Config {
     /// Words PowerLive should favor when recognizing, shared by every room.
     #[serde(default)]
     pub powerlive_hotwords: Vec<String>,
+    /// Room-specific words, keyed by platform then room ID.
+    #[serde(default)]
+    pub powerlive_room_hotwords: HashMap<String, HashMap<String, Vec<String>>>,
     /// The most characters a PowerLive subtitle line may have.
     #[serde(default = "default_powerlive_sentence_max_length")]
     pub powerlive_sentence_max_length: u32,
@@ -171,6 +175,44 @@ fn default_llm_config() -> LlmConfig {
 }
 
 impl Config {
+    /// Update one dictionary, returning its normalized words (not the merged list).
+    /// Omitted scope selects global; a room scope requires both nonblank keys.
+    pub fn set_powerlive_hotwords(
+        &mut self,
+        hotwords: Vec<String>,
+        platform: Option<&str>,
+        room_id: Option<&str>,
+    ) -> Result<Vec<String>, String> {
+        let scope = match (platform, room_id) {
+            (None, None) => None,
+            (Some(platform), Some(room_id))
+                if !platform.trim().is_empty() && !room_id.trim().is_empty() =>
+            {
+                Some((platform, room_id))
+            }
+            _ => return Err("platform and roomId must both be nonempty or both omitted".into()),
+        };
+        let hotwords = crate::subtitle_generator::powerlive::normalize_hotwords(hotwords);
+        if let Some((platform, room_id)) = scope {
+            if hotwords.is_empty() {
+                if let Some(rooms) = self.powerlive_room_hotwords.get_mut(platform) {
+                    rooms.remove(room_id);
+                    if rooms.is_empty() {
+                        self.powerlive_room_hotwords.remove(platform);
+                    }
+                }
+            } else {
+                self.powerlive_room_hotwords
+                    .entry(platform.to_string())
+                    .or_default()
+                    .insert(room_id.to_string(), hotwords.clone());
+            }
+        } else {
+            self.powerlive_hotwords = hotwords.clone();
+        }
+        Ok(hotwords)
+    }
+
     pub fn load(
         config_path: &PathBuf,
         default_cache: &Path,
@@ -206,6 +248,7 @@ impl Config {
             whisper_model: default_whisper_model(),
             whisper_prompt: default_whisper_prompt(),
             powerlive_hotwords: Vec::new(),
+            powerlive_room_hotwords: HashMap::new(),
             powerlive_sentence_max_length: default_powerlive_sentence_max_length(),
             openai_api_endpoint: default_openai_api_endpoint(),
             openai_api_key: default_openai_api_key(),
@@ -348,6 +391,137 @@ impl Config {
         self.update_interval
             .store(interval, atomic::Ordering::Relaxed);
         self.save();
+    }
+}
+
+#[cfg(test)]
+mod powerlive_config_tests {
+    use super::*;
+
+    fn config() -> Config {
+        toml::from_str(include_str!("../config.example.toml")).unwrap()
+    }
+
+    fn words(values: &[&str]) -> Vec<String> {
+        values.iter().map(|word| word.to_string()).collect()
+    }
+
+    #[test]
+    fn powerlive_dictionaries_default_for_legacy_and_new_configs() {
+        let legacy = config();
+        assert!(legacy.powerlive_hotwords.is_empty());
+        assert!(legacy.powerlive_room_hotwords.is_empty());
+        let mut json = serde_json::to_value(&legacy).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .remove("powerlive_room_hotwords");
+        json["powerlive_hotwords"] = serde_json::json!(["legacy"]);
+        let legacy: Config = serde_json::from_value(json).unwrap();
+        assert_eq!(legacy.powerlive_hotwords, ["legacy"]);
+        assert!(legacy.powerlive_room_hotwords.is_empty());
+
+        let directory = tempfile::tempdir().unwrap();
+        let fresh = Config::load(
+            &directory.path().join("config.toml"),
+            directory.path(),
+            directory.path(),
+        )
+        .unwrap();
+        assert!(fresh.powerlive_room_hotwords.is_empty());
+    }
+
+    #[test]
+    fn powerlive_updates_are_normalized_isolated_and_persisted() {
+        let mut config = config();
+        assert_eq!(
+            config
+                .set_powerlive_hotwords(words(&[" global ", "global", ""]), None, None)
+                .unwrap(),
+            ["global"]
+        );
+        let set_room = |config: &mut Config, platform, room, values: &[&str]| {
+            config
+                .set_powerlive_hotwords(words(values), Some(platform), Some(room))
+                .unwrap()
+        };
+        assert_eq!(
+            set_room(
+                &mut config,
+                "bilibili",
+                "123",
+                &[" Room   word ", "Room word"]
+            ),
+            ["Room word"]
+        );
+        set_room(&mut config, "bilibili", "456", &["other room"]);
+        set_room(&mut config, "douyu", "123", &["other platform"]);
+        assert_eq!(config.powerlive_hotwords, ["global"]);
+        assert_eq!(
+            config.powerlive_room_hotwords["bilibili"]["123"],
+            ["Room word"]
+        );
+        assert_eq!(
+            config.powerlive_room_hotwords["bilibili"]["456"],
+            ["other room"]
+        );
+        assert_eq!(
+            config.powerlive_room_hotwords["douyu"]["123"],
+            ["other platform"]
+        );
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        config.config_path = path.to_string_lossy().into_owned();
+        config.try_save().unwrap();
+        let reloaded = Config::load(&path, directory.path(), directory.path()).unwrap();
+        assert_eq!(reloaded.powerlive_hotwords, config.powerlive_hotwords);
+        assert_eq!(
+            reloaded.powerlive_room_hotwords,
+            config.powerlive_room_hotwords
+        );
+
+        // Normalized-empty words remove only the selected room and prune empty platforms.
+        set_room(&mut config, "bilibili", "123", &[" ", "\t"]);
+        assert!(!config.powerlive_room_hotwords["bilibili"].contains_key("123"));
+        set_room(&mut config, "bilibili", "456", &[]);
+        assert!(!config.powerlive_room_hotwords.contains_key("bilibili"));
+        set_room(&mut config, "missing", "123", &[]);
+        assert!(!config.powerlive_room_hotwords.contains_key("missing"));
+        assert_eq!(
+            config.powerlive_room_hotwords["douyu"]["123"],
+            ["other platform"]
+        );
+        config
+            .set_powerlive_hotwords(Vec::new(), None, None)
+            .unwrap();
+        assert!(config.powerlive_hotwords.is_empty());
+        assert_eq!(config.powerlive_room_hotwords.len(), 1);
+    }
+
+    #[test]
+    fn powerlive_invalid_scopes_leave_both_dictionaries_unchanged() {
+        let mut config = config();
+        config
+            .set_powerlive_hotwords(words(&["global"]), None, None)
+            .unwrap();
+        config
+            .set_powerlive_hotwords(words(&["room"]), Some("bilibili"), Some("123"))
+            .unwrap();
+        let before = serde_json::to_value(&config).unwrap();
+        for (platform, room_id) in [
+            (Some("bilibili"), None),
+            (None, Some("123")),
+            (Some(""), Some("123")),
+            (Some("bilibili"), Some("")),
+            (Some(" \t"), Some("123")),
+            (Some("bilibili"), Some(" \n")),
+            (Some(""), Some("")),
+        ] {
+            assert!(config
+                .set_powerlive_hotwords(words(&["bad"]), platform, room_id)
+                .is_err());
+            assert_eq!(serde_json::to_value(&config).unwrap(), before);
+        }
     }
 }
 

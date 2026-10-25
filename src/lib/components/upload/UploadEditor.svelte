@@ -29,6 +29,7 @@
   import { stickerRefUrl } from "../cover/custom-stickers";
   import { renderOverlayImages, StickerLoadError } from "../project/overlay-render";
   import TypeSelect from "../TypeSelect.svelte";
+  import TagInput from "../TagInput.svelte";
   import RenderSettingsFields from "../RenderSettingsFields.svelte";
 
   interface Props {
@@ -158,6 +159,11 @@
     base = { uid: snapshot.uid, profile: stored };
     saveError = "";
     saveRoomTemplate(upload.room_id, snapshot.profile);
+  }
+
+  function setTags(tags: string[]) {
+    profile.tag = tags.join(",");
+    scheduleSave();
   }
 
   function scheduleSave() {
@@ -444,10 +450,14 @@
             <span class="ui-label">描述</span>
             <textarea bind:value={profile.desc} placeholder="输入视频描述" rows="3" class="ui-input w-full resize-none"></textarea>
           </label>
-          <label class="block space-y-1.5">
+          <div class="space-y-1.5">
             <span class="ui-label">标签</span>
-            <input type="text" bind:value={profile.tag} placeholder="输入视频标签，用逗号分隔" class="ui-input w-full" />
-          </label>
+            <TagInput
+              value={[...new Set(profile.tag.split(",").map((tag) => tag.trim()).filter(Boolean))]}
+              onChange={setTags}
+              disabled={!editable || posting}
+            />
+          </div>
           <label class="block space-y-1.5">
             <span class="ui-label">动态</span>
             <textarea bind:value={profile.dynamic} placeholder="输入动态内容" rows="2" class="ui-input w-full resize-none"></textarea>

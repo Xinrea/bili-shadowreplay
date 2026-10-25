@@ -481,13 +481,37 @@ struct UpdateSubtitleGeneratorTypeRequest {
 #[serde(rename_all = "camelCase")]
 struct UpdatePowerLiveHotwordsRequest {
     hotwords: Vec<String>,
+    platform: Option<String>,
+    room_id: Option<String>,
+}
+
+#[cfg(test)]
+mod powerlive_hotwords_request_tests {
+    use super::UpdatePowerLiveHotwordsRequest;
+
+    #[test]
+    fn powerlive_http_scope_is_optional_and_uses_camel_case() {
+        let global: UpdatePowerLiveHotwordsRequest =
+            serde_json::from_value(serde_json::json!({"hotwords": ["global"]})).unwrap();
+        assert_eq!(global.hotwords, ["global"]);
+        assert!(global.platform.is_none());
+        assert!(global.room_id.is_none());
+
+        let room: UpdatePowerLiveHotwordsRequest = serde_json::from_value(
+            serde_json::json!({"hotwords": ["room"], "platform": "bilibili", "roomId": "123"}),
+        )
+        .unwrap();
+        assert_eq!(room.platform.as_deref(), Some("bilibili"));
+        assert_eq!(room.room_id.as_deref(), Some("123"));
+    }
 }
 
 async fn handler_update_powerlive_hotwords(
     state: axum::extract::State<State>,
     Json(param): Json<UpdatePowerLiveHotwordsRequest>,
 ) -> Result<Json<ApiResponse<Vec<String>>>, ApiError> {
-    let hotwords = update_powerlive_hotwords(state.0, param.hotwords).await?;
+    let hotwords =
+        update_powerlive_hotwords(state.0, param.hotwords, param.platform, param.room_id).await?;
     Ok(Json(ApiResponse::success(hotwords)))
 }
 

@@ -22,7 +22,7 @@ pub const DEFAULT_SENTENCE_MAX_LENGTH: u32 = 10;
 /// What a PowerLive request carries besides the audio.
 pub struct PowerLiveOptions<'a> {
     pub db: &'a crate::database::Database,
-    /// Proper nouns to favor, the user's global list.
+    /// Proper nouns to favor, room words before global words unless overridden.
     pub hotwords: Vec<String>,
     /// A sentence or two about the recording, empty for none.
     pub context: String,
@@ -31,11 +31,26 @@ pub struct PowerLiveOptions<'a> {
 }
 
 impl<'a> PowerLiveOptions<'a> {
-    /// The options the settings give, without a context.
-    pub fn new(db: &'a crate::database::Database, config: &crate::config::Config) -> Self {
+    /// Room words take priority when the request is normalized and capped.
+    /// Unknown rooms (including imported videos without a room) use global words.
+    pub fn for_room(
+        db: &'a crate::database::Database,
+        config: &crate::config::Config,
+        platform: &str,
+        room_id: &str,
+    ) -> Self {
+        let room_words = config
+            .powerlive_room_hotwords
+            .get(platform)
+            .and_then(|rooms| rooms.get(room_id));
         Self {
             db,
-            hotwords: config.powerlive_hotwords.clone(),
+            hotwords: room_words
+                .into_iter()
+                .flatten()
+                .chain(&config.powerlive_hotwords)
+                .cloned()
+                .collect(),
             context: String::new(),
             sentence_max_length: config.powerlive_sentence_max_length,
         }
@@ -49,6 +64,7 @@ impl<'a> PowerLiveOptions<'a> {
 pub struct PowerLiveOverrides {
     #[serde(default)]
     pub context: String,
+    /// Complete effective list, replacing both room and global dictionaries.
     pub hotwords: Option<Vec<String>>,
     pub sentence_max_length: Option<u32>,
 }
@@ -272,6 +288,91 @@ mod tests {
         });
         assert_eq!(replaced.hotwords, ["黄泉"]);
         assert_eq!(replaced.sentence_max_length, 20);
+    }
+
+    #[tokio::test]
+    async fn room_hotwords_merge_before_global_and_are_isolated() {
+        let db = signed_in_db("access").await;
+        let mut config: crate::config::Config =
+            toml::from_str(include_str!("../../config.example.toml")).unwrap();
+        config.powerlive_hotwords = vec![" global ".into(), " shared   word ".into()];
+        config.powerlive_room_hotwords = HashMap::from([
+            (
+                "bilibili".into(),
+                HashMap::from([
+                    (
+                        "123".into(),
+                        vec![" room ".into(), "shared word".into(), "".into()],
+                    ),
+                    ("456".into(), vec!["other room".into()]),
+                ]),
+            ),
+            (
+                "douyu".into(),
+                HashMap::from([("123".into(), vec!["other platform".into()])]),
+            ),
+        ]);
+        for (platform, room_id, expected) in [
+            ("bilibili", "123", vec!["room", "shared word", "global"]),
+            (
+                "bilibili",
+                "456",
+                vec!["other room", "global", "shared word"],
+            ),
+            (
+                "douyu",
+                "123",
+                vec!["other platform", "global", "shared word"],
+            ),
+            ("bilibili", "missing", vec!["global", "shared word"]),
+            ("missing", "123", vec!["global", "shared word"]),
+            ("", "", vec!["global", "shared word"]),
+        ] {
+            let generator = new(PowerLiveOptions::for_room(&db, &config, platform, room_id))
+                .await
+                .unwrap();
+            assert_eq!(generator.hotwords, expected);
+        }
+        for replacement in [vec![" override ".into(), "override".into()], Vec::new()] {
+            let expected = normalize_hotwords(replacement.clone());
+            let generator = new(PowerLiveOptions::for_room(&db, &config, "bilibili", "123")
+                .with_overrides(PowerLiveOverrides {
+                    hotwords: Some(replacement),
+                    ..Default::default()
+                }))
+            .await
+            .unwrap();
+            assert_eq!(generator.hotwords, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn room_merge_normalizes_and_deduplicates_before_the_service_limit() {
+        let db = signed_in_db("access").await;
+        let mut config: crate::config::Config =
+            toml::from_str(include_str!("../../config.example.toml")).unwrap();
+        config.powerlive_hotwords = (0..MAX_HOTWORDS).map(|i| format!("word {i}")).collect();
+        config.powerlive_room_hotwords = HashMap::from([(
+            "bilibili".into(),
+            HashMap::from([(
+                "123".into(),
+                vec![
+                    " room ".into(),
+                    "room".into(),
+                    " word   0 ".into(),
+                    " ".into(),
+                ],
+            )]),
+        )]);
+        let generator = new(PowerLiveOptions::for_room(&db, &config, "bilibili", "123"))
+            .await
+            .unwrap();
+        let expected: Vec<String> = std::iter::once("room".to_string())
+            .chain((0..MAX_HOTWORDS - 1).map(|i| format!("word {i}")))
+            .collect();
+        assert_eq!(generator.hotwords, expected);
+        // The service limit does not truncate either saved dictionary.
+        assert_eq!(config.powerlive_hotwords.len(), MAX_HOTWORDS);
     }
 
     #[test]

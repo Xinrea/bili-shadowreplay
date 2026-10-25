@@ -110,7 +110,7 @@
       options: [
         { id: "auto-subtitle", title: "自动生成字幕", keywords: ["subtitle", "auto"] },
         { id: "subtitle-generator", title: "字幕生成器类型", keywords: ["subtitle", "generator", "whisper"] },
-        { id: "powerlive-hotwords", title: "PowerLive 热词", keywords: ["powerlive", "hotword", "subtitle"] },
+        { id: "powerlive-hotwords", title: "PowerLive 全局词库", keywords: ["powerlive", "hotword", "subtitle", "热词"] },
         { id: "powerlive-sentence-length", title: "每条字幕最多字数", keywords: ["powerlive", "sentence", "length"] },
         { id: "whisper-model", title: "Whisper 模型路径", keywords: ["whisper", "model"] },
         { id: "whisper-endpoint", title: "OpenAI API 端点", keywords: ["whisper", "endpoint"] },
@@ -230,6 +230,7 @@
     whisper_model: "",
     whisper_prompt: "",
     powerlive_hotwords: [],
+    powerlive_room_hotwords: {},
     powerlive_sentence_max_length: 10,
     clip_name_format: "",
     auto_generate: {
@@ -1315,9 +1316,9 @@
               </div>
               {#if setting_model.subtitle_generator_type === "powerlive"}
                 <div class="px-4 py-3" data-setting="powerlive-hotwords">
-                  <h3 class="ui-label">PowerLive 热词</h3>
+                  <h3 class="ui-label">PowerLive 全局词库</h3>
                   <p class="ui-hint mt-0.5 mb-2">
-                    识别时会优先认出这些词，并用它们校对同音字，让主播名、游戏和角色名不再被写错；所有房间共用
+                    所有直播间共用的热词，帮助识别和校对专有名词。直播间专属热词请在 AI 字幕生成窗口的「直播间词库」中设置。
                   </p>
                   <PowerLiveHotwords bind:hotwords={setting_model.powerlive_hotwords} />
                 </div>

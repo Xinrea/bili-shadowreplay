@@ -15,6 +15,23 @@ const SEPARATORS = /[,，、;；\n\r]+/;
 const PUNCTUATION = /\p{P}/u;
 const NON_ASCII = /[^\x00-\x7f]/;
 
+export interface HotwordRoom {
+  platform: string;
+  roomId: string;
+}
+
+export type RoomHotwords = Record<string, Record<string, string[]>>;
+
+/** A missing room (including older configs) starts with an empty dictionary. */
+export function roomHotwords(dictionaries: RoomHotwords | undefined, room: HotwordRoom): string[] {
+  return dictionaries?.[room.platform]?.[room.roomId] ?? [];
+}
+
+/** Room-specific names take precedence within the service's shared limit. */
+export function mergeHotwords(room: string[], global: string[]): string[] {
+  return [...new Set([...room, ...global].map((word) => word.trim().replace(/\s+/g, " ")).filter(Boolean))];
+}
+
 /** Split typed or pasted text into hotwords, the way PowerLive does. */
 export function splitHotwords(text: string): string[] {
   return text

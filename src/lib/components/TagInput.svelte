@@ -5,6 +5,8 @@
     value,
     onChange,
     label = "标签",
+    addLabel,
+    removeLabel,
     hint = "输入后按回车添加，点击 × 删除",
     disabled = false,
     max,
@@ -15,6 +17,8 @@
     value: string[];
     onChange: (next: string[]) => void;
     label?: string;
+    addLabel?: string;
+    removeLabel?: string;
     hint?: string;
     disabled?: boolean;
     max?: number;
@@ -73,7 +77,7 @@
     {#each value as word (word)}
       <span class="inline-flex items-center gap-0.5 rounded-[5px] bg-accent-soft py-px pl-1.5 pr-0.5 text-[12px] leading-5 text-accent-fg">
         {word}
-        <button type="button" class="rounded-[3px] p-px opacity-70 hover:bg-accent/20 hover:opacity-100" aria-label="删除{label} {word}" {disabled} onclick={() => remove(word)}>
+        <button type="button" class="rounded-[3px] p-px opacity-70 hover:bg-accent/20 hover:opacity-100" aria-label="{removeLabel ?? `删除${label}`} {word}" {disabled} onclick={() => remove(word)}>
           <X class="h-3 w-3" />
         </button>
       </span>
@@ -87,7 +91,7 @@
       onblur={() => draft.trim() && commit()}
       oninput={() => (problem = "")}
       placeholder={value.length ? "" : "输入后按回车添加，可用逗号分隔一次添加多个"}
-      aria-label="添加{label}"
+      aria-label={addLabel ?? `添加${label}`}
       data-hotkey-block
     />
   </div>

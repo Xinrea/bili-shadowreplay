@@ -424,6 +424,7 @@ export interface Config {
   whisper_model: string;
   whisper_prompt: string;
   powerlive_hotwords: string[];
+  powerlive_room_hotwords: import("./powerlive-subtitle").RoomHotwords;
   powerlive_sentence_max_length: number;
   openai_api_endpoint: string;
   openai_api_key: string;

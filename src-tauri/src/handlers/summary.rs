@@ -248,7 +248,9 @@ async fn run_summary(
             &config.openai_api_key,
             &config.openai_api_endpoint,
             &config.whisper_language,
-            Some(PowerLiveOptions::new(&state.db, &config)),
+            Some(PowerLiveOptions::for_room(
+                &state.db, &config, &platform, &room_id,
+            )),
         )
         .await;
         let _ = tokio::fs::remove_file(&audio_path).await;

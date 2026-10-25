@@ -2,6 +2,10 @@
 
 CPU Skia compositor for this application's generated subtitle/danmaku ASS, not a general ASS engine. Skia is pinned to **0.82.0** with `textlayout`; Windows links `advapi32` for the prebuilt ICU dependency. No network access is needed at runtime.
 
+## Linux build baseline
+
+Linux builds require Ubuntu 24.04+ (or equivalent system libraries) and source-build Skia with `FORCE_SKIA_BUILD=1 SKIA_USE_SYSTEM_LIBRARIES=1`. The old upstream Linux archive has no COLRv1 paint implementation and its bundled ICU collides with V8; do not use it for this renderer. CI/release set those variables only on Linux, and the Docker builder/runtime both use Debian trixie. macOS and Windows keep the validated prebuilt configuration. See `docs/development/native-overlay.md` for packages and build/runtime ABI details before running the commands below on Linux.
+
 ## Integration
 
 ```rust,ignore
@@ -47,7 +51,7 @@ Tests cover parsing, cache eviction, active indexing/backwards seeks, layout/col
 
 - macOS: application GUI/headless compilation, renderer tests and main application tests; real FFmpeg workflows include standalone SRT, text/image danmaku, delayed video clocks, project clips/audio, segment caching and generated subtitles crossing segment boundaries.
 - Windows x64: the independent prototype completed both 1080p60 videos and alpha/time checks; this production renderer crate compiled and passed 21 tests with Rust 1.89 / MSVC 14.42.34433. Whole Windows GUI installer/manual interaction is not covered by those results.
-- Linux validation is explicitly deferred. Long-video sustained memory, 4K and all hardware encoders are not benchmarked by the six-second prototype.
+- Linux: CI checks the Ubuntu 24.04 source/system-library configuration, including actual color pixels and full application linking. Manual desktop acceptance, long-video sustained memory, 4K and all hardware encoders are not covered by those checks.
 
 Useful integration commands from the repository root:
 

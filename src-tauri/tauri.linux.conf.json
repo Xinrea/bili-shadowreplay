@@ -1,4 +1,21 @@
 {
+  "bundle": {
+    "linux": {
+      "deb": {
+        "depends": [
+          "libicu74",
+          "libharfbuzz0b",
+          "libharfbuzz-subset0",
+          "libfreetype6",
+          "libfontconfig1",
+          "libpng16-16t64",
+          "libjpeg-turbo8",
+          "libexpat1",
+          "zlib1g"
+        ]
+      }
+    }
+  },
   "app": {
     "windows": [
       {

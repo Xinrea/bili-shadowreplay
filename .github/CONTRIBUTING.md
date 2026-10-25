@@ -8,7 +8,7 @@
 
 ### Linux
 
-也无需额外配置。
+最低使用 Ubuntu 24.04，并安装 Tauri 和 Skia 的系统开发依赖。Linux 必须从源码构建 Skia，使用系统 FreeType、HarfBuzz 和 ICU；依赖安装命令和 Linux 专用环境变量见 [原生弹幕渲染构建](../docs/development/native-overlay.md)。首次源码构建耗时较长。
 
 ### Windows
 

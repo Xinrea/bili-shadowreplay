@@ -89,6 +89,7 @@ export default withMermaid({
             items: [
               { text: "录制管理器", link: "/development/backend/recorder-manager" },
               { text: "数据库模块", link: "/development/backend/database" },
+              { text: "原生弹幕渲染构建", link: "/development/native-overlay" },
             ],
           },
           {

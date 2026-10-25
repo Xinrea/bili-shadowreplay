@@ -22,7 +22,7 @@ jobs:
             args: "--target aarch64-apple-darwin"
             target: "aarch64-apple-darwin"
             updater-target: "darwin-aarch64"
-          - platform: "ubuntu-22.04"
+          - platform: "ubuntu-24.04"
             args: ""
             target: ""
             updater-target: "linux-x86_64"
@@ -47,10 +47,24 @@ jobs:
           submodules: recursive
 
       - name: install dependencies (ubuntu only)
-        if: matrix.platform == 'ubuntu-22.04' # This must match the platform value defined above.
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            clang libclang-dev ninja-build python3 pkg-config \
+            libicu-dev libharfbuzz-dev libfreetype-dev libfontconfig1-dev \
+            libpng-dev zlib1g-dev libexpat1-dev libjpeg-dev
+
+      - name: Configure source Skia with system libraries (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          # These flags are presence-based: do not set empty/false values on macOS or Windows.
+          # System FreeType supports COLRv1; versioned ICU avoids V8 symbol collisions.
+          echo "FORCE_SKIA_BUILD=1" >> "$GITHUB_ENV"
+          echo "SKIA_USE_SYSTEM_LIBRARIES=1" >> "$GITHUB_ENV"
+          echo "CC=clang" >> "$GITHUB_ENV"
+          echo "CXX=clang++" >> "$GITHUB_ENV"
 
       - name: setup node
         uses: actions/setup-node@v6
@@ -165,7 +179,7 @@ jobs:
         with:
           tagName: ${{ steps.release_info.outputs.tag }}
           releaseName: "BiliBili ShadowReplay v__VERSION__"
-          releaseBody: "> [!NOTE]\n> 如果你是第一次下载安装，请参考 [安装准备](https://bsr.xinrea.cn/getting-started/installation/desktop.html) 选择合适的版本。\n> Changelog: https://github.com/Xinrea/bili-shadowreplay/compare/${{ steps.get_previous_tag.outputs.previous_tag }}...${{ steps.get_previous_tag.outputs.current_tag }}"
+          releaseBody: "> [!NOTE]\n> 如果你是第一次下载安装，请参考 [安装准备](https://bsr.xinrea.cn/getting-started/installation/desktop.html) 选择合适的版本。\n> Linux 桌面版最低支持 Ubuntu 24.04；Ubuntu 22.04 不再受支持，AppImage 同样需要兼容的系统运行库。\n> Changelog: https://github.com/Xinrea/bili-shadowreplay/compare/${{ steps.get_previous_tag.outputs.previous_tag }}...${{ steps.get_previous_tag.outputs.current_tag }}"
           releaseDraft: true
           prerelease: ${{ steps.release_info.outputs.prerelease }}
           # Merge once after all builds to avoid CPU/CUDA collisions and upload races.

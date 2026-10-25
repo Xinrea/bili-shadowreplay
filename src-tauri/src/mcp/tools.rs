@@ -12,6 +12,7 @@ use std::path::{Component, Path};
 #[cfg(feature = "gui")]
 use tauri::Manager;
 
+use super::{jobs, workflow};
 use crate::{agent, handlers, state::State};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,6 +40,23 @@ enum Action {
     MergeVideos,
     #[cfg(feature = "gui")]
     ExtractVideoAudio,
+    GetTask,
+    CancelTask,
+    GenerateMaterials,
+    GetProjects,
+    GetProject,
+    CreateProject,
+    SetProjectClips,
+    UpdateProjectInfo,
+    UpdateProjectOutputSettings,
+    DeleteProject,
+    GetVideoTypelist,
+    GetUploads,
+    GetUpload,
+    CreateUploadDraft,
+    UpdateUploadDraft,
+    UpdateUploadDanmu,
+    DeleteUpload,
 }
 
 impl Action {
@@ -81,6 +99,23 @@ impl Action {
             "merge_videos" => Self::MergeVideos,
             #[cfg(feature = "gui")]
             "extract_video_audio" => Self::ExtractVideoAudio,
+            "get_task" => Self::GetTask,
+            "cancel_task" => Self::CancelTask,
+            "generate_materials" => Self::GenerateMaterials,
+            "get_projects" => Self::GetProjects,
+            "get_project" => Self::GetProject,
+            "create_project" => Self::CreateProject,
+            "set_project_clips" => Self::SetProjectClips,
+            "update_project_info" => Self::UpdateProjectInfo,
+            "update_project_output_settings" => Self::UpdateProjectOutputSettings,
+            "delete_project" => Self::DeleteProject,
+            "get_video_typelist" => Self::GetVideoTypelist,
+            "get_uploads" => Self::GetUploads,
+            "get_upload" => Self::GetUpload,
+            "create_upload_draft" => Self::CreateUploadDraft,
+            "update_upload_draft" => Self::UpdateUploadDraft,
+            "update_upload_danmu" => Self::UpdateUploadDanmu,
+            "delete_upload" => Self::DeleteUpload,
             _ => return None,
         })
     }
@@ -90,7 +125,13 @@ impl Action {
             Self::Read
             | Self::GetVideoCover
             | Self::GetVideoSubtitle
-            | Self::ExtractVideoFrames => true,
+            | Self::ExtractVideoFrames
+            | Self::GetTask
+            | Self::GetProjects
+            | Self::GetProject
+            | Self::GetVideoTypelist
+            | Self::GetUploads
+            | Self::GetUpload => true,
             #[cfg(feature = "gui")]
             Self::GetVideoMetadata | Self::GetArchiveMetadata => true,
             _ => false,
@@ -108,6 +149,9 @@ impl Action {
                 | Self::DeleteVideo
                 | Self::GenerateVideoSubtitle
                 | Self::GenerateArchiveSubtitle
+                | Self::SetProjectClips
+                | Self::DeleteProject
+                | Self::DeleteUpload
         )
     }
 }
@@ -121,14 +165,22 @@ fn resolve_action(name: &str, readonly: bool) -> Result<Action, String> {
 }
 
 pub(super) fn definitions(readonly: bool) -> Vec<Value> {
-    agent::bsr_tool_definitions()
+    let shared = agent::bsr_tool_definitions();
+    let clip_range_params = shared
+        .iter()
+        .find(|schema| schema["properties"]["action"]["const"] == "clip_range")
+        .map(|schema| schema["properties"]["args"]["properties"]["clip_range_params"].clone())
+        .unwrap_or_default();
+    let own = workflow::definitions(clip_range_params);
+    let own_names: Vec<&str> = own.iter().map(|(name, _, _)| *name).collect();
+    shared
         .into_iter()
         .filter_map(|schema| {
-            let name = schema["properties"]["action"]["const"].as_str()?;
-            let action = resolve_action(name, readonly).ok()?;
-            let mut input_schema = schema["properties"]["args"].clone();
-            include_supported_platforms(&mut input_schema);
-            constrain_schema(name, &mut input_schema);
+            let name = schema["properties"]["action"]["const"].as_str()?.to_string();
+            // Tools defined for MCP replace the assistant's of the same name.
+            if own_names.contains(&name.as_str()) {
+                return None;
+            }
             // Confirmation is provided by external clients. The in-app
             // assistant retains its own, separate confirmation behavior.
             let mut description = schema["description"]
@@ -136,9 +188,23 @@ pub(super) fn definitions(readonly: bool) -> Vec<Value> {
                 .unwrap_or_default()
                 .replace(" after user confirmation because the result is handled locally", "")
                 .replace(" after user confirmation", "");
-            if name == "get_video_cover" {
-                description = "Get a video's cover as an image, with its ID and stored cover filename as metadata.".into();
+            match name.as_str() {
+                "get_video_cover" => description = "Get a video's cover as an image, with its ID and stored cover filename as metadata.".into(),
+                "clip_range" => description = "Cut one material joining one or more archive ranges, in the background. Returns a task_id; poll get_task, whose metadata.result has video_id once it succeeds. generate_materials cuts one material per range instead.".into(),
+                "generate_video_subtitle" => description = "Recognize and save a video's subtitles, overwriting existing ones, in the background. Returns a task_id; read them with get_video_subtitle once get_task reports success.".into(),
+                "generate_archive_subtitle" => description = "Recognize and save an archive's subtitles, overwriting existing ones, in the background. Returns a task_id; read them with get_archive_subtitle once get_task reports success.".into(),
+                _ => {}
             }
+            Some((name, description, schema["properties"]["args"].clone()))
+        })
+        .chain(
+            own.into_iter()
+                .map(|(name, description, schema)| (name.to_string(), description, schema)),
+        )
+        .filter_map(|(name, description, mut input_schema)| {
+            let action = resolve_action(&name, readonly).ok()?;
+            include_supported_platforms(&mut input_schema);
+            constrain_schema(&name, &mut input_schema);
             Some(json!({
                 "name": name,
                 "description": description,
@@ -147,7 +213,7 @@ pub(super) fn definitions(readonly: bool) -> Vec<Value> {
                     "readOnlyHint": action.readonly(),
                     "destructiveHint": action.destructive(),
                     "idempotentHint": action.readonly(),
-                    "openWorldHint": matches!(action, Action::AddRecorder | Action::RemoveAccount | Action::GenerateArchiveSubtitle | Action::GenerateVideoSubtitle)
+                    "openWorldHint": matches!(action, Action::AddRecorder | Action::RemoveAccount | Action::GenerateArchiveSubtitle | Action::GenerateVideoSubtitle | Action::GetVideoTypelist)
                 }
             }))
         })
@@ -201,16 +267,20 @@ fn constrain_schema(name: &str, schema: &mut Value) {
             if let Some(properties) = properties.as_object_mut() {
                 properties.remove("reason");
             }
-            let clip = &mut properties["clip_range_params"]["properties"];
-            // The backend stores this offset as an i64, although the older
-            // assistant schema allowed arbitrary JSON numbers.
-            clip["local_offset"]["type"] = json!("integer");
-            clip["ranges"]["minItems"] = json!(1);
-            clip["ranges"]["items"]["properties"]["start"]["minimum"] = json!(0);
-            clip["ranges"]["items"]["properties"]["end"]["exclusiveMinimum"] = json!(0);
+            constrain_clip_range_params(&mut properties["clip_range_params"]);
             if let Some(required) = schema["required"].as_array_mut() {
                 required.retain(|name| name != "reason");
             }
+        }
+        "generate_materials" => {
+            constrain_clip_range_params(&mut properties["clip_range_params"]);
+            // Each range is its own material unless they are merged.
+            properties["clip_range_params"]["properties"]["transition"]["description"] =
+                json!("Transition between ranges joined with merge.");
+        }
+        "get_danmu_record" => {
+            properties["start"]["minimum"] = json!(0);
+            properties["end"]["exclusiveMinimum"] = json!(0);
         }
         "extract_video_frames" => {
             properties["max_frames"]["minimum"] = json!(1);
@@ -226,7 +296,59 @@ fn constrain_schema(name: &str, schema: &mut Value) {
     }
 }
 
-fn argument<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T, String> {
+/// Fields of `clip_range_params` clients may leave out.
+const CLIP_RANGE_DEFAULTS: [&str; 5] = ["note", "cover", "danmu", "local_offset", "fix_encoding"];
+
+/// The value of a field of `clip_range_params` left out.
+fn clip_range_default(field: &str) -> Value {
+    match field {
+        "danmu" | "fix_encoding" => json!(false),
+        "local_offset" => json!(0),
+        _ => json!(""),
+    }
+}
+
+/// Describe the clip parameters for clients, which may omit the fields with
+/// defaults.
+fn constrain_clip_range_params(params: &mut Value) {
+    let clip = &mut params["properties"];
+    // The backend stores this offset as an i64, although the older
+    // assistant schema allowed arbitrary JSON numbers.
+    clip["local_offset"]["type"] = json!("integer");
+    clip["local_offset"]["description"] = json!("Seconds the danmaku were realigned by in the player; 0 unless the user adjusted it. Default 0.");
+    clip["ranges"]["minItems"] = json!(1);
+    clip["ranges"]["description"] = json!("Seconds from the start of the recording, the time base of get_danmu_record, analyze_danmu_highlights and search_danmu_keywords.");
+    clip["ranges"]["items"]["properties"]["start"]["minimum"] = json!(0);
+    clip["ranges"]["items"]["properties"]["end"]["exclusiveMinimum"] = json!(0);
+    clip["danmu"]["description"] = json!("Burn the danmaku into the material. By default they are kept beside it, for projects and uploads to burn later.");
+    clip["cover"]["description"] =
+        json!("Cover as a base64 image data URL; empty to capture a frame. Default empty.");
+    clip["fix_encoding"]["description"] =
+        json!("Re-encode the material to repair broken timestamps; slower. Default false.");
+    clip["transition"]["description"] = json!("Transition between joined ranges.");
+    if let Some(required) = params["required"].as_array_mut() {
+        required.retain(|name| !CLIP_RANGE_DEFAULTS.iter().any(|field| name == *field));
+    }
+}
+
+/// The clip parameters in `args`, with defaults for the fields left out.
+fn clip_range_params(args: &Value) -> Result<crate::recorder_manager::ClipRangeParams, String> {
+    let mut params = args
+        .get("clip_range_params")
+        .cloned()
+        .ok_or_else(|| "Missing argument: clip_range_params".to_string())?;
+    if let Some(fields) = params.as_object_mut() {
+        for field in CLIP_RANGE_DEFAULTS {
+            fields
+                .entry(field)
+                .or_insert_with(|| clip_range_default(field));
+        }
+    }
+    serde_json::from_value(params)
+        .map_err(|error| format!("Invalid argument clip_range_params: {error}"))
+}
+
+pub(super) fn argument<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T, String> {
     let value = args
         .get(name)
         .ok_or_else(|| format!("Missing argument: {name}"))?;
@@ -352,9 +474,36 @@ fn validate_arguments(name: &str, args: &Value) -> Result<(), String> {
             let style: String = argument(args, "srt_style")?;
             validate_subtitle_style(&style)?;
         }
-        "clip_range" => {
-            let params: crate::recorder_manager::ClipRangeParams =
-                argument(args, "clip_range_params")?;
+        "get_danmu_record" => {
+            let start: Option<f64> = args
+                .get("start")
+                .map(|_| argument(args, "start"))
+                .transpose()?;
+            let end: Option<f64> = args.get("end").map(|_| argument(args, "end")).transpose()?;
+            if start.is_some_and(|start| !start.is_finite() || start < 0.0)
+                || end.is_some_and(|end| !end.is_finite() || end <= start.unwrap_or(0.0))
+            {
+                return Err("start must be non-negative and end must be after start".into());
+            }
+        }
+        "set_project_clips" => {
+            let clips: Vec<crate::handlers::project::ClipRequest> = argument(args, "clips")?;
+            if clips.is_empty()
+                || clips.iter().any(|clip| {
+                    !clip.start.is_finite()
+                        || clip.start < 0.0
+                        || clip
+                            .end
+                            .is_some_and(|end| !end.is_finite() || end <= clip.start)
+                })
+            {
+                return Err(
+                    "Each clip must have 0 <= start < end; provide at least one clip".into(),
+                );
+            }
+        }
+        "clip_range" | "generate_materials" => {
+            let params = clip_range_params(args)?;
             if params.ranges.is_empty()
                 || params.ranges.iter().any(|range| {
                     !range.start.is_finite()
@@ -550,18 +699,30 @@ pub(super) async fn call(state: &State, name: &str, args: Value) -> Result<Value
             Ok(json!({ "success": true }))
         }
         Action::GenerateVideoSubtitle => {
-            let event_id = format!("mcp-{}", uuid::Uuid::new_v4());
-            let subtitle = handlers::video::generate_video_subtitle(
-                command_state,
-                event_id.clone(),
-                argument(&args, "id")?,
+            let id: i64 = argument(&args, "id")?;
+            let task_id = jobs::new_task_id();
+            let background = state.clone();
+            let event_id = task_id.clone();
+            jobs::start(
+                state,
+                task_id,
+                "generate_video_subtitle",
                 None,
+                async move {
+                    handlers::video::generate_video_subtitle(
+                        command_state!(background),
+                        event_id,
+                        id,
+                        None,
+                    )
+                    .await?;
+                    Ok(json!({ "video_id": id }))
+                },
             )
-            .await?;
-            Ok(json!({ "subtitle": subtitle, "event_id": event_id }))
+            .await
         }
         Action::EncodeVideoSubtitle => {
-            let event_id = format!("mcp-{}", uuid::Uuid::new_v4());
+            let event_id = jobs::new_task_id();
             let task = handlers::video::encode_video_subtitle(
                 command_state,
                 event_id.clone(),
@@ -570,27 +731,117 @@ pub(super) async fn call(state: &State, name: &str, args: Value) -> Result<Value
                 None,
             )
             .await?;
-            Ok(json!({ "task": task, "event_id": event_id }))
+            Ok(json!({ "task": task, "task_id": event_id, "event_id": event_id }))
         }
         Action::ClipRange => {
-            let event_id = format!("mcp-{}", uuid::Uuid::new_v4());
-            let video = handlers::video::clip_range(
-                command_state,
-                event_id.clone(),
-                argument(&args, "clip_range_params")?,
-            )
-            .await?;
-            Ok(json!({ "video": video, "event_id": event_id }))
+            let params = clip_range_params(&args)?;
+            let task_id = jobs::new_task_id();
+            let background = state.clone();
+            let event_id = task_id.clone();
+            jobs::start(state, task_id, "clip_range", None, async move {
+                let video =
+                    handlers::video::clip_range(command_state!(background), event_id, params)
+                        .await?;
+                Ok(json!({ "video_id": video.id }))
+            })
+            .await
+        }
+        Action::GenerateMaterials => {
+            let params = clip_range_params(&args)?;
+            let merge = args.get("merge").and_then(Value::as_bool).unwrap_or(false);
+            let create_project = args
+                .get("create_project")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let task_id = jobs::new_task_id();
+            let background = state.clone();
+            let event_id = task_id.clone();
+            jobs::start(state, task_id, "generate_materials", None, async move {
+                let generated = handlers::project::generate_materials(
+                    command_state!(background),
+                    event_id,
+                    params,
+                    create_project,
+                    merge,
+                )
+                .await?;
+                Ok(json!({
+                    "material_ids": generated.materials.iter().map(|material| material.id).collect::<Vec<_>>(),
+                    "project_id": generated.project.map(|project| project.project.id),
+                }))
+            })
+            .await
         }
         Action::GenerateArchiveSubtitle => {
-            let subtitle = handlers::recorder::generate_archive_subtitle(
-                command_state,
-                argument(&args, "platform")?,
-                argument(&args, "room_id")?,
-                argument(&args, "live_id")?,
+            let platform: String = argument(&args, "platform")?;
+            let room_id: String = argument(&args, "room_id")?;
+            let live_id: String = argument(&args, "live_id")?;
+            let record = jobs::TaskRecord {
+                task_type: "generate_archive_subtitle",
+                metadata: json!({ "platform": platform, "room_id": room_id, "live_id": live_id }),
+            };
+            let background = state.clone();
+            jobs::start(
+                state,
+                jobs::new_task_id(),
+                "generate_archive_subtitle",
+                Some(record),
+                async move {
+                    handlers::recorder::generate_archive_subtitle(
+                        command_state!(background),
+                        platform.clone(),
+                        room_id.clone(),
+                        live_id.clone(),
+                    )
+                    .await?;
+                    Ok(json!({ "platform": platform, "room_id": room_id, "live_id": live_id }))
+                },
             )
-            .await?;
-            Ok(json!({ "subtitle": subtitle }))
+            .await
+        }
+        Action::GetTask => jobs::task(state, &argument::<String>(&args, "id")?).await,
+        Action::CancelTask => {
+            let id: String = argument(&args, "id")?;
+            jobs::task(state, &id).await?;
+            handlers::video::cancel(command_state, id.clone()).await?;
+            jobs::task(state, &id).await
+        }
+        Action::GetProjects => workflow::get_projects(state, &args).await,
+        Action::GetProject => workflow::get_project(state, &args).await,
+        Action::CreateProject => workflow::create_project(state, &args).await,
+        Action::SetProjectClips => workflow::set_project_clips(state, &args).await,
+        Action::UpdateProjectInfo => workflow::update_project_info(state, &args).await,
+        Action::UpdateProjectOutputSettings => {
+            workflow::update_project_output_settings(state, &args).await
+        }
+        Action::DeleteProject => {
+            let id = argument(&args, "id")?;
+            state
+                .db
+                .get_project(id)
+                .await
+                .map_err(|_| format!("Project {id} not found"))?;
+            handlers::project::delete_project(command_state, id).await?;
+            Ok(json!({ "success": true }))
+        }
+        Action::GetVideoTypelist => {
+            let typelist = handlers::video::get_video_typelist(command_state).await?;
+            Ok(json!({ "typelist": typelist }))
+        }
+        Action::GetUploads => workflow::get_uploads(state).await,
+        Action::GetUpload => workflow::get_upload(state, &args).await,
+        Action::CreateUploadDraft => workflow::create_upload_draft(state, &args).await,
+        Action::UpdateUploadDraft => workflow::update_upload_draft(state, &args).await,
+        Action::UpdateUploadDanmu => workflow::update_upload_danmu(state, &args).await,
+        Action::DeleteUpload => {
+            let id = argument(&args, "id")?;
+            state
+                .db
+                .get_upload(id)
+                .await
+                .map_err(|_| format!("Upload {id} not found"))?;
+            handlers::upload::delete_upload(command_state, id).await?;
+            Ok(json!({ "success": true }))
         }
         Action::ExtractVideoFrames => {
             let timestamps = args
@@ -1053,6 +1304,122 @@ mod tests {
         args["clip_range_params"]["ranges"][0]["end"] = json!(20);
         args["clip_range_params"]["local_offset"] = json!(0.5);
         assert!(validate_arguments("clip_range", &args).is_err());
+    }
+
+    #[test]
+    fn workflow_tools_cover_projects_and_drafts_but_never_post() {
+        let tools = definitions(false);
+        let names: HashSet<&str> = tools
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        for name in [
+            "get_task",
+            "cancel_task",
+            "generate_materials",
+            "get_projects",
+            "get_project",
+            "create_project",
+            "set_project_clips",
+            "update_project_info",
+            "update_project_output_settings",
+            "delete_project",
+            "get_video_typelist",
+            "get_uploads",
+            "get_upload",
+            "create_upload_draft",
+            "update_upload_draft",
+            "update_upload_danmu",
+            "delete_upload",
+        ] {
+            assert!(names.contains(name), "missing {name}");
+        }
+        for name in ["post_upload", "upload_procedure", "post_video_to_bilibili"] {
+            assert!(!names.contains(name));
+        }
+        let readonly: HashSet<String> = definitions(true)
+            .iter()
+            .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+            .collect();
+        for name in [
+            "get_task",
+            "get_projects",
+            "get_project",
+            "get_uploads",
+            "get_upload",
+            "get_video_typelist",
+        ] {
+            assert!(readonly.contains(name), "read-only mode lacks {name}");
+        }
+        for name in [
+            "generate_materials",
+            "create_project",
+            "set_project_clips",
+            "create_upload_draft",
+            "delete_upload",
+            "cancel_task",
+        ] {
+            assert!(!readonly.contains(name), "read-only mode offers {name}");
+            assert!(resolve_action(name, true).is_err());
+        }
+        for name in ["set_project_clips", "delete_project", "delete_upload"] {
+            let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
+            assert_eq!(tool["annotations"]["destructiveHint"], true);
+        }
+    }
+
+    #[test]
+    fn clip_parameters_with_defaults_may_be_omitted() {
+        let tools = definitions(false);
+        for name in ["clip_range", "generate_materials"] {
+            let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
+            let params = &tool["inputSchema"]["properties"]["clip_range_params"];
+            assert_eq!(
+                params["required"],
+                json!(["room_id", "live_id", "ranges", "title", "platform"])
+            );
+            assert_eq!(params["properties"]["local_offset"]["type"], "integer");
+            assert_eq!(params["properties"]["ranges"]["minItems"], 1);
+        }
+        let args = json!({ "clip_range_params": { "room_id": "1", "live_id": "2", "platform": "bilibili", "title": "Clip", "ranges": [{ "start": 10, "end": 20 }] } });
+        assert!(validate_arguments("generate_materials", &args).is_ok());
+        let params = clip_range_params(&args).unwrap();
+        assert!(!params.danmu && !params.fix_encoding);
+        assert_eq!(params.local_offset, 0);
+        assert!(params.cover.is_empty() && params.note.is_empty());
+        let mut args = args;
+        args["clip_range_params"]["ranges"] = json!([]);
+        assert!(validate_arguments("generate_materials", &args).is_err());
+    }
+
+    #[test]
+    fn danmu_windows_and_project_clips_are_validated() {
+        assert!(validate_arguments("get_danmu_record", &json!({})).is_ok());
+        assert!(
+            validate_arguments("get_danmu_record", &json!({ "start": 60, "end": 120 })).is_ok()
+        );
+        assert!(validate_arguments("get_danmu_record", &json!({ "end": 30 })).is_ok());
+        assert!(validate_arguments("get_danmu_record", &json!({ "start": -1 })).is_err());
+        assert!(
+            validate_arguments("get_danmu_record", &json!({ "start": 60, "end": 60 })).is_err()
+        );
+        let clips = |clips: Value| json!({ "id": 1, "clips": clips });
+        assert!(
+            validate_arguments("set_project_clips", &clips(json!([{ "material_id": 3 }]))).is_ok()
+        );
+        assert!(validate_arguments(
+            "set_project_clips",
+            &clips(
+                json!([{ "clip_id": "a", "material_id": 3, "start": 2, "end": 9.5, "volume": 0.5 }])
+            )
+        )
+        .is_ok());
+        assert!(validate_arguments("set_project_clips", &clips(json!([]))).is_err());
+        assert!(validate_arguments(
+            "set_project_clips",
+            &clips(json!([{ "material_id": 3, "start": 5, "end": 5 }]))
+        )
+        .is_err());
     }
 
     #[test]

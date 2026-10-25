@@ -1,6 +1,6 @@
 # MCP Server
 
-BSR 提供 MCP Server，让支持 MCP 的外部 Agent 查询直播间、录播和素材，并使用直播间管理、素材生成及字幕等功能。服务采用 [MCP Streamable HTTP 传输](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#streamable-http)，支持协议版本 `2025-11-25`、`2025-06-18` 和 `2025-03-26`。
+BSR 提供 MCP Server，让支持 MCP 的外部 Agent 完成从录播到投稿草稿的流程：查询直播间和录播、根据字幕和弹幕挑选时间点、切出素材、把素材编排成切片，并为素材或切片创建投稿草稿。投稿草稿由用户在 BSR 的投稿页检查后自行发布，MCP 不会发布视频。服务采用 [MCP Streamable HTTP 传输](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#streamable-http)，支持协议版本 `2025-11-25`、`2025-06-18` 和 `2025-03-26`。
 
 ## 启用服务
 
@@ -53,10 +53,38 @@ BSR 必须保持运行。客户端连接后会自动发现当前可用工具，�
 | 账号 | 查询已配置账号、移除账号 | `get_accounts`、`remove_account` |
 | 直播间 | 查询直播间和录制状态、添加或移除直播间 | `get_recorder_list`、`get_recorder_info`、`add_recorder`、`remove_recorder` |
 | 录播 | 查询列表和详情、查询近期录制、删除录播 | `get_archives`、`get_archive`、`get_recent_record`、`get_recent_record_all`、`delete_archive`、`delete_archives` |
-| 弹幕 | 读取弹幕、分析弹幕高峰、搜索关键词 | `get_danmu_record`、`analyze_danmu_highlights`、`search_danmu_keywords` |
-| 素材 | 查询列表、详情和封面，生成或删除素材 | `get_videos`、`get_all_videos`、`get_video`、`get_video_cover`、`clip_range`、`delete_video` |
+| 弹幕 | 读取弹幕（可按时间段）、分析弹幕高峰、搜索关键词 | `get_danmu_record`、`analyze_danmu_highlights`、`search_danmu_keywords` |
+| 素材 | 查询列表、详情和封面，从录播生成素材，删除素材 | `get_videos`、`get_all_videos`、`get_video`、`get_video_cover`、`generate_materials`、`clip_range`、`delete_video` |
 | 字幕 | 读取或生成录播及素材字幕、将字幕压制到素材 | `get_archive_subtitle`、`get_video_subtitle`、`generate_archive_subtitle`、`generate_video_subtitle`、`encode_video_subtitle` |
-| 后台任务 | 查询任务进度、删除任务记录 | `get_background_tasks`、`delete_background_task` |
+| 切片 | 查询、新建和删除切片，设置主轨片段，修改标题备注，设置弹幕压制和画质码率 | `get_projects`、`get_project`、`create_project`、`set_project_clips`、`update_project_info`、`update_project_output_settings`、`delete_project` |
+| 投稿草稿 | 查询分区，查询投稿记录，创建和修改草稿，设置是否压制弹幕，删除记录 | `get_video_typelist`、`get_uploads`、`get_upload`、`create_upload_draft`、`update_upload_draft`、`update_upload_danmu`、`delete_upload` |
+| 后台任务 | 查询任务列表或单个任务、取消任务、删除任务记录 | `get_background_tasks`、`get_task`、`cancel_task`、`delete_background_task` |
+
+### 时间基准
+
+`get_danmu_record`、`analyze_danmu_highlights` 和 `search_danmu_keywords` 返回的时间都是**从录播开始算起的秒数**，与 `generate_materials`、`clip_range` 的 `ranges` 使用同一基准，可以直接用作切片区间。录播开始之前收到的弹幕不会返回。`get_danmu_record` 可以用 `start`、`end`（同样以秒计）只读取一段时间内的弹幕，避免一次返回整场直播的弹幕。
+
+### 生成素材
+
+`generate_materials` 与素材生成对话框一致：默认每个选区生成一个素材；`merge` 为 `true` 时按顺序合并为一个素材；`create_project` 为 `true` 时同时创建一个依次播放这些素材的切片。`clip_range` 始终把所有选区合并为一个素材。两者的 `clip_range_params` 只要求 `room_id`、`live_id`、`platform`、`title` 和 `ranges`，其余字段可省略：`note`、`cover` 默认为空（自动截取封面），`danmu`、`fix_encoding` 默认为 `false`，`local_offset` 默认为 `0`。
+
+### 后台任务
+
+`generate_materials`、`clip_range`、`generate_video_subtitle` 和 `generate_archive_subtitle` 在后台执行，调用后立即返回 `task_id`。用 `get_task` 查询，直到 `status` 为 `success`、`failed` 或 `cancelled`；成功后 `metadata.result` 中是产出的 ID，例如素材的 `video_id`，或 `material_ids` 与 `project_id`。字幕生成完成后用 `get_video_subtitle` 或 `get_archive_subtitle` 读取。开始执行前就能发现的错误（例如素材或录播不存在）会直接作为调用错误返回。在任务队列中运行的任务可以用 `cancel_task` 取消；字幕识别不在任务队列中，无法取消。
+
+`encode_video_subtitle` 同样立即返回，结果中的 `task_id` 可用于 `get_task`。返回排队任务不代表视频已压制完成。
+
+### 切片
+
+`create_project` 为每个素材创建一个完整长度的片段，片段会自动带上素材已识别的字幕。`get_project` 返回解析后的时间轴：`clips` 依次首尾相接播放，`start`、`end` 是片段在素材内的入点和出点（秒）。
+
+`set_project_clips` 按给定顺序替换整条主轨。传入已有片段的 `clip_id`（且素材相同）时保留该片段，锚定在它上面的字幕、文字、贴纸、画中画和音频随之保留；未传入的片段及锚定在其上的内容会被移除。新片段会自动带上素材已识别的字幕。切片正在编辑窗口中打开时不要调用，编辑窗口保存时会覆盖这次修改。
+
+### 投稿草稿
+
+`create_upload_draft` 为素材或切片创建投稿草稿，可填写标题、简介、标签、分区（`tid`，用 `get_video_typelist` 查询）、动态和投稿账号（`uid`，用 `get_accounts` 查询 B 站账号）。未填写的字段使用投稿页的默认值，封面默认使用来源的封面。`update_upload_draft` 只修改传入的字段。
+
+MCP 不提供发布工具。草稿出现在 BSR 的投稿页，由用户检查投稿信息、封面后点击发布；切片中的字幕、文字和贴纸也在发布时生成。投稿进行中或已发布的记录无法再修改。
 
 `get_video_cover` 会读取输出目录内的封面文件，或解码数据库中遗留的 Base64 图片 data URL，返回图片内容块，并附带视频 ID 和封面文件名（内嵌封面为 `null`）。支持 JPEG、PNG、GIF 和 WebP，MIME 类型按图片内容判断；没有封面、文件无法读取或格式不支持时返回工具错误。
 
@@ -70,9 +98,7 @@ BSR 必须保持运行。客户端连接后会自动发现当前可用工具，�
 | 合并素材 | `merge_videos` |
 | 提取视频音频 | `extract_video_audio` |
 
-具体工具、参数和说明由 MCP 的工具列表提供。MCP Server 不提供任意 FFmpeg 命令执行或打开桌面窗口的工具。
-
-`encode_video_subtitle` 会将字幕压制加入任务队列，并立即返回 `task` 和 `event_id`。请使用 `get_background_tasks` 查询执行结果；返回排队任务不代表视频已压制完成。
+具体工具、参数和说明由 MCP 的工具列表提供。MCP Server 不提供任意 FFmpeg 命令执行、打开桌面窗口或发布投稿的工具。
 
 启用服务后，同机外部 Agent 可以访问 BSR 中的内容，并执行工具列表中的修改和删除操作。这些调用由外部 MCP 客户端负责向用户确认，不会进入 BSR 内置 AI 助手的审批流程。只读 headless 模式仅提供查询工具，并在服务端拒绝修改操作。
 

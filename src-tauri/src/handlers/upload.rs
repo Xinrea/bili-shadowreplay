@@ -326,6 +326,52 @@ pub async fn update_upload(
     }
 }
 
+/// Edit the draft's form as stored: `uid` replaces the account when given,
+/// and `edit` changes the upload form. Unlike [`update_upload`], which saves
+/// a form an editor shows, this applies the edit to whatever is stored now,
+/// so edits saved meanwhile are kept.
+pub(crate) async fn patch_upload(
+    state: &State,
+    id: i64,
+    uid: Option<&str>,
+    edit: impl Fn(&mut serde_json::Value),
+) -> Result<UploadView, String> {
+    if let Some(uid) = uid {
+        state
+            .db
+            .get_account("bilibili", uid)
+            .await
+            .map_err(|_| format!("没有 UID 为 {uid} 的 B 站账号"))?;
+    }
+    for _ in 0..5 {
+        let upload = state.db.get_upload(id).await?;
+        ensure_editable(&upload)?;
+        let mut profile = if upload.profile.trim().is_empty() {
+            serde_json::to_value(Profile::default()).map_err(|e| e.to_string())?
+        } else {
+            serde_json::from_str(&upload.profile).map_err(|e| format!("投稿信息无效: {e}"))?
+        };
+        edit(&mut profile);
+        serde_json::from_value::<Profile>(profile.clone())
+            .map_err(|e| format!("投稿信息无效: {e}"))?;
+        let uid = uid.unwrap_or(&upload.uid);
+        let now = Local::now().to_rfc3339();
+        if state
+            .db
+            .update_upload_form(
+                id,
+                (uid, &profile.to_string()),
+                (&upload.uid, &upload.profile),
+                &now,
+            )
+            .await?
+        {
+            return Ok(upload_view(state, state.db.get_upload(id).await?).await);
+        }
+    }
+    Err(not_editable(state, id).await)
+}
+
 /// Replace the cover with the base64 data URL `cover`, and the homepage's
 /// 4:3 cover with `cover43`. Without one, an earlier 4:3 cover is dropped
 /// as it would no longer match, and Bilibili crops `cover` instead.

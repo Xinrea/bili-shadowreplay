@@ -629,6 +629,23 @@ impl Timeline {
         overlays + self.audio_items().count()
     }
 
+    /// Make `clips` the main track. Subtitles, overlays and sounds anchored to
+    /// a clip whose id stays on it follow that clip; those of the others go
+    /// with them.
+    pub fn replace_clips(&mut self, clips: Vec<TimelineClip>) {
+        self.clips = clips;
+        let kept: Vec<String> = self.clips.iter().map(|clip| clip.id.clone()).collect();
+        self.subtitles
+            .retain(|subtitle| kept.contains(&subtitle.clip_id));
+        for track in &mut self.tracks {
+            track
+                .items
+                .retain(|overlay| kept.contains(&overlay.clip_id));
+        }
+        self.tracks.retain(|track| !track.items.is_empty());
+        self.retain_audio(|item| kept.contains(&item.clip_id));
+    }
+
     /// Anchor material-time cues to `clip_id`, replacing its existing subtitles.
     pub fn set_clip_subtitles(&mut self, clip_id: &str, cues: Vec<(f64, f64, String)>) {
         self.subtitles
@@ -996,6 +1013,46 @@ mod tests {
             ..Timeline::default()
         };
         assert_eq!(trimmed.single_full_material(30.0), None);
+    }
+
+    #[test]
+    fn replacing_clips_keeps_what_is_anchored_to_kept_clips_only() {
+        let mut timeline = timeline();
+        timeline.subtitles = vec![subtitle("a", 11.0, 12.0), subtitle("b", 1.0, 2.0)];
+        timeline.tracks = vec![OverlayTrack {
+            id: "t".into(),
+            kind: Some(TrackKind::Sticker),
+            items: vec![Overlay {
+                id: "o".into(),
+                clip_id: "b".into(),
+                start: 0.0,
+                duration: 1.0,
+                content: OverlayContent::Text {
+                    element: serde_json::Value::Null,
+                },
+            }],
+        }];
+        timeline.audio_tracks = vec![AudioTrack {
+            id: "s".into(),
+            items: vec![AudioItem {
+                id: "i".into(),
+                clip_id: "a".into(),
+                start: 10.0,
+                duration: 1.0,
+                source: AudioSource::File { audio_id: 3 },
+                source_start: 0.0,
+                volume: 1.0,
+                fade_in: 0.0,
+                fade_out: 0.0,
+            }],
+        }];
+        timeline.replace_clips(vec![clip("c", 3, 0.0, 4.0), clip("a", 1, 12.0, 15.0)]);
+        let ids: Vec<&str> = timeline.clips.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["c", "a"]);
+        assert_eq!(timeline.subtitles.len(), 1);
+        assert_eq!(timeline.subtitles[0].clip_id, "a");
+        assert!(timeline.tracks.is_empty());
+        assert_eq!(timeline.audio_ids(), vec![3]);
     }
 
     #[test]

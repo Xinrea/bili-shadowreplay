@@ -126,7 +126,7 @@
   } from "../../powerlive-subtitle";
   import { createStateRefresh, watchStateChanges } from "../../state-refresh";
   import { announceTask, openTaskCenter, settleTask, wasCancelled } from "../../stores/tasks";
-  import AssSubtitlePreview from "../AssSubtitlePreview.svelte";
+  import NativeSubtitlePreview from "../NativeSubtitlePreview.svelte";
   import { stickerRefUrl } from "../cover/custom-stickers";
   import ElementToolbar from "../cover/ElementToolbar.svelte";
   import { loadSticker, STICKER_GROUPS } from "../cover/render";
@@ -1692,6 +1692,7 @@
         id: projectId,
         timeline: exported,
         subtitleAss: exportedSubtitles ? exportedAss : null,
+        generatedSubtitle: true,
         overlays: overlayImages,
         target,
         base: parseTimeline(syncedTimeline),
@@ -2069,7 +2070,7 @@
               >
                 {#snippet above()}
                   {#if player && subtitles.length > 0}
-                    <AssSubtitlePreview assContent={subtitleAss} video={player} fontName={subtitleStyle.fontName} />
+                    <NativeSubtitlePreview assContent={subtitleAss} video={player} fontName={subtitleStyle.fontName} />
                   {/if}
                 {/snippet}
               </OverlayStage>

@@ -19,7 +19,7 @@
     updateAssFields,
     type SubtitleStylePreset,
   } from "../subtitle-ass";
-  import AssSubtitlePreview from "./AssSubtitlePreview.svelte";
+  import NativeSubtitlePreview from "./NativeSubtitlePreview.svelte";
   import SubtitleFontSelect from "./SubtitleFontSelect.svelte";
 
   interface Props {
@@ -128,7 +128,7 @@
     controlsVersion += 1;
   }
 
-  // A small CSS approximation for the preset buttons; the preview above is libass.
+  // A small CSS approximation for preset buttons; the main preview uses native Skia.
   function swatchStyle(preset: SubtitleStylePreset): string {
     const values = ["", "", ...preset.fields.split(",")];
     const scale = 14 / Number(values[ASS_FIELD.Fontsize]);
@@ -214,14 +214,14 @@
           <!-- Dark-to-light backdrop shows outlines, shadows and boxes on both scene tones. -->
           <div class="relative mx-auto aspect-video w-full max-w-[calc(36vh*16/9)] overflow-hidden rounded-lg bg-gradient-to-r from-slate-900 via-slate-500 to-slate-300">
             {#if previewAss}
-              <AssSubtitlePreview assContent={previewAss} fontName={style.fontName} />
+              <NativeSubtitlePreview assContent={previewAss} fontName={style.fontName} />
             {:else}
               <div class="flex h-full items-center justify-center px-6 text-center text-sm text-gray-300">
                 修正 ASS 样式代码后显示预览
               </div>
             {/if}
           </div>
-          <p class="text-center text-[11px] text-gray-500">libass 实时预览 · 1920 × 1080 · 与压制使用同一份 ASS 样式</p>
+          <p class="text-center text-[11px] text-gray-500">原生彩色字幕预览 · 1920 × 1080 · 与压制使用同一渲染器</p>
         </div>
 
         <div>

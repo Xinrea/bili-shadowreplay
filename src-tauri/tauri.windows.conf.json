@@ -25,7 +25,9 @@
       "ffplay.exe": "ffplay.exe",
       "ffprobe.exe": "ffprobe.exe",
       "silero_vad.onnx": "silero_vad.onnx",
-      "windows-runtime": "."
+      "windows-runtime": ".",
+      "crates/native-overlay/assets/EMOJI-OFL.txt": "licenses/Noto-Emoji-OFL.txt",
+      "crates/native-overlay/assets/UNICODE-LICENSE.txt": "licenses/Unicode.txt"
     }
   }
 }

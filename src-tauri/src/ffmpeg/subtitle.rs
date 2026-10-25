@@ -64,10 +64,9 @@ fn subtitle_filter(
     Ok(filter)
 }
 
-/// Burn an SRT or ASS subtitle file into a video through libass.
-///
-/// `fonts_directory` supplies the font files given to the WASM preview. Native
-/// libass can still use its system font provider for fallback glyphs.
+/// Burn plain SRT through the native color-emoji compositor. External ASS
+/// retains the legacy libass path and its full compatibility surface.
+/// `fonts_directory` supplements system fonts in either renderer.
 pub async fn encode_video_subtitle<R: ProgressReporterTrait>(
     reporter: &R,
     file: &Path,
@@ -109,26 +108,129 @@ pub async fn encode_video_subtitle<R: ProgressReporterTrait>(
     };
     let output_path = file.with_file_name(&output_filename);
     let output_guard = super::runner::TempArtifact::new(&output_path);
-    let vf = subtitle_filter(subtitle, &srt_style, fonts_directory)?;
-    let mut command = ffmpeg_command();
-    let video_encoder = hwaccel::get_x264_encoder().await;
-    command.arg("-i").arg(file);
-    hwaccel::apply_x264_encoder_args(&mut command, video_encoder, Some(&vf));
-    command.args(["-c:a", "copy"]);
-    hwaccel::apply_x264_quality_args(&mut command, video_encoder);
-    command.args(["-y"]).arg(&output_path);
+    if subtitle
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("srt"))
+    {
+        encode_native_srt(
+            reporter,
+            file,
+            subtitle,
+            &srt_style,
+            fonts_directory,
+            &output_path,
+        )
+        .await?;
+    } else {
+        let vf = subtitle_filter(subtitle, &srt_style, fonts_directory)?;
+        let mut command = ffmpeg_command();
+        let video_encoder = hwaccel::get_x264_encoder().await;
+        command.arg("-i").arg(file);
+        hwaccel::apply_x264_encoder_args(&mut command, video_encoder, Some(&vf));
+        command.args(["-c:a", "copy"]);
+        hwaccel::apply_x264_quality_args(&mut command, video_encoder);
+        command.args(["-y"]).arg(&output_path);
 
-    run_command(
-        command,
-        ProgressMode::stage("压制字幕", ProgressTotal::FirstInput),
-        "Encode video subtitle",
-        Some(reporter),
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+        run_command(
+            command,
+            ProgressMode::stage("压制字幕", ProgressTotal::FirstInput),
+            "Encode video subtitle",
+            Some(reporter),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    }
     output_guard.keep();
     log::info!("Encode video subtitle task end: {}", output_path.display());
     Ok(output_filename)
+}
+
+fn native_subtitle_graph(vaapi: bool) -> String {
+    let output_format = if vaapi {
+        hwaccel::vaapi_filter_suffix()
+    } else {
+        "format=yuv420p"
+    };
+    // FFmpeg shifts the source's common container origin, preserving relative
+    // A/V delay. Never rebase only video with setpts=PTS-STARTPTS here.
+    format!("[0:v]{scale}[base];[base][1:v]overlay=format=auto:alpha=straight:eof_action=pass:repeatlast=0:shortest=0,{output_format}[video]",scale=hwaccel::H264_SCALE_PAD_FILTER)
+}
+
+async fn encode_native_srt<R: ProgressReporterTrait>(
+    reporter: &R,
+    file: &Path,
+    subtitle: &Path,
+    style: &str,
+    fonts_directory: Option<&Path>,
+    output: &Path,
+) -> Result<(), String> {
+    use super::native_overlay::{add_overlay_input, run_overlay_command, OverlaySpec};
+    use native_overlay::{AssSource, RenderInput, SourceKind};
+    use tokio::io::AsyncReadExt;
+
+    const MAX_SRT_BYTES: u64 = 64 * 1024 * 1024;
+    // Freeze the SRT once; styles and events cannot change during streaming.
+    let source = tokio::fs::File::open(subtitle)
+        .await
+        .map_err(|error| format!("Cannot read SRT {}: {error}", subtitle.display()))?;
+    let mut content = String::new();
+    source
+        .take(MAX_SRT_BYTES + 1)
+        .read_to_string(&mut content)
+        .await
+        .map_err(|error| format!("Cannot decode UTF-8 SRT {}: {error}", subtitle.display()))?;
+    if content.len() as u64 > MAX_SRT_BYTES {
+        return Err("SRT exceeds 64 MiB".into());
+    }
+    let ass = super::subtitle_native::srt_to_ass(&content, style)?;
+    let font_paths = super::subtitle_native::font_paths(fonts_directory)?;
+    let metadata = ffmpeg_utils::extract_video_metadata(file).await?;
+    let duration = super::danmu::probe_overlay_duration(file, metadata.duration).await?;
+    let fps = if metadata.fps.is_finite() && metadata.fps > 0.0 {
+        metadata.fps
+    } else {
+        30.0
+    };
+    let spec = OverlaySpec {
+        input: RenderInput {
+            documents: vec![AssSource {
+                text: ass,
+                kind: SourceKind::Subtitle,
+            }],
+            images: vec![],
+        },
+        font_paths,
+        width: 1920,
+        height: 1080,
+        fps,
+        start: 0.0,
+        duration,
+    };
+    let encoder = hwaccel::get_x264_encoder().await;
+    let mut command = ffmpeg_command();
+    command.arg("-i").arg(file);
+    add_overlay_input(&mut command, &spec)?;
+    command.args([
+        "-filter_complex",
+        &native_subtitle_graph(hwaccel::is_vaapi_encoder(encoder)),
+        "-map",
+        "[video]",
+        "-map",
+        "0:a?",
+    ]);
+    hwaccel::apply_x264_encoder_only(&mut command, encoder);
+    hwaccel::apply_x264_quality_args(&mut command, encoder);
+    command.args(["-c:a", "copy", "-y"]).arg(output);
+    run_overlay_command(
+        command,
+        spec,
+        ProgressMode::stage("压制字幕", ProgressTotal::FirstInput),
+        "Encode native SRT subtitle",
+        Some(reporter),
+    )
+    .await?;
+    Ok(())
 }
 
 /// Decode a 16-bit PCM WAV straight to f32 samples, scaled like
@@ -392,6 +494,16 @@ mod subtitle_filter_tests {
     use super::*;
 
     #[test]
+    fn native_graph_preserves_source_timeline_and_ends_with_source_video() {
+        let graph = native_subtitle_graph(false);
+        assert!(graph.starts_with(&format!("[0:v]{}[base]", hwaccel::H264_SCALE_PAD_FILTER)));
+        assert!(graph.contains("alpha=straight:eof_action=pass:repeatlast=0:shortest=0"));
+        assert!(!graph.contains("setpts"));
+        assert!(graph.ends_with("format=yuv420p[video]"));
+        assert!(native_subtitle_graph(true).ends_with("format=nv12,hwupload[video]"));
+    }
+
+    #[test]
     fn escapes_both_filter_parsers_for_paths_and_style_values() {
         assert_eq!(escape_filter_option("'"), r"\\\'");
         assert_eq!(escape_filter_option(":"), r"\\:");
@@ -428,6 +540,92 @@ mod subtitle_filter_tests {
         .unwrap();
         assert!(filter.ends_with(r":fontsdir=/tmp/font\\\'s\,\[test\]"));
         assert!(!filter.contains("force_style"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires FFmpeg with libx264 and native system fonts"]
+    async fn native_srt_burns_color_emoji_and_honors_cue_end() {
+        #[derive(Clone)]
+        struct Reporter;
+        #[async_trait::async_trait]
+        impl ProgressReporterTrait for Reporter {
+            async fn update(&self, _: &str) {}
+            async fn finish(&self, _: bool, _: &str) {}
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("source.mp4");
+        let created = ffmpeg_command()
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=black:s=320x180:r=30:d=2",
+                "-c:v",
+                "libx264",
+                "-y",
+            ])
+            .arg(&input)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            created.status.success(),
+            "{}",
+            String::from_utf8_lossy(&created.stderr)
+        );
+        let subtitle = directory.path().join("字幕.srt");
+        std::fs::write(
+            &subtitle,
+            "1\n00:00:00,000 --> 00:00:01,000\n中文 <b>Hello</b> 😀👍🏽👩🏽‍💻🇨🇳\n",
+        )
+        .unwrap();
+        let name = encode_video_subtitle(
+            &Reporter,
+            &input,
+            &subtitle,
+            "FontName=Arial,FontSize=24,Outline=1,Alignment=2".into(),
+            None,
+        )
+        .await
+        .unwrap();
+        let output = input.with_file_name(name);
+        let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+        assert_eq!((metadata.width, metadata.height), (1920, 1080));
+        assert!((metadata.duration - 2.0).abs() < 0.1);
+        for (time, visible) in [("0.5", true), ("1.5", false)] {
+            let frame = ffmpeg_command()
+                .args(["-v", "error", "-ss", time, "-i"])
+                .arg(&output)
+                .args([
+                    "-frames:v",
+                    "1",
+                    "-pix_fmt",
+                    "rgb24",
+                    "-f",
+                    "rawvideo",
+                    "pipe:1",
+                ])
+                .output()
+                .await
+                .unwrap();
+            assert!(frame.status.success());
+            let colored = frame
+                .stdout
+                .chunks_exact(3)
+                .filter(|p| {
+                    let high = *p.iter().max().unwrap();
+                    let low = *p.iter().min().unwrap();
+                    high > 80 && high - low > 50
+                })
+                .count();
+            if visible {
+                assert!(colored > 100, "missing color emoji: {colored}");
+            } else {
+                assert_eq!(colored, 0, "subtitle persists past end");
+            }
+        }
     }
 
     fn write_pcm_wav(path: &Path, samples: &[i16]) {

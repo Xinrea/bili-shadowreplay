@@ -79,7 +79,7 @@ jobs:
     needs: changes
     # Pushes to main always run, which also keeps the caches PRs restore fresh.
     if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.rust == 'true') }}
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     # A warm run takes about 10 minutes; this bounds stalls such as a slow apt
     # mirror on a cache miss.
     timeout-minutes: 45
@@ -87,6 +87,11 @@ jobs:
       # Debug info is unused in CI but slows compiling and linking and roughly
       # doubles the size of the Rust cache. Panic messages keep their locations.
       CARGO_PROFILE_DEV_DEBUG: "0"
+      # 0.82's Linux archive lacks COLRv1 and bundles ICU that collides with V8.
+      FORCE_SKIA_BUILD: "1"
+      SKIA_USE_SYSTEM_LIBRARIES: "1"
+      CC: clang
+      CXX: clang++
 
     steps:
       - name: Checkout repository
@@ -97,7 +102,7 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/apt-install
         with:
-          packages: ffmpeg libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          packages: ffmpeg libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libfontconfig1-dev fonts-wqy-microhei clang libclang-dev ninja-build python3 libicu-dev libharfbuzz-dev libpng-dev zlib1g-dev libexpat1-dev libjpeg-dev
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -114,6 +119,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          key: linux-system-skia-v1
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Swatinem/rust-cache deletes every file under non-profile `target/`

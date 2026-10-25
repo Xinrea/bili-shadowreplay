@@ -25,13 +25,18 @@ jobs:
 
   test:
     name: Run Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Bounds stalls such as a slow apt mirror on a cache miss.
     timeout-minutes: 45
     env:
       # Debug info is unused in CI but slows compiling and linking and enlarges
       # the Rust cache. Panic messages keep their locations.
       CARGO_PROFILE_DEV_DEBUG: "0"
+      # Build against modern FreeType and versioned ICU instead of the old archive.
+      FORCE_SKIA_BUILD: "1"
+      SKIA_USE_SYSTEM_LIBRARIES: "1"
+      CC: clang
+      CXX: clang++
 
     steps:
       - uses: actions/checkout@v6
@@ -42,7 +47,7 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/apt-install
         with:
-          packages: libssl-dev pkg-config ffmpeg
+          packages: libssl-dev pkg-config ffmpeg libfontconfig1-dev fonts-wqy-microhei clang libclang-dev ninja-build python3 libicu-dev libharfbuzz-dev libpng-dev zlib1g-dev libexpat1-dev libjpeg-dev
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -51,6 +56,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          key: linux-system-skia-v1
           # PRs restore main's cache. Saving one per PR fills the 10 GB repo
           # cache limit and evicts the larger Lint cache.
           save-if: ${{ github.ref == 'refs/heads/main' }}

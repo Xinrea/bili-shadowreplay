@@ -30,7 +30,8 @@ use crate::{
 
 use super::{
     hwaccel,
-    runner::{run_command, ProgressMode, ProgressTotal},
+    native_overlay::{add_overlay_input, image_events, run_overlay_command, OverlaySpec},
+    runner::{ProgressMode, ProgressTotal, TempArtifact},
 };
 
 const MIN_DANMU_FPS: f64 = 60.0;
@@ -298,149 +299,21 @@ async fn prepare_images(danmus: &[DanmuEntry], directory: &Path) -> HashMap<Url,
         .await
 }
 
-/// Reuse each overlay after its previous event ends instead of creating one
-/// FFmpeg input/filter for every message in an hours-long recording. Repeated
-/// images that overlap in time get separate slots; their decoder is shared.
-struct OverlaySlot<'a> {
-    image: &'a DanmuImage,
-    available_at: f64,
-    events: Vec<&'a ImageDanmu>,
-}
-
-fn overlay_slots(images: &[ImageDanmu]) -> Vec<OverlaySlot<'_>> {
-    let mut slots: Vec<OverlaySlot<'_>> = Vec::new();
-    let mut images: Vec<_> = images.iter().collect();
-    images.sort_by(|a, b| a.start.total_cmp(&b.start));
-    for event in images {
-        let index = slots
-            .iter()
-            .position(|slot| {
-                slot.available_at <= event.start
-                    && slot.image.path == event.image.path
-                    && slot.image.width == event.image.width
-                    && slot.image.height == event.image.height
-            })
-            .unwrap_or_else(|| {
-                slots.push(OverlaySlot {
-                    image: &event.image,
-                    available_at: 0.0,
-                    events: Vec::new(),
-                });
-                slots.len() - 1
-            });
-        slots[index].available_at = event.end;
-        slots[index].events.push(event);
-    }
-    slots
-}
-
-/// FFmpeg's `if` evaluates only the selected branch. A balanced tree costs
-/// O(log(events)) per frame per slot, unlike sendcmd (which scans the entire
-/// command list each frame) or a linear nest of conditions. Its bounded depth
-/// also avoids libavutil's expression recursion limit for long recordings.
-fn position_expression(events: &[&ImageDanmu], horizontal: bool) -> String {
-    if events.len() > 1 {
-        let mid = events.len() / 2;
-        return format!(
-            "if(lt(t,{:.6}),{},{})",
-            events[mid].start,
-            position_expression(&events[..mid], horizontal),
-            position_expression(&events[mid..], horizontal),
-        );
-    }
-    let Some(event) = events.first() else {
-        return "NAN".into();
-    };
-    let scale = 1080.0 / PLAY_RES_Y;
-    if horizontal {
-        format!(
-            "if(gte(t,{:.6})*lt(t,{:.6}),{:.6}{:+.6}*(t-{:.6}),NAN)",
-            event.start,
-            event.end,
-            event.from * scale,
-            (event.to - event.from) * scale / (event.end - event.start),
-            event.start,
-        )
-    } else {
-        format!("{:.6}", event.top * scale)
-    }
-}
-
-pub(super) struct OverlayGraph {
-    pub(super) inputs: Vec<PathBuf>,
-    pub(super) filter: String,
-}
-
-/// Composite image danmaku onto `[{prefix}0]`, ending at `[{prefix}N]` where
-/// `N` is `slots`. Image inputs are numbered from `first_input`.
-pub(super) fn image_overlay_chain(
-    images: &[ImageDanmu],
-    opacity: f64,
-    first_input: usize,
-    prefix: &str,
-) -> (OverlayGraph, usize) {
-    let slots = overlay_slots(images);
-    let mut inputs = Vec::new();
-    let mut groups: Vec<Vec<usize>> = Vec::new();
-    for (index, slot) in slots.iter().enumerate() {
-        let input = inputs
-            .iter()
-            .position(|path| path == &slot.image.path)
-            .unwrap_or_else(|| {
-                inputs.push(slot.image.path.clone());
-                groups.push(Vec::new());
-                inputs.len() - 1
-            });
-        groups[input].push(index);
-    }
-    let mut filter = String::new();
-    for (input, group) in groups.iter().enumerate() {
-        filter.push_str(&format!(
-            "[{}:v]format=rgba,split={}",
-            input + first_input,
-            group.len()
-        ));
-        for index in group {
-            filter.push_str(&format!("[source{index}]"));
-        }
-        filter.push_str(";\n");
-    }
-    for (index, slot) in slots.iter().enumerate() {
-        let width = (slot.image.width * 1080.0 / PLAY_RES_Y).round().max(1.0);
-        let height = (slot.image.height * 1080.0 / PLAY_RES_Y).round().max(1.0);
-        let x = position_expression(&slot.events, true);
-        let y = position_expression(&slot.events, false);
-        filter.push_str(&format!(
-            "[source{index}]scale={width}:{height}:force_original_aspect_ratio=decrease,\
-             pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black@0,\
-             setsar=1,colorchannelmixer=aa={opacity}[image{index}];\n\
-             [{prefix}{index}][image{index}]overlay=x='{x}':y='{y}':eval=frame:\
-             format=auto:eof_action=repeat:repeatlast=1[{prefix}{}];\n",
-            index + 1,
-        ));
-    }
-    (OverlayGraph { inputs, filter }, slots.len())
-}
-
-fn overlay_graph(images: &[ImageDanmu], opacity: f64, fps: f64, vaapi: bool) -> OverlayGraph {
+fn overlay_graph(fps: f64, vaapi: bool) -> String {
     // Change FPS before compositing, not only at the encoder, so motion is
     // actually evaluated at 60+ FPS rather than duplicating already-drawn frames.
     let mut filter = format!(
-        "[0:v]{},fps={fps},ass=danmu.ass[base0];\n",
+        "[0:v]{},fps={fps}[base];\n\
+         [base][1:v]overlay=shortest=1:format=auto:alpha=straight[composited];\n",
         hwaccel::H264_SCALE_PAD_FILTER,
     );
-    let (chain, slots) = image_overlay_chain(images, opacity, 1, "base");
-    filter.push_str(&chain.filter);
     let format = if vaapi {
         hwaccel::vaapi_filter_suffix()
     } else {
         "format=yuv420p"
     };
-    filter.push_str(&format!("[base{slots}]{format}[outv]\n"));
-    OverlayGraph {
-        inputs: chain.inputs,
-        filter,
-    }
+    filter.push_str(&format!("[composited]{format}[outv]\n"));
+    filter
 }
 
 fn validate_options(options: &Danmu2AssOptions) -> Result<(), String> {
@@ -516,6 +389,58 @@ pub async fn encode_video_danmu<R: ProgressReporterTrait>(
     encode_danmu_plan(reporter, file, plan, options, bitrate, directory.path()).await
 }
 
+/// FFmpeg rebases all streams against the container start, not the first
+/// video frame. A delayed video can therefore end later than its track length.
+/// Cover that timeline (and let the primary video end the overlay naturally).
+fn overlay_timeline_duration(probe: &serde_json::Value, track_duration: f64) -> f64 {
+    let number = |value: &serde_json::Value| {
+        value
+            .as_str()
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| value.is_finite())
+    };
+    let format = &probe["format"];
+    let container_start = number(&format["start_time"]).unwrap_or(0.0);
+    let video_start = probe["streams"]
+        .as_array()
+        .and_then(|streams| {
+            streams
+                .iter()
+                .find(|stream| stream["codec_type"] == "video")
+        })
+        .and_then(|video| number(&video["start_time"]))
+        .unwrap_or(container_start);
+    (track_duration + (video_start - container_start).max(0.0))
+        .max(number(&format["duration"]).unwrap_or(0.0))
+}
+
+pub(super) async fn probe_overlay_duration(
+    file: &Path,
+    track_duration: f64,
+) -> Result<f64, String> {
+    let output = ffmpeg_utils::ffprobe_command()
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration,start_time:stream=codec_type,start_time",
+            "-of",
+            "json",
+        ])
+        .arg(file)
+        .output()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to inspect overlay timeline: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let probe = serde_json::from_slice(&output.stdout).map_err(|error| error.to_string())?;
+    Ok(overlay_timeline_duration(&probe, track_duration))
+}
+
 async fn encode_danmu_plan<R: ProgressReporterTrait>(
     reporter: Option<&R>,
     file: &Path,
@@ -532,54 +457,54 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
     let input = std::path::absolute(file).map_err(|error| error.to_string())?;
     let absolute_output = std::path::absolute(&output_path).map_err(|error| error.to_string())?;
     log::info!("Encode video danmu task start: {}", file.display());
-    let source_fps = match ffmpeg_utils::extract_video_metadata(file).await {
-        Ok(metadata) => metadata.fps,
-        Err(error) => {
-            log::warn!("Failed to inspect source FPS; using {MIN_DANMU_FPS} FPS: {error}");
-            0.0
-        }
-    };
-    let fps = danmu_output_fps(source_fps);
+    // A finite duration is necessary for the bounded overlay producer. Never
+    // silently turn a failed probe into an indefinite rawvideo input.
+    let metadata = ffmpeg_utils::extract_video_metadata(file)
+        .await
+        .map_err(|error| format!("Failed to inspect source video: {error}"))?;
+    let fps = danmu_output_fps(metadata.fps);
     let encoder = hwaccel::get_x264_encoder().await;
-    let graph = overlay_graph(
-        &plan.images,
-        options.opacity,
+    let graph = overlay_graph(fps, hwaccel::is_vaapi_encoder(encoder));
+    let spec = OverlaySpec {
+        input: native_overlay::RenderInput {
+            documents: vec![native_overlay::AssSource {
+                text: plan.ass,
+                kind: native_overlay::SourceKind::Danmaku,
+            }],
+            images: image_events(&plan.images, options.opacity),
+        },
+        font_paths: Vec::new(),
+        width: 1920,
+        height: 1080,
         fps,
-        hwaccel::is_vaapi_encoder(encoder),
-    );
-    for (name, content) in [("danmu.ass", plan.ass), ("filter.txt", graph.filter)] {
-        tokio::fs::write(directory.join(name), content)
-            .await
-            .map_err(|error| error.to_string())?;
-    }
+        start: 0.0,
+        duration: probe_overlay_duration(file, metadata.duration).await?,
+    };
     let mut command = ffmpeg_command();
     command
         .current_dir(directory)
         .args(["-nostdin", "-i"])
         .arg(&input);
-    for image in graph.inputs {
-        // A single PNG frame is repeated by overlay framesync, not a looping
-        // input. The main video determines duration, including silent videos.
-        command.args(["-threads", "1", "-i"]).arg(image);
-    }
-    // A file avoids OS command-line limits for large danmaku tracks.
+    add_overlay_input(&mut command, &spec)?;
     command
-        .arg(filter_complex_file_option().await)
-        .arg("filter.txt")
+        .arg("-filter_complex")
+        .arg(graph)
         .args(["-map", "[outv]", "-map", "0:a?"]);
     hwaccel::apply_x264_encoder_only(&mut command, encoder);
     hwaccel::apply_x264_quality_args_with_bitrate(&mut command, encoder, bitrate);
     command
         .args(["-c:a", "copy", "-r", &fps.to_string(), "-y"])
         .arg(&absolute_output);
-    run_command(
+    let output_guard = TempArtifact::new(&absolute_output);
+    run_overlay_command(
         command,
+        spec,
         ProgressMode::stage("压制弹幕", ProgressTotal::FirstInput),
         "Encode video danmu",
         reporter,
     )
-    .await
-    .map_err(|error| error.to_string())?;
+    .await?;
+    output_guard.keep();
     // The caller's TempDir keeps assets alive through encoding and removes them
     // on error/cancellation. The FFmpeg factory uses kill_on_drop for the process.
     log::info!("Encode video danmu task end: {}", output_path.display());
@@ -611,21 +536,6 @@ mod tests {
         }
     }
 
-    fn image_event(start: f64) -> ImageDanmu {
-        ImageDanmu {
-            image: DanmuImage {
-                path: "emoji.png".into(),
-                width: 54.0,
-                height: 54.0,
-            },
-            start,
-            end: start + 8.0,
-            top: 0.0,
-            from: 1280.0,
-            to: -54.0,
-        }
-    }
-
     #[derive(Clone)]
     struct NoopReporter;
 
@@ -645,6 +555,22 @@ mod tests {
             select_filter_complex_file_option("-filter_complex <graph>\n-filter_complex_threads"),
             "-/filter_complex"
         );
+    }
+
+    #[test]
+    fn overlay_duration_covers_delayed_video_without_using_absolute_pts() {
+        let delayed = serde_json::json!({
+            "format": {"start_time":"0.0", "duration":"5.0"},
+            "streams": [{"codec_type":"audio", "start_time":"0.0"},
+                        {"codec_type":"video", "start_time":"2.0"}],
+        });
+        assert_eq!(overlay_timeline_duration(&delayed, 3.0), 5.0);
+        let ts = serde_json::json!({
+            "format": {"start_time":"10000.0", "duration":"3.0"},
+            "streams": [{"codec_type":"video", "start_time":"10000.2"}],
+        });
+        assert!((overlay_timeline_duration(&ts, 3.0) - 3.2).abs() < 0.001);
+        assert_eq!(overlay_timeline_duration(&serde_json::json!({}), 3.0), 3.0);
     }
 
     #[test]
@@ -735,65 +661,19 @@ mod tests {
     }
 
     #[test]
-    fn overlay_slots_are_reused_but_concurrent_images_remain_independent() {
-        let graph = overlay_graph(
-            &[
-                image_event(16.0),
-                image_event(0.0),
-                image_event(1.0),
-                image_event(8.0),
-            ],
-            0.8,
-            60.0,
-            false,
-        );
-        assert_eq!(graph.inputs, vec![PathBuf::from("emoji.png")]);
-        assert_eq!(graph.filter.matches("]overlay=").count(), 2);
-        assert!(graph.filter.contains("split=2[source0][source1]"));
-        assert!(graph.filter.contains("colorchannelmixer=aa=0.8"));
-        assert!(graph.filter.contains("fps=60,ass=danmu.ass"));
-        assert!(graph.filter.contains("if(lt(t,8.000000),"));
-        assert!(graph.filter.contains("gte(t,8.000000)*lt(t,16.000000)"));
-        assert!(graph.filter.contains("gte(t,16.000000)*lt(t,24.000000)"));
-        assert!(
-            !graph.filter.contains("setpts"),
-            "must not rebase video without audio"
-        );
-    }
-
-    #[test]
-    fn large_tracks_keep_filter_count_and_expression_depth_bounded() {
-        let events: Vec<_> = (0..10_000)
-            .map(|i| image_event(f64::from(i) * 8.0))
-            .collect();
-        let graph = overlay_graph(&events, 1.0, 120.0, false);
-        assert_eq!(graph.inputs.len(), 1);
-        assert_eq!(graph.filter.matches("]overlay=").count(), 1);
-        let mut depth = 0;
-        let mut max_depth = 0;
-        for character in graph.filter.chars() {
-            if character == '(' {
-                depth += 1;
-                max_depth = max_depth.max(depth);
-            } else if character == ')' {
-                depth -= 1;
-            }
-        }
-        assert_eq!(depth, 0);
-        assert!(
-            max_depth <= 16,
-            "expression is not balanced: depth {max_depth}"
-        );
-    }
-
-    #[test]
     fn text_only_and_vaapi_graphs_have_explicit_output_formats() {
-        let text = overlay_graph(&[], 0.8, 60.0, false);
-        assert!(text.inputs.is_empty());
-        assert!(!text.filter.contains("sendcmd"));
-        assert!(text.filter.contains("format=yuv420p[outv]"));
-        let hardware = overlay_graph(&[image_event(0.0)], 0.8, 60.0, true);
-        assert!(hardware.filter.ends_with("format=nv12,hwupload[outv]\n"));
+        let text = overlay_graph(60.0, false);
+        assert!(text.contains("fps=60[base]"));
+        assert!(text.contains("[base][1:v]overlay=shortest=1:format=auto:alpha=straight"));
+        assert!(!text.contains("ass="));
+        assert!(
+            !text.contains("setpts"),
+            "do not rebase video without audio"
+        );
+        assert!(text.contains("format=yuv420p[outv]"));
+        let hardware = overlay_graph(120.0, true);
+        assert!(hardware.contains("fps=120[base]"));
+        assert!(hardware.ends_with("format=nv12,hwupload[outv]\n"));
     }
 
     #[tokio::test]
@@ -975,7 +855,7 @@ mod tests {
 
     /// Run explicitly with `cargo test ... ffmpeg_image_danmu_workflow -- --ignored`.
     #[tokio::test]
-    #[ignore = "requires FFmpeg with libass, libx264 and libwebp"]
+    #[ignore = "requires FFmpeg with libx264/libwebp and native Skia renderer"]
     async fn ffmpeg_image_danmu_workflow() {
         // Paths containing quotes, spaces and Unicode must never enter filter syntax.
         let directory = tempfile::Builder::new()
@@ -1138,7 +1018,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires FFmpeg with libass and libx264"]
+    #[ignore = "requires FFmpeg with libx264 and native Skia renderer"]
     async fn ffmpeg_preserves_delayed_video_and_shared_danmu_clock() {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("delayed.mp4");
@@ -1203,7 +1083,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires FFmpeg with libass and libx264"]
+    #[ignore = "requires FFmpeg with libx264 and native Skia renderer"]
     async fn ffmpeg_text_fallback_without_audio() {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("silent.mp4");

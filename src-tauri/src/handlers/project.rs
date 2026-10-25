@@ -1026,6 +1026,7 @@ pub(crate) async fn project_upload_video(
     event_id: &str,
     id: i64,
     subtitle_ass: Option<String>,
+    generated_subtitle: bool,
     overlay_images: Vec<OverlayImage>,
     directory: &Path,
 ) -> Result<(PathBuf, Option<oneshot::Receiver<Result<(), String>>>), String> {
@@ -1048,6 +1049,7 @@ pub(crate) async fn project_upload_video(
         title: project.title.clone(),
         metadata: json!({ "project_id": project.id, "title": project.title }),
         subtitle_ass: subtitle_ass.filter(|_| timeline.has_visible_subtitles()),
+        generated_subtitle,
         overlay_images,
         timeline,
         materials: &materials,
@@ -1095,6 +1097,7 @@ pub(crate) async fn material_danmu_video(
         materials: &materials,
         audio: &audio,
         subtitle_ass: None,
+        generated_subtitle: false,
         overlay_images: Vec::new(),
         danmu_options: danmu_options(state).await,
         project: None,
@@ -1232,6 +1235,7 @@ struct ExportSource<'a> {
     /// The files of the audio library it plays.
     audio: &'a HashMap<i64, AudioRow>,
     subtitle_ass: Option<String>,
+    generated_subtitle: bool,
     /// Pictures of the text and sticker overlays.
     overlay_images: Vec<OverlayImage>,
     danmu_options: Danmu2AssOptions,
@@ -1242,7 +1246,12 @@ struct ExportSource<'a> {
 impl ExportSource<'_> {
     /// Identifies what rendering this source contains.
     fn render_hash(&self) -> String {
-        let mut extra = self.subtitle_ass.clone().unwrap_or_default();
+        let mut extra = format!(
+            "native:{}:{}\n",
+            self.generated_subtitle,
+            native_overlay::RENDERER_VERSION
+        );
+        extra.push_str(self.subtitle_ass.as_deref().unwrap_or_default());
         if self.timeline.danmu {
             extra.push_str(&serde_json::to_string(&self.danmu_options).unwrap_or_default());
         }
@@ -1269,6 +1278,7 @@ struct ExportJob {
     /// Each audio library file's path, by id.
     audio_files: HashMap<i64, PathBuf>,
     subtitle_ass: Option<String>,
+    generated_subtitle: bool,
     font_name: Option<String>,
     /// The picture of each text and sticker overlay, by id.
     overlay_images: HashMap<String, DecodedOverlayImage>,
@@ -1289,6 +1299,7 @@ pub async fn export_project(
     id: i64,
     timeline: Timeline,
     subtitle_ass: Option<String>,
+    generated_subtitle: Option<bool>,
     overlays: Option<Vec<OverlayImage>>,
     target: Option<String>,
     base: Option<Timeline>,
@@ -1326,6 +1337,7 @@ pub async fn export_project(
         materials: &materials,
         audio: &audio,
         subtitle_ass,
+        generated_subtitle: generated_subtitle.unwrap_or(false),
         overlay_images: overlays.unwrap_or_default(),
         danmu_options: danmu_options(&state).await,
         project: Some(project.id),
@@ -1369,6 +1381,7 @@ async fn queue_export(
         materials,
         audio,
         subtitle_ass,
+        generated_subtitle,
         overlay_images,
         danmu_options,
         project,
@@ -1443,6 +1456,7 @@ async fn queue_export(
             .collect(),
         timeline,
         subtitle_ass,
+        generated_subtitle,
         font_name,
         overlay_images,
         danmu_options,
@@ -1691,6 +1705,7 @@ async fn render_timeline(
             overlays,
             sounds,
             subtitle_ass: job.subtitle_ass.clone(),
+            generated_subtitle: job.generated_subtitle,
             fonts_directory: fonts_directory.as_ref().map(|directory| directory.path()),
             danmus,
             danmu_options: job.danmu_options.clone(),
@@ -2329,6 +2344,7 @@ mod tests {
             materials: &materials,
             audio: &audio,
             subtitle_ass: None,
+            generated_subtitle: false,
             overlay_images: images,
             danmu_options: Danmu2AssOptions::default(),
             project: None,

@@ -456,6 +456,7 @@ pub async fn post_upload(
     event_id: String,
     id: i64,
     subtitle_ass: Option<String>,
+    generated_subtitle: Option<bool>,
     overlays: Option<Vec<OverlayImage>>,
 ) -> Result<(), String> {
     let upload = state.db.get_upload(id).await?;
@@ -508,6 +509,7 @@ pub async fn post_upload(
             &upload,
             profile,
             subtitle_ass,
+            generated_subtitle.unwrap_or(false),
             overlays.unwrap_or_default(),
         )
         .await;
@@ -605,6 +607,8 @@ async fn set_upload_status(state: &State, id: i64, status: &str) -> Result<(), S
     Ok(state.db.set_upload_progress(id, status, &now).await?)
 }
 
+// Keep the queued render inputs explicit, matching the public upload command.
+#[allow(clippy::too_many_arguments)]
 async fn post_upload_inner(
     state: &State,
     reporter: &ProgressReporter,
@@ -612,6 +616,7 @@ async fn post_upload_inner(
     upload: &UploadRow,
     profile: Profile,
     subtitle_ass: Option<String>,
+    generated_subtitle: bool,
     overlays: Vec<OverlayImage>,
 ) -> Result<PostedVideo, String> {
     let output = output_dir(state).await;
@@ -652,6 +657,7 @@ async fn post_upload_inner(
                 &format!("{event_id}-export"),
                 project.id,
                 subtitle_ass,
+                generated_subtitle,
                 overlays,
                 &output.join(upload_dir(upload.id)),
             )

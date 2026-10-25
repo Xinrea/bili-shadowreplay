@@ -17,7 +17,11 @@
 
 ## Linux
 
-Linux 版本目前仅支持使用 CPU 推理，且测试较少，可能存在一些问题，遇到问题请及时反馈。
+Linux 桌面安装包最低支持 **Ubuntu 24.04**，不再支持 Ubuntu 22.04。其他发行版需要提供兼容的系统运行库，不能仅凭发行时间判断兼容性；AppImage 也不保证能在旧系统上运行。
+
+程序的原生弹幕渲染依赖系统 FreeType、HarfBuzz 和 ICU 等运行库，以支持 COLRv1 彩色 Emoji，并避免与 V8 内置 ICU 的符号冲突。`.deb` 包会声明这些依赖，推荐使用 `sudo apt install ./下载的文件名.deb` 安装，由包管理器一并安装依赖；不要用忽略依赖的方式强行安装到 Ubuntu 22.04。
+
+Linux 版本目前仅支持使用 CPU 推理，且测试较少，可能存在一些问题，遇到问题请及时反馈。需要自行编译时，请参考 [原生弹幕渲染构建](../../development/native-overlay.md)。
 
 ## MacOS
 

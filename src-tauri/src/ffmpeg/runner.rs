@@ -21,7 +21,11 @@ use async_ffmpeg_sidecar::{
 };
 use async_trait::async_trait;
 use thiserror::Error;
-use tokio::{io::BufReader, process::Command};
+use tokio::{
+    io::{AsyncWriteExt, BufReader},
+    process::{ChildStdin, Command},
+    sync::mpsc,
+};
 
 use crate::progress::progress_reporter::{ProgressReporterTrait, StageProgress};
 use ffmpeg_utils::ffmpeg_command;
@@ -289,14 +293,30 @@ impl FfmpegJob {
     where
         R: ProgressReporterTrait,
     {
+        self.run_with_frames(command, None, reporter).await
+    }
+
+    async fn run_with_frames<R: ProgressReporterTrait>(
+        &self,
+        command: Command,
+        frames: Option<RawFrameReceiver>,
+        reporter: Option<&R>,
+    ) -> Result<JobOutput, FfmpegError> {
         let context = self.command_context();
-        let mut child =
-            self.configure_command(command)
-                .spawn()
-                .map_err(|source| FfmpegError::Spawn {
-                    context: context.clone(),
-                    source,
-                })?;
+        let mut command = self.configure_command(command);
+        // Existing jobs retain exactly the stdin configured by their caller.
+        if frames.is_some() {
+            command.stdin(Stdio::piped());
+        }
+        let mut child = command.spawn().map_err(|source| FfmpegError::Spawn {
+            context: context.clone(),
+            source,
+        })?;
+        let stdin = if frames.is_some() {
+            child.stdin.take()
+        } else {
+            None
+        };
 
         let stderr = child
             .stderr
@@ -308,56 +328,88 @@ impl FfmpegJob {
         let mut tracker = ProgressTracker::default();
         let mut logs = Vec::new();
 
-        loop {
-            // Do not use `while let Ok(...)` here: parser/I/O failures are
-            // meaningful job failures and must reach the caller.
-            let event = parser
-                .parse_next_event()
-                .await
-                .map_err(|error| FfmpegError::Parser {
-                    context: context.clone(),
-                    message: error.to_string(),
-                })?;
+        let process = async {
+            loop {
+                // Do not use `while let Ok(...)` here: parser/I/O failures are
+                // meaningful job failures and must reach the caller.
+                let event =
+                    parser
+                        .parse_next_event()
+                        .await
+                        .map_err(|error| FfmpegError::Parser {
+                            context: context.clone(),
+                            message: error.to_string(),
+                        })?;
 
-            match event {
-                FfmpegEvent::LogEOF => break,
-                FfmpegEvent::Error(message) => {
-                    return Err(FfmpegError::Event { context, message });
-                }
-                event => {
-                    if let FfmpegEvent::Log(_, content) = &event {
-                        logs.push(content.clone());
+                match event {
+                    FfmpegEvent::LogEOF => break,
+                    FfmpegEvent::Error(message) => {
+                        return Err(FfmpegError::Event {
+                            context: context.clone(),
+                            message,
+                        });
                     }
-                    if let Some(reporter) = reporter {
-                        match tracker.observe(&self.progress, &event) {
-                            Some(ProgressReport::Text(message)) => reporter.update(&message).await,
-                            Some(ProgressReport::Stage(progress)) => {
-                                reporter.progress(progress).await
+                    event => {
+                        if let FfmpegEvent::Log(_, content) = &event {
+                            logs.push(content.clone());
+                        }
+                        if let Some(reporter) = reporter {
+                            match tracker.observe(&self.progress, &event) {
+                                Some(ProgressReport::Text(message)) => {
+                                    reporter.update(&message).await
+                                }
+                                Some(ProgressReport::Stage(progress)) => {
+                                    reporter.progress(progress).await
+                                }
+                                None => {}
                             }
-                            None => {}
                         }
                     }
                 }
             }
-        }
 
-        let status = child.wait().await.map_err(|source| FfmpegError::Wait {
-            context: context.clone(),
-            source,
-        })?;
-        if !status.success() {
-            return Err(FfmpegError::NonZeroExit {
-                context,
+            let status = child.wait().await.map_err(|source| FfmpegError::Wait {
+                context: context.clone(),
+                source,
+            })?;
+            if !status.success() {
+                return Err(FfmpegError::NonZeroExit {
+                    context: context.clone(),
+                    status,
+                    detail: failure_detail(&logs),
+                });
+            }
+
+            Ok(JobOutput {
+                output: self.output.clone(),
                 status,
-                detail: failure_detail(&logs),
-            });
+                logs,
+            })
+        };
+        tokio::pin!(process);
+        let feed = feed_raw_frames(stdin, frames);
+        tokio::pin!(feed);
+        tokio::select! {
+            // Prefer a ready producer failure over a simultaneous process exit.
+            biased;
+            result = &mut feed => {
+                match result {
+                    Ok(()) => process.await,
+                    Err(FrameFeedError::Io(error)) if error.kind() == io::ErrorKind::BrokenPipe => {
+                        // FFmpeg may stop reading when its primary video ends before
+                        // the probed duration. Only its successful exit legitimizes
+                        // this closure; never mask a failed encode with pipe EOF.
+                        process.await
+                    }
+                    Err(error) => Err(FfmpegError::FrameFeed {
+                        context: context.clone(), message: error.to_string(),
+                    }),
+                }
+            }
+            result = &mut process => result,
         }
-
-        Ok(JobOutput {
-            output: self.output.clone(),
-            status,
-            logs,
-        })
+        // Both futures live in this scope, not detached tasks: cancellation
+        // drops stdin + the receiver and kills the child (kill_on_drop).
     }
 }
 
@@ -406,6 +458,85 @@ where
         .await
 }
 
+/// A bounded raw-video stream must explicitly finish. Dropping its producer
+/// (including a panic) is not a successful EOF.
+pub enum RawFrame {
+    Frame(Vec<u8>),
+    Finished,
+}
+
+pub struct RawFrameReceiver {
+    pub receiver: mpsc::Receiver<Result<RawFrame, String>>,
+    pub frame_bytes: usize,
+    pub frame_count: u64,
+}
+
+#[derive(Debug, Error)]
+enum FrameFeedError {
+    #[error("{0}")]
+    Stream(String),
+    #[error("failed writing raw video: {0}")]
+    Io(#[from] io::Error),
+}
+
+async fn feed_raw_frames(
+    stdin: Option<ChildStdin>,
+    frames: Option<RawFrameReceiver>,
+) -> Result<(), FrameFeedError> {
+    let Some(mut frames) = frames else {
+        return std::future::pending().await;
+    };
+    let mut stdin = stdin.ok_or_else(|| FrameFeedError::Stream("stdin pipe unavailable".into()))?;
+    let mut written = 0;
+    loop {
+        let message = frames
+            .receiver
+            .recv()
+            .await
+            .ok_or_else(|| {
+                FrameFeedError::Stream("raw-frame producer closed without finishing".into())
+            })?
+            .map_err(FrameFeedError::Stream)?;
+        match message {
+            RawFrame::Frame(bytes) => {
+                if bytes.len() != frames.frame_bytes || written >= frames.frame_count {
+                    return Err(FrameFeedError::Stream(
+                        "invalid raw-frame size or count".into(),
+                    ));
+                }
+                stdin.write_all(&bytes).await?;
+                written += 1;
+            }
+            RawFrame::Finished => {
+                if written != frames.frame_count {
+                    return Err(FrameFeedError::Stream(format!(
+                        "raw-frame stream ended after {written} of {} frames",
+                        frames.frame_count
+                    )));
+                }
+                stdin.shutdown().await?;
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// Run the same job pipeline with an explicitly opted-in raw-video stdin.
+/// The receiver is owned here so cancellation always releases a blocked sender.
+pub async fn run_command_with_frames<R: ProgressReporterTrait>(
+    command: Command,
+    frames: RawFrameReceiver,
+    progress: ProgressMode,
+    context: impl Into<String>,
+    reporter: Option<&R>,
+) -> Result<JobOutput, FfmpegError> {
+    FfmpegJob::new()
+        .progress(progress)
+        .context(context)
+        .run_with_frames(command, Some(frames), reporter)
+        .await
+}
+
 fn has_progress_argument(args: &[OsString]) -> bool {
     args.iter()
         .any(|arg| arg.as_os_str() == OsStr::new("-progress"))
@@ -420,6 +551,8 @@ pub enum FfmpegError {
         #[source]
         source: io::Error,
     },
+    #[error("{context}: raw-video stream failed: {message}")]
+    FrameFeed { context: String, message: String },
     #[error("{context}: ffmpeg stderr pipe unavailable")]
     StderrPipeUnavailable { context: String },
     #[error("{context}: failed to parse ffmpeg stderr: {message}")]
@@ -644,6 +777,204 @@ mod tests {
             )],
         ));
         assert_eq!(reports[0].processed, 0.0);
+    }
+
+    fn raw_receiver(
+        receiver: mpsc::Receiver<Result<RawFrame, String>>,
+        frame_bytes: usize,
+        frame_count: u64,
+    ) -> RawFrameReceiver {
+        RawFrameReceiver {
+            receiver,
+            frame_bytes,
+            frame_count,
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn raw_stream_requires_explicit_complete_eof_and_valid_frames() {
+        for (messages, expected) in [
+            (
+                vec![Ok(RawFrame::Frame(vec![1; 4])), Ok(RawFrame::Finished)],
+                None,
+            ),
+            (
+                vec![Ok(RawFrame::Frame(vec![1; 4]))],
+                Some("without finishing"),
+            ),
+            (vec![Err("render failed".into())], Some("render failed")),
+            (
+                vec![Ok(RawFrame::Frame(vec![1; 3]))],
+                Some("invalid raw-frame"),
+            ),
+            (vec![Ok(RawFrame::Finished)], Some("0 of 1")),
+        ] {
+            let (sender, receiver) = mpsc::channel(2);
+            for message in messages {
+                sender.send(message).await.unwrap();
+            }
+            drop(sender);
+            let result = run_command_with_frames(
+                test_command("cat >/dev/null"),
+                raw_receiver(receiver, 4, 1),
+                ProgressMode::None,
+                "stream test",
+                None::<&RecordingReporter>,
+            )
+            .await;
+            match expected {
+                None => assert!(result.is_ok(), "{result:?}"),
+                Some(expected) => assert!(result.unwrap_err().to_string().contains(expected)),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn raw_stdin_closure_never_masks_a_failed_process() {
+        let (sender, receiver) = mpsc::channel(1);
+        let producer = tokio::spawn(async move {
+            loop {
+                if sender
+                    .send(Ok(RawFrame::Frame(vec![0; 1024 * 1024])))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let result = run_command_with_frames(
+            test_command("exit 17"),
+            raw_receiver(receiver, 1024 * 1024, u64::MAX),
+            ProgressMode::None,
+            "early failure",
+            None::<&RecordingReporter>,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(FfmpegError::NonZeroExit { .. })),
+            "{result:?}"
+        );
+        producer.await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelling_raw_stream_closes_receiver_and_kills_process() {
+        use tokio::time::{sleep, timeout, Duration};
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("pid");
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "printf '%s' \"$$\" > \"$1\"; exec sleep 60", "test"])
+            .arg(&pid_file);
+        let (sender, receiver) = mpsc::channel(1);
+        sender
+            .send(Ok(RawFrame::Frame(vec![0; 1024 * 1024])))
+            .await
+            .unwrap();
+        let job = tokio::spawn(async move {
+            run_command_with_frames(
+                command,
+                raw_receiver(receiver, 1024 * 1024, 1),
+                ProgressMode::None,
+                "cancellation",
+                None::<&RecordingReporter>,
+            )
+            .await
+        });
+        timeout(Duration::from_secs(3), async {
+            while !pid_file.exists() {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        job.abort();
+        assert!(job.await.unwrap_err().is_cancelled());
+        timeout(Duration::from_secs(1), sender.closed())
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(3), async {
+            while Command::new("kill")
+                .args(["-0", &pid])
+                .stderr(Stdio::null())
+                .status()
+                .await
+                .unwrap()
+                .success()
+            {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("cancelled raw-video child must exit");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires FFmpeg"]
+    async fn raw_video_may_end_naturally_before_the_overlay_spec() {
+        use tokio::time::{timeout, Duration};
+        let (sender, receiver) = mpsc::channel(1);
+        let producer = tokio::spawn(async move {
+            for _ in 0..1000 {
+                if sender
+                    .send(Ok(RawFrame::Frame(vec![0; 64 * 64 * 4])))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            let _ = sender.send(Ok(RawFrame::Finished)).await;
+        });
+        let mut command = ffmpeg_command();
+        command
+            .args([
+                "-nostdin",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=s=64x64:r=60:d=0.1",
+                "-f",
+                "rawvideo",
+                "-pixel_format",
+                "rgba",
+                "-video_size",
+                "64x64",
+                "-framerate",
+                "60",
+                "-i",
+                "pipe:0",
+                "-filter_complex",
+                "[0:v][1:v]overlay=shortest=1:alpha=straight[outv]",
+                "-map",
+                "[outv]",
+                "-f",
+                "null",
+                "-",
+            ])
+            .stdout(Stdio::null());
+        let result = timeout(
+            Duration::from_secs(10),
+            run_command_with_frames(
+                command,
+                raw_receiver(receiver, 64 * 64 * 4, 1000),
+                ProgressMode::Time,
+                "short input",
+                None::<&RecordingReporter>,
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(result.is_ok(), "{result:?}");
+        timeout(Duration::from_secs(1), producer)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]

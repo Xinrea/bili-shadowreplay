@@ -42,7 +42,7 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/apt-install
         with:
-          packages: libssl-dev pkg-config ffmpeg
+          packages: libssl-dev pkg-config ffmpeg libfontconfig1-dev fonts-wqy-microhei
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable

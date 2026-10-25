@@ -42,6 +42,7 @@ use crate::project::MAX_VOLUME;
 
 use super::{
     danmu, hwaccel,
+    native_overlay::{add_overlay_input, image_events, run_overlay_command, OverlaySpec},
     project_plan::{plan_segments, PlanClip, Segment, SegmentLimits, SAMPLE_RATE},
     runner::{run_command, ProgressMode, ProgressTotal, TempArtifact},
 };
@@ -69,7 +70,7 @@ const EPSILON: f64 = 1e-6;
 const RENDER_STAGE: &str = "导出切片";
 /// Part of every segment's key: change it with what a segment's graph draws,
 /// so that segments rendered before are not used again.
-const RENDER_VERSION: u32 = 1;
+const RENDER_VERSION: u32 = 2;
 
 pub struct RenderClip {
     /// The same however the timeline is edited around the clip.
@@ -181,6 +182,8 @@ pub struct ProjectRender<'a> {
     pub sounds: Vec<RenderSound>,
     /// ASS document in project time, exactly as previewed by the editor.
     pub subtitle_ass: Option<String>,
+    /// Only app-generated ASS uses native text rendering; external ASS keeps libass.
+    pub generated_subtitle: bool,
     /// Font files the preview used for the subtitles.
     pub fonts_directory: Option<&'a Path>,
     /// Danmaku in project time; empty to burn none.
@@ -748,7 +751,7 @@ impl Drop for Scratch<'_> {
 }
 
 struct Subtitles {
-    /// Options of their `ass` filter.
+    /// Options of their legacy `ass` filter; unused for generated subtitles.
     options: String,
     document: AssDocument,
 }
@@ -759,6 +762,60 @@ struct Danmaku {
     images: Vec<ImageDanmu>,
     /// A digest of each image's file.
     pictures: HashMap<PathBuf, String>,
+}
+
+/// Explicit fonts used by generated subtitles, and their cache identity.
+#[derive(Default)]
+struct NativeFonts {
+    paths: Vec<PathBuf>,
+    identity: String,
+}
+
+impl NativeFonts {
+    async fn load(directory: Option<&Path>) -> Result<Self, String> {
+        let Some(directory) = directory else {
+            return Ok(Self::default());
+        };
+        let mut entries = tokio::fs::read_dir(directory)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut paths = Vec::new();
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            let path = entry.path();
+            let extension = path
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default();
+            if matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "ttf" | "otf" | "ttc" | "otc"
+            ) {
+                paths.push(std::path::absolute(path).map_err(|error| error.to_string())?);
+            }
+        }
+        paths.sort();
+        let mut identity = String::new();
+        for path in &paths {
+            let bytes = tokio::fs::read(path)
+                .await
+                .map_err(|error| error.to_string())?;
+            // Temporary font directories can change between otherwise identical renders.
+            let _ = writeln!(identity, "{}", digest(&bytes));
+        }
+        Ok(Self { paths, identity })
+    }
+}
+
+/// Put the streamed overlay on the same project clock as the joined clips.
+fn native_overlay_filter(video: &str, input: usize, start: f64) -> String {
+    format!(
+        "[{input}:v]setpts=PTS+{start:.6}/TB[native];\n\
+         [{video}][native]overlay=x=0:y=0:eof_action=pass:repeatlast=0[native_overlaid];\n"
+    )
 }
 
 /// What the segments of one render share.
@@ -774,6 +831,7 @@ struct Render<'a> {
     pictures: Vec<Option<String>>,
     subtitles: Option<Subtitles>,
     danmaku: Option<Danmaku>,
+    native_fonts: NativeFonts,
 }
 
 impl Render<'_> {
@@ -793,6 +851,12 @@ impl Render<'_> {
             hwaccel::project_quality_args(self.encoder, &job.render_settings).join(" "),
             segment.frames,
             segment.samples,
+        );
+        let _ = writeln!(
+            key,
+            "native {} {}",
+            job.generated_subtitle,
+            ::native_overlay::RENDERER_VERSION
         );
         for part in &segment.parts {
             let clip = &job.clips[part.clip];
@@ -844,6 +908,26 @@ impl Render<'_> {
                 }
             };
         }
+        // Explicit fonts are registered for the whole native canvas, so they
+        // can affect danmaku fallback as well as generated subtitle text.
+        let native_text = (job.generated_subtitle
+            && self.subtitles.as_ref().is_some_and(|subtitles| {
+                subtitles
+                    .document
+                    .during(start, segment.end(fps))
+                    .next()
+                    .is_some()
+            }))
+            || self.danmaku.as_ref().is_some_and(|danmaku| {
+                danmaku
+                    .document
+                    .during(start, segment.end(fps))
+                    .next()
+                    .is_some()
+            });
+        if native_text {
+            key.push_str(&self.native_fonts.identity);
+        }
         if let Some(subtitles) = &self.subtitles {
             key.push_str("subtitles\n");
             subtitles
@@ -879,6 +963,49 @@ impl Render<'_> {
         digest(key.as_bytes())
     }
 
+    /// A single native stream for generated subtitles and all danmaku. Excerpts
+    /// keep project timestamps, including movement already in progress at a cut.
+    fn native_overlay(&self, segment: &Segment) -> Option<OverlaySpec> {
+        use ::native_overlay::{AssSource, RenderInput, SourceKind};
+
+        let (start, end) = (segment.start(self.fps), segment.end(self.fps));
+        let mut input = RenderInput::default();
+        if self.job.generated_subtitle {
+            if let Some(subtitles) = &self.subtitles {
+                if subtitles.document.during(start, end).next().is_some() {
+                    input.documents.push(AssSource {
+                        text: subtitles.document.excerpt(start, end),
+                        kind: SourceKind::Subtitle,
+                    });
+                }
+            }
+        }
+        if let Some(danmaku) = &self.danmaku {
+            if danmaku.document.during(start, end).next().is_some() {
+                input.documents.push(AssSource {
+                    text: danmaku.document.excerpt(start, end),
+                    kind: SourceKind::Danmaku,
+                });
+            }
+            input.images = image_events(
+                &segment_danmaku(&danmaku.images, start, end),
+                self.job.danmu_options.opacity,
+            );
+        }
+        if input.documents.is_empty() && input.images.is_empty() {
+            return None;
+        }
+        Some(OverlaySpec {
+            input,
+            font_paths: self.native_fonts.paths.clone(),
+            width: 1920,
+            height: 1080,
+            fps: self.fps,
+            start,
+            duration: end - start,
+        })
+    }
+
     /// Render segment `index` into the video and sound files named by `key`.
     async fn segment<R: ProgressReporterTrait>(
         &self,
@@ -908,33 +1035,23 @@ impl Render<'_> {
             filter.push_str(&mix_filter(joined_audio, &graph.audio));
         }
         let mut current = graph.video;
-        if let Some(subtitles) = &self.subtitles {
-            filter.push_str(&format!(
-                "[{current}]ass={}[subtitled];\n",
-                subtitles.options
-            ));
-            current = "subtitled".to_string();
+        if !job.generated_subtitle {
+            if let Some(subtitles) = &self.subtitles {
+                filter.push_str(&format!(
+                    "[{current}]ass={}[subtitled];\n",
+                    subtitles.options
+                ));
+                current = "subtitled".to_string();
+            }
         }
-        let mut image_inputs = Vec::new();
-        if let Some(danmaku) = &self.danmaku {
-            // Only the danmaku on screen during the segment, for it to read.
-            let danmu_name = format!("danmu{index}.ass");
-            tokio::fs::write(
-                self.directory.join(&danmu_name),
-                danmaku.document.excerpt(start, end),
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-            filter.push_str(&format!("[{current}]ass={danmu_name}[danmu0];\n"));
-            let (chain, slots) = danmu::image_overlay_chain(
-                &segment_danmaku(&danmaku.images, start, end),
-                job.danmu_options.opacity,
+        let native = self.native_overlay(segment);
+        if native.is_some() {
+            filter.push_str(&native_overlay_filter(
+                &current,
                 segment.parts.len() + overlays.len(),
-                "danmu",
-            );
-            filter.push_str(&chain.filter);
-            image_inputs = chain.inputs;
-            current = format!("danmu{slots}");
+                start,
+            ));
+            current = "native_overlaid".to_string();
         }
         let format = if hwaccel::is_vaapi_encoder(self.encoder) {
             hwaccel::vaapi_filter_suffix()
@@ -997,9 +1114,8 @@ impl Render<'_> {
                 }
             }
         }
-        for image in image_inputs {
-            // A single PNG frame is repeated by overlay framesync.
-            command.args(["-threads", "1", "-i"]).arg(image);
+        if let Some(spec) = &native {
+            add_overlay_input(&mut command, spec)?;
         }
         command
             .arg(danmu::filter_complex_file_option().await)
@@ -1030,14 +1146,22 @@ impl Render<'_> {
             .arg(&partial_sound);
         log::info!("Render project segment {index}: {command:?}");
         log::debug!("Project segment {index} filter graph:\n{filter}");
-        run_command(
-            command,
-            ProgressMode::stage(RENDER_STAGE, ProgressTotal::Known(end - start)),
-            "Render project segment",
-            Some(reporter),
-        )
-        .await
-        .map_err(|error| error.to_string())?;
+        let progress = ProgressMode::stage(RENDER_STAGE, ProgressTotal::Known(end - start));
+        if let Some(spec) = native {
+            run_overlay_command(
+                command,
+                spec,
+                progress,
+                "Render project segment",
+                Some(reporter),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        } else {
+            run_command(command, progress, "Render project segment", Some(reporter))
+                .await
+                .map_err(|error| error.to_string())?;
+        }
         for (from, to) in [(partial_sound, sound), (partial_video, video)] {
             tokio::fs::rename(self.directory.join(from), self.directory.join(to))
                 .await
@@ -1373,15 +1497,18 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
     }
     let subtitles = match &job.subtitle_ass {
         Some(ass) => {
-            tokio::fs::write(directory.join("subtitle.ass"), ass)
-                .await
-                .map_err(|error| error.to_string())?;
-            let mut options = "filename=subtitle.ass".to_string();
-            if let Some(fonts) = job.fonts_directory {
-                options.push_str(&format!(
-                    ":fontsdir={}",
-                    super::subtitle::subtitle_filter_path(fonts)?
-                ));
+            let mut options = String::new();
+            if !job.generated_subtitle {
+                tokio::fs::write(directory.join("subtitle.ass"), ass)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                options.push_str("filename=subtitle.ass");
+                if let Some(fonts) = job.fonts_directory {
+                    options.push_str(&format!(
+                        ":fontsdir={}",
+                        super::subtitle::subtitle_filter_path(fonts)?
+                    ));
+                }
             }
             Some(Subtitles {
                 options,
@@ -1418,6 +1545,11 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
     } else {
         None
     };
+    let native_fonts = if job.generated_subtitle && subtitles.is_some() {
+        NativeFonts::load(job.fonts_directory).await?
+    } else {
+        NativeFonts::default()
+    };
     let render = Render {
         job,
         directory: &directory,
@@ -1427,6 +1559,7 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
         pictures,
         subtitles,
         danmaku,
+        native_fonts,
     };
 
     let keys: Vec<String> = segments
@@ -2099,6 +2232,146 @@ mod tests {
         assert_eq!(keys(&with_sounds, ""), key(1.0));
     }
 
+    fn native_segment(start: f64, duration: f64) -> Segment {
+        Segment {
+            first_frame: (start * 30.0).round() as u64,
+            cut: start,
+            frames: (duration * 30.0).round() as u64,
+            samples: (duration * SAMPLE_RATE).round() as u64,
+            parts: Vec::new(),
+        }
+    }
+
+    fn document_render<'a>(job: &'a ProjectRender<'a>, subtitle: &str, danmu: &str) -> Render<'a> {
+        Render {
+            job,
+            directory: Path::new("."),
+            fps: 30.0,
+            encoder: "libx264",
+            files: HashMap::new(),
+            pictures: vec![None; job.overlays.len()],
+            subtitles: Some(Subtitles {
+                options: "filename=subtitle.ass".into(),
+                document: AssDocument::parse(subtitle),
+            }),
+            danmaku: Some(Danmaku {
+                document: AssDocument::parse(danmu),
+                images: Vec::new(),
+                pictures: HashMap::new(),
+            }),
+            native_fonts: NativeFonts::default(),
+        }
+    }
+
+    #[test]
+    fn native_documents_keep_project_time_and_subtitle_danmaku_order() {
+        use ::native_overlay::SourceKind;
+        let mut project = job(vec![clip(false, 30.0)], 0.0, 0.0);
+        project.generated_subtitle = true;
+        let render = document_render(&project, ASS, ASS);
+        let segment = native_segment(2.0, 1.0);
+        let spec = render.native_overlay(&segment).unwrap();
+        assert_eq!((spec.start, spec.duration), (2.0, 1.0));
+        assert_eq!((spec.width, spec.height, spec.fps), (1920, 1080, 30.0));
+        assert_eq!(spec.input.documents.len(), 2);
+        assert!(matches!(spec.input.documents[0].kind, SourceKind::Subtitle));
+        assert!(matches!(spec.input.documents[1].kind, SourceKind::Danmaku));
+        for document in &spec.input.documents {
+            assert!(document.text.contains("0:00:01.00,0:00:02.50"));
+            assert!(!document.text.contains("Default,later"));
+        }
+        assert_eq!(
+            native_overlay_filter("subtitled", 5, spec.start),
+            "[5:v]setpts=PTS+2.000000/TB[native];\n\
+             [subtitled][native]overlay=x=0:y=0:eof_action=pass:repeatlast=0[native_overlaid];\n"
+        );
+    }
+
+    #[test]
+    fn native_stream_skips_external_subtitles_and_empty_segments() {
+        let mut project = job(vec![clip(false, 30.0)], 0.0, 0.0);
+        let segment = native_segment(1.0, 1.0);
+        // An external ASS document alone still takes the libass path.
+        assert!(document_render(&project, ASS, "")
+            .native_overlay(&segment)
+            .is_none());
+        project.generated_subtitle = true;
+        let render = document_render(&project, ASS, ASS);
+        assert!(render.native_overlay(&native_segment(3.0, 1.0)).is_none());
+        assert!(document_render(&project, "[Script Info]\n[Events]\n", "")
+            .native_overlay(&segment)
+            .is_none());
+    }
+
+    #[test]
+    fn image_only_danmaku_uses_the_native_stream() {
+        let project = job(vec![clip(false, 30.0)], 0.0, 0.0);
+        let mut render = document_render(&project, "", "");
+        render.danmaku.as_mut().unwrap().images.push(ImageDanmu {
+            image: crate::danmu2ass::DanmuImage {
+                path: PathBuf::from("emoji.png"),
+                width: 40.0,
+                height: 40.0,
+            },
+            start: 1.0,
+            end: 4.0,
+            top: 0.0,
+            from: 1280.0,
+            to: -40.0,
+        });
+        let spec = render.native_overlay(&native_segment(2.0, 1.0)).unwrap();
+        assert!(spec.input.documents.is_empty());
+        assert_eq!(spec.input.images.len(), 1);
+        assert!(render.native_overlay(&native_segment(4.0, 1.0)).is_none());
+    }
+
+    #[test]
+    fn native_renderer_and_font_identity_invalidate_cached_segments() {
+        let mut project = job(vec![clip(false, 30.0)], 0.0, 0.0);
+        let external = keys(&project, ASS);
+        project.generated_subtitle = true;
+        assert_ne!(external, keys(&project, ASS));
+        let mut render = document_render(&project, ASS, "");
+        let segment = native_segment(1.0, 1.0);
+        let before = render.key(&segment, &[]);
+        render.native_fonts.identity = "updated font".into();
+        assert_ne!(before, render.key(&segment, &[]));
+        let empty = native_segment(3.0, 1.0);
+        let before = render.key(&empty, &[]);
+        render.native_fonts.identity = "another font".into();
+        assert_eq!(before, render.key(&empty, &[]));
+    }
+
+    #[tokio::test]
+    async fn native_font_cache_identity_uses_contents_not_temporary_paths() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        tokio::fs::write(first.path().join("font.TTF"), b"font one")
+            .await
+            .unwrap();
+        tokio::fs::write(first.path().join("ignore.txt"), b"not a font")
+            .await
+            .unwrap();
+        tokio::fs::write(second.path().join("font.TTF"), b"font one")
+            .await
+            .unwrap();
+        let before = NativeFonts::load(Some(first.path())).await.unwrap();
+        let moved = NativeFonts::load(Some(second.path())).await.unwrap();
+        assert_eq!(before.paths.len(), 1);
+        assert_eq!(before.identity, moved.identity);
+        assert_ne!(before.paths, moved.paths);
+        tokio::fs::write(first.path().join("font.TTF"), b"font two")
+            .await
+            .unwrap();
+        assert_ne!(
+            before.identity,
+            NativeFonts::load(Some(first.path()))
+                .await
+                .unwrap()
+                .identity
+        );
+    }
+
     #[test]
     fn changing_output_settings_invalidates_cached_segments() {
         let mut project = job(vec![clip(true, 30.0)], 0.0, 0.0);
@@ -2146,6 +2419,7 @@ mod tests {
             overlays: Vec::new(),
             sounds: Vec::new(),
             subtitle_ass: None,
+            generated_subtitle: false,
             fonts_directory: None,
             danmus: Vec::new(),
             danmu_options: Danmu2AssOptions::default(),
@@ -2186,6 +2460,7 @@ mod tests {
             }],
             subtitle_ass: None,
             sounds: Vec::new(),
+            generated_subtitle: false,
             fonts_directory: None,
             danmus: Vec::new(),
             danmu_options: Danmu2AssOptions::default(),
@@ -2223,6 +2498,7 @@ mod tests {
                 document: AssDocument::parse(ass),
             }),
             danmaku,
+            native_fonts: NativeFonts::default(),
         };
         let clips: Vec<_> = job
             .clips
@@ -2383,6 +2659,7 @@ mod tests {
                 overlays: Vec::new(),
                 subtitle_ass: None,
                 sounds: Vec::new(),
+                generated_subtitle: false,
                 fonts_directory: None,
                 danmus: Vec::new(),
                 danmu_options: Danmu2AssOptions::default(),
@@ -2593,6 +2870,7 @@ mod tests {
                 overlays: Vec::new(),
                 subtitle_ass: None,
                 sounds: Vec::new(),
+                generated_subtitle: false,
                 fonts_directory: None,
                 danmus: Vec::new(),
                 danmu_options: Danmu2AssOptions::default(),
@@ -2624,6 +2902,7 @@ mod tests {
                 overlays: Vec::new(),
                 subtitle_ass: None,
                 sounds: Vec::new(),
+                generated_subtitle: false,
                 fonts_directory: None,
                 danmus: Vec::new(),
                 danmu_options: Danmu2AssOptions::default(),
@@ -2719,6 +2998,7 @@ mod tests {
                 }],
                 subtitle_ass: None,
                 sounds: Vec::new(),
+                generated_subtitle: false,
                 fonts_directory: None,
                 danmus: Vec::new(),
                 danmu_options: Danmu2AssOptions::default(),
@@ -2810,6 +3090,7 @@ mod tests {
                 overlays: Vec::new(),
                 subtitle_ass: None,
                 sounds: Vec::new(),
+                generated_subtitle: false,
                 fonts_directory: None,
                 danmus: Vec::new(),
                 danmu_options: Danmu2AssOptions::default(),
@@ -2843,6 +3124,60 @@ mod tests {
             price: None,
             sc_duration: None,
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires FFmpeg with libx264 and native system fonts"]
+    async fn native_generated_subtitles_render_across_segments() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("native.mp4");
+        let cache = directory.path().join("segments");
+        let ass = "[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\n\n\
+            [V4+ Styles]\n\
+            Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
+            Style: Default,Arial,100,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,5,0,0,0,1\n\n\
+            [Events]\n\
+            Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+            Dialogue: 0,0:00:00.20,0:00:00.80,Default,,0,0,0,,Native text 😀\n";
+        let project = ProjectRender {
+            clips: vec![RenderClip::blank(1.0)],
+            overlays: Vec::new(),
+            sounds: Vec::new(),
+            subtitle_ass: Some(ass.into()),
+            generated_subtitle: true,
+            fonts_directory: None,
+            danmus: Vec::new(),
+            danmu_options: Danmu2AssOptions::default(),
+            render_settings: crate::project::RenderSettings::default(),
+            output: &output,
+            segment_cache: Some(&cache),
+        };
+        let limits = SegmentLimits {
+            seconds: 0.5,
+            parts: 16,
+        };
+        let stats = render_with_encoder(&NoopReporter, &project, limits, "libx264")
+            .await
+            .unwrap();
+        assert_eq!(stats.segments, 2);
+        assert_eq!(stats.reused, 0);
+        // The cue crosses the cut: project timestamps must not restart there.
+        for time in [0.3, 0.6] {
+            let color = area_color(&output, time, [400, 400, 1120, 280]).await;
+            assert!(color[0] > 3, "missing native text at {time}: {color:?}");
+        }
+        for time in [0.0, 0.9] {
+            let color = area_color(&output, time, [400, 400, 1120, 280]).await;
+            assert!(color[0] < 2, "text outside cue at {time}: {color:?}");
+        }
+        let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+        assert_eq!((metadata.width, metadata.height), (1920, 1080));
+        assert!((metadata.duration - 1.0).abs() < 0.1);
+        assert!(!metadata.audio_codec.is_empty());
+        let again = render_with_encoder(&NoopReporter, &project, limits, "libx264")
+            .await
+            .unwrap();
+        assert_eq!(again.reused, 2);
     }
 
     /// Render 1-3 s of a red 30 FPS clip and 0.5-2.5 s of a larger blue
@@ -2922,6 +3257,7 @@ mod tests {
                 overlays: Vec::new(),
                 subtitle_ass: subtitles.then(|| ass.to_string()),
                 sounds: Vec::new(),
+                generated_subtitle: false,
                 fonts_directory: None,
                 danmus: if danmaku {
                     vec![text_danmu(500), text_danmu(2500)]
@@ -3089,6 +3425,7 @@ mod tests {
                 ],
                 subtitle_ass: None,
                 sounds: Vec::new(),
+                generated_subtitle: false,
                 fonts_directory: None,
                 danmus: Vec::new(),
                 danmu_options: Danmu2AssOptions::default(),
@@ -3333,6 +3670,7 @@ mod tests {
                         overlays: Vec::new(),
                         sounds,
                         subtitle_ass: None,
+                        generated_subtitle: false,
                         fonts_directory: None,
                         danmus: Vec::new(),
                         danmu_options: Danmu2AssOptions::default(),
@@ -3453,6 +3791,7 @@ mod tests {
                     overlays: Vec::new(),
                     subtitle_ass: None,
                     sounds: Vec::new(),
+                    generated_subtitle: false,
                     fonts_directory: None,
                     danmus: Vec::new(),
                     danmu_options: Danmu2AssOptions::default(),
@@ -3592,6 +3931,7 @@ mod tests {
                         overlays: Vec::new(),
                         subtitle_ass: Some(ass),
                         sounds: Vec::new(),
+                        generated_subtitle: false,
                         fonts_directory: None,
                         danmus: Vec::new(),
                         danmu_options: Danmu2AssOptions::default(),

@@ -97,7 +97,7 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/apt-install
         with:
-          packages: ffmpeg libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          packages: ffmpeg libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libfontconfig1-dev fonts-wqy-microhei
 
       - name: Setup Python
         uses: actions/setup-python@v5

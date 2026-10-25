@@ -1190,6 +1190,8 @@ struct ExportProjectRequest {
     #[serde(default)]
     subtitle_ass: Option<String>,
     #[serde(default)]
+    generated_subtitle: Option<bool>,
+    #[serde(default)]
     overlays: Option<Vec<OverlayImage>>,
     #[serde(default)]
     target: Option<String>,
@@ -1207,6 +1209,7 @@ async fn handler_export_project(
         param.id,
         param.timeline,
         param.subtitle_ass,
+        param.generated_subtitle,
         param.overlays,
         param.target,
         param.base,
@@ -1379,6 +1382,8 @@ struct PostUploadRequest {
     #[serde(default)]
     subtitle_ass: Option<String>,
     #[serde(default)]
+    generated_subtitle: Option<bool>,
+    #[serde(default)]
     overlays: Option<Vec<OverlayImage>>,
 }
 
@@ -1391,6 +1396,7 @@ async fn handler_post_upload(
         param.event_id,
         param.id,
         param.subtitle_ass,
+        param.generated_subtitle,
         param.overlays,
     )
     .await?;
@@ -1672,6 +1678,26 @@ async fn handler_encode_video_subtitle(
 #[serde(rename_all = "camelCase")]
 struct SubtitlePreviewFontsRequest {
     font_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeneratedSubtitlePreviewRequest {
+    ass_content: String,
+    time: f64,
+    font_name: String,
+}
+
+async fn handler_render_generated_subtitle_preview(
+    Json(param): Json<GeneratedSubtitlePreviewRequest>,
+) -> Result<Json<ApiResponse<String>>, ApiError> {
+    let image = crate::handlers::native_overlay_preview::render_generated_subtitle_preview(
+        param.ass_content,
+        param.time,
+        param.font_name,
+    )
+    .await?;
+    Ok(Json(ApiResponse::success(image)))
 }
 
 async fn handler_get_subtitle_preview_fonts(
@@ -2691,6 +2717,10 @@ pub async fn start_api_server(state: State) {
         .route("/api/get_material_danmu", post(handler_get_material_danmu))
         .route("/api/get_video_typelist", post(handler_get_video_typelist))
         .route("/api/get_video_subtitle", post(handler_get_video_subtitle))
+        .route(
+            "/api/render_generated_subtitle_preview",
+            post(handler_render_generated_subtitle_preview),
+        )
         .route(
             "/api/get_subtitle_preview_fonts",
             post(handler_get_subtitle_preview_fonts),

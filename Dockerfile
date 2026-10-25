@@ -35,6 +35,8 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     glib-2.0-dev \
     libclang-dev \
+    libfontconfig1-dev \
+    curl \
     g++ \
     wget \
     xz-utils \
@@ -75,6 +77,7 @@ WORKDIR /app
 # Install runtime dependencies, SSL certificates and Chinese fonts
 RUN apt-get update && apt-get install -y \
     libssl3 \
+    libfontconfig1 \
     ca-certificates \
     fonts-wqy-microhei \
     netbase \
@@ -95,6 +98,9 @@ COPY --from=frontend-builder /app/dist ./dist
 
 # Copy built Rust binary
 COPY --from=rust-builder /app/src-tauri/target/release/bili-shadowreplay .
+# The emoji font and Unicode table are embedded in the binary; ship their notices.
+COPY src-tauri/crates/native-overlay/assets/EMOJI-OFL.txt ./licenses/Noto-Emoji-OFL.txt
+COPY src-tauri/crates/native-overlay/assets/UNICODE-LICENSE.txt ./licenses/Unicode.txt
 
 # Expose port
 EXPOSE 3000

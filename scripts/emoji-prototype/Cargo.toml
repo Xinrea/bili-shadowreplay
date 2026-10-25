@@ -1,0 +1,16 @@
+[package]
+name = "color-emoji-prototype"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Deliberately independent of the application's native dependencies/build script.
+[workspace]
+
+[dependencies]
+# 0.82's official binaries support the tested Windows MSVC 14.42 toolchain.
+# 0.90's prebuilt Skia requires newer C++ runtime symbols (__std_search_1).
+# Rasterization is CPU-only; no GPU context is created.
+skia-safe = { version = "=0.82.0", features = ["textlayout"] }
+serde_json = "1"
+unicode-segmentation = "=1.12.0"

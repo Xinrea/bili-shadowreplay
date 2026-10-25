@@ -299,7 +299,7 @@ function cueText(text: string): string {
   return result + literalText(text.slice(offset));
 }
 
-/** Build the exact document used for both the libass WASM preview and burning. */
+/** Build the generated subset shared by native preview/burn-in and portable ASS export. */
 export function buildSubtitleAss(cues: readonly SubtitleCue[], style: SubtitleStyle): string {
   const values = readValues(serializeAssStyle(style));
   const ordered = cues.map((cue, index) => ({ cue, index }))

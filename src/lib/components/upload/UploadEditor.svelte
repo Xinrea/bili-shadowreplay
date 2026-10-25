@@ -236,7 +236,7 @@
         task_type: "upload",
         metadata: JSON.stringify({ upload_id: upload.id, title: profile.title }),
       });
-      await invoke("post_upload", { eventId, id: upload.id, subtitleAss, overlays });
+      await invoke("post_upload", { eventId, id: upload.id, subtitleAss, generatedSubtitle: true, overlays });
       openTaskCenter(eventId);
       // Show the attempt as running before allowing another click.
       await onChanged();

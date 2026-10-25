@@ -7,11 +7,13 @@ mod danmu;
 pub mod general;
 pub mod hwaccel;
 pub mod metadata;
+pub mod native_overlay;
 pub mod playlist;
 pub mod project;
 mod project_plan;
 pub mod runner;
 pub mod subtitle;
+mod subtitle_native;
 
 #[cfg(test)]
 pub(crate) use audio::get_audio_duration;

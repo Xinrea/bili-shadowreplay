@@ -1049,9 +1049,13 @@
    * the lowest video track free there or a new one when all are taken.
    */
   async function addMaterialAtPlayhead(materialId: number) {
-    const at = time;
+    return addMaterialAtTime(materialId, time >= mainLength - MIN_OVERLAY_DURATION ? mainLength : time);
+  }
+
+  /** Share the ＋ behavior with drops, using the pointer's time instead of the playhead. */
+  async function addMaterialAtTime(materialId: number, at: number) {
     // Decided on the main track as it is after each wait, which other edits may have changed.
-    const onMain = () => at >= mainLength - MIN_OVERLAY_DURATION;
+    const onMain = () => !timeline.clips.length || at >= mainLength;
     const info = await loadMaterial(materialId);
     if (!info) return;
     if (onMain()) return addMaterial(materialId);
@@ -2263,7 +2267,7 @@
       }}
       onSelectOverlay={selectOverlay}
       onSelectAudio={selectAudio}
-      onDropMaterial={(id, index) => void addMaterial(id, index)}
+      onDropMaterial={(id, at) => void addMaterialAtTime(id, at)}
       onDropOverlay={(id, at, target) => void addVideoOverlay(id, at, target)}
       onLiftClip={(id, at, target) => void liftClip(id, at, target)}
       onDropAudio={(source, at, target) => void addSound(source, at, target)}

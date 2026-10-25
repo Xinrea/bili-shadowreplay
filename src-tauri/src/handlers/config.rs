@@ -316,15 +316,18 @@ pub async fn update_whisper_prompt(state: state_type!(), whisper_prompt: String)
     Ok(())
 }
 
-/// Save the PowerLive hotwords and return them as stored.
+/// Save one PowerLive dictionary and return it as stored, not the merged list.
+/// Omit both scope keys for global, or supply both for a room.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_powerlive_hotwords(
     state: state_type!(),
     hotwords: Vec<String>,
+    platform: Option<String>,
+    room_id: Option<String>,
 ) -> Result<Vec<String>, String> {
-    let hotwords = crate::subtitle_generator::powerlive::normalize_hotwords(hotwords);
     let mut config = state.config.write().await;
-    config.powerlive_hotwords = hotwords.clone();
+    let hotwords =
+        config.set_powerlive_hotwords(hotwords, platform.as_deref(), room_id.as_deref())?;
     config.try_save()?;
     Ok(hotwords)
 }

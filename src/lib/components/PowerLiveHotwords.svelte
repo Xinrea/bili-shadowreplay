@@ -2,10 +2,11 @@
   import { X } from "lucide-svelte";
   import type { Config } from "../interface";
   import { invoke } from "../invoker";
-  import { hotwordProblem, MAX_HOTWORDS, splitHotwords } from "../powerlive-subtitle";
+  import { hotwordProblem, MAX_HOTWORDS, roomHotwords, splitHotwords, type HotwordRoom } from "../powerlive-subtitle";
 
-  /** The global PowerLive hotwords; edits are saved as they are made. */
-  let { hotwords = $bindable([]) }: { hotwords?: string[] } = $props();
+  /** Without a room, edits go to the global dictionary. */
+  let { hotwords = $bindable([]), room }: { hotwords?: string[]; room?: HotwordRoom } = $props();
+  let dictionaryLabel = $derived(room ? "直播间词库" : "全局词库");
 
   let draft = $state("");
   let problem = $state("");
@@ -15,17 +16,20 @@
   function save(next: string[]) {
     hotwords = next;
     const id = ++saves;
+    const scope = room;
     // In order, so a quick add then remove is stored as the last one says.
     saving = saving.then(async () => {
       try {
-        const stored = await invoke<string[]>("update_powerlive_hotwords", { hotwords: next });
+        const stored = await invoke<string[]>("update_powerlive_hotwords", { hotwords: next, ...scope });
         // An earlier reply would undo the edits made since.
-        if (id === saves) hotwords = stored;
+        if (id === saves && scope === room) hotwords = stored;
       } catch (error) {
         problem = "保存热词失败：" + error;
         // Show what is still stored.
         const config = await invoke<Config>("get_config").catch(() => null);
-        if (config && id === saves) hotwords = config.powerlive_hotwords;
+        if (config && id === saves && scope === room) {
+          hotwords = scope ? roomHotwords(config.powerlive_room_hotwords, scope) : config.powerlive_hotwords;
+        }
       }
     });
   }
@@ -76,7 +80,7 @@
     {#each hotwords as word (word)}
       <span class="inline-flex items-center gap-0.5 rounded-[5px] bg-accent-soft py-px pl-1.5 pr-0.5 text-[12px] leading-5 text-accent-fg">
         {word}
-        <button type="button" class="rounded-[3px] p-px opacity-70 hover:bg-accent/20 hover:opacity-100" aria-label="删除热词 {word}" onclick={() => remove(word)}>
+        <button type="button" class="rounded-[3px] p-px opacity-70 hover:bg-accent/20 hover:opacity-100" aria-label="从{dictionaryLabel}删除热词 {word}" onclick={() => remove(word)}>
           <X class="h-3 w-3" />
         </button>
       </span>
@@ -89,7 +93,7 @@
       onblur={() => draft.trim() && commit()}
       oninput={() => (problem = "")}
       placeholder={hotwords.length ? "" : "输入后按回车添加，可用逗号分隔一次添加多个"}
-      aria-label="添加热词"
+      aria-label="向{dictionaryLabel}添加热词"
       data-hotkey-block
     />
   </div>

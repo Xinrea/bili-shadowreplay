@@ -1387,7 +1387,7 @@ impl RecorderManager {
                 config.openai_api_key.clone(),
                 config.openai_api_endpoint.clone(),
                 config.whisper_language.clone(),
-                PowerLiveOptions::new(&self.db, &config),
+                PowerLiveOptions::for_room(&self.db, &config, platform.as_str(), room_id),
             )
         };
 

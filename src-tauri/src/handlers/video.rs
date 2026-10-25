@@ -1109,6 +1109,7 @@ async fn generate_video_subtitle_inner(
     id: i64,
     overrides: PowerLiveOverrides,
 ) -> Result<String, String> {
+    let video = state.db.get_video(id).await?;
     // Copy the settings out so no config guard is held across the subtitle
     // job, and resolve them before the task row exists so a bad setting or
     // missing video does not leave the task pending.
@@ -1131,10 +1132,10 @@ async fn generate_video_subtitle_inner(
             config.openai_api_endpoint.clone(),
             config.whisper_language.clone(),
             config.output.clone(),
-            PowerLiveOptions::new(&state.db, &config).with_overrides(overrides),
+            PowerLiveOptions::for_room(&state.db, &config, &video.platform, &video.room_id)
+                .with_overrides(overrides),
         )
     };
-    let video = state.db.get_video(id).await?;
     let filepath = Path::new(&output).join(&video.file);
     let file = Path::new(&filepath);
 

@@ -41,7 +41,8 @@ const outputDir = resolve(process.argv[2] ?? join(root, "src-tauri", "target", "
 
 function checkLockedVersion() {
   const lock = readFileSync(join(root, "src-tauri", "Cargo.lock"), "utf8");
-  const locked = /name = "skia-bindings"\nversion = "([^"]+)"/.exec(lock)?.[1];
+  // Windows checkouts may use CRLF.
+  const locked = /name = "skia-bindings"\r?\nversion = "([^"]+)"/.exec(lock)?.[1];
   if (locked !== SKIA_BINDINGS_VERSION) {
     throw new Error(`Cargo.lock has skia-bindings ${locked}, but this script patches ${SKIA_BINDINGS_VERSION}. `
       + "Update KEY, ARCHIVE_SHA256 and SHARED_ICU_SYMBOLS for the new version.");

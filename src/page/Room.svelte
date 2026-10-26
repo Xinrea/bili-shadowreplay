@@ -32,6 +32,7 @@
   import AutoRecordIcon from "../lib/components/AutoRecordIcon.svelte";
   import GenerateWholeClipModal from "../lib/components/GenerateWholeClipModal.svelte";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
+  import DeleteConfirmActions from "../lib/components/DeleteConfirmActions.svelte";
   import { onMount } from "svelte";
   import { registerCommands } from "../lib/stores/commands";
 
@@ -186,6 +187,7 @@
 
   // modals
   let deleteModal = $state(false);
+  let deletingRoom = $state(false);
   let deleteRoom = $state(null);
 
   let addModal = $state(false);
@@ -353,6 +355,7 @@
 
     // 第四层：deleteModal
     if (deleteModal) {
+      if (deletingRoom) return;
       const deleteModalEl = document.querySelector(".delete-modal");
       if (deleteModalEl) {
         if (deleteModalEl.contains(clickedElement)) {
@@ -799,28 +802,18 @@
             此操作将移除所有相关的录制记录
           </p>
         </div>
-        <div class="flex justify-center gap-2">
-          <button
-            class="ui-btn w-24"
-            onclick={() => {
-              deleteModal = false;
-            }}
-          >
-            取消
-          </button>
-          <button
-            class="ui-btn ui-btn-danger w-24"
-            onclick={async () => {
-              await invoke("remove_recorder", {
-                roomId: deleteRoom.room_info.room_id,
-                platform: deleteRoom.room_info.platform,
-              });
-              deleteModal = false;
-            }}
-          >
-            移除
-          </button>
-        </div>
+        <DeleteConfirmActions
+          bind:busy={deletingRoom}
+          confirmLabel="移除"
+          oncancel={() => (deleteModal = false)}
+          onconfirm={async () => {
+            await invoke("remove_recorder", {
+              roomId: deleteRoom.room_info.room_id,
+              platform: deleteRoom.room_info.platform,
+            });
+            deleteModal = false;
+          }}
+        />
       </div>
     </div>
   </div>

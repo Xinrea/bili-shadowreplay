@@ -7,6 +7,7 @@
   import type { VideoItem } from "../lib/interface";
   import ImportVideoDialog from "../lib/components/ImportVideoDialog.svelte";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
+  import DeleteConfirmActions from "../lib/components/DeleteConfirmActions.svelte";
   import { onMount, onDestroy, tick } from "svelte";
   import {
     Play,
@@ -331,26 +332,20 @@
   }
 
   async function deleteVideo(video: VideoItem) {
-    try {
-      await invoke("delete_video", { id: video.id });
-      await loadVideos();
-      closeDeleteConfirm();
-    } catch (error) {
-      console.error("Failed to delete video:", error);
-    }
+    await invoke("delete_video", { id: video.id });
+    selectedVideos.delete(video.id);
+    await loadVideos();
+    closeDeleteConfirm();
   }
 
   async function deleteSelectedVideos() {
-    try {
-      for (const id of selectedVideos) {
-        await invoke("delete_video", { id });
-      }
-      selectedVideos.clear();
-      await loadVideos();
-      closeDeleteConfirm();
-    } catch (error) {
-      console.error("Failed to delete selected videos:", error);
+    const ids = [...selectedVideos];
+    for (const id of ids) {
+      await invoke("delete_video", { id });
+      selectedVideos.delete(id);
     }
+    await loadVideos();
+    closeDeleteConfirm();
   }
 
   async function playVideo(video: VideoItem) {
@@ -939,23 +934,10 @@
           {/if}
           <p class="text-[11px] text-danger-fg">此操作无法撤销。</p>
         </div>
-        <div class="flex justify-center gap-2">
-          <button class="ui-btn w-24" onclick={closeDeleteConfirm}>
-            取消
-          </button>
-          <button
-            class="ui-btn ui-btn-danger w-24"
-            onclick={() => {
-              if (videoToDelete) {
-                deleteVideo(videoToDelete);
-              } else {
-                deleteSelectedVideos();
-              }
-            }}
-          >
-            删除
-          </button>
-        </div>
+        <DeleteConfirmActions
+          oncancel={closeDeleteConfirm}
+          onconfirm={() => videoToDelete ? deleteVideo(videoToDelete) : deleteSelectedVideos()}
+        />
       </div>
     </div>
   </div>

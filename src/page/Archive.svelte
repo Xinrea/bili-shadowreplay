@@ -36,6 +36,7 @@
   import GenerateWholeClipModal from "../lib/components/GenerateWholeClipModal.svelte";
   import ArchiveSummaryModal from "../lib/components/ArchiveSummaryModal.svelte";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
+  import DeleteConfirmActions from "../lib/components/DeleteConfirmActions.svelte";
   import type { RecorderInfo, RecorderList } from "src/lib/interface";
 
   let archives: RecordItem[] = [];
@@ -410,39 +411,33 @@
   }
 
   async function deleteArchive(archive: RecordItem) {
-    try {
+    await invoke("delete_archive", {
+      platform: archive.platform,
+      roomId: archive.room_id,
+      liveId: archive.live_id,
+    });
+    selectedArchives.delete(archive.live_id);
+    await loadArchives();
+    showDeleteConfirm = false;
+    archiveToDelete = null;
+  }
+
+  async function deleteSelectedArchives() {
+    // Deletion events can refresh the list while this batch is in flight.
+    const targets = filteredArchives.filter((archive) => selectedArchives.has(archive.live_id));
+    for (const archive of targets) {
       await invoke("delete_archive", {
         platform: archive.platform,
         roomId: archive.room_id,
         liveId: archive.live_id,
       });
-      await loadArchives();
-      showDeleteConfirm = false;
-      archiveToDelete = null;
-    } catch (error) {
-      console.error("Failed to delete archive:", error);
+      // A retry after partial failure must not delete completed items again.
+      selectedArchives.delete(archive.live_id);
     }
-  }
-
-  async function deleteSelectedArchives() {
-    try {
-      for (const liveId of selectedArchives) {
-        const archive = filteredArchives.find((a) => a.live_id === liveId);
-        if (archive) {
-          await invoke("delete_archive", {
-            platform: archive.platform,
-            roomId: archive.room_id,
-            liveId: archive.live_id,
-          });
-        }
-      }
-      selectedArchives.clear();
-      await loadArchives();
-      showDeleteConfirm = false;
-      archiveToDelete = null;
-    } catch (error) {
-      console.error("Failed to delete selected archives:", error);
-    }
+    selectedArchives.clear();
+    await loadArchives();
+    showDeleteConfirm = false;
+    archiveToDelete = null;
   }
 
   async function playArchive(archive: RecordItem) {
@@ -922,27 +917,14 @@
         <p class="text-[12px] text-danger-fg">此操作无法撤销。</p>
       </div>
       <div class="ui-modal-footer">
-        <button
-          class="ui-btn min-w-[72px]"
-          onclick={() => {
+        <DeleteConfirmActions
+          align="end"
+          oncancel={() => {
             showDeleteConfirm = false;
             archiveToDelete = null;
           }}
-        >
-          取消
-        </button>
-        <button
-          class="ui-btn ui-btn-danger min-w-[72px]"
-          onclick={() => {
-            if (archiveToDelete) {
-              deleteArchive(archiveToDelete);
-            } else {
-              deleteSelectedArchives();
-            }
-          }}
-        >
-          删除
-        </button>
+          onconfirm={() => archiveToDelete ? deleteArchive(archiveToDelete) : deleteSelectedArchives()}
+        />
       </div>
     </div>
   </div>

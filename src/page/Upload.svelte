@@ -13,6 +13,7 @@
     Upload,
   } from "lucide-svelte";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
+  import DeleteConfirmActions from "../lib/components/DeleteConfirmActions.svelte";
   import UploadEditor from "../lib/components/upload/UploadEditor.svelte";
   import UploadSourceDialog from "../lib/components/upload/UploadSourceDialog.svelte";
   import { get_static_url, invoke } from "../lib/invoker";
@@ -167,14 +168,10 @@
   }
 
   async function deleteUpload(upload: UploadRow) {
-    try {
-      await invoke("delete_upload", { id: upload.id });
-      uploadToDelete = null;
-      if (editingId === upload.id) editingId = null;
-      await stateRefresh.run();
-    } catch (error) {
-      alert("删除投稿失败：" + error);
-    }
+    await invoke("delete_upload", { id: upload.id });
+    if (editingId === upload.id) editingId = null;
+    await stateRefresh.run();
+    uploadToDelete = null;
   }
 </script>
 
@@ -386,10 +383,10 @@
               : "草稿和自定义封面会一并删除，素材、切片和视频文件不受影响。"}
           </p>
         </div>
-        <div class="flex justify-center gap-2">
-          <button class="ui-btn w-24" onclick={() => (uploadToDelete = null)}>取消</button>
-          <button class="ui-btn ui-btn-danger w-24" onclick={() => deleteUpload(uploadToDelete!)}>删除</button>
-        </div>
+        <DeleteConfirmActions
+          oncancel={() => (uploadToDelete = null)}
+          onconfirm={() => deleteUpload(uploadToDelete!)}
+        />
       </div>
     </div>
   </div>

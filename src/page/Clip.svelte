@@ -4,6 +4,7 @@
   import { invoke, get_static_url } from "../lib/invoker";
   import type { ProjectItem } from "../lib/interface";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
+  import DeleteConfirmActions from "../lib/components/DeleteConfirmActions.svelte";
   import { onMount } from "svelte";
   import {
     Calendar,
@@ -125,13 +126,9 @@
   }
 
   async function deleteProject(project: ProjectRow) {
-    try {
-      await invoke("delete_project", { id: project.id });
-      projectToDelete = null;
-      await stateRefresh.run();
-    } catch (error) {
-      alert("删除切片失败：" + error);
-    }
+    await invoke("delete_project", { id: project.id });
+    await stateRefresh.run();
+    projectToDelete = null;
   }
 
   function openNoteDialog(project: ProjectRow) {
@@ -349,12 +346,10 @@
           </p>
           <p class="text-[11px] text-fg-muted">素材不会被删除，切片的导出文件和封面会一并删除。</p>
         </div>
-        <div class="flex justify-center gap-2">
-          <button class="ui-btn w-24" onclick={() => (projectToDelete = null)}>取消</button>
-          <button class="ui-btn ui-btn-danger w-24" onclick={() => deleteProject(projectToDelete)}>
-            删除
-          </button>
-        </div>
+        <DeleteConfirmActions
+          oncancel={() => (projectToDelete = null)}
+          onconfirm={() => deleteProject(projectToDelete!)}
+        />
       </div>
     </div>
   </div>

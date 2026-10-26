@@ -193,6 +193,49 @@
   white-space: normal;
 }
 
+/* A native select. */
+.m-input.select {
+  justify-content: space-between;
+}
+
+.m-input.select > svg {
+  color: var(--muted);
+}
+
+/* TagInput: entered words as chips, then the field being typed into. */
+.m-input.tags {
+  height: auto;
+  min-height: 30px;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 6px;
+}
+
+.m-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 5px;
+  background: var(--accent-soft);
+  padding: 1px 2px 1px 6px;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--accent-fg);
+}
+
+.m-tag > svg {
+  opacity: 0.7;
+}
+
+.m-input.tags .draft {
+  margin-left: 4px;
+  font-size: 12px;
+}
+
+.m-input.tags .placeholder {
+  margin-left: 4px;
+}
+
 .m-caret {
   display: inline-block;
   width: 1px;
@@ -307,6 +350,46 @@
   background: var(--accent);
 }
 
+/* Segmented control: a sunken track of tabs. */
+.m-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 9px;
+  background: var(--sunken);
+  padding: 3px;
+}
+
+.m-tab {
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 7px;
+  padding: 0 12px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  transition: background-color 200ms ease, color 200ms ease;
+}
+
+.m-tab.active {
+  background: var(--selected);
+  color: var(--fg);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+}
+
+.m-spin {
+  animation: m-spin 1s linear infinite;
+}
+
+@keyframes m-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .m-backdrop {
   position: absolute;
   inset: 0;
@@ -343,6 +426,9 @@
 }
 
 .m-modal-body {
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
   padding: 18px;
 }
 

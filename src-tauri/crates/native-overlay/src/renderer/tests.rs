@@ -8,6 +8,76 @@ fn input(text: &str, style: &str) -> RenderInput {
     RenderInput { documents: vec![AssSource { kind: SourceKind::Subtitle, text: format!("[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\n[V4+ Styles]\nFormat: {FIELDS}\nStyle: {style}\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{text}\n") }], images: vec![] }
 }
 
+/// Each fixture has immutable, identical artwork at a distinct path.
+struct TestImage(PathBuf);
+
+impl TestImage {
+    fn new() -> Self {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "native-overlay-cache-{}-{}.png",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut s = surface(8, 4, CACHE_BYTES).unwrap();
+        s.canvas().clear(Color::RED);
+        let mut paint = Paint::default();
+        paint.set_color(Color::from_argb(128, 0, 255, 0));
+        paint.set_blend_mode(BlendMode::Src);
+        s.canvas()
+            .draw_rect(Rect::from_xywh(4.0, 0.0, 4.0, 4.0), &paint);
+        fs::write(
+            &path,
+            s.image_snapshot()
+                .encode(None, EncodedImageFormat::PNG, None)
+                .unwrap()
+                .as_bytes(),
+        )
+        .unwrap();
+        Self(path)
+    }
+
+    fn event(&self) -> ImageEvent {
+        ImageEvent {
+            path: self.0.clone(),
+            start: 1.0,
+            end: 3.0,
+            from: (0.0, 0.0),
+            to: (960.0, 540.0),
+            width: 320.0,
+            height: 160.0,
+            opacity: 0.5,
+        }
+    }
+}
+
+impl Drop for TestImage {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn timings(stats: &RenderStats) -> [Duration; 5] {
+    [
+        stats.text_layout,
+        stats.text_raster,
+        stats.image_prepare,
+        stats.composition,
+        stats.readback,
+    ]
+}
+
+fn counters(stats: &RenderStats) -> [u64; 5] {
+    [
+        stats.frames,
+        stats.text_cache_hits,
+        stats.text_cache_misses,
+        stats.image_cache_hits,
+        stats.image_cache_misses,
+    ]
+}
+
 fn bbox(data: &[u8], w: usize) -> Option<(usize, usize, usize, usize)> {
     let mut r = (usize::MAX, usize::MAX, 0, 0);
     for (i, p) in data.chunks_exact(4).enumerate() {
@@ -51,6 +121,9 @@ fn color_emoji_raster_and_rgba_png_parity() {
     let mut r = Renderer::new(960, 540, input("😀 👩🏽‍💻 👨‍👩‍👧‍👦 🇨🇳 1️⃣ ❤️", STYLE), vec![]).unwrap();
     let pixels = r.frame(1.0).unwrap();
     assert_eq!(pixels.len(), 960 * 540 * 4);
+    let mut reused = vec![0xa5; pixels.len()];
+    r.frame_into(1.0, &mut reused).unwrap();
+    assert_eq!(reused, pixels);
     assert_eq!(r.missing_glyph_count(), 0);
     let colored = pixels
         .chunks_exact(4)
@@ -206,11 +279,196 @@ fn image_artwork_is_contained_and_centered_in_reserved_footprint() {
         }],
     };
     let mut r = Renderer::new(192, 108, input, vec![]).unwrap();
-    let sprite = r.image_sprite(0).unwrap();
+    let sprite = r.image_sprite(0, false).unwrap();
     assert_eq!(sprite.size, (32.0, 16.0));
     assert_eq!((sprite.image.width(), sprite.image.height()), (32, 16));
     assert_eq!(bbox(&r.frame(0.0).unwrap(), 192), Some((0, 4, 31, 11)));
     fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn frame_into_rejects_wrong_lengths_without_changing_render_state() {
+    let image = TestImage::new();
+    let mut source = input("😀", STYLE);
+    source.images.push(image.event());
+    let mut r = Renderer::new(192, 108, source, vec![]).unwrap();
+    r.set_profiling(true);
+    let expected = 192 * 108 * 4;
+    // First reject an active timestamp: no cache preparation or frame is counted.
+    let mut short = vec![0x5a; expected - 1];
+    assert!(r.frame_into(1.0, &mut short).is_err());
+    assert!(short.iter().all(|byte| *byte == 0x5a));
+    assert_eq!(counters(&r.stats()), [0; 5]);
+    assert_eq!(timings(&r.stats()), [Duration::ZERO; 5]);
+    assert!(r.active_text.is_empty() && r.active_images.is_empty());
+
+    let pixels = r.frame(1.0).unwrap();
+    let before = r.stats();
+    let active_text = r.active_text.clone();
+    let active_images = r.active_images.clone();
+    let placed = r.placed.clone();
+    for (time, length) in [(10.0, 0), (0.0, expected - 1), (f64::NAN, expected + 1)] {
+        let mut wrong = vec![0x5a; length];
+        let error = r.frame_into(time, &mut wrong).unwrap_err();
+        assert!(error.contains("RGBA buffer length"), "{error}");
+        assert!(wrong.iter().all(|byte| *byte == 0x5a));
+        assert_eq!(counters(&r.stats()), counters(&before));
+        assert_eq!(timings(&r.stats()), timings(&before));
+        assert_eq!(r.active_text, active_text);
+        assert_eq!(r.active_images, active_images);
+        assert_eq!(r.placed, placed);
+        let mut unchanged = vec![0; expected];
+        let info = ImageInfo::new((192, 108), ColorType::RGBA8888, AlphaType::Unpremul, None);
+        assert!(r
+            .surface
+            .read_pixels(&info, &mut unchanged, 192 * 4, (0, 0)));
+        assert_eq!(unchanged, pixels);
+    }
+    // The next valid call still observes the correct half-open timeline.
+    assert_eq!(r.frame(1.0).unwrap(), pixels);
+    assert!(r.frame(3.0).unwrap().iter().all(|byte| *byte == 0));
+    assert_eq!(r.frame(1.0).unwrap(), pixels);
+    assert_eq!(counters(&r.stats()), [4, 2, 1, 2, 1]);
+}
+
+#[test]
+fn reused_frame_buffer_matches_allocating_frames_across_seeks_and_transparency() {
+    let image = TestImage::new();
+    let mut source = input("😀", &STYLE.replace("&H00FFFFFF", "&H80FFFFFF"));
+    source.images.push(image.event());
+    let mut allocating = Renderer::new(192, 108, source.clone(), vec![]).unwrap();
+    let mut reused = Renderer::new(192, 108, source, vec![]).unwrap();
+    let mut buffer = vec![0xa5; 192 * 108 * 4];
+    let pointer = buffer.as_ptr();
+    for time in [0.0, 1.0, 1.5, 2.99, 3.0, 8.0, 1.5, 0.99, 1.0] {
+        reused.frame_into(time, &mut buffer).unwrap();
+        assert_eq!(buffer.as_ptr(), pointer);
+        assert_eq!(buffer, allocating.frame(time).unwrap(), "time {time}");
+        if (1.0..3.0).contains(&time) {
+            assert!(buffer.chunks_exact(4).any(|p| p[3] > 0 && p[3] < 255));
+        } else {
+            assert!(buffer.iter().all(|byte| *byte == 0));
+        }
+    }
+    assert_eq!(counters(&reused.stats()), [9, 4, 1, 4, 1]);
+    assert_eq!(counters(&reused.stats()), counters(&allocating.stats()));
+}
+
+#[test]
+fn image_cache_shares_only_paths_and_rounded_output_dimensions() {
+    let shared = TestImage::new();
+    let other = TestImage::new();
+    let copies: Vec<_> = (0..5).map(|_| TestImage::new()).collect();
+    let mut first = shared.event();
+    first.width = 311.0;
+    first.height = 151.0;
+    let mut second = first.clone();
+    second.start = 1.25;
+    second.end = 4.0;
+    second.from = (250.0, 100.0);
+    second.to = (600.0, 200.0);
+    second.opacity = 0.75;
+    second.width = 319.0;
+    second.height = 159.0;
+    let mut different_size = second.clone();
+    different_size.width = 321.0;
+    let mut different_height = second.clone();
+    different_height.height = 161.0;
+    let mut different_path = second.clone();
+    different_path.path = other.0.clone();
+    let source = RenderInput {
+        documents: vec![],
+        images: vec![
+            first,
+            second,
+            different_size,
+            different_height,
+            different_path,
+        ],
+    };
+    let mut reference = source.clone();
+    for (event, copy) in reference.images.iter_mut().zip(&copies) {
+        event.path = copy.0.clone();
+    }
+    let mut r = Renderer::new(192, 108, source, vec![]).unwrap();
+    let mut reference = Renderer::new(192, 108, reference, vec![]).unwrap();
+    assert_eq!(r.image_sprite_ids, [0, 0, 1, 2, 3]);
+    assert_eq!(r.frame(1.5).unwrap(), reference.frame(1.5).unwrap());
+    assert_eq!(counters(&r.stats()), [1, 0, 0, 1, 4]);
+    assert_eq!(counters(&reference.stats()), [1, 0, 0, 0, 5]);
+    for time in [2.0, 3.0, 4.0, 1.5] {
+        assert_eq!(r.frame(time).unwrap(), reference.frame(time).unwrap());
+    }
+    assert_eq!(counters(&r.stats()), [5, 0, 0, 15, 4]);
+    assert_eq!(counters(&reference.stats()), [5, 0, 0, 14, 5]);
+}
+
+#[test]
+fn evicted_image_redecodes_with_identical_pixels_after_backward_seek() {
+    let first = TestImage::new();
+    let second = TestImage::new();
+    let a = first.event();
+    let mut b = second.event();
+    b.start = 3.0;
+    b.end = 5.0;
+    let mut r = Renderer::new(
+        192,
+        108,
+        RenderInput {
+            documents: vec![],
+            images: vec![a, b],
+        },
+        vec![],
+    )
+    .unwrap();
+    // One 32 × 16 sprite fits; the next one must evict it.
+    r.cache = ByteLru::new(32 * 16 * 4);
+    let original = r.frame(1.5).unwrap();
+    assert!(bbox(&original, 192).is_some());
+    assert_eq!(counters(&r.stats()), [1, 0, 0, 0, 1]);
+    r.frame(3.5).unwrap();
+    assert_eq!(counters(&r.stats()), [2, 0, 0, 0, 2]);
+    assert_eq!(r.frame(1.5).unwrap(), original);
+    assert_eq!(counters(&r.stats()), [3, 0, 0, 0, 3]);
+    assert_eq!(r.frame(1.5).unwrap(), original);
+    assert_eq!(counters(&r.stats()), [4, 0, 0, 1, 3]);
+}
+
+#[test]
+fn profiling_is_opt_in_cumulative_and_excludes_png_work() {
+    let image = TestImage::new();
+    let mut source = input("😀", STYLE);
+    source.images.push(image.event());
+    let mut r = Renderer::new(192, 108, source, vec![]).unwrap();
+    r.frame(1.0).unwrap();
+    assert_eq!(timings(&r.stats()), [Duration::ZERO; 5]);
+    assert_eq!(counters(&r.stats()), [1, 0, 1, 0, 1]);
+
+    r.set_profiling(true);
+    assert_eq!(counters(&r.stats()), [1, 0, 1, 0, 1]);
+    // Cold caches exercise all five stages, not just composition/readback.
+    r.cache = ByteLru::new(CACHE_BYTES);
+    let mut buffer = vec![0; 192 * 108 * 4];
+    r.frame_into(1.0, &mut buffer).unwrap();
+    let profiled = r.stats();
+    assert!(timings(&profiled)
+        .iter()
+        .all(|elapsed| *elapsed > Duration::ZERO));
+    assert_eq!(counters(&profiled), [2, 0, 2, 0, 2]);
+
+    r.cache = ByteLru::new(CACHE_BYTES);
+    r.png(1.0).unwrap();
+    r.png(1.0).unwrap();
+    assert_eq!(timings(&r.stats()), timings(&profiled));
+    assert_eq!(counters(&r.stats()), [2, 1, 3, 1, 3]);
+
+    r.set_profiling(false);
+    r.cache = ByteLru::new(CACHE_BYTES);
+    r.frame_into(1.0, &mut buffer).unwrap();
+    assert_eq!(timings(&r.stats()), timings(&profiled));
+    assert_eq!(counters(&r.stats()), [3, 1, 4, 1, 4]);
+    // Returned stats are snapshots, not live handles.
+    assert_eq!(counters(&profiled), [2, 0, 2, 0, 2]);
 }
 
 #[test]

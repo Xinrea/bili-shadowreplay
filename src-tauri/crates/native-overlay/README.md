@@ -11,11 +11,51 @@ Linux builds require Ubuntu 24.04+ (or equivalent system libraries) and source-b
 ```rust,ignore
 use native_overlay::{Renderer, RenderInput, RENDERER_VERSION};
 let mut renderer = Renderer::new(width, height, input, font_paths)?;
-let straight_rgba = renderer.frame(time_seconds)?;
+// Allocate once for streaming/export; every successful call overwrites all bytes.
+let mut straight_rgba = vec![0; width as usize * height as usize * 4];
+renderer.frame_into(time_seconds, &mut straight_rgba)?;
+// Convenience API for callers that want a new Vec for each frame.
+let allocated_rgba = renderer.frame(time_seconds)?;
 let preview_png = renderer.png(time_seconds)?;
+// Optional cumulative stage timings; disabled by default.
+renderer.set_profiling(true);
+renderer.frame_into(next_time_seconds, &mut straight_rgba)?;
+let stats = renderer.stats();
 ```
 
-The agreed public types and signatures are in `src/lib.rs`. `RENDERER_VERSION` is intended for persistent segment-cache keys; bump it when rendering semantics/assets change. The additional `missing_glyph_count()` diagnostic reports unresolved glyphs encountered on cache misses (re-rasterization may count them again).
+The public scene types are in `src/lib.rs`. The stable renderer API is:
+
+```rust,ignore
+Renderer::new(width: u32, height: u32, input: RenderInput,
+              font_paths: Vec<PathBuf>) -> Result<Renderer, String>
+Renderer::frame(&mut self, time: f64) -> Result<Vec<u8>, String>
+Renderer::frame_into(&mut self, time: f64, bytes: &mut [u8]) -> Result<(), String>
+Renderer::png(&mut self, time: f64) -> Result<Vec<u8>, String>
+Renderer::set_profiling(&mut self, enabled: bool)
+Renderer::stats(&self) -> RenderStats
+Renderer::missing_glyph_count(&self) -> usize
+```
+
+Times are seconds and must be finite. `frame_into` requires exactly `width × height × 4` bytes; a different length is rejected before changing the destination, output surface, timeline, caches or statistics. `frame` allocates this buffer and delegates to `frame_into`. A reused buffer is cleared through composition even on empty frames, so no old pixels remain after events end or a seek. `png` uses the same compositor but returns encoded PNG bytes.
+
+`RENDERER_VERSION` is intended for persistent segment-cache keys; bump it when rendering semantics/assets change. The additional `missing_glyph_count()` diagnostic reports unresolved glyphs encountered on cache misses (re-rasterization may count them again).
+
+### Metrics
+
+`stats()` returns a cumulative snapshot, not a live handle. `set_profiling` changes timing collection for subsequent RGBA calls without resetting any totals; timings are disabled by default and there is no per-frame logging.
+
+| Field | Meaning |
+| --- | --- |
+| `frames` | Successfully completed RGBA frames from either `frame` or `frame_into`, including empty frames, whether profiling is enabled or not. PNG calls and failed RGBA calls do not increment it. |
+| `text_layout` | `Duration` spent constructing and laying out foreground/mask paragraphs on text cache misses while profiling is enabled. |
+| `text_raster` | `Duration` spent rasterizing text and its outline/shadow/background effects on text cache misses while profiling is enabled. |
+| `image_prepare` | `Duration` spent reading, decoding and rasterizing image assets on image cache misses while profiling is enabled. |
+| `composition` | `Duration` of composition excluding the nested text-layout, text-raster and image-preparation timings, while profiling is enabled. Includes active-event scheduling and drawing cached sprites. |
+| `readback` | `Duration` spent copying the surface into straight RGBA bytes while profiling is enabled. |
+| `text_cache_hits`, `text_cache_misses` | Number of text sprite lookups satisfied by the LRU or requiring preparation, respectively. |
+| `image_cache_hits`, `image_cache_misses` | Number of image sprite lookups satisfied by the LRU or requiring preparation, respectively. Shared assets avoid repeated decode/rasterization while resident. |
+
+Cache counters are always collected, including during PNG calls; a miss counts an attempted preparation even if it fails. PNG calls never contribute stage timings or `frames`, even when profiling is enabled and their cache is cold. Timings are cumulative work, not end-to-end export latency: they exclude renderer construction, frame-buffer allocation, PNG encoding, downstream FFmpeg work and profiling-disabled calls. A failed profiled RGBA call may still contribute timings/cache accesses for work already attempted.
 
 This crate is a member of the application workspace and uses `src-tauri/Cargo.lock`. Its font and Unicode data are embedded in the binary; desktop bundles and the container image also ship the corresponding license notices. Application-generated preview, project export and SRT burn-in use this renderer. Arbitrary ASS input and portable ASS file export retain their existing compatibility paths.
 
@@ -31,7 +71,11 @@ This crate is a member of the application workspace and uses `src-tauri/Cargo.lo
 
 ## Memory and scheduling
 
-Only active events are visited on sequential frames; a backwards seek resets the time cursor once. Metadata remains proportional to input event count, not movie raster count. Text/image sprites share a **64 MiB byte LRU**; SkParagraph's separate paragraph cache is disabled. Text rasters are individually limited to 8 MiB to bound their simultaneous intermediate surfaces. Output surfaces/raw buffers are each limited to 128 MiB and dimensions to 16384. Encoded images are limited to 32 MiB; decoded dimensions are checked before pixel decode (64 MiB), and output image rasters to 64 MiB. Fonts are limited to 64 MiB/file, 256 MiB total, 128 paths and 128 faces/collection. Documents are limited to 128 MiB and dialogue visible text to 1 MiB. These are explicit allocation guards, not a promise of 64 MiB total process RSS: Skia/font/decoder caches and input metadata also use memory.
+Only active events are visited on sequential frames; a backwards seek resets the time cursor once. Metadata remains proportional to input event count, not movie raster count. Text/image sprites share a **64 MiB byte LRU**; SkParagraph's separate paragraph cache is disabled. Image sprites are shared by exact asset `PathBuf` and output raster width/height (normalized dimensions scaled to the output and rounded up to whole pixels). Start/end times, trajectory, placement and opacity do not create separate sprites; different paths or rounded dimensions do. Paths are not canonicalized and equal file contents at different paths are not deduplicated.
+
+**Image paths must refer to immutable preprocessed assets for the renderer's lifetime.** There is no per-frame filesystem/mtime validation or invalidation. Replacing a file at the same path can leave cached pixels stale and make a later eviction/redecode disagree with earlier frames. Use a new asset path and recreate the renderer when artwork changes. Evicted sprites are prepared again on demand, including after a backward seek; immutable input keeps the resulting pixels stable.
+
+Text rasters are individually limited to 8 MiB to bound their simultaneous intermediate surfaces. Output surfaces/raw buffers are each limited to 128 MiB and dimensions to 16384. Encoded images are limited to 32 MiB; decoded dimensions are checked before pixel decode (64 MiB), and output image rasters to 64 MiB. Fonts are limited to 64 MiB/file, 256 MiB total, 128 paths and 128 faces/collection. Documents are limited to 128 MiB and dialogue visible text to 1 MiB. These are explicit allocation guards, not a promise of 64 MiB total process RSS: Skia/font/decoder caches and input metadata also use memory.
 
 ## Scope and validation
 
@@ -45,7 +89,7 @@ cargo clippy --locked --manifest-path src-tauri/crates/native-overlay/Cargo.toml
 cargo fmt --manifest-path src-tauri/crates/native-overlay/Cargo.toml --check
 ```
 
-Tests cover parsing, cache eviction, active indexing/backwards seeks, layout/collision semantics, actual color emoji pixels, all Unicode 16 fully-qualified emoji shaping, PNG/raw parity, alpha, nonfatal missing glyphs, image containment and movement. Assets with pinned upstream URLs, SHA-256 hashes and licenses are listed in `assets/README.md`.
+Tests cover parsing, cache eviction/redecode pixel stability, active indexing/backwards seeks, layout/collision semantics, actual color emoji pixels, all Unicode 16 fully-qualified emoji shaping, PNG/raw parity, allocating/reused-buffer parity and invalid buffer rejection, alpha, nonfatal missing glyphs, image containment/movement, path-and-rounded-size sprite sharing with exact cache counters, and opt-in profiling with PNG excluded from timings/frame counts. Assets with pinned upstream URLs, SHA-256 hashes and licenses are listed in `assets/README.md`.
 
 ## Verified integration
 

@@ -28,6 +28,7 @@
     RotateCw,
     Edit,
     Clapperboard,
+    FolderOpen,
   } from "lucide-svelte";
   import { SvelteSet } from "svelte/reactivity";
   import { registerCommands } from "../lib/stores/commands";
@@ -449,6 +450,14 @@
     }
   }
 
+  async function openMaterialFolder() {
+    try {
+      await invoke("open_material_folder");
+    } catch (error) {
+      alert(`打开素材目录失败：${error}`);
+    }
+  }
+
   // 键盘事件处理
   function handleKeydown(event: KeyboardEvent) {
     if (showEditNoteDialog && event.key === "Escape") {
@@ -475,6 +484,15 @@
   >
     <RefreshCw class="h-4 w-4 {loading ? 'animate-spin' : ''}" />
   </button>
+  {#if TAURI_ENV}
+    <button
+      class="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-[7px] border border-line px-2.5 text-[12px] font-medium text-fg-secondary transition-colors hover:bg-control-hover"
+      onclick={openMaterialFolder}
+    >
+      <FolderOpen class="h-3.5 w-3.5" />
+      打开素材目录
+    </button>
+  {/if}
   <button
     class="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-[7px] bg-success px-2.5 text-[12px] font-medium text-white transition-colors hover:bg-success/90"
     onclick={() => (showImportDialog = true)}

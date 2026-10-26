@@ -1111,6 +1111,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::utils::open_project,
         crate::handlers::utils::set_window_title,
         crate::handlers::utils::open_log_folder,
+        crate::handlers::utils::open_material_folder,
         crate::handlers::utils::file_exists,
         crate::handlers::utils::console_log,
         crate::handlers::utils::list_folder,

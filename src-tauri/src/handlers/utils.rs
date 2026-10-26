@@ -286,6 +286,31 @@ pub async fn open_log_folder(state: state_type!()) -> Result<(), String> {
     Ok(())
 }
 
+/// Open the configured material directory itself, rather than reveal it in its parent.
+#[cfg(feature = "gui")]
+#[tauri::command]
+pub async fn open_material_folder(state: state_type!()) -> Result<(), String> {
+    let output = state.config.read().await.output.clone();
+    let path = std::path::absolute(output)
+        .map_err(|e| format!("Failed to resolve material directory: {e}"))?;
+    tokio::fs::create_dir_all(&path)
+        .await
+        .map_err(|e| format!("Failed to create material directory: {e}"))?;
+
+    #[cfg(target_os = "windows")]
+    let mut command = Command::new("explorer");
+    #[cfg(target_os = "macos")]
+    let mut command = Command::new("open");
+    #[cfg(target_os = "linux")]
+    let mut command = Command::new("xdg-open");
+
+    command
+        .arg(path)
+        .spawn()
+        .map_err(|e| format!("Failed to open material directory: {e}"))?;
+    Ok(())
+}
+
 /// Preview windows draw their own title bar (`TitleBar.svelte`): on macOS it
 /// sits under the native traffic lights, elsewhere it replaces the decorations.
 /// Keep the traffic light position in sync with `tauri.macos.conf.json`.

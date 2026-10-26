@@ -15,7 +15,10 @@ const props = defineProps<{
   time: number;
   playing: boolean;
   panel: "materials" | "text";
-  danmu: boolean;
+  /** Writing the video after 导出设置 was confirmed. */
+  exporting?: boolean;
+  /** Where a material being dragged over the main track would go, in seconds. */
+  dropAt?: number | null;
   /** The text overlay drawn on the preview, if any. */
   caption?: string;
   /** Name of the selected main-track clip, for the toolbar hint. */
@@ -30,6 +33,8 @@ const VIEW = 150;
 const at = (seconds: number) => `${(seconds / VIEW) * 100}%`;
 const pad = (n: number) => String(Math.floor(n)).padStart(2, "0");
 const timecode = (s: number) => `${pad(s / 60)}:${pad(s % 60)}.${pad((s % 1) * 100)}`;
+/** Like the app's `formatTimecode`: m:ss.s */
+const dropTimecode = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`;
 
 const duration = computed(() =>
   props.clips.reduce((end, clip) => Math.max(end, clip.start + clip.length), 0),
@@ -69,11 +74,10 @@ const rail = [
         <span class="icon-button"><Icon name="circle-help" :size="16" /></span>
         <span class="icon-button"><Icon name="list-checks" :size="16" /></span>
         <span class="divider" />
-        <span class="toggle" data-ref="danmu" :class="{ on: danmu }">
-          <Icon name="message-square-text" :size="14" />弹幕{{ danmu ? "：开" : "：关" }}
-        </span>
         <span class="tb-button" data-ref="upload"><Icon name="upload" :size="14" />投稿</span>
-        <span class="tb-button primary"><Icon name="download" :size="14" />导出</span>
+        <span class="tb-button primary" :class="{ busy: exporting }" data-ref="export">
+          <Icon :name="exporting ? 'loader-circle' : 'download'" :size="14" />{{ exporting ? "导出中" : "导出" }}
+        </span>
       </span>
     </header>
 
@@ -256,6 +260,11 @@ const rail = [
             </span>
           </TransitionGroup>
           <span class="drop-slot" :style="{ left: at(duration) }" data-ref="drop" />
+          <span v-if="dropAt != null" class="insert-marker" :style="{ left: at(Math.min(dropAt, duration)) }">
+            <span class="drop-label">
+              {{ dropAt < duration ? "叠加视频" : "添加到主轨" }} · {{ dropTimecode(Math.min(dropAt, duration)) }}
+            </span>
+          </span>
         </div>
         <div class="track">
           <span
@@ -334,7 +343,6 @@ const rail = [
   background: #2b3340;
 }
 
-.toggle,
 .tb-button {
   display: inline-flex;
   height: 28px;
@@ -350,20 +358,18 @@ const rail = [
   transition: all 200ms ease;
 }
 
-.toggle {
-  color: #8c98aa;
-}
-
-.toggle.on {
-  border-color: rgb(10 132 255 / 70%);
-  background: #153b5c;
-  color: #65c2ff;
-}
-
 .tb-button.primary {
   border-color: transparent;
   background: #0a84ff;
   color: #fff;
+}
+
+.tb-button.busy {
+  opacity: 0.5;
+}
+
+.tb-button.busy :deep(svg) {
+  animation: spin 1s linear infinite;
 }
 
 .body {
@@ -1076,6 +1082,27 @@ const rail = [
   top: 4px;
   bottom: 4px;
   width: 30%;
+}
+
+.insert-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 30;
+  width: 2px;
+  margin-left: -1px;
+  background: #fbbf24;
+}
+
+.drop-label {
+  position: absolute;
+  top: -20px;
+  border-radius: 3px;
+  background: #0a84ff;
+  padding: 2px 5px;
+  font-size: 10px;
+  color: #fff;
+  white-space: nowrap;
 }
 
 .playhead {

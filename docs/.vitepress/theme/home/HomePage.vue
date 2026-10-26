@@ -37,7 +37,7 @@ const steps: { title: string; text: string; scene: Component }[] = [
   },
   {
     title: "投稿",
-    text: "切片剪完直接投稿到 B 站。生成视频、上传和发布都在后台完成。",
+    text: "在切片编辑窗口直接投稿到 B 站。生成视频、上传和发布都在后台完成。",
     scene: SceneUpload,
   },
 ];
@@ -290,7 +290,7 @@ async function copyDocker() {
 
         <div ref="stage" class="stage" :class="{ measured: scale > 0 }">
           <div class="canvas" :style="canvasStyle">
-            <div class="window" :class="{ dark: current === 1 || current === 2 || current === 3 }">
+            <div class="window" :class="{ dark: current !== 0 }">
               <span class="lights" aria-hidden="true"><i /><i /><i /></span>
               <template v-for="(step, index) in steps" :key="step.title">
                 <div

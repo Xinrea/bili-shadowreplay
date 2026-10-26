@@ -22,6 +22,8 @@ export interface Script {
   /** Moves the pointer to the center of an element, or to a point in window coordinates. */
   move(target: Element | null | undefined | [number, number], ms?: number): Promise<void>;
   click(target: Element | null | undefined | [number, number], ms?: number): Promise<void>;
+  /** Scrolls a container, such as a dialog body, to `top` or its end. */
+  scroll(container: Element | null | undefined, top: number | "end", ms?: number): Promise<void>;
 }
 
 class Cancelled extends Error {}
@@ -57,6 +59,7 @@ export function useScene(options: SceneOptions) {
       },
       move: async (_target, ms = 650) => void (total += ms),
       click: async (_target, ms = 650) => void (total += ms + 260),
+      scroll: async (_container, _top, ms = 500) => void (total += ms),
     };
     await options.run(script);
     return total;
@@ -110,6 +113,14 @@ export function useScene(options: SceneOptions) {
         await wait(140);
         pointer.down = false;
         await wait(120);
+      },
+      scroll: async (container, top, ms = 500) => {
+        check();
+        container?.scrollTo({
+          top: top === "end" ? container.scrollHeight : top,
+          behavior: "smooth",
+        });
+        await wait(ms);
       },
     };
   }

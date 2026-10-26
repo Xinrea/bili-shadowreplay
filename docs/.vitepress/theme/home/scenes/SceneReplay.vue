@@ -35,15 +35,16 @@ const heat = Array.from({ length: 150 }, (_, i) => {
 });
 const THRESHOLD = 0.62;
 
+// Rows fill from the top, like the room's danmaku; all in the default white.
 const comments = [
   { text: "这波操作太秀了", lane: 0, delay: 0 },
-  { text: "满星了！！！", lane: 1, delay: 2.2, color: "#ffd166" },
+  { text: "满星了！！！", lane: 1, delay: 2.2 },
   { text: "前方高能", lane: 2, delay: 4.6 },
   { text: "哈哈哈哈哈哈", lane: 3, delay: 1.2 },
   { text: "录下来了吗", lane: 0, delay: 5.4 },
-  { text: "切片 man 在哪", lane: 4, delay: 3.4, color: "#7fd1ff" },
+  { text: "切片 man 在哪", lane: 4, delay: 3.4 },
   { text: "8888888", lane: 1, delay: 7 },
-  { text: "名场面预定", lane: 3, delay: 6.4, color: "#ff9db8" },
+  { text: "名场面预定", lane: 3, delay: 6.4 },
   { text: "主播手好稳", lane: 2, delay: 8.2 },
 ];
 
@@ -55,12 +56,16 @@ const state = reactive({
   peaks: initialPeaks(),
   tab: "ranges" as "ranges" | "clips",
   confirm: false,
-  createProject: true,
   clips: [] as { name: string; progress: number }[],
 });
 
 const total = computed(() => state.ranges.reduce((sum, r) => sum + r.end - r.start, 0));
 const minutes = (s: number) => `${pad(s / 60)}:${pad(s % 60)}`;
+/** Like the generate dialog's formatDuration: "2 分 20 秒". */
+const duration = (s: number) =>
+  [s >= 3600 && `${Math.floor(s / 3600)} 小时`, s >= 60 && `${Math.floor((s % 3600) / 60)} 分`, `${s % 60} 秒`]
+    .filter(Boolean)
+    .join(" ");
 
 // The stream keeps going while the demo plays.
 let ticker: ReturnType<typeof setInterval> | undefined;
@@ -156,8 +161,7 @@ const { pointer } = useScene({
                 v-for="item in comments"
                 :key="item.text"
                 :style="{
-                  top: `${8 + item.lane * 9}%`,
-                  color: item.color,
+                  top: `${item.lane * 22.4}px`,
                   animationDelay: `-${item.delay}s`,
                 }"
                 >{{ item.text }}</span
@@ -324,29 +328,57 @@ const { pointer } = useScene({
         <div class="m-modal dialog">
           <div class="m-modal-body">
             <h3 class="dialog-title">确认生成素材</h3>
-            <p class="dialog-text">每个选区生成一个素材，选区内的弹幕会一并保存，导出切片时可选择压制</p>
-            <div class="m-label list-label">选区列表</div>
-            <div class="dialog-ranges">
-              <div v-for="(range, index) in state.ranges" :key="range.start" class="dialog-range">
-                <span class="badge num">{{ index + 1 }}</span>
-                <span>
-                  <span class="num">{{ clock(range.start) }} → {{ clock(range.end) }}</span>
-                  <small>时长: {{ range.end - range.start }} 秒</small>
-                </span>
+            <p class="dialog-text">每个选区生成一个素材</p>
+            <div class="dialog-columns">
+              <div class="dialog-column">
+                <div>
+                  <div class="m-label list-label">选区列表</div>
+                  <div class="dialog-ranges">
+                    <div v-for="(range, index) in state.ranges" :key="range.start" class="dialog-range">
+                      <span class="badge num">{{ index + 1 }}</span>
+                      <span>
+                        <span class="num">{{ clock(range.start) }} → {{ clock(range.end) }}</span>
+                        <small>时长: {{ duration(range.end - range.start) }}</small>
+                      </span>
+                    </div>
+                  </div>
+                  <div class="total">总时长: {{ duration(total) }}</div>
+                </div>
+                <label class="field">
+                  <span class="field-name">素材备注（可选）</span>
+                  <span class="m-input" />
+                </label>
+              </div>
+              <div class="dialog-column">
+                <div class="field">
+                  <span class="m-label">素材</span>
+                  <span class="m-tabs"><span class="m-tab active">分别生成</span><span class="m-tab">合并生成</span></span>
+                  <span class="hint">每个选区单独生成素材，可以放进切片里继续剪辑</span>
+                </div>
+                <div class="field">
+                  <span class="m-label">弹幕</span>
+                  <span class="m-tabs"><span class="m-tab active">外挂</span><span class="m-tab">内嵌</span></span>
+                  <span class="hint">弹幕和素材分开保存，导出切片或投稿时再选择是否压制</span>
+                </div>
+                <div class="options">
+                  <label class="option">
+                    <span class="m-check on"><Icon name="check" :size="10" :stroke="3" /></span>
+                    <span>
+                      同时新建切片
+                      <small>按选区顺序把生成的素材放入一个新切片，便于直接剪辑和投稿</small>
+                    </span>
+                  </label>
+                  <label class="option">
+                    <span class="m-check" />
+                    <span>修复编码（素材异常时使用）</span>
+                  </label>
+                </div>
               </div>
             </div>
-            <div class="total">总时长: {{ minutes(total) }}</div>
-            <label class="option">
-              <span class="m-check on"><Icon name="check" :size="10" :stroke="3" /></span>
-              <span>
-                同时新建切片
-                <small>按选区顺序把生成的素材放入一个新切片，便于直接剪辑和投稿</small>
-              </span>
-            </label>
           </div>
           <div class="m-modal-footer">
             <span class="m-btn">取消</span>
-            <span ref="confirmButton" class="m-btn primary">确认生成素材</span>
+            <span ref="confirmButton" class="m-btn primary">确认生成</span>
           </div>
         </div>
       </div>
@@ -446,10 +478,13 @@ const { pointer } = useScene({
   position: absolute;
   left: 100%;
   white-space: nowrap;
+  font-family: "Microsoft YaHei", 微软雅黑, sans-serif;
   font-size: 19px;
-  font-weight: 600;
+  font-weight: bold;
+  line-height: 1.125;
   color: #fff;
-  text-shadow: 0 0 2px #000, 0 1px 3px rgb(0 0 0 / 60%);
+  opacity: 0.8;
+  text-shadow: 1px 0 1px #000, 0 1px 1px #000, 0 -1px 1px #000, -1px 0 1px #000;
   animation: fly 9s linear infinite;
 }
 
@@ -994,7 +1029,7 @@ const { pointer } = useScene({
 
 /* Generate dialog */
 .dialog {
-  width: 420px;
+  width: 768px;
 }
 
 .dialog-title {
@@ -1009,8 +1044,43 @@ const { pointer } = useScene({
   color: var(--muted);
 }
 
-.list-label {
+.dialog-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px 24px;
   margin-top: 16px;
+}
+
+.dialog-column {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.field .m-input {
+  width: 100%;
+}
+
+.field-name {
+  font-size: 13px;
+  color: var(--fg-2);
+}
+
+.hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.list-label {
+  margin: 0;
 }
 
 .dialog-ranges {
@@ -1059,11 +1129,16 @@ const { pointer } = useScene({
   font-weight: 600;
 }
 
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .option {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  margin-top: 14px;
   font-size: 13px;
   color: var(--fg-2);
 }

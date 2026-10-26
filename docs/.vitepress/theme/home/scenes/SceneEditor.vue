@@ -1,20 +1,15 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from "vue";
 import EditorFrame, { type Clip, type Span } from "../EditorFrame.vue";
+import Icon from "../Icon.vue";
 import Pointer from "../Pointer.vue";
+import RenderSettings from "../RenderSettings.vue";
 import Thumb from "../Thumb.vue";
+import { BGM, DANMU_COUNT, MATERIALS as materials, TITLE } from "../project";
 import { useScene } from "../scene";
 
 const props = defineProps<{ active: boolean }>();
 const emit = defineEmits<{ start: [duration: number]; done: [] }>();
-
-const materials: Clip[] = [
-  { start: 0, length: 52, label: "深渊满星挑战 选区 1", scene: "dusk" },
-  { start: 52, length: 47, label: "深渊满星挑战 选区 2", scene: "forest" },
-  { start: 99, length: 41, label: "深渊满星挑战 选区 3", scene: "sea" },
-];
-const BGM: Span = { start: 0, length: 140, label: "轻快 BGM.mp3" };
-const TITLE: Span = { start: 48, length: 8, label: "满星达成！" };
 
 const state = reactive({
   clips: [materials[0]] as Clip[],
@@ -22,9 +17,13 @@ const state = reactive({
   time: 0,
   playing: false,
   panel: "materials" as "materials" | "text",
-  danmu: false,
   used: [0],
   dragging: null as Clip | null,
+  /** Where the dragged material would go, shown on the main track. */
+  dropAt: null as number | null,
+  exportDialog: false,
+  exportDanmu: false,
+  exporting: false,
 });
 
 const caption = computed(() =>
@@ -43,9 +42,12 @@ const { pointer } = useScene({
     state.time = 0;
     state.playing = false;
     state.panel = "materials";
-    state.danmu = false;
     state.used = [0];
     state.dragging = null;
+    state.dropAt = null;
+    state.exportDialog = false;
+    state.exportDanmu = false;
+    state.exporting = false;
   },
   async run(s) {
     await s.wait(700);
@@ -55,8 +57,12 @@ const { pointer } = useScene({
       state.dragging = materials[index];
       await s.wait(150);
       await s.move(el("drop"), 900);
+      // Past the main track's end, so it is appended there.
+      state.dropAt = materials[index].start;
+      await s.wait(350);
       pointer.down = false;
       state.dragging = null;
+      state.dropAt = null;
       state.clips.push(materials[index]);
       state.used.push(index);
       await s.wait(500);
@@ -90,8 +96,16 @@ const { pointer } = useScene({
     }
     state.playing = false;
     await s.wait(300);
-    await s.click(el("danmu"), 800);
-    state.danmu = true;
+    // Danmaku burning is an export setting, shared with posting.
+    await s.click(el("export"), 800);
+    state.exportDialog = true;
+    await s.wait(600);
+    await s.click(el("export-danmu"), 700);
+    state.exportDanmu = true;
+    await s.wait(700);
+    await s.click(el("export-confirm"), 700);
+    state.exportDialog = false;
+    state.exporting = true;
     await s.wait(1500);
   },
   onStart: (duration) => emit("start", duration),
@@ -109,13 +123,14 @@ const { pointer } = useScene({
       :time="state.time"
       :playing="state.playing"
       :panel="state.panel"
-      :danmu="state.danmu"
+      :exporting="state.exporting"
+      :drop-at="state.dropAt"
       :caption="caption"
       :used="state.used"
     />
     <div
       v-if="state.dragging"
-      class="ghost"
+      class="drag-ghost"
       :style="{
         transform: `translate(${pointer.x}px, ${pointer.y}px)`,
         transitionDuration: `${pointer.ms}ms`,
@@ -124,6 +139,35 @@ const { pointer } = useScene({
       <span class="ghost-thumb"><Thumb :scene="state.dragging.scene" /></span>
       {{ state.dragging.label }}
     </div>
+
+    <Transition name="m-fade">
+      <div v-if="state.exportDialog" class="m-backdrop">
+        <div class="m-modal dialog">
+          <div class="m-modal-header">
+            <h3><Icon name="download" :size="16" class="accent" />导出设置</h3>
+            <span class="m-btn sm icon ghost"><Icon name="x" :size="16" /></span>
+          </div>
+          <div class="m-modal-body body">
+            <div class="switch-row">
+              <span>
+                <span class="m-label">压制弹幕</span>
+                <span class="m-hint">将素材保存的弹幕压制到视频画面中（{{ DANMU_COUNT }} 条）</span>
+              </span>
+              <span class="m-switch" :class="{ on: state.exportDanmu }" data-ref="export-danmu" />
+            </div>
+            <RenderSettings />
+            <p class="m-hint">这些设置也用于此切片的投稿。</p>
+          </div>
+          <div class="m-modal-footer">
+            <span class="m-btn">取消</span>
+            <span class="m-btn primary" data-ref="export-confirm">
+              <Icon name="download" :size="14" />选择位置并导出
+            </span>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
     <Pointer :pointer="pointer" />
   </div>
 </template>
@@ -134,7 +178,50 @@ const { pointer } = useScene({
   height: 100%;
 }
 
-.ghost {
+.dialog {
+  width: 420px;
+}
+
+.m-modal-header h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.accent {
+  color: var(--accent-fg);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.body > .m-hint {
+  margin: 0;
+}
+
+.switch-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.switch-row .m-label,
+.switch-row .m-hint {
+  display: block;
+}
+
+.switch-row .m-switch {
+  margin-top: 2px;
+}
+
+.drag-ghost {
   position: absolute;
   top: 0;
   left: 0;

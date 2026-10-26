@@ -1,36 +1,24 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from "vue";
-import EditorFrame, { type Clip, type Span } from "../EditorFrame.vue";
+import EditorFrame, { type Span } from "../EditorFrame.vue";
 import Icon from "../Icon.vue";
 import Pointer from "../Pointer.vue";
+import { BGM, MATERIALS as clips, SUBTITLES as lines, TITLE } from "../project";
 import { useScene } from "../scene";
 
 const props = defineProps<{ active: boolean }>();
 const emit = defineEmits<{ start: [duration: number]; done: [] }>();
 
-const clips: Clip[] = [
-  { start: 0, length: 52, label: "深渊满星挑战 选区 1", scene: "dusk" },
-  { start: 52, length: 47, label: "深渊满星挑战 选区 2", scene: "forest" },
-  { start: 99, length: 41, label: "深渊满星挑战 选区 3", scene: "sea" },
-];
-const sounds: Span[] = [{ start: 0, length: 140, label: "轻快 BGM.mp3" }];
-const texts: Span[] = [{ start: 48, length: 8, label: "满星达成！" }];
-
-const lines: Span[] = [
-  { start: 0, length: 4, label: "好，今天我们来打深境螺旋" },
-  { start: 5, length: 3, label: "目标是十二层满星" },
-  { start: 14, length: 3, label: "先上胡桃这一队" },
-  { start: 31, length: 4, label: "这一下伤害直接拉满" },
-  { start: 57, length: 5, label: "雷电将军开大，好起来了" },
-  { start: 75, length: 4, label: "稳住，还有最后一波" },
-  { start: 104, length: 4, label: "满星！终于拿下了" },
-  { start: 128, length: 4, label: "谢谢大家的弹幕陪伴" },
-];
+const sounds: Span[] = [BGM];
+const texts: Span[] = [TITLE];
 
 const GENERATED_CONTEXT = "主播星野Hoshino，直播标题：深渊满星挑战，今天必拿";
+const MAX_HOTWORDS = 500;
+const GLOBAL_HOTWORDS = ["原神", "米哈游"];
 
 const state = reactive({
   modal: false,
+  /** 直播间词库: this room's words, typed into below. */
   hotwords: ["星野Hoshino", "深境螺旋"],
   draft: "",
   focus: "" as "" | "hotwords" | "context",
@@ -43,8 +31,11 @@ const state = reactive({
 });
 
 const contextLength = computed(() => [...state.context].length);
+/** Both dictionaries, merged without duplicates as recognizing does. */
+const merged = computed(() => new Set([...state.hotwords, ...GLOBAL_HOTWORDS]).size);
 
 const root = ref<HTMLElement | null>(null);
+const body = ref<HTMLElement | null>(null);
 const el = (name: string) => root.value?.querySelector(`[data-ref="${name}"]`);
 
 const { pointer } = useScene({
@@ -79,6 +70,9 @@ const { pointer } = useScene({
       state.draft = "";
       await s.wait(250);
     }
+    // The dialog is taller than the window allows: scroll to the context.
+    state.focus = "";
+    await s.scroll(body.value, "end", 600);
     await s.click(el("context"), 700);
     state.focus = "context";
     await s.type("，在玩原神", (value) => (state.context = GENERATED_CONTEXT + value), 90);
@@ -122,7 +116,6 @@ const { pointer } = useScene({
       :time="state.time"
       :playing="state.playing"
       panel="materials"
-      :danmu="true"
       :recognizing="state.recognizing"
       :used="[0, 1, 2]"
     />
@@ -134,7 +127,7 @@ const { pointer } = useScene({
             <h3><Icon name="brain-circuit" :size="16" class="accent" />AI 字幕</h3>
             <span class="m-btn sm icon ghost"><Icon name="x" :size="16" /></span>
           </div>
-          <div class="m-modal-body body">
+          <div ref="body" class="m-modal-body body">
             <p class="intro">按素材识别字幕，每个素材只识别一次，结果会缓存并按片段范围放入时间轴。</p>
             <div class="checks">
               <label class="check-row">
@@ -148,20 +141,16 @@ const { pointer } = useScene({
             </div>
             <div class="powerlive">
               <p class="m-hint">
-                PowerLive 会参考热词和上下文识别专有名词，并在识别后校对同音字。
+                PowerLive 会参考热词和上下文识别专有名词，并在识别后校对同音字。已识别过的素材直接使用缓存，修改后需勾选「忽略缓存，重新识别」才会生效。
               </p>
               <div>
                 <div class="field-head">
-                  <span class="m-label">热词</span>
-                  <span class="m-hint">全局设置，所有切片共用</span>
+                  <span class="m-label">直播间词库</span>
+                  <span class="m-hint">B站 · 22603245，仅本直播间使用</span>
                 </div>
-                <div
-                  class="chips m-input"
-                  :class="{ focus: state.focus === 'hotwords' }"
-                  data-ref="hotwords"
-                >
+                <div class="m-input tags" :class="{ focus: state.focus === 'hotwords' }" data-ref="hotwords">
                   <TransitionGroup name="m-pop">
-                    <span v-for="word in state.hotwords" :key="word" class="chip">
+                    <span v-for="word in state.hotwords" :key="word" class="m-tag">
                       {{ word }}<Icon name="x" :size="12" />
                     </span>
                   </TransitionGroup>
@@ -170,9 +159,27 @@ const { pointer } = useScene({
                 </div>
                 <div class="field-foot">
                   <span class="m-hint">主播名、游戏和角色名等专有名词，不要放常用词</span>
-                  <span class="faint num">{{ state.hotwords.length }} / 500</span>
+                  <span class="faint num">{{ state.hotwords.length }} / {{ MAX_HOTWORDS }}</span>
                 </div>
               </div>
+              <div>
+                <div class="field-head">
+                  <span class="m-label">全局词库</span>
+                  <span class="m-hint">所有直播间共用，与主窗口设置同步</span>
+                </div>
+                <div class="m-input tags">
+                  <span v-for="word in GLOBAL_HOTWORDS" :key="word" class="m-tag">
+                    {{ word }}<Icon name="x" :size="12" />
+                  </span>
+                </div>
+                <div class="field-foot">
+                  <span class="m-hint">主播名、游戏和角色名等专有名词，不要放常用词</span>
+                  <span class="faint num">{{ GLOBAL_HOTWORDS.length }} / {{ MAX_HOTWORDS }}</span>
+                </div>
+              </div>
+              <p class="m-hint">
+                两份词库自动保存，识别时合并去重，优先使用直播间热词。合并后共 {{ merged }} / {{ MAX_HOTWORDS }} 词。
+              </p>
               <div class="length-row">
                 <span class="m-label">
                   每条字幕最多字数
@@ -229,6 +236,8 @@ const { pointer } = useScene({
 
 .dialog {
   width: 520px;
+  /* The app's .ui-modal: at most 85% of the window, the body scrolls. */
+  max-height: 85%;
 }
 
 .m-modal-header h3 {
@@ -313,31 +322,6 @@ const { pointer } = useScene({
 .faint {
   font-size: 11px;
   color: var(--faint);
-}
-
-.chips {
-  height: auto;
-  min-height: 30px;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 4px 6px;
-}
-
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  border-radius: 5px;
-  background: var(--accent-soft);
-  padding: 1px 4px 1px 6px;
-  font-size: 12px;
-  line-height: 20px;
-  color: var(--accent-fg);
-}
-
-.draft {
-  margin-left: 4px;
-  font-size: 12px;
 }
 
 .length-row {

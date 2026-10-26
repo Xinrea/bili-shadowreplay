@@ -64,9 +64,10 @@ fn subtitle_filter(
     Ok(filter)
 }
 
-/// Burn plain SRT through the native color-emoji compositor. External ASS
-/// retains the legacy libass path and its full compatibility surface.
-/// `fonts_directory` supplements system fonts in either renderer.
+/// Burn plain SRT through the native color-emoji compositor, which draws with
+/// the system fonts as the preview does. External ASS retains the legacy
+/// libass path and its full compatibility surface; `fonts_directory`
+/// supplements system fonts there only.
 pub async fn encode_video_subtitle<R: ProgressReporterTrait>(
     reporter: &R,
     file: &Path,
@@ -113,15 +114,7 @@ pub async fn encode_video_subtitle<R: ProgressReporterTrait>(
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("srt"))
     {
-        encode_native_srt(
-            reporter,
-            file,
-            subtitle,
-            &srt_style,
-            fonts_directory,
-            &output_path,
-        )
-        .await?;
+        encode_native_srt(reporter, file, subtitle, &srt_style, &output_path).await?;
     } else {
         let vf = subtitle_filter(subtitle, &srt_style, fonts_directory)?;
         let mut command = ffmpeg_command();
@@ -162,7 +155,6 @@ async fn encode_native_srt<R: ProgressReporterTrait>(
     file: &Path,
     subtitle: &Path,
     style: &str,
-    fonts_directory: Option<&Path>,
     output: &Path,
 ) -> Result<(), String> {
     use super::native_overlay::{add_overlay_input, run_overlay_command, OverlaySpec};
@@ -184,7 +176,6 @@ async fn encode_native_srt<R: ProgressReporterTrait>(
         return Err("SRT exceeds 64 MiB".into());
     }
     let ass = super::subtitle_native::srt_to_ass(&content, style)?;
-    let font_paths = super::subtitle_native::font_paths(fonts_directory)?;
     let metadata = ffmpeg_utils::extract_video_metadata(file).await?;
     let duration = super::danmu::probe_overlay_duration(file, metadata.duration).await?;
     let fps = if metadata.fps.is_finite() && metadata.fps > 0.0 {
@@ -200,7 +191,6 @@ async fn encode_native_srt<R: ProgressReporterTrait>(
             }],
             images: vec![],
         },
-        font_paths,
         width: 1920,
         height: 1080,
         fps,

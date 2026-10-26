@@ -1,10 +1,6 @@
 //! Explicit SRT conversion for the native renderer: never ask FFmpeg to emit
 //! ASS overrides, since its decoder can emit tags outside our supported subset.
-use std::{
-    collections::HashSet,
-    path::{Path, PathBuf},
-    sync::OnceLock,
-};
+use std::{collections::HashSet, sync::OnceLock};
 
 use regex::Regex;
 
@@ -470,42 +466,6 @@ pub(super) fn srt_to_ass(content: &str, force_style: &str) -> Result<String, Str
     Ok(output)
 }
 
-/// Collect only immediate font files, sorted by path. No recursive traversal.
-/// Fail rather than silently truncate beyond 128 fonts or ignore I/O errors.
-pub(super) fn font_paths(directory: Option<&Path>) -> Result<Vec<PathBuf>, String> {
-    let Some(directory) = directory else {
-        return Ok(Vec::new());
-    };
-    let entries = std::fs::read_dir(directory)
-        .map_err(|e| format!("Cannot read fonts directory {}: {e}", directory.display()))?;
-    let mut fonts = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|e| format!("Cannot read font directory entry: {e}"))?;
-        let path = entry.path();
-        let extension = path
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        if !matches!(extension.as_str(), "ttf" | "otf" | "ttc" | "otc") {
-            continue;
-        }
-        let metadata = std::fs::metadata(&path)
-            .map_err(|e| format!("Cannot inspect font {}: {e}", path.display()))?;
-        if !metadata.is_file() {
-            continue;
-        }
-        std::fs::File::open(&path)
-            .map_err(|e| format!("Cannot read font {}: {e}", path.display()))?;
-        fonts.push(path);
-        if fonts.len() > 128 {
-            return Err("Fonts directory exceeds 128 font files".into());
-        }
-    }
-    fonts.sort();
-    Ok(fonts)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -698,41 +658,5 @@ mod tests {
             ""
         )
         .is_ok());
-    }
-
-    #[test]
-    fn fonts_are_shallow_sorted_bounded_and_optional() {
-        assert!(font_paths(None).unwrap().is_empty());
-        let dir = std::env::temp_dir().join(format!(
-            "subtitle-native-fonts-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir(&dir).unwrap();
-        struct Cleanup(PathBuf);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let _cleanup = Cleanup(dir.clone());
-        for name in ["z.TTF", "a.otf", "b.ttc", "c.otc", "ignored.txt"] {
-            std::fs::write(dir.join(name), []).unwrap();
-        }
-        std::fs::create_dir(dir.join("nested")).unwrap();
-        std::fs::write(dir.join("nested/deep.ttf"), []).unwrap();
-        assert_eq!(
-            font_paths(Some(&dir)).unwrap(),
-            ["a.otf", "b.ttc", "c.otc", "z.TTF"].map(|s| dir.join(s))
-        );
-        assert!(font_paths(Some(&dir.join("missing"))).is_err());
-        assert!(font_paths(Some(&dir.join("a.otf"))).is_err());
-        for i in 0..125 {
-            std::fs::write(dir.join(format!("extra{i}.ttf")), []).unwrap();
-        }
-        assert!(font_paths(Some(&dir)).unwrap_err().contains("128"));
     }
 }

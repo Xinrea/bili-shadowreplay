@@ -1,5 +1,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
-use native_overlay::{AssSource, RenderInput, Renderer, SourceKind};
+use native_overlay::{AssSource, RenderInput, SourceKind};
+
+use crate::ffmpeg::native_overlay::system_renderer;
 
 const MAX_DOCUMENT_BYTES: usize = 256 * 1024;
 
@@ -28,8 +30,8 @@ pub async fn render_generated_subtitle_preview(
     validate_preview(&ass_content, time, &font_name)?;
     tokio::task::spawn_blocking(move || {
         // Construct and drop the renderer inside this closure: native shaping
-        // and graphics handles need not be Send. Use the native system font
-        // provider, including its color-emoji fallback, just as export does.
+        // and graphics handles need not be Send. Burns create theirs the same
+        // way, so the preview shows the fonts they draw with.
         let input = RenderInput {
             documents: vec![AssSource {
                 text: ass_content,
@@ -37,7 +39,7 @@ pub async fn render_generated_subtitle_preview(
             }],
             ..Default::default()
         };
-        let mut renderer = Renderer::new(1920, 1080, input, Vec::new())?;
+        let mut renderer = system_renderer(1920, 1080, input)?;
         let png = renderer.png(time)?;
         Ok(format!("data:image/png;base64,{}", STANDARD.encode(png)))
     })

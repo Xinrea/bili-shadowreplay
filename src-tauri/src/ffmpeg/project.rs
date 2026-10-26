@@ -70,7 +70,8 @@ const EPSILON: f64 = 1e-6;
 const RENDER_STAGE: &str = "导出切片";
 /// Part of every segment's key: change it with what a segment's graph draws,
 /// so that segments rendered before are not used again.
-const RENDER_VERSION: u32 = 2;
+/// 3: generated subtitles are drawn with the system fonts, as previewed.
+const RENDER_VERSION: u32 = 3;
 
 pub struct RenderClip {
     /// The same however the timeline is edited around the clip.
@@ -764,10 +765,12 @@ struct Danmaku {
     pictures: HashMap<PathBuf, String>,
 }
 
-/// Explicit fonts used by generated subtitles, and their cache identity.
+/// What the system font files of the generated subtitles' family are now.
+/// They are drawn through the system font manager, as the preview draws them;
+/// the files only tell when an installed font changes, so that cached
+/// segments are rendered again.
 #[derive(Default)]
 struct NativeFonts {
-    paths: Vec<PathBuf>,
     identity: String,
 }
 
@@ -806,7 +809,7 @@ impl NativeFonts {
             // Temporary font directories can change between otherwise identical renders.
             let _ = writeln!(identity, "{}", digest(&bytes));
         }
-        Ok(Self { paths, identity })
+        Ok(Self { identity })
     }
 }
 
@@ -908,18 +911,11 @@ impl Render<'_> {
                 }
             };
         }
-        // Explicit fonts are registered for the whole native canvas, so they
-        // can affect danmaku fallback as well as generated subtitle text.
-        let native_text = (job.generated_subtitle
+        // Only the generated subtitles' family is known; danmaku text is
+        // drawn with the system fonts the same way and needs no files here.
+        let native_text = job.generated_subtitle
             && self.subtitles.as_ref().is_some_and(|subtitles| {
                 subtitles
-                    .document
-                    .during(start, segment.end(fps))
-                    .next()
-                    .is_some()
-            }))
-            || self.danmaku.as_ref().is_some_and(|danmaku| {
-                danmaku
                     .document
                     .during(start, segment.end(fps))
                     .next()
@@ -997,7 +993,6 @@ impl Render<'_> {
         }
         Some(OverlaySpec {
             input,
-            font_paths: self.native_fonts.paths.clone(),
             width: 1920,
             height: 1080,
             fps: self.fps,
@@ -2357,9 +2352,8 @@ mod tests {
             .unwrap();
         let before = NativeFonts::load(Some(first.path())).await.unwrap();
         let moved = NativeFonts::load(Some(second.path())).await.unwrap();
-        assert_eq!(before.paths.len(), 1);
+        assert!(!before.identity.is_empty());
         assert_eq!(before.identity, moved.identity);
-        assert_ne!(before.paths, moved.paths);
         tokio::fs::write(first.path().join("font.TTF"), b"font two")
             .await
             .unwrap();
@@ -3178,6 +3172,90 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(again.reused, 2);
+    }
+
+    /// Exports prepare a fonts directory for the subtitles' family, as the app
+    /// does. The burned text must still be what the preview draws: the same
+    /// renderer with the system fonts, whatever that directory holds.
+    #[tokio::test]
+    #[ignore = "requires FFmpeg with libx264 and native system fonts"]
+    async fn generated_subtitles_burn_what_the_preview_draws() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("export.mp4");
+        let ass = "[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\n\n\
+            [V4+ Styles]\n\
+            Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
+            Style: Default,Arial,96,&H0000C000,&H00FFFFFF,&H00FFFFFF,&H00000000,-1,0,0,0,100,100,0,0,1,6,0,5,0,0,0,1\n\n\
+            [Events]\n\
+            Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+            Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,你看你身上没有钱 Hello\n";
+        let fonts = crate::handlers::subtitle_fonts::prepare_subtitle_font_directory(
+            directory.path().to_path_buf(),
+            "Arial".into(),
+        )
+        .await
+        .unwrap();
+        let project = ProjectRender {
+            clips: vec![RenderClip::blank(1.0)],
+            overlays: Vec::new(),
+            sounds: Vec::new(),
+            subtitle_ass: Some(ass.into()),
+            generated_subtitle: true,
+            fonts_directory: Some(fonts.path()),
+            danmus: Vec::new(),
+            danmu_options: Danmu2AssOptions::default(),
+            render_settings: crate::project::RenderSettings::default(),
+            output: &output,
+            segment_cache: None,
+        };
+        render_with_encoder(&NoopReporter, &project, SEGMENT_LIMITS, "libx264")
+            .await
+            .unwrap();
+
+        let [x, y, width, height] = [360, 440, 1200, 200];
+        let input = ::native_overlay::RenderInput {
+            documents: vec![::native_overlay::AssSource {
+                text: ass.into(),
+                kind: ::native_overlay::SourceKind::Subtitle,
+            }],
+            ..Default::default()
+        };
+        let preview = super::super::native_overlay::system_renderer(1920, 1080, input)
+            .unwrap()
+            .frame(0.5)
+            .unwrap();
+        let burned = ffmpeg_command()
+            .args(["-v", "error", "-ss", "0.5", "-i"])
+            .arg(&output)
+            .args(["-frames:v", "1", "-vf"])
+            .arg(format!("crop={width}:{height}:{x}:{y}"))
+            .args(["-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+            .output()
+            .await
+            .unwrap()
+            .stdout;
+        assert_eq!(burned.len(), (width * height * 3) as usize);
+        // Compare brightness, which the encoder keeps per pixel; colour is
+        // shared between pixels and blurs along the edges of the letters.
+        let luma = |[r, g, b]: [f64; 3]| 0.299 * r + 0.587 * g + 0.114 * b;
+        let (mut ink, mut different) = (0, 0);
+        for row in 0..height {
+            for column in 0..width {
+                let drawn = &preview[(((y + row) * 1920 + x + column) * 4) as usize..][..4];
+                // Straight RGBA over the blank clip's black.
+                let alpha = f64::from(drawn[3]) / 255.0;
+                let expected = luma([0, 1, 2].map(|channel| f64::from(drawn[channel]) * alpha));
+                let pixel = &burned[((row * width + column) * 3) as usize..][..3];
+                let actual = luma([0, 1, 2].map(|channel| f64::from(pixel[channel])));
+                ink += usize::from(expected > 64.0);
+                different += usize::from((expected - actual).abs() > 32.0);
+            }
+        }
+        assert!(ink > 20_000, "the preview draws no text: {ink} pixels");
+        assert!(
+            different * 100 < ink,
+            "{different} burned pixels differ from the preview's {ink} text pixels"
+        );
     }
 
     /// Render 1-3 s of a red 30 FPS clip and 0.5-2.5 s of a larger blue

@@ -1,7 +1,6 @@
 //! Stream native-rendered straight RGBA into FFmpeg without video-sized temp files.
 
 use std::{
-    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -22,6 +21,16 @@ use super::runner::{
 
 const FRAME_BUFFERS: usize = 3;
 
+/// The one way previews and burns create a renderer: with the system font
+/// manager and no supplied font files, so a burn draws what was previewed.
+pub fn system_renderer(
+    width: u32,
+    height: u32,
+    input: native_overlay::RenderInput,
+) -> Result<native_overlay::Renderer, String> {
+    native_overlay::Renderer::new(width, height, input, Vec::new())
+}
+
 /// Stage measurements overlap across producer and FFmpeg; never sum them to
 /// estimate wall time. `ffmpeg_drain` is post-stdin completion/muxing, not pure
 /// encoder CPU time. Disabled for normal jobs unless debug logging is enabled.
@@ -40,7 +49,6 @@ pub struct OverlayRunStats {
 
 pub struct OverlaySpec {
     pub input: native_overlay::RenderInput,
-    pub font_paths: Vec<PathBuf>,
     pub width: u32,
     pub height: u32,
     pub fps: f64,
@@ -163,12 +171,7 @@ async fn run_overlay_inner<R: ProgressReporterTrait>(
             }
             // Renderer need not be Send: construct and use on one blocking thread.
             let initialization = profile.then(Instant::now);
-            let mut renderer = native_overlay::Renderer::new(
-                spec.width,
-                spec.height,
-                spec.input,
-                spec.font_paths,
-            )?;
+            let mut renderer = system_renderer(spec.width, spec.height, spec.input)?;
             renderer.set_profiling(profile);
             if let Some(initialization) = initialization {
                 stats.initialization = initialization.elapsed();
@@ -283,7 +286,6 @@ mod tests {
     fn spec() -> OverlaySpec {
         OverlaySpec {
             input: native_overlay::RenderInput::default(),
-            font_paths: Vec::new(),
             width: 1920,
             height: 1080,
             fps: 60.0,

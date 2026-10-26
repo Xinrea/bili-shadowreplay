@@ -473,7 +473,6 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
             }],
             images: image_events(&plan.images, options.opacity),
         },
-        font_paths: Vec::new(),
         width: 1920,
         height: 1080,
         fps,

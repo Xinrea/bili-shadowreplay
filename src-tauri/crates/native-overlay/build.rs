@@ -3,6 +3,13 @@ fn main() {
     // Skia 0.82's prebuilt ICU references Windows registry APIs.
     if target == "windows" {
         println!("cargo:rustc-link-lib=advapi32");
+        // The upstream Windows archive's ICU shares symbol names with V8's
+        // ICU, which MSVC rejects at link time. Fail before the long build.
+        println!("cargo:rerun-if-env-changed=SKIA_BINARIES_URL");
+        assert!(
+            std::env::var_os("SKIA_BINARIES_URL").is_some(),
+            "Windows native-overlay requires the patched Skia archive: run `node scripts/prepare-windows-skia.mjs` and set the SKIA_BINARIES_URL it prints; see docs/development/native-overlay.md"
+        );
     }
     if target == "linux" {
         // The upstream Linux archive compiles out COLRv1 and bundles an ICU

@@ -17,6 +17,8 @@ Windows 下分为两个版本，分别是 `cpu` 和 `cuda` 版本。区别在于
 
 默认运行为 `cpu` 版本，使用 `yarn tauri dev --features cuda` 命令运行 `cuda` 版本。
 
+首次构建前须运行 `node scripts/prepare-windows-skia.mjs` 并按输出设置 `SKIA_BINARIES_URL`，以避免 Skia 与 V8 内置 ICU 的链接冲突，详见 [原生弹幕渲染构建](../docs/development/native-overlay.md#windows处理-skia-内置-icu-的符号冲突)。
+
 在运行前，须要安装以下依赖：
 
 1. 安装 LLVM 且配置相关环境变量，详情见 [LLVM Windows Setup](https://llvm.org/docs/GettingStarted.html#building-llvm-on-windows)；

@@ -15,10 +15,11 @@ use skia_safe::{
     ImageInfo, Paint, Rect, Surface,
 };
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     io::Read,
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -226,6 +227,22 @@ impl Fonts {
     }
 }
 
+/// Cumulative renderer work. Durations are collected only while profiling is
+/// enabled, and exclude PNG calls. Cache counters include PNG cache accesses.
+#[derive(Clone, Debug, Default)]
+pub struct RenderStats {
+    pub frames: u64,
+    pub text_layout: Duration,
+    pub text_raster: Duration,
+    pub image_prepare: Duration,
+    pub composition: Duration,
+    pub readback: Duration,
+    pub text_cache_hits: u64,
+    pub text_cache_misses: u64,
+    pub image_cache_hits: u64,
+    pub image_cache_misses: u64,
+}
+
 /// CPU-only Skia compositor. Owns fonts, one output surface and a 64 MiB
 /// byte-accounted LRU, not a raster for every event in a movie.
 pub struct Renderer {
@@ -238,6 +255,12 @@ pub struct Renderer {
     timeline: Timeline,
     image_timeline: Timeline,
     cache: ByteLru<Sprite>,
+    image_sprite_ids: Vec<usize>,
+    active_text: Vec<usize>,
+    active_images: Vec<usize>,
+    placed: Vec<(i32, u8, Rect)>,
+    profiling: bool,
+    stats: RenderStats,
     missing_glyphs: usize,
 }
 
@@ -270,6 +293,21 @@ impl Renderer {
             validate_image(image)?;
         }
         images.sort_by(|a, b| a.start.total_cmp(&b.start));
+        // Paths name immutable preprocessed assets for this renderer. Intern
+        // once, using the actual (ceil-rounded) output raster dimensions, not
+        // scheduling, placement, opacity or per-frame filesystem inspection.
+        let mut sprite_ids = HashMap::new();
+        let mut image_sprite_ids = Vec::with_capacity(images.len());
+        for image in &images {
+            let (w, h, _) = raster_bytes(
+                image.width * width as f32 / 1920.0,
+                image.height * height as f32 / 1080.0,
+                CACHE_BYTES,
+            )?;
+            let next = events.len() + sprite_ids.len();
+            let id = *sprite_ids.entry((image.path.clone(), w, h)).or_insert(next);
+            image_sprite_ids.push(id);
+        }
         let timeline = Timeline::new(events.iter().map(|e| (e.start, e.end)).collect());
         let image_timeline = Timeline::new(images.iter().map(|e| (e.start, e.end)).collect());
         Ok(Self {
@@ -282,6 +320,12 @@ impl Renderer {
             timeline,
             image_timeline,
             cache: ByteLru::new(CACHE_BYTES),
+            image_sprite_ids,
+            active_text: Vec::new(),
+            active_images: Vec::new(),
+            placed: Vec::new(),
+            profiling: false,
+            stats: RenderStats::default(),
             missing_glyphs: 0,
         })
     }
@@ -292,28 +336,68 @@ impl Renderer {
         self.missing_glyphs
     }
 
+    /// Enable stage timings for subsequent RGBA frames, without resetting stats.
+    /// Disabled by default; PNG rendering never contributes timings or frames.
+    pub fn set_profiling(&mut self, enabled: bool) {
+        self.profiling = enabled;
+    }
+
+    /// Snapshot cumulative work; completed RGBA frames and cache accesses count
+    /// even when timings are disabled. No per-frame logging is performed.
+    pub fn stats(&self) -> RenderStats {
+        self.stats.clone()
+    }
+
     /// Straight (unpremultiplied) RGBA8888, tightly packed row-major.
     pub fn frame(&mut self, time: f64) -> Result<Vec<u8>, String> {
-        self.compose(time)?;
         let mut bytes = vec![0; self.width as usize * self.height as usize * 4];
+        self.frame_into(time, &mut bytes)?;
+        Ok(bytes)
+    }
+
+    /// Render into exactly width × height × 4 bytes of straight RGBA8888.
+    /// Invalid lengths are rejected before composition or timeline/cache changes.
+    pub fn frame_into(&mut self, time: f64, bytes: &mut [u8]) -> Result<(), String> {
+        let expected = self.width as usize * self.height as usize * 4;
+        if bytes.len() != expected {
+            return Err(format!(
+                "RGBA buffer length {} does not match expected {expected}",
+                bytes.len()
+            ));
+        }
+        let profile = self.profiling;
+        let started = profile.then(Instant::now);
+        let preparation = self.stats.text_layout + self.stats.text_raster + self.stats.image_prepare;
+        let result = self.compose(time, profile);
+        if let Some(started) = started {
+            let nested = self.stats.text_layout + self.stats.text_raster + self.stats.image_prepare
+                - preparation;
+            self.stats.composition += started.elapsed().saturating_sub(nested);
+        }
+        result?;
+        let started = profile.then(Instant::now);
         let info = ImageInfo::new(
             (self.width as i32, self.height as i32),
             ColorType::RGBA8888,
             AlphaType::Unpremul,
             None,
         );
-        if !self
+        let read = self
             .surface
-            .read_pixels(&info, &mut bytes, self.width as usize * 4, (0, 0))
-        {
+            .read_pixels(&info, bytes, self.width as usize * 4, (0, 0));
+        if let Some(started) = started {
+            self.stats.readback += started.elapsed();
+        }
+        if !read {
             return Err("Skia straight RGBA readback failed".into());
         }
-        Ok(bytes)
+        self.stats.frames += 1;
+        Ok(())
     }
 
     /// PNG from exactly the same compositor used by `frame`.
     pub fn png(&mut self, time: f64) -> Result<Vec<u8>, String> {
-        self.compose(time)?;
+        self.compose(time, false)?;
         self.surface
             .image_snapshot()
             .encode(None, EncodedImageFormat::PNG, None)
@@ -321,10 +405,12 @@ impl Renderer {
             .ok_or_else(|| "PNG encoding failed".into())
     }
 
-    fn text_sprite(&mut self, id: usize) -> Result<Sprite, String> {
+    fn text_sprite(&mut self, id: usize, profile: bool) -> Result<Sprite, String> {
         if let Some(sprite) = self.cache.get(id) {
+            self.stats.text_cache_hits += 1;
             return Ok(sprite);
         }
+        self.stats.text_cache_misses += 1;
         let event = &self.events[id];
         let style = &event.style;
         let sx = self.width as f32 / event.res.0 * style.scale_x;
@@ -337,10 +423,14 @@ impl Renderer {
         if !wrap.is_finite() || wrap <= 0.0 {
             return Err("Subtitle margins leave no layout width".into());
         }
+        let started = profile.then(Instant::now);
         let mut paragraph = self.fonts.paragraph(event, false);
         paragraph.layout(wrap);
         let layout_width = paragraph.longest_line().ceil().max(1.0) + 1.0;
         paragraph.layout(layout_width);
+        if let Some(started) = started {
+            self.stats.text_layout += started.elapsed();
+        }
         let missing = paragraph.unresolved_glyphs().unwrap_or(0);
         if missing > 0 {
             self.missing_glyphs = self.missing_glyphs.saturating_add(missing);
@@ -360,12 +450,21 @@ impl Renderer {
             size.1 + pad * 2.0,
             MAX_TEXT_RASTER_BYTES,
         )?;
+        let started = profile.then(Instant::now);
         let mut fill = surface(w, h, CACHE_BYTES)?;
         fill.canvas().translate((pad, pad)).scale((sx, sy));
         paragraph.paint(fill.canvas(), (0.0, 0.0));
         let fill = fill.image_snapshot();
+        if let Some(started) = started {
+            self.stats.text_raster += started.elapsed();
+        }
+        let started = profile.then(Instant::now);
         let mut mask = self.fonts.paragraph(event, true);
         mask.layout(layout_width);
+        if let Some(started) = started {
+            self.stats.text_layout += started.elapsed();
+        }
+        let started = profile.then(Instant::now);
         let mut alpha = surface(w, h, CACHE_BYTES)?;
         alpha.canvas().translate((pad, pad)).scale((sx, sy));
         mask.paint(alpha.canvas(), (0.0, 0.0));
@@ -434,15 +533,21 @@ impl Renderer {
             size,
             pad,
         };
+        if let Some(started) = started {
+            self.stats.text_raster += started.elapsed();
+        }
         self.cache.insert(id, sprite.clone(), bytes);
         Ok(sprite)
     }
 
-    fn image_sprite(&mut self, id: usize) -> Result<Sprite, String> {
-        let key = self.events.len() + id;
+    fn image_sprite(&mut self, id: usize, profile: bool) -> Result<Sprite, String> {
+        let key = self.image_sprite_ids[id];
         if let Some(sprite) = self.cache.get(key) {
+            self.stats.image_cache_hits += 1;
             return Ok(sprite);
         }
+        self.stats.image_cache_misses += 1;
+        let started = profile.then(Instant::now);
         let event = &self.images[id];
         let bytes = read_bounded(&event.path, 32 * 1024 * 1024)?;
         let image = Image::from_encoded(Data::new_copy(&bytes))
@@ -477,28 +582,33 @@ impl Renderer {
             size,
             pad: 0.0,
         };
+        if let Some(started) = started {
+            self.stats.image_prepare += started.elapsed();
+        }
         self.cache.insert(key, sprite.clone(), bytes);
         Ok(sprite)
     }
 
-    fn compose(&mut self, time: f64) -> Result<(), String> {
+    fn compose(&mut self, time: f64, profile: bool) -> Result<(), String> {
         if !time.is_finite() {
             return Err("Frame time must be finite".into());
         }
         self.surface.canvas().clear(Color::TRANSPARENT);
-        let mut active = self.timeline.at(time).to_vec();
-        active.sort_by(|a, b| {
+        self.active_text.clear();
+        self.active_text.extend_from_slice(self.timeline.at(time));
+        self.active_text.sort_by(|a, b| {
             self.events[*a]
                 .layer
                 .cmp(&self.events[*b].layer)
                 .then(self.events[*a].order.cmp(&self.events[*b].order))
         });
-        let mut placed: Vec<(i32, u8, Rect)> = Vec::new();
-        for id in active {
+        self.placed.clear();
+        for index in 0..self.active_text.len() {
+            let id = self.active_text[index];
             if self.events[id].runs.is_empty() {
                 continue;
             }
-            let sprite = self.text_sprite(id)?;
+            let sprite = self.text_sprite(id, profile)?;
             let event = &self.events[id];
             let (ax, ay) = alignment(event.style.alignment);
             let (xscale, yscale) = (
@@ -538,8 +648,8 @@ impl Renderer {
             rect.offset(anchor);
             let mut dy = 0.0;
             if event.kind == SourceKind::Subtitle && event.movement.is_none() {
-                dy = stack(&mut rect, event.layer, event.style.alignment, &placed);
-                placed.push((event.layer, event.style.alignment, rect));
+                dy = stack(&mut rect, event.layer, event.style.alignment, &self.placed);
+                self.placed.push((event.layer, event.style.alignment, rect));
             }
             let canvas = self.surface.canvas();
             canvas.save();
@@ -556,9 +666,12 @@ impl Renderer {
             );
             canvas.restore();
         }
-        let active = self.image_timeline.at(time).to_vec();
-        for id in active {
-            let sprite = self.image_sprite(id)?;
+        self.active_images.clear();
+        self.active_images
+            .extend_from_slice(self.image_timeline.at(time));
+        for index in 0..self.active_images.len() {
+            let id = self.active_images[index];
+            let sprite = self.image_sprite(id, profile)?;
             let event = &self.images[id];
             let f = ((time - event.start) / (event.end - event.start)).clamp(0.0, 1.0) as f32;
             let x = (event.from.0 + (event.to.0 - event.from.0) * f) * self.width as f32 / 1920.0;

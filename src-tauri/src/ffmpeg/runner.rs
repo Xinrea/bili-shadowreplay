@@ -13,6 +13,8 @@ use std::{
     path::PathBuf,
     process::ExitStatus,
     process::Stdio,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use async_ffmpeg_sidecar::{
@@ -465,10 +467,44 @@ pub enum RawFrame {
     Finished,
 }
 
+/// Feed-stage wall times. Pipe writes include OS/FFmpeg backpressure, not just
+/// copying and not pure encoding time. Queue wait overlaps producer rendering.
+#[derive(Clone, Debug, Default)]
+pub struct FrameFeedStats {
+    pub frames: u64,
+    pub bytes: u64,
+    pub queue_wait: Duration,
+    pub pipe_write: Duration,
+    pub(crate) feed_finished_at: Option<Instant>,
+}
+
 pub struct RawFrameReceiver {
     pub receiver: mpsc::Receiver<Result<RawFrame, String>>,
     pub frame_bytes: usize,
     pub frame_count: u64,
+    /// Return ownership only after write_all has consumed the entire frame.
+    /// Dropping this sender must wake a producer waiting for a reusable buffer.
+    pub recycle: Option<mpsc::Sender<Vec<u8>>>,
+    pub stats: Option<Arc<Mutex<FrameFeedStats>>>,
+}
+
+struct FeedProfile {
+    destination: Option<Arc<Mutex<FrameFeedStats>>>,
+    value: FrameFeedStats,
+}
+
+impl FeedProfile {
+    fn start(&self) -> Option<Instant> {
+        self.destination.as_ref().map(|_| Instant::now())
+    }
+}
+
+impl Drop for FeedProfile {
+    fn drop(&mut self) {
+        if let Some(destination) = &self.destination {
+            *destination.lock().unwrap_or_else(|e| e.into_inner()) = self.value.clone();
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -488,11 +524,17 @@ async fn feed_raw_frames(
     };
     let mut stdin = stdin.ok_or_else(|| FrameFeedError::Stream("stdin pipe unavailable".into()))?;
     let mut written = 0;
+    let mut profile = FeedProfile {
+        destination: frames.stats.take(),
+        value: FrameFeedStats::default(),
+    };
     loop {
-        let message = frames
-            .receiver
-            .recv()
-            .await
+        let started = profile.start();
+        let received = frames.receiver.recv().await;
+        if let Some(started) = started {
+            profile.value.queue_wait += started.elapsed();
+        }
+        let message = received
             .ok_or_else(|| {
                 FrameFeedError::Stream("raw-frame producer closed without finishing".into())
             })?
@@ -504,8 +546,20 @@ async fn feed_raw_frames(
                         "invalid raw-frame size or count".into(),
                     ));
                 }
-                stdin.write_all(&bytes).await?;
+                let started = profile.start();
+                let result = stdin.write_all(&bytes).await;
+                if let Some(started) = started {
+                    profile.value.pipe_write += started.elapsed();
+                }
+                result?;
                 written += 1;
+                profile.value.frames += 1;
+                profile.value.bytes += bytes.len() as u64;
+                if let Some(recycle) = &frames.recycle {
+                    // Closed means the producer has already finished or failed.
+                    // Never await here: the last frames may have no consumer.
+                    let _ = recycle.try_send(bytes);
+                }
             }
             RawFrame::Finished => {
                 if written != frames.frame_count {
@@ -515,6 +569,9 @@ async fn feed_raw_frames(
                     )));
                 }
                 stdin.shutdown().await?;
+                if profile.destination.is_some() {
+                    profile.value.feed_finished_at = Some(Instant::now());
+                }
                 return Ok(());
             }
         }
@@ -788,7 +845,51 @@ mod tests {
             receiver,
             frame_bytes,
             frame_count,
+            recycle: None,
+            stats: None,
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn raw_frames_return_the_same_owned_allocation_after_writing() {
+        let (sender, receiver) = mpsc::channel(1);
+        let (recycle, mut recycled) = mpsc::channel(1);
+        let stats = Arc::new(Mutex::new(FrameFeedStats::default()));
+        let mut input = raw_receiver(receiver, 4096, 8);
+        input.recycle = Some(recycle);
+        input.stats = Some(stats.clone());
+        let producer = async move {
+            let mut bytes = vec![0u8; 4096];
+            let pointer = bytes.as_ptr() as usize;
+            for i in 0..8 {
+                bytes.fill(i);
+                sender.send(Ok(RawFrame::Frame(bytes))).await.unwrap();
+                bytes = recycled.recv().await.unwrap();
+                assert_eq!(
+                    bytes.as_ptr() as usize,
+                    pointer,
+                    "writer must return ownership, not clone"
+                );
+                assert!(bytes.iter().all(|b| *b == i));
+            }
+            sender.send(Ok(RawFrame::Finished)).await.unwrap();
+        };
+        let mut command = Command::new("sh");
+        command.args(["-c", "cat >/dev/null"]);
+        let run = FfmpegJob::new();
+        let (_, output) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(
+                producer,
+                run.run_with_frames(command, Some(input), None::<&RecordingReporter>)
+            )
+        })
+        .await
+        .unwrap();
+        output.unwrap();
+        let stats = stats.lock().unwrap();
+        assert_eq!((stats.frames, stats.bytes), (8, 8 * 4096));
+        assert!(stats.feed_finished_at.is_some());
     }
 
     #[cfg(unix)]

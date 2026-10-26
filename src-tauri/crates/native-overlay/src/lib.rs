@@ -43,4 +43,4 @@ pub struct RenderInput {
 /// rules, Skia or bundled assets change.
 pub const RENDERER_VERSION: &str = "skia082-noto-e20cbc2-unicode16-v2";
 
-pub use renderer::Renderer;
+pub use renderer::{RenderStats, Renderer};

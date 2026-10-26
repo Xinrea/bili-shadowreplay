@@ -93,7 +93,12 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
-          key: ${{ matrix.target || matrix.features || 'native' }}
+          # sherpa-onnx-sys downloads its libraries beside, not inside, its
+          # OUT_DIR. Keep them with the build script's cached output, or a
+          # restored build links against a folder that no longer exists.
+          cache-directories: src-tauri/target/sherpa-onnx-prebuilt
+          # Bumped so caches saved without that folder are not restored.
+          key: ${{ matrix.target || matrix.features || 'native' }}-sherpa-prebuilt
 
       - name: Install CUDA toolkit (Windows CUDA only)
         if: matrix.features == 'cuda'

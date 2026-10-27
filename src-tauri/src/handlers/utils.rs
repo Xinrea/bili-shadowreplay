@@ -676,33 +676,39 @@ mod tests {
 #[cfg(all(test, target_os = "macos"))]
 mod disk_info_tests {
     use super::*;
+    use std::ffi::{CStr, CString};
+    use std::os::unix::ffi::OsStrExt;
 
     #[tokio::test]
     async fn disk_info_reads_the_file_system_of_a_folder_to_be() {
         let directory = tempfile::tempdir().unwrap();
-        let info = get_disk_info_inner(directory.path().join("to/be"))
-            .await
-            .unwrap();
-        assert!(info.total > 0 && info.free > 0 && info.free <= info.total);
-        assert!(!info.disk.is_empty());
-        // About the free space a listing of every volume reports for the one
-        // holding the folder, which also counts what macOS can purge. Not
-        // that of the system volume at `/`, which a match by path prefix
-        // took for folders such as `/tmp` and `/var`, nearly full by design.
-        let disks = sysinfo::Disks::new_with_refreshed_list();
-        let listed = disks
-            .list()
-            .iter()
-            .find(|disk| disk.mount_point().to_string_lossy() == info.disk)
-            .map(|disk| disk.available_space())
-            .unwrap();
-        // Within 15%: the two readings count purgeable space differently, and
-        // drift about 11% apart on a busy disk.
-        assert!(
-            listed.abs_diff(info.free) < listed / 100 * 15,
-            "{listed} {}",
-            info.free
+        let target = directory.path().join("to/be");
+        assert!(!target.exists());
+
+        // Read the existing parent directly to verify that the missing child
+        // resolves to its file system, not another volume selected by prefix.
+        let path = CString::new(directory.path().as_os_str().as_bytes()).unwrap();
+        let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
+        // SAFETY: `path` is a valid C string and `stats` is writable.
+        assert_eq!(
+            unsafe { libc::statfs(path.as_ptr(), stats.as_mut_ptr()) },
+            0
         );
-        assert_ne!(info.disk, "/");
+        // SAFETY: the successful call initialized `stats`, including the
+        // NUL-terminated mount point.
+        let stats = unsafe { stats.assume_init() };
+        let mount_point = unsafe { CStr::from_ptr(stats.f_mntonname.as_ptr()) };
+
+        let info = get_disk_info_inner(target.clone()).await.unwrap();
+        assert!(
+            !target.exists(),
+            "querying disk info must not create the path"
+        );
+        assert_eq!(info.disk, mount_point.to_string_lossy());
+        assert_eq!(info.total, stats.f_blocks * u64::from(stats.f_bsize));
+        // Free space can change between reads or be zero on a full volume.
+        // sysinfo's macOS estimate also includes reclaimable capacity, so it
+        // is not an oracle for statfs's immediately available blocks.
+        assert!(info.total > 0 && info.free <= info.total);
     }
 }

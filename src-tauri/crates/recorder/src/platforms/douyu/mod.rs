@@ -26,19 +26,34 @@ pub struct DouyuExtra {
     selected_cdn: Arc<RwLock<Option<String>>>,
     avoid_cdn: Arc<RwLock<Option<String>>>,
     encryption_key: api::EncryptionCache,
-    resolved_room_id: Arc<RwLock<Option<u64>>>,
+    resolved_room_id: Arc<RwLock<Option<api::RoomIdResolution>>>,
 }
 
 impl DouyuRecorder {
     async fn room_numeric_id(&self) -> Result<u64, RecorderError> {
-        if let Some(room_id) = *self.extra.resolved_room_id.read().await {
-            return Ok(room_id);
+        self.room_numeric_id_at(api::MOBILE_ROOM_BASE).await
+    }
+
+    async fn room_numeric_id_at(&self, mobile_base: &str) -> Result<u64, RecorderError> {
+        // Serialize lookups so polling and danmu cannot race to refresh an
+        // expired fallback. Confirmed mappings never need another request.
+        let mut cached = self.extra.resolved_room_id.write().await;
+        if let Some(resolved) = cached.as_ref().filter(|resolved| resolved.is_valid()) {
+            return Ok(resolved.room_id);
         }
 
-        let room_id = api::resolve_room_id(&self.client, &self.account, &self.room_id)
-            .await
-            .map_err(api::DouyuApiError::into_recorder_error)?;
-        *self.extra.resolved_room_id.write().await = Some(room_id);
+        let resolved =
+            api::resolve_room_id_at(&self.client, &self.account, &self.room_id, mobile_base)
+                .await
+                .map_err(api::DouyuApiError::into_recorder_error)?;
+        let room_id = resolved.room_id;
+        if room_id.to_string() != self.room_id {
+            log::info!(
+                "[Douyu][{}] Room handle resolves to room id {room_id}",
+                self.room_id
+            );
+        }
+        *cached = Some(resolved);
         Ok(room_id)
     }
 
@@ -219,6 +234,113 @@ impl RecorderTrait for DouyuRecorder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn temporary_room_id_fallback_recovers_without_recreating_the_recorder() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Both server errors and successful challenge pages are temporary.
+        for failed_page in [
+            ResponseTemplate::new(500),
+            ResponseTemplate::new(200).set_body_string("<html>verification required</html>"),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/6657"))
+                .respond_with(failed_page)
+                .with_priority(1)
+                .up_to_n_times(1)
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/6657"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string(r#"roomInfo":{"rid":6979222,"vipId":6657}"#),
+                )
+                .with_priority(2)
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let (events, _) = broadcast::channel(4);
+            let recorder = DouyuRecorder::new(
+                "6657",
+                &Account::default(),
+                std::env::temp_dir(),
+                events,
+                Arc::new(AtomicU64::new(10)),
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                recorder.room_numeric_id_at(&server.uri()).await.unwrap(),
+                6657
+            );
+            // Repeated lookups must reuse the fallback during its backoff.
+            // Always use the mock endpoint, even if caching regresses.
+            assert_eq!(
+                recorder.room_numeric_id_at(&server.uri()).await.unwrap(),
+                6657
+            );
+
+            // Advance only the cache clock; resume before any network I/O.
+            tokio::time::pause();
+            tokio::time::advance(std::time::Duration::from_secs(61)).await;
+            tokio::time::resume();
+            assert_eq!(
+                recorder.room_numeric_id_at(&server.uri()).await.unwrap(),
+                6979222
+            );
+
+            tokio::time::pause();
+            tokio::time::advance(std::time::Duration::from_secs(61)).await;
+            tokio::time::resume();
+            assert_eq!(
+                recorder.room_numeric_id_at(&server.uri()).await.unwrap(),
+                6979222
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn confirmed_room_id_equal_to_the_input_is_cached_without_expiring() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/182102"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(r#"roomInfo":{"rid":182102,"vipId":0}"#),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (events, _) = broadcast::channel(4);
+        let recorder = DouyuRecorder::new(
+            "182102",
+            &Account::default(),
+            std::env::temp_dir(),
+            events,
+            Arc::new(AtomicU64::new(10)),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            recorder.room_numeric_id_at(&server.uri()).await.unwrap(),
+            182102
+        );
+        tokio::time::pause();
+        tokio::time::advance(std::time::Duration::from_secs(61)).await;
+        tokio::time::resume();
+        assert_eq!(
+            recorder.room_numeric_id_at(&server.uri()).await.unwrap(),
+            182102
+        );
+    }
 
     #[tokio::test]
     async fn cdn_rotation_is_cleared_when_a_live_ends_or_the_user_stops() {

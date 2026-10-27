@@ -25,6 +25,9 @@ pub const DEFAULT_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:154.0) Gecko/20100101 Firefox/154.0";
 const KEY_FALLBACK_TTL_SECS: u64 = 24 * 60 * 60;
 const STREAM_SELECTION_TIMEOUT: Duration = Duration::from_secs(30);
+pub(super) const MOBILE_ROOM_BASE: &str = "https://m.douyu.com";
+const ROOM_RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
+const ROOM_RESOLVE_RETRY_DELAY: Duration = Duration::from_secs(60);
 // The highest source quality can exceed 20 Mbps. The tested 4 Mbps tier
 // records reliably without forcing users to opt into the P2P web player.
 const PREFERRED_MAX_BITRATE_KBPS: u64 = 4000;
@@ -153,35 +156,70 @@ fn extract_real_room_id(body: &str) -> Option<u64> {
         .and_then(|value| value.as_str().parse().ok())
 }
 
-/// Resolve a numeric room id from a normal id or a Douyu vanity URL/path.
-///
-/// The public RoomApi only accepts numeric ids. Douyu's mobile page embeds the
-/// numeric id in `roomInfo`, so resolve a short name once before polling it.
+/// Read an explicit `rid` from a room URL query, e.g. a topic page.
 fn numeric_rid_query(room_id: &str) -> Option<u64> {
     let query = room_id.split_once('?')?.1.split('#').next()?;
     url::form_urlencoded::parse(query.as_bytes())
         .find_map(|(key, value)| (key == "rid").then(|| value.parse::<u64>().ok()).flatten())
 }
 
+/// Confirmed mappings last for the recorder's lifetime. A numeric fallback
+/// only suppresses lookups briefly, so transient failures can recover.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RoomIdResolution {
+    pub room_id: u64,
+    retry_at: Option<Instant>,
+}
+
+impl RoomIdResolution {
+    fn confirmed(room_id: u64) -> Self {
+        Self {
+            room_id,
+            retry_at: None,
+        }
+    }
+
+    fn fallback(room_id: u64) -> Self {
+        Self {
+            room_id,
+            retry_at: Some(Instant::now() + ROOM_RESOLVE_RETRY_DELAY),
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.retry_at
+            .is_none_or(|retry_at| Instant::now() < retry_at)
+    }
+}
+
+/// Resolve the numeric room id for a room id, URL or vanity path.
+///
+/// The id in a Douyu room URL is a page handle, not always the room's own id.
+/// Short ids such as `6657` (玩机器) or `6200` (完美世界电竞频道赛事房) are
+/// 靓号/vipIds that the room page maps to a different numeric id, and the
+/// public RoomApi only knows those real ids: asked for the handle it answers
+/// with placeholder metadata (default cover, random owner name, epoch start
+/// time) or 404, so the room looks offline while it is streaming. Douyu's
+/// mobile page embeds the real id in `roomInfo`. Recorder callers retain the
+/// resolution status so a temporary numeric fallback can be retried.
 pub async fn resolve_room_id(
     client: &Client,
     account: &Account,
     room_id: &str,
 ) -> Result<u64, DouyuApiError> {
-    resolve_room_id_at(client, account, room_id, "https://m.douyu.com").await
+    resolve_room_id_at(client, account, room_id, MOBILE_ROOM_BASE)
+        .await
+        .map(|resolved| resolved.room_id)
 }
 
-async fn resolve_room_id_at(
+pub(super) async fn resolve_room_id_at(
     client: &Client,
     account: &Account,
     room_id: &str,
     mobile_base: &str,
-) -> Result<u64, DouyuApiError> {
+) -> Result<RoomIdResolution, DouyuApiError> {
     if let Some(room_id) = numeric_rid_query(room_id) {
-        return Ok(room_id);
-    }
-    if let Ok(room_id) = room_id.trim().parse::<u64>() {
-        return Ok(room_id);
+        return Ok(RoomIdResolution::confirmed(room_id));
     }
 
     let path = room_id
@@ -199,10 +237,30 @@ async fn resolve_room_id_at(
             detail: "room id/path is empty".to_string(),
         });
     }
-    if let Ok(room_id) = path.parse::<u64>() {
-        return Ok(room_id);
-    }
 
+    match resolve_room_path(client, account, path, mobile_base).await {
+        Ok(room_id) => Ok(RoomIdResolution::confirmed(room_id)),
+        // Keep direct numeric rooms usable, but do not mistake this fallback
+        // for a confirmed mapping: the recorder retries it after a backoff.
+        Err(error) => match path.parse::<u64>() {
+            Ok(room_id) => {
+                log::warn!(
+                    "[Douyu] Could not resolve room handle {path} on the mobile page: {error}; using it as the room id"
+                );
+                Ok(RoomIdResolution::fallback(room_id))
+            }
+            Err(_) => Err(error),
+        },
+    }
+}
+
+/// Read the real room id from the mobile room page for `path`.
+async fn resolve_room_path(
+    client: &Client,
+    account: &Account,
+    path: &str,
+    mobile_base: &str,
+) -> Result<u64, DouyuApiError> {
     let endpoint = "roomResolve";
     let mut headers = HeaderMap::new();
     headers.insert(USER_AGENT, HeaderValue::from_static(DEFAULT_USER_AGENT));
@@ -226,7 +284,9 @@ async fn resolve_room_id_at(
     }
     let request = client
         .get(format!("{}/{path}", mobile_base.trim_end_matches('/')))
-        .headers(headers);
+        .headers(headers)
+        // Reqwest's total timeout covers connection, headers and body reads.
+        .timeout(ROOM_RESOLVE_TIMEOUT);
     let (status, body) = send_text(request, endpoint).await?;
     if !status.is_success() {
         return Err(DouyuApiError::Http { endpoint, status });
@@ -1545,7 +1605,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(room_id, 123456);
+        assert_eq!(room_id.room_id, 123456);
     }
 
     #[test]
@@ -1554,11 +1614,184 @@ mod tests {
             extract_real_room_id(r#"<script>roomInfo":{"rid":987654,"roomName":"test"}</script>"#),
             Some(987654)
         );
+        // The page also nests `roomInfo` inside `roomInfo`; the inner object
+        // carries the id for 靓号 rooms.
+        assert_eq!(
+            extract_real_room_id(
+                r#"roomInfo":{"roomInfo":{"rid":6979222,"vipId":6657,"roomName":"room"}}"#
+            ),
+            Some(6979222)
+        );
         assert_eq!(
             extract_real_room_id(r#"roomInfo&quot;:{&quot;rid&quot;:123456}"#),
             Some(123456)
         );
         assert_eq!(extract_real_room_id("roomInfo: {}"), None);
+    }
+
+    /// A short numeric handle (靓号) is not the room id that RoomApi and the
+    /// play API expect; the mobile page maps it to the real one.
+    #[tokio::test]
+    async fn numeric_vip_handle_is_resolved_to_the_real_room_id() {
+        use wiremock::matchers::{method, path as url_path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        for (handle, real_id) in [(6657, 6979222), (6200, 6829849)] {
+            Mock::given(method("GET"))
+                .and(url_path(format!("/{handle}")))
+                .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                    r#"<script>roomInfo":{{"roomInfo":{{"rid":{real_id},"vipId":{handle}}}}}</script>"#,
+                )))
+                .expect(2)
+                .mount(&server)
+                .await;
+
+            // Cover both old database entries and newly pasted room URLs.
+            for input in [
+                handle.to_string(),
+                format!("https://www.douyu.com/{handle}?dyshid=share"),
+            ] {
+                let resolved =
+                    resolve_room_id_at(&Client::new(), &Account::default(), &input, &server.uri())
+                        .await
+                        .unwrap();
+                assert_eq!(resolved.room_id, real_id);
+                assert!(resolved.retry_at.is_none());
+            }
+        }
+    }
+
+    /// Resolution must never break a room that RoomApi can already read, so a
+    /// failed page request falls back to the numeric handle itself.
+    #[tokio::test]
+    async fn numeric_handle_falls_back_to_itself_when_the_page_is_unreadable() {
+        use wiremock::matchers::{method, path as url_path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(url_path("/182102"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(url_path("/182103"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(r#"<html><title>斗鱼</title></html>"#),
+            )
+            .mount(&server)
+            .await;
+
+        for room_id in ["182102", "182103"] {
+            let resolved =
+                resolve_room_id_at(&Client::new(), &Account::default(), room_id, &server.uri())
+                    .await
+                    .unwrap();
+            assert_eq!(resolved.room_id.to_string(), room_id);
+            assert!(resolved.retry_at.is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn room_lookup_timeout_bounds_numeric_fallback_and_vanity_errors() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(r#"roomInfo":{"rid":6979222}"#)
+                    .set_delay(ROOM_RESOLVE_TIMEOUT * 2),
+            )
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let client = Client::new(); // No client-level timeout to mask the bug.
+        let account = Account::default();
+        let base = server.uri();
+        let started = Instant::now();
+        let (numeric, vanity) =
+            tokio::time::timeout(ROOM_RESOLVE_TIMEOUT + Duration::from_secs(3), async {
+                tokio::join!(
+                    resolve_room_id_at(&client, &account, "6657", &base),
+                    resolve_room_id_at(&client, &account, "short-name", &base),
+                )
+            })
+            .await
+            .expect("room-page lookups must not wait for the delayed response");
+
+        assert!(started.elapsed() >= ROOM_RESOLVE_TIMEOUT);
+        let fallback = numeric.unwrap();
+        assert_eq!(fallback.room_id, 6657);
+        assert!(fallback.retry_at.is_some());
+        assert!(
+            matches!(vanity, Err(DouyuApiError::Request { source, .. }) if source.is_timeout())
+        );
+    }
+
+    #[tokio::test]
+    async fn room_lookup_timeout_also_covers_a_stalled_response_body() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (release, wait) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            while !request.ends_with(b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).await.unwrap();
+                assert!(count > 0, "client closed before sending request headers");
+                request.extend_from_slice(&buffer[..count]);
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial")
+                .await
+                .unwrap();
+            let _ = wait.await; // Keep the response open without finishing its body.
+        });
+
+        let started = Instant::now();
+        let resolved = tokio::time::timeout(
+            ROOM_RESOLVE_TIMEOUT + Duration::from_secs(3),
+            resolve_room_id_at(&Client::new(), &Account::default(), "6657", &base),
+        )
+        .await
+        .expect("the timeout must cover body reads, not only response headers")
+        .unwrap();
+        assert!(started.elapsed() >= ROOM_RESOLVE_TIMEOUT);
+        assert_eq!(resolved.room_id, 6657);
+        assert!(resolved.retry_at.is_some());
+        let _ = release.send(());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_room_page_still_rejects_an_unresolved_vanity_path() {
+        use wiremock::matchers::{method, path as url_path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(url_path("/short-name"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let error = resolve_room_id_at(
+            &Client::new(),
+            &Account::default(),
+            "short-name",
+            &server.uri(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, DouyuApiError::Http { .. }));
     }
 
     #[test]

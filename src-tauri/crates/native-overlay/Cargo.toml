@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[features]
+metal = ["skia-safe/metal"]
+
 [dependencies]
 # 0.90 requires newer Windows MSVC symbols than our supported VS toolchain.
 skia-safe = { version = "=0.82.0", features = ["textlayout"] }

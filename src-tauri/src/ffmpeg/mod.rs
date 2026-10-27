@@ -4,9 +4,12 @@ use std::path::Path;
 pub mod audio;
 pub mod clip;
 mod danmu;
+pub mod encoding;
 pub mod general;
 pub mod hwaccel;
 pub mod metadata;
+#[cfg(target_os = "macos")]
+mod metal;
 pub mod native_overlay;
 pub mod playlist;
 pub mod project;

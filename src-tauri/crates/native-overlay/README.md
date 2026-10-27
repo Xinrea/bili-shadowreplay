@@ -106,3 +106,16 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features -
 ```
 
 The last command deliberately runs FFmpeg-dependent tests normally marked ignored; it requires a working FFmpeg with the encoders/filters used by those tests. Failed/cancelled streaming jobs drop the child/stdin, signal the blocking raster thread and release the bounded channel; they do not write a movie-sized intermediate RGBA file.
+
+## Optional Metal backend
+
+On macOS, the `metal` feature adds `Renderer::new_metal` and `render_metal`.
+They share the existing parser, fonts, scheduler, sprite cache and compositor.
+Text/effect sprites use GPU surfaces; `render_metal` submits into a caller-owned
+BGRA8Unorm texture without reading the composed frame back to the CPU. The caller
+must keep its device, queue and textures alive and retire GPU work before reusing
+textures. CPU `frame_into` and PNG callers keep their existing raster path.
+
+The application's material danmaku export uses this backend through the
+`metal-export` crate; project and subtitle exports retain their existing path.
+See `docs/development/native-overlay.md` for build and runtime dependencies.

@@ -51,6 +51,8 @@ pub struct Config {
     pub webhook_url: String,
     #[serde(default = "default_danmu_ass_options")]
     pub danmu_ass_options: Danmu2AssOptions,
+    #[serde(default)]
+    pub video_encoding: crate::ffmpeg::encoding::VideoEncodingSettings,
     #[serde(skip)]
     pub update_interval: Arc<AtomicU64>,
     #[serde(default = "default_llm_config")]
@@ -259,6 +261,7 @@ impl Config {
             whisper_language: default_whisper_language(),
             webhook_url: default_webhook_url(),
             danmu_ass_options: default_danmu_ass_options(),
+            video_encoding: Default::default(),
             update_interval: Arc::new(AtomicU64::new(default_status_check_interval())),
             llm: default_llm_config(),
             mcp_enabled: false,

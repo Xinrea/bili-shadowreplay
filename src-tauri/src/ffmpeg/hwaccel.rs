@@ -58,7 +58,7 @@ fn build_vaapi_filter(filter: &str) -> String {
 
 /// 判断编码器是否为 VAAPI。
 pub fn is_vaapi_encoder(encoder: &str) -> bool {
-    encoder == VAAPI_ENCODER
+    matches!(encoder, "h264_vaapi" | "hevc_vaapi")
 }
 
 /// 返回 VAAPI 硬件上传滤镜片段。
@@ -140,7 +140,8 @@ pub fn quality_args_with_bitrate(encoder: &str, bitrate: Option<NonZeroU32>) -> 
 
 /// 返回指定 H.264 编码器应使用的质量参数。
 pub fn quality_args_for_encoder(encoder: &str) -> &'static [&'static str] {
-    match encoder {
+    let family = encoder.replacen("hevc_", "h264_", 1);
+    match family.as_str() {
         VAAPI_ENCODER => &["-b:v", "8000k", "-maxrate", "10000k", "-bufsize", "16000k"],
         NVENC_ENCODER => &[
             "-preset", "p5", "-rc", "vbr", "-cq", "23", "-b:v", "8000k", "-maxrate", "10000k",
@@ -353,7 +354,7 @@ pub async fn list_supported_hwaccels() -> Result<Vec<String>, String> {
 /// 测试指定的编码器是否在当前硬件上真正可用
 ///
 /// 通过尝试对测试流进行编码来验证编码器可用性
-async fn test_encoder_availability(encoder: &str) -> bool {
+pub(super) async fn test_encoder_availability(encoder: &str) -> bool {
     let mut command = ffmpeg_command();
 
     // 使用合成输入源 (testsrc2) 测试编码器

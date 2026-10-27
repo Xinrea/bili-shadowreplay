@@ -4,7 +4,7 @@
   import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
   import { clickOutside } from "../lib/actions/clickOutside";
 
-  import type { Config, McpServerStatus } from "../lib/interface";
+  import type { Config, McpServerStatus, AvailableVideoEncoder } from "../lib/interface";
   import {
     Bell,
     HardDrive,
@@ -133,6 +133,14 @@
       ],
     },
     {
+      title: "弹幕压制编码",
+      icon: DiscAlbum,
+      options: [
+        { id: "video-codec", title: "视频编码", keywords: ["h264", "hevc", "h265"] },
+        { id: "video-bitrate", title: "目标码率", keywords: ["bitrate", "mbps"] },
+      ],
+    },
+    {
       title: "自动素材生成",
       icon: SquareBottomDashedScissors,
       options: [
@@ -245,7 +253,38 @@
       font_size: 36,
       opacity: 0.8,
     },
+    video_encoding: { codec: "h264", bitrate_mbps: 10, videotoolbox_speed_priority: true },
   });
+
+  let availableEncoders: AvailableVideoEncoder[] = $state([]);
+  let encodingLoading = $state(true);
+  let encodingSaving = $state(false);
+  let encodingError = $state("");
+  let encodingUsesVideoToolbox = $derived(
+    availableEncoders.some((item) => item.codec === setting_model.video_encoding.codec && item.videotoolbox),
+  );
+
+  async function loadVideoEncoders() {
+    try {
+      availableEncoders = await invoke<AvailableVideoEncoder[]>("get_available_video_encoders");
+    } catch (error) {
+      encodingError = String(error);
+    } finally {
+      encodingLoading = false;
+    }
+  }
+
+  async function saveVideoEncoding() {
+    encodingSaving = true;
+    encodingError = "";
+    try {
+      await invoke("update_video_encoding", { encoding: { ...setting_model.video_encoding } });
+    } catch (error) {
+      encodingError = String(error);
+    } finally {
+      encodingSaving = false;
+    }
+  }
 
   let showModal = $state(false);
   let show_clip_name_help = $state(false);
@@ -598,6 +637,7 @@
     await get_config();
     await Promise.all([
       loadLaunchAtLogin(),
+      loadVideoEncoders(),
       ...(TAURI_ENV || endpoint !== "" ? [loadMcpServerStatus()] : []),
     ]);
   });
@@ -1604,6 +1644,64 @@
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+
+          <div class="space-y-3">
+            <h2 class="flex items-center gap-2 text-[14px] font-semibold text-fg">
+              <DiscAlbum class="h-4 w-4 text-fg-muted" />
+              <span>弹幕压制编码</span>
+            </h2>
+            <div class="ui-card divide-y divide-line">
+              <div class="px-4 py-3" data-setting="video-codec">
+                <div class="flex items-center justify-between gap-6">
+                  <div>
+                    <h3 class="ui-label">视频编码</h3>
+                    <p class="ui-hint mt-0.5">用于素材和整场录播的弹幕压制，GOP 固定为 120 帧。</p>
+                  </div>
+                  <select class="ui-input w-40" aria-label="视频编码"
+                    bind:value={setting_model.video_encoding.codec}
+                    disabled={encodingLoading || encodingSaving || availableEncoders.length === 0}
+                    onchange={saveVideoEncoding}>
+                    <option value="h264" disabled={!availableEncoders.some((item) => item.codec === "h264")}>H.264</option>
+                    <option value="hevc" disabled={!availableEncoders.some((item) => item.codec === "hevc")}>H.265 / HEVC</option>
+                  </select>
+                </div>
+              </div>
+              <div class="px-4 py-3" data-setting="video-bitrate">
+                <div class="flex items-center justify-between gap-6">
+                  <div>
+                    <h3 class="ui-label">目标码率</h3>
+                    <p class="ui-hint mt-0.5">范围 1–100 Mbps；单次任务指定的码率优先。</p>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <input type="number" class="ui-input w-24" aria-label="目标码率"
+                      bind:value={setting_model.video_encoding.bitrate_mbps}
+                      min="1" max="100" step="1" disabled={encodingLoading || encodingSaving}
+                      onchange={saveVideoEncoding} />
+                    <span class="ui-hint">Mbps</span>
+                  </div>
+                </div>
+              </div>
+              {#if encodingUsesVideoToolbox}
+                <div class="px-4 py-3">
+                  <div class="flex items-center justify-between gap-6">
+                    <div>
+                      <h3 class="ui-label">速度优先</h3>
+                      <p class="ui-hint mt-0.5">VideoToolbox 优先提高编码速度。</p>
+                    </div>
+                    <label class="ui-switch">
+                      <input type="checkbox" aria-label="速度优先"
+                        bind:checked={setting_model.video_encoding.videotoolbox_speed_priority}
+                        disabled={encodingSaving} onchange={saveVideoEncoding} />
+                      <span></span>
+                    </label>
+                  </div>
+                </div>
+              {/if}
+              {#if encodingError}
+                <p class="px-4 py-3 text-xs text-red-500" role="alert">{encodingError}</p>
+              {/if}
             </div>
           </div>
 

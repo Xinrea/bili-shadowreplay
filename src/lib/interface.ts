@@ -408,6 +408,18 @@ export function default_profile(): Profile {
   };
 }
 
+export interface VideoEncodingSettings {
+  codec: "h264" | "hevc";
+  bitrate_mbps: number;
+  videotoolbox_speed_priority: boolean;
+}
+
+export interface AvailableVideoEncoder {
+  codec: VideoEncodingSettings["codec"];
+  encoder: string;
+  videotoolbox: boolean;
+}
+
 export interface Config {
   cache: string;
   output: string;
@@ -434,6 +446,7 @@ export interface Config {
   whisper_language: string;
   webhook_url: string;
   danmu_ass_options: Danmu2AssOptions;
+  video_encoding: VideoEncodingSettings;
   llm: LlmConfig;
 }
 

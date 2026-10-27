@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/danmu_stream", "crates/ffmpeg_utils", "crates/native-overlay", "crates/recorder", "crates/whisper-cpp-rs"]
+members = ["crates/danmu_stream", "crates/ffmpeg_utils", "crates/native-overlay", "crates/metal-export", "crates/recorder", "crates/whisper-cpp-rs"]
 resolver = "2"
 
 [workspace.lints.clippy]
@@ -78,6 +78,7 @@ sherpa-onnx = { version = "1.13.4", default-features = false, features = ["share
 sherpa-onnx = "1.13.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+metal-export = { path = "crates/metal-export" }
 libc = "0.2"
 # async-ffmpeg-sidecar enables async_zip's full feature, pulling in liblzma-sys
 # through async-compression. Without static linking, pkg-config can select

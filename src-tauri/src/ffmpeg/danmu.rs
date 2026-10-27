@@ -29,6 +29,7 @@ use crate::{
 };
 
 use super::{
+    encoding::VideoEncodingSettings,
     hwaccel,
     native_overlay::{add_overlay_input, image_events, run_overlay_command, OverlaySpec},
     runner::{ProgressMode, ProgressTotal, TempArtifact},
@@ -374,6 +375,7 @@ pub async fn encode_video_danmu<R: ProgressReporterTrait>(
     file: &Path,
     danmus: &[DanmuEntry],
     options: &Danmu2AssOptions,
+    encoding: &VideoEncodingSettings,
     bitrate: Option<NonZeroU32>,
 ) -> Result<PathBuf, String> {
     // Use fixed relative names inside a private job directory. No user/CDN path
@@ -386,7 +388,22 @@ pub async fn encode_video_danmu<R: ProgressReporterTrait>(
         reporter.update("准备弹幕和表情图片中").await;
     }
     let plan = danmu_plan(danmus, options, directory.path()).await?;
-    encode_danmu_plan(reporter, file, plan, options, bitrate, directory.path()).await
+    #[cfg(target_os = "macos")]
+    if encoding.encoder().await?.videotoolbox {
+        let output = danmu_output_path(file)?;
+        let spec = danmu_overlay_spec(file, plan, options).await?;
+        return super::metal::encode_video(reporter, file, spec, &output, encoding, bitrate).await;
+    }
+    encode_danmu_plan(
+        reporter,
+        file,
+        plan,
+        options,
+        encoding,
+        bitrate,
+        directory.path(),
+    )
+    .await
 }
 
 /// FFmpeg rebases all streams against the container start, not the first
@@ -441,31 +458,23 @@ pub(super) async fn probe_overlay_duration(
     Ok(overlay_timeline_duration(&probe, track_duration))
 }
 
-async fn encode_danmu_plan<R: ProgressReporterTrait>(
-    reporter: Option<&R>,
-    file: &Path,
-    plan: DanmuRenderPlan,
-    options: &Danmu2AssOptions,
-    bitrate: Option<NonZeroU32>,
-    directory: &Path,
-) -> Result<PathBuf, String> {
+fn danmu_output_path(file: &Path) -> Result<PathBuf, String> {
     let filename = file
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| format!("Invalid file name: {}", file.display()))?;
-    let output_path = file.with_file_name(format!("{}{filename}", constants::PREFIX_DANMAKU));
-    let input = std::path::absolute(file).map_err(|error| error.to_string())?;
-    let absolute_output = std::path::absolute(&output_path).map_err(|error| error.to_string())?;
-    log::info!("Encode video danmu task start: {}", file.display());
-    // A finite duration is necessary for the bounded overlay producer. Never
-    // silently turn a failed probe into an indefinite rawvideo input.
+    Ok(file.with_file_name(format!("{}{filename}", constants::PREFIX_DANMAKU)))
+}
+
+async fn danmu_overlay_spec(
+    file: &Path,
+    plan: DanmuRenderPlan,
+    options: &Danmu2AssOptions,
+) -> Result<OverlaySpec, String> {
     let metadata = ffmpeg_utils::extract_video_metadata(file)
         .await
         .map_err(|error| format!("Failed to inspect source video: {error}"))?;
-    let fps = danmu_output_fps(metadata.fps);
-    let encoder = hwaccel::get_x264_encoder().await;
-    let graph = overlay_graph(fps, hwaccel::is_vaapi_encoder(encoder));
-    let spec = OverlaySpec {
+    Ok(OverlaySpec {
         input: native_overlay::RenderInput {
             documents: vec![native_overlay::AssSource {
                 text: plan.ass,
@@ -475,10 +484,29 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
         },
         width: 1920,
         height: 1080,
-        fps,
+        fps: danmu_output_fps(metadata.fps),
         start: 0.0,
         duration: probe_overlay_duration(file, metadata.duration).await?,
-    };
+    })
+}
+
+async fn encode_danmu_plan<R: ProgressReporterTrait>(
+    reporter: Option<&R>,
+    file: &Path,
+    plan: DanmuRenderPlan,
+    options: &Danmu2AssOptions,
+    encoding: &VideoEncodingSettings,
+    bitrate: Option<NonZeroU32>,
+    directory: &Path,
+) -> Result<PathBuf, String> {
+    let output_path = danmu_output_path(file)?;
+    let input = std::path::absolute(file).map_err(|error| error.to_string())?;
+    let absolute_output = std::path::absolute(&output_path).map_err(|error| error.to_string())?;
+    log::info!("Encode video danmu task start: {}", file.display());
+    let spec = danmu_overlay_spec(file, plan, options).await?;
+    let fps = spec.fps;
+    let encoder = encoding.encoder().await?;
+    let graph = overlay_graph(fps, hwaccel::is_vaapi_encoder(&encoder.encoder));
     let mut command = ffmpeg_command();
     command
         .current_dir(directory)
@@ -489,8 +517,7 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
         .arg("-filter_complex")
         .arg(graph)
         .args(["-map", "[outv]", "-map", "0:a?"]);
-    hwaccel::apply_x264_encoder_only(&mut command, encoder);
-    hwaccel::apply_x264_quality_args_with_bitrate(&mut command, encoder, bitrate);
+    encoding.apply(&mut command, &encoder, bitrate);
     command
         .args(["-c:a", "copy", "-r", &fps.to_string(), "-y"])
         .arg(&absolute_output);
@@ -785,6 +812,7 @@ mod tests {
             Path::new("missing.mp4"),
             &[],
             &options,
+            &VideoEncodingSettings::default(),
             None,
         )
         .await
@@ -941,9 +969,17 @@ mod tests {
         });
         let job = directory.path().join("job");
         std::fs::create_dir(&job).unwrap();
-        let output = encode_danmu_plan(None::<&NoopReporter>, &source, plan, &options, None, &job)
-            .await
-            .unwrap();
+        let output = encode_danmu_plan(
+            None::<&NoopReporter>,
+            &source,
+            plan,
+            &options,
+            &VideoEncodingSettings::default(),
+            None,
+            &job,
+        )
+        .await
+        .unwrap();
         let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
         assert_eq!((metadata.width, metadata.height), (1920, 1080));
         assert_eq!(metadata.fps, 60.0);
@@ -1059,6 +1095,7 @@ mod tests {
             &source,
             plan,
             &options,
+            &VideoEncodingSettings::default(),
             None,
             directory.path(),
         )
@@ -1101,13 +1138,19 @@ mod tests {
         )
         .await;
         let entries = [entry(0, "file:///not-allowed.png")];
-        let output = encode_video_danmu(
+        let options = Danmu2AssOptions::default();
+        let plan = danmu_plan(&entries, &options, directory.path())
+            .await
+            .unwrap();
+        let output = encode_danmu_plan(
             None::<&NoopReporter>,
             &source,
-            &entries,
-            &Danmu2AssOptions::default(),
+            plan,
+            &options,
+            &VideoEncodingSettings::default(),
             // Also exercises a chosen bitrate in place of the default quality.
             NonZeroU32::new(2000),
+            directory.path(),
         )
         .await
         .unwrap();

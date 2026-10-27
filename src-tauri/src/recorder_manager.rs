@@ -1683,7 +1683,13 @@ impl RecorderManager {
 
         // Keep image metadata through concatenation; the common encoder prepares
         // each playlist's text and images together in its own temporary directory.
-        let danmu_options = self.config.read().await.danmu_ass_options.clone();
+        let (danmu_options, encoding) = {
+            let config = self.config.read().await;
+            (
+                config.danmu_ass_options.clone(),
+                config.video_encoding.clone(),
+            )
+        };
         let danmu_tracks = if encode_danmu {
             let danmu_tracks = playlists
                 .iter()
@@ -1740,6 +1746,7 @@ impl RecorderManager {
             &playlists_refs,
             danmu_tracks,
             &danmu_options,
+            &encoding,
             &output_path,
         )
         .await

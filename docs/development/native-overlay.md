@@ -2,6 +2,36 @@
 
 原生弹幕渲染使用 `native-overlay` crate 和 Skia 0.82 的 `textlayout` 功能。Linux 使用源码构建 Skia，并链接发行版提供的系统库；macOS 保持上游预编译 Skia 的默认路径；Windows 使用经过处理的上游预编译 Skia（见下文）。Windows 和 macOS 都不需要设置下文的 Linux 专用变量。
 
+## macOS：Metal 弹幕压制
+
+`native-overlay` 的 `metal` feature 为现有渲染器添加 GPU 后端，预览、字幕和项目布局仍共享
+上游的同一套解析、字体与缓存。`metal-export` 只负责软件解码 → Metal 绘制/叠加 → VideoToolbox
+编码的原生流水线；应用通过自己的 `--metal-export` 子进程入口执行任务并处理进度与取消。
+
+构建时安装 Homebrew 开发依赖：
+
+```sh
+brew install ffmpeg pkg-config
+```
+
+默认使用 `brew --prefix ffmpeg` 的头文件，要求 **FFmpeg >= 8.0**，只构建一个 ABI 适配器。
+不下载、不源码编译 FFmpeg，也不要求第二套 FFmpeg。只有显式设置构建变量
+`BSR_FFMPEG_PREFIXES`（以 `:` 分隔的绝对安装前缀）才会构建多个 ABI。例如安装了 8 和 9 后：
+
+```sh
+BSR_FFMPEG_PREFIXES="$(brew --prefix ffmpeg@8):$(brew --prefix ffmpeg@9)" \
+  cargo build --manifest-path src-tauri/Cargo.toml
+```
+
+运行时从标准 Homebrew 路径和构建时指定的前缀中加载一套完整、匹配已构建适配器的动态库，
+也可通过 `BSR_FFMPEG_LIBRARY_DIR` 指定库目录。没有匹配版本时导出会报错，不影响应用启动。
+同一个安装包支持 8/9 的前提是构建时包含了两个 ABI；默认单版本包需要其对应 ABI。
+macOS 发布 workflow 会安装 `ffmpeg@8`、`ffmpeg@9` 并设置上述变量，每个架构的发布包均包含两个 ABI。
+本地未设置变量时仍只构建当前 `ffmpeg` 的一个 ABI。
+Intel 和 Apple Silicon 使用各自架构的构建机和运行库，原生组件部署目标为 macOS 13.3。
+详细的流水线、时间轴、旋转处理和库加载说明见
+[`metal-export/README.md`](../../src-tauri/crates/metal-export/README.md)。
+
 ## Windows：处理 Skia 内置 ICU 的符号冲突
 
 上游 Windows 预编译包的 `skunicode_icu.lib` 与 V8（`deno_core` 依赖）都内置了 ICU 74。Skia 的 ICU 关闭了版本化重命名，而 `ulocimp_getParent` 等少数 ICU 内部符号在 V8 的 ICU 中同样没有版本后缀，两边定义同名符号。MSVC 链接时会报 `LNK2005 ulocimp_getParent already defined`，未报错的同名符号也可能让 Skia 的 ICU 调用到 V8 的实现。

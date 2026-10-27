@@ -460,3 +460,27 @@ pub async fn update_danmu_ass_options(
         .set_danmu_ass_options(Danmu2AssOptions { font_size, opacity });
     Ok(())
 }
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_available_video_encoders(
+) -> Result<Vec<crate::ffmpeg::encoding::AvailableVideoEncoder>, String> {
+    Ok(crate::ffmpeg::encoding::available_encoders().await?.clone())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_video_encoding(
+    state: state_type!(),
+    encoding: crate::ffmpeg::encoding::VideoEncodingSettings,
+) -> Result<(), String> {
+    #[cfg(feature = "headless")]
+    if state.readonly {
+        return Err("Video encoding settings cannot be changed in readonly mode".into());
+    }
+    encoding.encoder().await?;
+    let mut config = state.config.write().await;
+    let mut updated = config.clone();
+    updated.video_encoding = encoding;
+    updated.try_save()?;
+    *config = updated;
+    Ok(())
+}

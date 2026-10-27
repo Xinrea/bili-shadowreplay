@@ -614,7 +614,13 @@ async fn burn_material_danmus(
     danmus: &[DanmuEntry],
     bitrate: Option<std::num::NonZeroU32>,
 ) -> Result<(), String> {
-    let options = state.config.read().await.danmu_ass_options.clone();
+    let (options, encoding) = {
+        let config = state.config.read().await;
+        (
+            config.danmu_ass_options.clone(),
+            config.video_encoding.clone(),
+        )
+    };
     let parent = file
         .parent()
         .ok_or_else(|| format!("Invalid material path: {}", file.display()))?;
@@ -628,7 +634,8 @@ async fn burn_material_danmus(
         return Err(format!("移动素材失败: {} ({e})", file.display()));
     }
     let burned =
-        ffmpeg::encode_video_danmu(Some(reporter), &cut, danmus, &options, bitrate).await?;
+        ffmpeg::encode_video_danmu(Some(reporter), &cut, danmus, &options, &encoding, bitrate)
+            .await?;
     tokio::fs::rename(&burned, file)
         .await
         .map_err(|e| format!("保存压制弹幕的素材失败: {} ({e})", file.display()))

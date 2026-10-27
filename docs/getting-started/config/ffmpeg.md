@@ -13,6 +13,16 @@ brew install ffmpeg
 
 如果没有安装 Homebrew，可以参考 [Homebrew 官网](https://brew.sh/) 进行安装。
 
+macOS 的弹幕压制使用 Skia Metal、Metal 叠加和 VideoToolbox，需安装
+**FFmpeg 8.0 或更高版本的 Homebrew 共享库**。运行时的库 ABI 必须与应用构建时包含的版本一致；
+只复制 `ffmpeg` 可执行文件不能满足这个要求。macOS 发布包包含 FFmpeg 8 和 9 两套 ABI 适配器。
+本地默认构建只包含当前 `ffmpeg` 的一个 ABI；显式设置 `BSR_FFMPEG_PREFIXES` 可构建多个版本，见
+[原生渲染构建](../../development/native-overlay.md#macosmetal-弹幕压制)。
+
+在设置的“弹幕压制编码”中选择 H.264/H.265 和目标码率；macOS 默认使用
+HEVC、10 Mbps、GOP 120、速度优先。速度优先开关仅在当前编码格式有可用的
+VideoToolbox 编码器时显示。选项用于素材和整场录播的弹幕压制；项目导出使用项目自己的输出设置。
+
 ## Linux
 
 在 Linux 上安装 FFmpeg 可以使用系统自带的包管理器进行安装，例如：

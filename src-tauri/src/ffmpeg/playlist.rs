@@ -304,6 +304,7 @@ pub async fn concat_playlists_to_video(
     playlists: &[&Path],
     danmu_tracks: Vec<Option<Vec<recorder::danmu::DanmuEntry>>>,
     danmu_options: &crate::danmu2ass::Danmu2AssOptions,
+    encoding: &super::encoding::VideoEncodingSettings,
     output_path: &Path,
 ) -> Result<bool, String> {
     let output_dir = output_path
@@ -323,9 +324,15 @@ pub async fn concat_playlists_to_video(
             continue;
         }
         if let Some(danmus) = danmu_tracks.get(i).and_then(Option::as_ref) {
-            video_path =
-                super::encode_video_danmu(reporter, &video_path, danmus, danmu_options, None)
-                    .await?;
+            video_path = super::encode_video_danmu(
+                reporter,
+                &video_path,
+                danmus,
+                danmu_options,
+                encoding,
+                None,
+            )
+            .await?;
             burned |= danmus.iter().any(recorder::danmu::DanmuEntry::is_danmu);
         }
         segments.push(video_path);

@@ -198,6 +198,14 @@ jobs:
           includeUpdaterJson: false
           args: ${{ matrix.args }} ${{ matrix.features == 'cuda' && '--config src-tauri/tauri.windows.cuda.conf.json' || '' }}
 
+      - name: Verify macOS application signature
+        if: runner.os == 'macOS'
+        env:
+          RUST_TARGET: ${{ matrix.target }}
+        run: |
+          codesign --verify --deep --strict --verbose=2 \
+            "src-tauri/target/$RUST_TARGET/release/bundle/macos/bili-shadowreplay.app"
+
       - name: Create platform updater manifest
         env:
           UPDATER_ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}

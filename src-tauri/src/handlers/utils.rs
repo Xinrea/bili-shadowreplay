@@ -16,11 +16,7 @@ use {
 /// continue something there.
 pub(crate) fn focus_main_window(_state: &State) {
     #[cfg(feature = "gui")]
-    if let Some(window) = _state.app_handle.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-    }
+    crate::tray::show_main_window(&_state.app_handle);
 }
 
 /// The bytes of the base64 data URL `data`.

@@ -380,12 +380,7 @@ async fn login_callback(
         }
     }
     if success {
-        use tauri::Manager;
-        if let Some(window) = callback.state.app_handle.get_webview_window("main") {
-            let _ = window.show();
-            let _ = window.unminimize();
-            let _ = window.set_focus();
-        }
+        crate::tray::show_main_window(&callback.state.app_handle);
     }
     login_page_response(if success {
         LoginPage::Success

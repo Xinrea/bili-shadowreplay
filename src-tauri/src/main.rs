@@ -914,9 +914,7 @@ fn setup_plugins(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::W
         .plugin(updater.build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_focus();
-            }
+            tray::show_main_window(app);
         }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_os::init())
@@ -1199,7 +1197,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let Some(state) = setup_app_state(app).await? else {
                     return Ok(());
                 };
-                let _ = tray::create_tray(app.handle());
+                if let Err(e) = tray::create_tray(app.handle()) {
+                    log::error!("Failed to create tray: {e}");
+                }
                 #[cfg(target_os = "macos")]
                 remove_legacy_macos_launch_agent();
 
@@ -1216,6 +1216,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .build(context)?
         .run(|app_handle: &tauri::AppHandle, event| {
+            // Dock clicks and LaunchServices reopening an already-running app
+            // do not necessarily invoke the single-instance plugin callback.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                tray::show_main_window(app_handle);
+            }
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 let Some(state) = app_handle.try_state::<State>() else {
                     return;

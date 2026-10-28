@@ -28,13 +28,31 @@ const sub = (id, clip_id, start, end, text = id) => ({ id, clip_id, start, end, 
 
 test("output settings default for old projects and merge without losing local edits", () => {
   const base = api.parseTimeline('{"clips":[{"id":"a","material_id":1,"start":0,"end":30}]}');
-  assert.deepEqual(plain(base.render_settings), { quality: "balanced", bitrate_kbps: 0 });
-  const remote = { ...base, render_settings: { quality: "high", bitrate_kbps: 12000 } };
+  assert.deepEqual(plain(base.render_settings), { codec: "hevc", priority: "speed", bitrate_kbps: 10000 });
+  const remote = { ...base, render_settings: { codec: "h264", priority: "quality", bitrate_kbps: 12000 } };
   const local = api.trimClip(base, "a", "end", 20, 30);
   const merged = api.mergeRemoteTimeline(local, base, remote);
   assert.equal(merged.clips[0].end, 20);
   assert.deepEqual(plain(merged.render_settings), remote.render_settings);
   assert.deepEqual(plain(api.parseTimeline(JSON.stringify(merged)).render_settings), remote.render_settings);
+});
+
+test("legacy render settings gain codec and priority without losing a chosen bitrate", () => {
+  for (const quality of ["high", "balanced", "compact"]) {
+    for (const bitrate_kbps of [0, 12000]) {
+      const timeline = api.parseTimeline(JSON.stringify({ render_settings: { quality, bitrate_kbps } }));
+      assert.deepEqual(plain(timeline.render_settings), {
+        codec: "hevc",
+        priority: quality === "high" ? "quality" : "speed",
+        bitrate_kbps: bitrate_kbps || 10000,
+      });
+    }
+  }
+  const explicit = { codec: "h264", priority: "speed", bitrate_kbps: 6000 };
+  assert.deepEqual(plain(api.normalizeRenderSettings({ ...explicit, quality: "high" })), explicit);
+  assert.deepEqual(plain(api.normalizeRenderSettings({ codec: "h264", quality: "high", bitrate_kbps: 0 })), {
+    codec: "h264", priority: "speed", bitrate_kbps: 0,
+  });
 });
 
 test("clips play back to back and the later clip owns a cut", () => {

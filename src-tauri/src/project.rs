@@ -23,8 +23,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const TIMELINE_VERSION: u32 = 1;
-/// Durations closer than this are treated as the whole material.
-const FULL_MATERIAL_TOLERANCE: f64 = 0.05;
 /// Overlay spans this short, from rounding, are empty.
 const EPSILON: f64 = 1e-6;
 /// Loudest a clip, picture in picture or sound is turned up to.
@@ -36,20 +34,71 @@ fn timeline_version() -> u32 {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum VideoQuality {
-    High,
+pub enum VideoCodec {
     #[default]
-    Balanced,
-    Compact,
+    Hevc,
+    H264,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EncodingPriority {
+    #[default]
+    Speed,
+    Quality,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "StoredRenderSettings")]
 pub struct RenderSettings {
-    #[serde(default)]
-    pub quality: VideoQuality,
-    /// Zero selects quality mode; positive Kbps selects bitrate mode and ignores quality.
-    #[serde(default)]
+    pub codec: VideoCodec,
+    pub priority: EncodingPriority,
     pub bitrate_kbps: u32,
+}
+
+impl Default for RenderSettings {
+    fn default() -> Self {
+        Self {
+            codec: VideoCodec::Hevc,
+            priority: EncodingPriority::Speed,
+            bitrate_kbps: 10_000,
+        }
+    }
+}
+
+/// Read old projects without writing their obsolete quality-mode fields back.
+#[derive(Deserialize)]
+struct StoredRenderSettings {
+    codec: Option<VideoCodec>,
+    priority: Option<EncodingPriority>,
+    quality: Option<String>,
+    #[serde(default = "default_bitrate_kbps")]
+    bitrate_kbps: u32,
+}
+
+fn default_bitrate_kbps() -> u32 {
+    RenderSettings::default().bitrate_kbps
+}
+
+impl From<StoredRenderSettings> for RenderSettings {
+    fn from(stored: StoredRenderSettings) -> Self {
+        let legacy = stored.codec.is_none() && stored.priority.is_none();
+        let defaults = Self::default();
+        Self {
+            codec: stored.codec.unwrap_or(defaults.codec),
+            priority: stored.priority.unwrap_or_else(|| {
+                if legacy && stored.quality.as_deref() == Some("high") {
+                    EncodingPriority::Quality
+                } else {
+                    defaults.priority
+                }
+            }),
+            bitrate_kbps: match stored.bitrate_kbps {
+                0 if legacy => defaults.bitrate_kbps,
+                bitrate => bitrate,
+            },
+        }
+    }
 }
 
 impl RenderSettings {
@@ -58,7 +107,7 @@ impl RenderSettings {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.bitrate_kbps != 0 && !(500..=100_000).contains(&self.bitrate_kbps) {
+        if !(500..=100_000).contains(&self.bitrate_kbps) {
             return Err("视频码率须在 500–100000 Kbps 之间".to_string());
         }
         Ok(())
@@ -459,11 +508,6 @@ impl Timeline {
             .collect()
     }
 
-    /// Whether the sound is the clips' own, as it is in their materials.
-    fn has_plain_sound(&self) -> bool {
-        self.clips.iter().all(|clip| clip.volume == 1.0) && self.placed_audio().is_empty()
-    }
-
     pub fn has_visible_overlays(&self) -> bool {
         !self.placed_overlays().is_empty()
     }
@@ -742,27 +786,16 @@ impl Timeline {
         Ok(())
     }
 
-    /// The material when the whole project is one untouched material, which
-    /// can be uploaded as-is.
-    pub fn single_full_material(&self, material_duration: f64) -> Option<i64> {
-        let [clip] = self.clips.as_slice() else {
-            return None;
-        };
-        let untouched = clip.start <= FULL_MATERIAL_TOLERANCE
-            && material_duration > 0.0
-            && clip.end >= material_duration - FULL_MATERIAL_TOLERANCE;
-        (untouched
-            && !self.danmu
-            && self.render_settings.is_default()
-            && !self.has_visible_subtitles()
-            && !self.has_visible_overlays()
-            && self.has_plain_sound())
-        .then_some(clip.material_id)
+    /// Even an untouched material must be encoded: its source codec and bitrate
+    /// cannot be assumed to match the requested output settings.
+    pub fn single_full_material(&self, _material_duration: f64) -> Option<i64> {
+        None
     }
 
     /// Identifies an export: a different hash means the output is stale.
     pub fn render_hash(&self, extra: &str) -> String {
         let mut hasher = Sha256::new();
+        hasher.update(b"project-render-v2\0");
         hasher.update(self.to_json().as_bytes());
         hasher.update([0]);
         hasher.update(extra.as_bytes());
@@ -897,15 +930,119 @@ mod tests {
     }
 
     #[test]
+    fn render_settings_defaults_and_legacy_migration() {
+        use serde_json::json;
+
+        let defaults = RenderSettings::default();
+        assert_eq!(
+            serde_json::to_value(&defaults).unwrap(),
+            json!({ "codec": "hevc", "priority": "speed", "bitrate_kbps": 10000 })
+        );
+        assert_eq!(
+            serde_json::from_str::<RenderSettings>("{}").unwrap(),
+            defaults
+        );
+        for quality in ["high", "balanced", "compact", "unknown"] {
+            for bitrate in [None, Some(0), Some(500), Some(12_000), Some(100_000)] {
+                let mut legacy = json!({ "quality": quality });
+                if let Some(bitrate) = bitrate {
+                    legacy["bitrate_kbps"] = json!(bitrate);
+                }
+                let migrated: RenderSettings = serde_json::from_value(legacy).unwrap();
+                assert_eq!(migrated.codec, VideoCodec::Hevc);
+                assert_eq!(
+                    migrated.priority,
+                    if quality == "high" {
+                        EncodingPriority::Quality
+                    } else {
+                        EncodingPriority::Speed
+                    }
+                );
+                assert_eq!(
+                    migrated.bitrate_kbps,
+                    bitrate.filter(|value| *value > 0).unwrap_or(10_000)
+                );
+                assert!(migrated.validate().is_ok());
+                let serialized = serde_json::to_value(&migrated).unwrap();
+                assert!(serialized.get("quality").is_none());
+                assert_eq!(
+                    serde_json::from_value::<RenderSettings>(serialized).unwrap(),
+                    migrated
+                );
+            }
+        }
+        let explicit: RenderSettings = serde_json::from_value(json!({
+            "codec": "h264", "priority": "speed", "quality": "high"
+        }))
+        .unwrap();
+        assert_eq!(explicit.codec, VideoCodec::H264);
+        assert_eq!(explicit.priority, EncodingPriority::Speed);
+        assert_eq!(explicit.bitrate_kbps, 10_000);
+    }
+
+    #[test]
+    fn current_render_settings_reject_invalid_bitrates() {
+        use serde_json::json;
+
+        for bitrate in [0, 1, 499, 100_001] {
+            let settings: RenderSettings = serde_json::from_value(json!({
+                "codec": "hevc", "priority": "speed", "bitrate_kbps": bitrate
+            }))
+            .unwrap();
+            assert_eq!(settings.bitrate_kbps, bitrate);
+            assert!(settings.validate().is_err());
+        }
+        // Either new field marks current settings; zero must not migrate.
+        for current in [
+            json!({ "codec": "hevc", "bitrate_kbps": 0 }),
+            json!({ "priority": "quality", "bitrate_kbps": 0 }),
+        ] {
+            assert!(serde_json::from_value::<RenderSettings>(current)
+                .unwrap()
+                .validate()
+                .is_err());
+        }
+        for bitrate in [
+            json!(-1),
+            json!(1.5),
+            json!(10000.0),
+            json!(null),
+            json!("10000"),
+            json!(u64::MAX),
+        ] {
+            assert!(serde_json::from_value::<RenderSettings>(json!({
+                "codec": "hevc", "priority": "speed", "bitrate_kbps": bitrate
+            }))
+            .is_err());
+        }
+        for value in ["NaN", "Infinity", "1e999"] {
+            assert!(serde_json::from_str::<RenderSettings>(&format!(
+                r#"{{"codec":"hevc","priority":"speed","bitrate_kbps":{value}}}"#
+            ))
+            .is_err());
+        }
+        for bitrate_kbps in [500, 10_000, 100_000] {
+            assert!(RenderSettings {
+                bitrate_kbps,
+                ..RenderSettings::default()
+            }
+            .validate()
+            .is_ok());
+        }
+    }
+
+    #[test]
     fn output_settings_survive_old_projects_and_editor_merges() {
         let mut edited =
             Timeline::parse(r#"{"clips":[{"id":"a","material_id":1,"start":0,"end":30}]}"#)
                 .unwrap();
-        assert_eq!(edited.single_full_material(30.0), Some(1));
+        assert_eq!(edited.render_settings, RenderSettings::default());
+        assert_eq!(edited.single_full_material(30.0), None);
         let base = edited.clone();
         let mut saved = base.clone();
         saved.render_settings = RenderSettings {
-            quality: VideoQuality::High,
+            codec: VideoCodec::H264,
+            priority: EncodingPriority::Quality,
             bitrate_kbps: 12_000,
         };
         edited.clips[0].end = 20.0;
@@ -999,9 +1136,9 @@ mod tests {
     }
 
     #[test]
-    fn only_an_untouched_single_material_skips_export() {
+    fn even_an_untouched_single_material_requires_encoding() {
         let mut timeline = Timeline::from_materials(&[(7, 30.0)]);
-        assert_eq!(timeline.single_full_material(30.0), Some(7));
+        assert_eq!(timeline.single_full_material(30.0), None);
         timeline.danmu = true;
         assert_eq!(timeline.single_full_material(30.0), None);
         timeline.danmu = false;

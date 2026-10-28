@@ -376,6 +376,20 @@ pub async fn encode_video_danmu<R: ProgressReporterTrait>(
     options: &Danmu2AssOptions,
     bitrate: Option<NonZeroU32>,
 ) -> Result<PathBuf, String> {
+    encode_video_danmu_with_settings(reporter, file, danmus, options, bitrate, None).await
+}
+
+pub async fn encode_video_danmu_with_settings<R: ProgressReporterTrait>(
+    reporter: Option<&R>,
+    file: &Path,
+    danmus: &[DanmuEntry],
+    options: &Danmu2AssOptions,
+    bitrate: Option<NonZeroU32>,
+    settings: Option<&crate::project::RenderSettings>,
+) -> Result<PathBuf, String> {
+    if let Some(settings) = settings {
+        settings.validate()?;
+    }
     // Use fixed relative names inside a private job directory. No user/CDN path
     // is interpolated into filter syntax (including Windows drive letters).
     let directory = tempfile::Builder::new()
@@ -386,7 +400,16 @@ pub async fn encode_video_danmu<R: ProgressReporterTrait>(
         reporter.update("准备弹幕和表情图片中").await;
     }
     let plan = danmu_plan(danmus, options, directory.path()).await?;
-    encode_danmu_plan(reporter, file, plan, options, bitrate, directory.path()).await
+    encode_danmu_plan(
+        reporter,
+        file,
+        plan,
+        options,
+        bitrate,
+        directory.path(),
+        settings,
+    )
+    .await
 }
 
 /// FFmpeg rebases all streams against the container start, not the first
@@ -448,6 +471,7 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
     options: &Danmu2AssOptions,
     bitrate: Option<NonZeroU32>,
     directory: &Path,
+    settings: Option<&crate::project::RenderSettings>,
 ) -> Result<PathBuf, String> {
     let filename = file
         .file_name()
@@ -463,7 +487,7 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
         .await
         .map_err(|error| format!("Failed to inspect source video: {error}"))?;
     let fps = danmu_output_fps(metadata.fps);
-    let encoder = hwaccel::get_x264_encoder().await;
+    let encoder = hwaccel::material_encoder(settings).await;
     let graph = overlay_graph(fps, hwaccel::is_vaapi_encoder(encoder));
     let spec = OverlaySpec {
         input: native_overlay::RenderInput {
@@ -490,7 +514,7 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
         .arg(graph)
         .args(["-map", "[outv]", "-map", "0:a?"]);
     hwaccel::apply_x264_encoder_only(&mut command, encoder);
-    hwaccel::apply_x264_quality_args_with_bitrate(&mut command, encoder, bitrate);
+    hwaccel::apply_material_quality(&mut command, encoder, bitrate, settings);
     command
         .args(["-c:a", "copy", "-r", &fps.to_string(), "-y"])
         .arg(&absolute_output);
@@ -941,9 +965,17 @@ mod tests {
         });
         let job = directory.path().join("job");
         std::fs::create_dir(&job).unwrap();
-        let output = encode_danmu_plan(None::<&NoopReporter>, &source, plan, &options, None, &job)
-            .await
-            .unwrap();
+        let output = encode_danmu_plan(
+            None::<&NoopReporter>,
+            &source,
+            plan,
+            &options,
+            None,
+            &job,
+            None,
+        )
+        .await
+        .unwrap();
         let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
         assert_eq!((metadata.width, metadata.height), (1920, 1080));
         assert_eq!(metadata.fps, 60.0);
@@ -1061,6 +1093,7 @@ mod tests {
             &options,
             None,
             directory.path(),
+            None,
         )
         .await
         .unwrap();

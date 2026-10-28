@@ -70,8 +70,8 @@ const EPSILON: f64 = 1e-6;
 const RENDER_STAGE: &str = "导出切片";
 /// Part of every segment's key: change it with what a segment's graph draws,
 /// so that segments rendered before are not used again.
-/// 3: generated subtitles are drawn with the system fonts, as previewed.
-const RENDER_VERSION: u32 = 3;
+/// 4: explicit codec, priority and bitrate replace the old quality modes.
+const RENDER_VERSION: u32 = 4;
 
 pub struct RenderClip {
     /// The same however the timeline is edited around the clip.
@@ -857,6 +857,11 @@ impl Render<'_> {
         );
         let _ = writeln!(
             key,
+            "{}",
+            serde_json::to_string(&job.render_settings).unwrap()
+        );
+        let _ = writeln!(
+            key,
             "native {} {}",
             job.generated_subtitle,
             ::native_overlay::RENDERER_VERSION
@@ -1419,7 +1424,7 @@ async fn render_in_segments<R: ProgressReporterTrait>(
     job: &ProjectRender<'_>,
     limits: SegmentLimits,
 ) -> Result<RenderStats, String> {
-    let encoder = hwaccel::get_x264_encoder().await;
+    let encoder = hwaccel::get_render_encoder(&job.render_settings).await;
     render_with_encoder(reporter, job, limits, encoder).await
 }
 
@@ -2370,17 +2375,20 @@ mod tests {
     fn changing_output_settings_invalidates_cached_segments() {
         let mut project = job(vec![clip(true, 30.0)], 0.0, 0.0);
         let original = keys(&project, "");
-        project.render_settings.quality = crate::project::VideoQuality::High;
+        project.render_settings.priority = crate::project::EncodingPriority::Quality;
         let high = keys(&project, "");
         assert_ne!(original, high);
         project.render_settings.bitrate_kbps = 12_000;
-        assert_ne!(high, keys(&project, ""));
+        let bitrate = keys(&project, "");
+        assert_ne!(high, bitrate);
+        project.render_settings.codec = crate::project::VideoCodec::H264;
+        assert_ne!(bitrate, keys(&project, ""));
     }
 
     #[tokio::test]
     #[ignore = "requires FFmpeg with libx264"]
     async fn selected_output_settings_render_and_replace_cached_video() {
-        use crate::project::{RenderSettings, VideoQuality};
+        use crate::project::{EncodingPriority, RenderSettings, VideoCodec};
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("source.mp4");
         let output = directory.path().join("output.mp4");
@@ -2418,8 +2426,9 @@ mod tests {
             danmus: Vec::new(),
             danmu_options: Danmu2AssOptions::default(),
             render_settings: RenderSettings {
-                quality: VideoQuality::High,
-                bitrate_kbps: 0,
+                codec: VideoCodec::H264,
+                priority: EncodingPriority::Quality,
+                bitrate_kbps: 10_000,
             },
             output: &output,
             segment_cache: Some(&cache),

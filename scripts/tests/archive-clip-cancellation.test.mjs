@@ -32,6 +32,9 @@ async function fixture({ variant = "primary" } = {}) {
   const dependencies = {
     svelte: { onMount() {}, onDestroy() {} },
     "lucide-svelte": { Scissors() {} },
+    "../project-timeline": {
+      defaultRenderSettings: () => ({ codec: "hevc", priority: "speed", bitrate_kbps: 10000 }),
+    },
     "../interface": {
       generateEventId: () => `clip-${++nextId}`,
       generateMaterials: (eventId, params) => {
@@ -51,7 +54,10 @@ async function fixture({ variant = "primary" } = {}) {
   // or reactive rendering is needed to reproduce the RPC completion orders.
   const source = await readFile(new URL("../../src/lib/components/ArchiveClipButton.svelte", import.meta.url), "utf8");
   const script = source.match(/<script lang="ts">([\s\S]*?)<\/script>/)[1];
-  const output = ts.transpileModule(`${script}\nexport { generateClip };`, {
+  const output = ts.transpileModule(`${script}
+    export { generateClip };
+    export function configure(settings, danmu) { renderSettings = settings; embedDanmu = danmu; }
+  `, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
   }).outputText;
   const module = new vm.SourceTextModule(output, { context });
@@ -88,6 +94,9 @@ test("a started clip is announced, highlighted, and settled with its result", as
   assert.equal(f.announced[0].task_type, "generate_materials");
   // The cover is a data URL the task list never needs.
   assert.equal(JSON.parse(f.announced[0].metadata).params.cover, "");
+  assert.deepEqual(JSON.parse(f.announced[0].metadata).params.render_settings, {
+    codec: "hevc", priority: "speed", bitrate_kbps: 10000,
+  });
   assert.deepEqual(f.opened, [request.eventId]);
   assert.deepEqual(f.settled, []);
 
@@ -96,6 +105,28 @@ test("a started clip is announced, highlighted, and settled with its result", as
   assert.deepEqual(f.generated, [{ id: 1 }]);
   assert.deepEqual(f.settled, [request.eventId]);
   assert.deepEqual(f.alerts, []);
+});
+
+test("material settings are submitted independently of danmaku and snapshotted per task", async () => {
+  const f = await fixture();
+  const settings = { codec: "h264", priority: "quality", bitrate_kbps: 16000 };
+  f.handlers.configure(settings, false);
+  const first = await startClip(f);
+  assert.deepEqual(JSON.parse(JSON.stringify(first.request.params.render_settings)), settings);
+  assert.equal(first.request.params.danmu, false);
+  settings.codec = "hevc";
+  settings.priority = "speed";
+  settings.bitrate_kbps = 6000;
+  f.handlers.configure(settings, true);
+  const second = await startClip(f);
+  assert.deepEqual(JSON.parse(JSON.stringify(second.request.params.render_settings)), settings);
+  assert.equal(second.request.params.danmu, true);
+  assert.equal(first.request.params.render_settings.codec, "h264");
+  assert.equal(first.request.params.render_settings.priority, "quality");
+  assert.equal(first.request.params.render_settings.bitrate_kbps, 16000);
+  first.request.resolve({ id: 1 });
+  second.request.resolve({ id: 2 });
+  await Promise.all([first.completion, second.completion]);
 });
 
 test("clips can be generated while another is still running", async () => {

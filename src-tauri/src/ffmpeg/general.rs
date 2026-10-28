@@ -262,7 +262,19 @@ pub async fn concat_videos(
     videos: &[PathBuf],
     output_path: &Path,
 ) -> Result<(), String> {
-    concat_videos_with_demuxer(reporter, videos, output_path).await
+    concat_videos_with_demuxer(reporter, videos, output_path, None).await
+}
+
+/// Join full recordings already encoded with `settings`. Matching streams can
+/// be copied; any normalization still uses the same explicit output policy.
+pub async fn concat_encoded_videos(
+    reporter: Option<&impl ProgressReporterTrait>,
+    videos: &[PathBuf],
+    output_path: &Path,
+    settings: &crate::project::RenderSettings,
+) -> Result<(), String> {
+    settings.validate()?;
+    concat_videos_with_demuxer(reporter, videos, output_path, Some(settings)).await
 }
 
 /// Join recordings whose streams differ. The concat demuxer feeds every file
@@ -273,6 +285,7 @@ async fn concat_mismatched_videos(
     reporter: Option<&impl ProgressReporterTrait>,
     videos: &[PathBuf],
     output_path: &Path,
+    settings: Option<&crate::project::RenderSettings>,
 ) -> Result<(), String> {
     let mut silence = Vec::with_capacity(videos.len());
     for video in videos {
@@ -287,6 +300,7 @@ async fn concat_mismatched_videos(
         filter_complex,
         ProgressTotal::AllInputs,
         None,
+        settings,
     )
     .await
 }
@@ -295,11 +309,15 @@ async fn concat_videos_with_demuxer(
     reporter: Option<&impl ProgressReporterTrait>,
     videos: &[PathBuf],
     output_path: &Path,
+    settings: Option<&crate::project::RenderSettings>,
 ) -> Result<(), String> {
+    if videos.is_empty() {
+        return Err("No videos to concatenate".to_string());
+    }
     let video_refs: Vec<&Path> = videos.iter().map(|p| p.as_path()).collect();
     let should_encode = !super::check_videos(&video_refs).await;
     if should_encode && videos.len() > 1 {
-        return concat_mismatched_videos(reporter, videos, output_path).await;
+        return concat_mismatched_videos(reporter, videos, output_path, settings).await;
     }
 
     let mut ffmpeg_process = ffmpeg_command();
@@ -342,14 +360,14 @@ async fn concat_videos_with_demuxer(
             .ok_or_else(|| format!("Invalid filelist path (non-UTF8): {}", filelist.display()))?,
     ]);
     if should_encode {
-        let video_encoder = hwaccel::get_x264_encoder().await;
+        let video_encoder = hwaccel::material_encoder(settings).await;
         hwaccel::apply_x264_encoder_args(
             &mut ffmpeg_process,
             video_encoder,
             Some(hwaccel::H264_SCALE_PAD_FILTER),
         );
         ffmpeg_process.args(["-c:a", "aac"]);
-        hwaccel::apply_x264_quality_args(&mut ffmpeg_process, video_encoder);
+        hwaccel::apply_material_quality(&mut ffmpeg_process, video_encoder, None, settings);
         ffmpeg_process.args(["-threads", "0"]);
     } else {
         ffmpeg_process.args(["-c", "copy"]);
@@ -369,6 +387,7 @@ async fn encode_filter_concat(
     filter_complex: String,
     total: ProgressTotal,
     bitrate: Option<NonZeroU32>,
+    settings: Option<&crate::project::RenderSettings>,
 ) -> Result<(), String> {
     let mut ffmpeg_process = ffmpeg_command();
 
@@ -383,7 +402,7 @@ async fn encode_filter_concat(
         ]);
     }
 
-    let video_encoder = hwaccel::get_x264_encoder().await;
+    let video_encoder = hwaccel::material_encoder(settings).await;
     if hwaccel::is_vaapi_encoder(video_encoder) {
         let filter_complex = format!(
             "{filter_complex};[outv]{}[outv_hw]",
@@ -398,7 +417,7 @@ async fn encode_filter_concat(
     ffmpeg_process.args(["-map", "[outa]"]);
 
     hwaccel::apply_x264_encoder_only(&mut ffmpeg_process, video_encoder);
-    hwaccel::apply_x264_quality_args_with_bitrate(&mut ffmpeg_process, video_encoder, bitrate);
+    hwaccel::apply_material_quality(&mut ffmpeg_process, video_encoder, bitrate, settings);
     ffmpeg_process.args(["-c:a", "aac"]);
     ffmpeg_process.args(["-y"]);
     ffmpeg_process.args([output_path
@@ -417,13 +436,38 @@ pub async fn concat_videos_with_transition(
     transition: Option<&str>,
     bitrate: Option<NonZeroU32>,
 ) -> Result<(), String> {
+    concat_videos_with_settings(reporter, videos, output_path, transition, bitrate, None).await
+}
+
+pub async fn concat_videos_with_settings(
+    reporter: Option<&impl ProgressReporterTrait>,
+    videos: &[PathBuf],
+    output_path: &Path,
+    transition: Option<&str>,
+    bitrate: Option<NonZeroU32>,
+    settings: Option<&crate::project::RenderSettings>,
+) -> Result<(), String> {
+    if let Some(settings) = settings {
+        settings.validate()?;
+    }
     if videos.is_empty() {
         return Err("No videos to concatenate".to_string());
     }
 
-    // Single file: remux/copy, no join to fix
+    // An explicit output policy must not be silently bypassed for one input.
     if videos.len() == 1 {
-        return concat_videos_with_demuxer(reporter, videos, output_path).await;
+        if settings.is_some() {
+            return super::clip::transcode_with_settings(
+                reporter,
+                &videos[0],
+                output_path,
+                false,
+                bitrate,
+                settings,
+            )
+            .await;
+        }
+        return concat_videos_with_demuxer(reporter, videos, output_path, None).await;
     }
 
     // No visual transition: still re-encode via concat filter so each clip's
@@ -432,7 +476,12 @@ pub async fn concat_videos_with_transition(
     if transition.is_none() || transition == Some("none") {
         let video_refs: Vec<&Path> = videos.iter().map(|p| p.as_path()).collect();
         let normalize = !super::check_videos(&video_refs).await;
-        let filter_complex = build_hardcut_concat_filter_complex(videos.len(), normalize, &[]);
+        let mut silence = Vec::with_capacity(videos.len());
+        for video in videos {
+            let metadata = ffmpeg_utils::extract_video_metadata(video).await?;
+            silence.push(metadata.audio_codec.is_empty().then_some(metadata.duration));
+        }
+        let filter_complex = build_hardcut_concat_filter_complex(videos.len(), normalize, &silence);
         return encode_filter_concat(
             reporter,
             videos,
@@ -440,6 +489,7 @@ pub async fn concat_videos_with_transition(
             filter_complex,
             ProgressTotal::AllInputs,
             bitrate,
+            settings,
         )
         .await;
     }
@@ -469,6 +519,7 @@ pub async fn concat_videos_with_transition(
         filter_complex,
         ProgressTotal::Known(output_duration),
         bitrate,
+        settings,
     )
     .await
 }

@@ -391,11 +391,20 @@ pub async fn update_auto_generate(
     state: state_type!(),
     enabled: bool,
     encode_danmu: bool,
+    render_settings: Option<crate::project::RenderSettings>,
 ) -> Result<(), String> {
     let mut config = state.config.write().await;
-    config.auto_generate.enabled = enabled;
-    config.auto_generate.encode_danmu = encode_danmu;
-    config.save();
+    let mut next = config.clone();
+    next.auto_generate.enabled = enabled;
+    next.auto_generate.encode_danmu = encode_danmu;
+    if let Some(settings) = render_settings {
+        next.auto_generate.render_settings = settings;
+    }
+    next.auto_generate.render_settings.validate()?;
+    // Persist first so validation or I/O errors cannot partially change the
+    // running configuration. Omitted settings retain the latest saved value.
+    next.try_save()?;
+    *config = next;
     Ok(())
 }
 

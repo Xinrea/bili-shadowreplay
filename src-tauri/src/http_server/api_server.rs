@@ -574,17 +574,52 @@ async fn handler_update_openai_api_key(
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UpdateAutoGenerateRequest {
-    enable: bool,
+    #[serde(alias = "enable")]
+    enabled: bool,
     encode_danmu: bool,
+    #[serde(default)]
+    render_settings: Option<RenderSettings>,
+}
+
+#[cfg(test)]
+mod auto_generate_request_tests {
+    use super::*;
+
+    #[test]
+    fn auto_generate_http_accepts_enabled_legacy_alias_and_render_settings() {
+        for key in ["enabled", "enable"] {
+            let mut wire = serde_json::json!({"encodeDanmu": true});
+            wire[key] = true.into();
+            let legacy: UpdateAutoGenerateRequest = serde_json::from_value(wire.clone()).unwrap();
+            assert!(legacy.enabled && legacy.encode_danmu);
+            assert!(legacy.render_settings.is_none());
+            wire["renderSettings"] = serde_json::json!({
+                "codec": "h264", "priority": "quality", "bitrate_kbps": 16000
+            });
+            let current: UpdateAutoGenerateRequest = serde_json::from_value(wire).unwrap();
+            let settings = current.render_settings.as_ref().unwrap();
+            assert_eq!(settings.codec, crate::project::VideoCodec::H264);
+            assert_eq!(settings.priority, crate::project::EncodingPriority::Quality);
+            assert_eq!(settings.bitrate_kbps, 16_000);
+            let serialized = serde_json::to_value(current).unwrap();
+            assert_eq!(serialized["enabled"], true);
+            assert!(serialized.get("enable").is_none());
+            assert!(serialized.get("renderSettings").is_some());
+        }
+    }
 }
 
 async fn handler_update_auto_generate(
     state: axum::extract::State<State>,
     Json(auto_generate): Json<UpdateAutoGenerateRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    update_auto_generate(state.0, auto_generate.enable, auto_generate.encode_danmu)
-        .await
-        .map_err(|_| ApiError::from("Failed to update auto generate setting"))?;
+    update_auto_generate(
+        state.0,
+        auto_generate.enabled,
+        auto_generate.encode_danmu,
+        auto_generate.render_settings,
+    )
+    .await?;
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -1807,6 +1842,7 @@ async fn handler_generate_whole_clip(
         param.parent_id,
         param.selected_live_ids,
         param.output_name,
+        param.render_settings,
     )
     .await?;
     Ok(Json(ApiResponse::success(task)))

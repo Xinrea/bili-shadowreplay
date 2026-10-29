@@ -91,6 +91,26 @@ pub async fn encode_video_subtitle<R: ProgressReporterTrait>(
     srt_style: String,
     fonts_directory: Option<&Path>,
 ) -> Result<String, String> {
+    encode_video_subtitle_with_resources(
+        reporter,
+        file,
+        subtitle,
+        srt_style,
+        fonts_directory,
+        Vec::new(),
+    )
+    .await
+}
+
+/// Transfer temporary subtitle/font ownership to the media worker and renderer.
+pub async fn encode_video_subtitle_with_resources<R: ProgressReporterTrait>(
+    reporter: &R,
+    file: &Path,
+    subtitle: &Path,
+    srt_style: String,
+    fonts_directory: Option<&Path>,
+    resources: Vec<ffmpeg_utils::MediaResourceLease>,
+) -> Result<String, String> {
     log::info!("Encode video subtitle task start: {}", file.display());
     log::info!("SRT style: {srt_style}");
     match std::fs::metadata(subtitle) {
@@ -130,11 +150,20 @@ pub async fn encode_video_subtitle<R: ProgressReporterTrait>(
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("srt"))
     {
-        encode_native_srt(reporter, file, subtitle, &srt_style, &output_path).await?;
+        encode_native_srt_with_resources(
+            reporter,
+            file,
+            subtitle,
+            &srt_style,
+            &output_path,
+            resources,
+        )
+        .await?;
     } else {
         let vf = subtitle_filter(subtitle, &srt_style, fonts_directory)?;
         let video_encoder = hwaccel::get_x264_encoder().await;
-        let plan = libass_plan(file, &output_path, &vf, video_encoder)?;
+        let mut plan = libass_plan(file, &output_path, &vf, video_encoder)?;
+        plan.resources.extend(resources);
         run_native_media(
             plan,
             ProgressMode::stage("压制字幕", ProgressTotal::FirstInput),
@@ -156,12 +185,24 @@ fn native_subtitle_graph(encoder: &str) -> String {
     format!("[0:v]{scale},format=bgra[base];[base][1:v]overlay=format=rgb:alpha=premultiplied:eof_action=pass:repeatlast=0:shortest=0,{output_format}[video]",scale=hwaccel::H264_SCALE_PAD_FILTER)
 }
 
+#[cfg(test)]
 async fn encode_native_srt<R: ProgressReporterTrait>(
     reporter: &R,
     file: &Path,
     subtitle: &Path,
     style: &str,
     output: &Path,
+) -> Result<(), String> {
+    encode_native_srt_with_resources(reporter, file, subtitle, style, output, Vec::new()).await
+}
+
+async fn encode_native_srt_with_resources<R: ProgressReporterTrait>(
+    reporter: &R,
+    file: &Path,
+    subtitle: &Path,
+    style: &str,
+    output: &Path,
+    resources: Vec<ffmpeg_utils::MediaResourceLease>,
 ) -> Result<(), String> {
     use super::native_overlay::{run_overlay_plan, OverlaySpec};
     use native_overlay::{AssSource, RenderInput, SourceKind};
@@ -206,13 +247,14 @@ async fn encode_native_srt<R: ProgressReporterTrait>(
     let encoder = hwaccel::get_x264_encoder().await;
     let mut video = hwaccel::native_video_options(encoder, None, None, None)?;
     video.filter = None;
-    let plan = super::danmu::overlay_media_plan(
+    let mut plan = super::danmu::overlay_media_plan(
         file.to_path_buf(),
         output.to_path_buf(),
         native_subtitle_graph(encoder),
         "video",
         video,
     );
+    plan.resources.extend(resources);
     run_overlay_plan(
         plan,
         spec,
@@ -825,6 +867,92 @@ mod libass_native_tests {
             actual, expected,
             "burning ASS must copy the complete original audio"
         );
+    }
+
+    #[test]
+    fn cancelled_public_ass_api_keeps_temp_assets_until_queued_worker_closes() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            // Encoder selection is independent of these assets and must finish
+            // before the sole blocking worker is deliberately occupied.
+            hwaccel::get_x264_encoder().await;
+            let directory = tempfile::tempdir().unwrap();
+            let input = directory.path().join("source.mp4");
+            fs::copy(fixture(), &input).unwrap();
+            let subtitle = tempfile::Builder::new()
+                .suffix(".ass")
+                .tempfile_in(directory.path())
+                .unwrap()
+                .into_temp_path();
+            ass(&subtitle);
+            let fonts = tempfile::Builder::new()
+                .prefix("fonts-")
+                .tempdir_in(directory.path())
+                .unwrap();
+            let subtitle_path = subtitle.to_path_buf();
+            let fonts_path = fonts.path().to_path_buf();
+            let resources = vec![
+                ffmpeg_utils::MediaResourceLease::new(subtitle),
+                ffmpeg_utils::MediaResourceLease::new(fonts),
+            ];
+            let (ready, started) = tokio::sync::oneshot::channel();
+            let (release, blocked) = std::sync::mpsc::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                let _ = ready.send(());
+                let _ = blocked.recv();
+            });
+            started.await.unwrap();
+            let (task_subtitle, task_fonts) = (subtitle_path.clone(), fonts_path.clone());
+            let (queued, waiting) = tokio::sync::oneshot::channel();
+            let task = tokio::spawn(async move {
+                let reporter = Reporter;
+                let encode = encode_video_subtitle_with_resources(
+                    &reporter,
+                    &input,
+                    &task_subtitle,
+                    String::new(),
+                    Some(&task_fonts),
+                    resources,
+                );
+                tokio::pin!(encode);
+                let mut queued = Some(queued);
+                std::future::poll_fn(|context| {
+                    let result = std::future::Future::poll(encode.as_mut(), context);
+                    if result.is_pending() {
+                        if let Some(queued) = queued.take() {
+                            let _ = queued.send(());
+                        }
+                    }
+                    result
+                })
+                .await
+            });
+            // The ASS path has no asynchronous preparation after the warmed
+            // encoder probe: its first suspension queues the media worker.
+            waiting.await.unwrap();
+            task.abort();
+            let stopped = task.await;
+            assert!(
+                matches!(&stopped, Err(error) if error.is_cancelled()),
+                "unexpected subtitle task result: {stopped:?}"
+            );
+            assert!(subtitle_path.is_file(), "queued worker lost its ASS lease");
+            assert!(fonts_path.is_dir(), "queued worker lost its fonts lease");
+            release.send(()).unwrap();
+            blocker.await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while subtitle_path.exists() || fonts_path.exists() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("cancelled worker leaked temporary ASS/font assets");
+            assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+        });
     }
 
     #[tokio::test]

@@ -1513,18 +1513,30 @@ async fn encode_video_subtitle_inner(
         subtitle,
         font_name,
     } = job;
-    // Kept alive until FFmpeg exits; dropping it removes the directory.
     let fonts_directory = if let Some(font_name) = font_name {
         Some(prepare_subtitle_font_directory(cache, font_name).await?)
     } else {
         None
     };
-    let output_filename = ffmpeg::encode_video_subtitle(
+    let fonts_path = fonts_directory
+        .as_ref()
+        .map(|directory| directory.path().to_path_buf());
+    let SubtitleEncodingInput {
+        path,
+        force_style,
+        _temporary_subtitle,
+    } = subtitle;
+    let mut resources = vec![ffmpeg_utils::MediaResourceLease::new(_temporary_subtitle)];
+    if let Some(directory) = fonts_directory {
+        resources.push(ffmpeg_utils::MediaResourceLease::new(directory));
+    }
+    let output_filename = ffmpeg::encode_video_subtitle_with_resources(
         reporter,
         &filepath,
-        &subtitle.path,
-        subtitle.force_style.clone(),
-        fonts_directory.as_ref().map(|directory| directory.path()),
+        &path,
+        force_style,
+        fonts_path.as_deref(),
+        resources,
     )
     .await?;
     let output_filepath = filepath.with_file_name(&output_filename);

@@ -23,7 +23,9 @@ pub use danmu::{encode_video_danmu, encode_video_danmu_with_settings};
 pub use metadata::{
     check_ffmpeg, check_videos, extract_frame, generate_thumbnail, get_random_thumbnail_timestamp,
 };
-pub use subtitle::{encode_video_subtitle, generate_video_subtitle};
+#[allow(unused_imports)]
+pub use subtitle::encode_video_subtitle;
+pub use subtitle::{encode_video_subtitle_with_resources, generate_video_subtitle};
 
 #[cfg(test)]
 use crate::constants;

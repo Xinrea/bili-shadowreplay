@@ -768,6 +768,7 @@ fn is_image_file(name: &std::ffi::OsStr) -> bool {
 struct RenderWorkspace {
     directory: PathBuf,
     _temporary: Option<tempfile::TempDir>,
+    _resources: Vec<ffmpeg_utils::MediaResourceLease>,
 }
 
 impl Drop for RenderWorkspace {
@@ -1502,7 +1503,17 @@ pub async fn render_project<R: ProgressReporterTrait>(
     reporter: &R,
     job: ProjectRender<'_>,
 ) -> Result<(), String> {
-    render_in_segments(reporter, &job, SEGMENT_LIMITS).await?;
+    render_project_with_resources(reporter, job, Vec::new()).await
+}
+
+/// Keep caller-created assets alive through all segment workers and renderers.
+pub async fn render_project_with_resources<R: ProgressReporterTrait>(
+    reporter: &R,
+    job: ProjectRender<'_>,
+    resources: Vec<ffmpeg_utils::MediaResourceLease>,
+) -> Result<(), String> {
+    let encoder = hwaccel::get_render_encoder(&job.render_settings).await;
+    render_with_encoder_and_resources(reporter, &job, SEGMENT_LIMITS, encoder, resources).await?;
     Ok(())
 }
 
@@ -1513,6 +1524,7 @@ struct RenderStats {
     reused: usize,
 }
 
+#[cfg(test)]
 async fn render_in_segments<R: ProgressReporterTrait>(
     reporter: &R,
     job: &ProjectRender<'_>,
@@ -1522,11 +1534,22 @@ async fn render_in_segments<R: ProgressReporterTrait>(
     render_with_encoder(reporter, job, limits, encoder).await
 }
 
+#[cfg(test)]
 async fn render_with_encoder<R: ProgressReporterTrait>(
     reporter: &R,
     job: &ProjectRender<'_>,
     limits: SegmentLimits,
     encoder: &'static str,
+) -> Result<RenderStats, String> {
+    render_with_encoder_and_resources(reporter, job, limits, encoder, Vec::new()).await
+}
+
+async fn render_with_encoder_and_resources<R: ProgressReporterTrait>(
+    reporter: &R,
+    job: &ProjectRender<'_>,
+    limits: SegmentLimits,
+    encoder: &'static str,
+    resources: Vec<ffmpeg_utils::MediaResourceLease>,
 ) -> Result<RenderStats, String> {
     job.render_settings.validate()?;
     if job.clips.is_empty() {
@@ -1554,6 +1577,7 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
     let workspace = ffmpeg_utils::MediaResourceLease::new(RenderWorkspace {
         directory: directory.clone(),
         _temporary: temporary,
+        _resources: resources,
     });
     let burn_danmu = !job.danmus.is_empty();
     let fps = output_fps(&job.clips, burn_danmu);

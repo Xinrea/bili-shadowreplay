@@ -20,8 +20,8 @@ use crate::database::video::VideoRow;
 use crate::database::{Database, DatabaseError};
 use crate::ffmpeg::hwaccel;
 use crate::ffmpeg::project::{
-    limit_segment_caches, project_frame_rate, render_project, OverlayLayer, ProjectRender,
-    RenderClip, RenderOverlay, RenderSound, VideoLayer,
+    limit_segment_caches, project_frame_rate, render_project_with_resources, OverlayLayer,
+    ProjectRender, RenderClip, RenderOverlay, RenderSound, VideoLayer,
 };
 use crate::handlers::subtitle_fonts::prepare_subtitle_font_directory;
 use crate::handlers::utils::{decode_data_url, get_disk_info_inner};
@@ -1657,15 +1657,20 @@ async fn render_timeline(
         Vec::new()
     };
 
-    // Kept alive until FFmpeg exits; dropping it removes the directory.
     let fonts_directory = match &job.font_name {
         Some(font_name) => {
             Some(prepare_subtitle_font_directory(job.cache.clone(), font_name.clone()).await?)
         }
         None => None,
     };
-
-    render_project(
+    let fonts_path = fonts_directory
+        .as_ref()
+        .map(|directory| directory.path().to_path_buf());
+    let resources = fonts_directory
+        .map(ffmpeg_utils::MediaResourceLease::new)
+        .into_iter()
+        .collect();
+    render_project_with_resources(
         reporter,
         ProjectRender {
             clips,
@@ -1673,13 +1678,14 @@ async fn render_timeline(
             sounds,
             subtitle_ass: job.subtitle_ass.clone(),
             generated_subtitle: job.generated_subtitle,
-            fonts_directory: fonts_directory.as_ref().map(|directory| directory.path()),
+            fonts_directory: fonts_path.as_deref(),
             danmus,
             danmu_options: job.danmu_options.clone(),
             render_settings: job.timeline.render_settings.clone(),
             output,
             segment_cache: job.segment_cache.as_deref(),
         },
+        resources,
     )
     .await?;
     if let Some(segment_cache) = &job.segment_cache {

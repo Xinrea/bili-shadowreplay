@@ -1,6 +1,6 @@
 //! Native media probing, image/audio profiles and structured media execution
-//! shared by the application and recorder. CLI helpers remain for callers
-//! that have not yet migrated and for optional test oracles.
+//! shared by the application and recorder. External executable helpers exist
+//! only in unit tests or with the explicit `cli-test-oracles` feature.
 //!
 //! The recorder probes every downloaded HLS segment to notice a resolution
 //! change; the application uses the same description for finished recordings.
@@ -24,7 +24,9 @@ pub use audio::{
     AudioTiming, ImportAudioMode,
 };
 pub use capabilities::{available_video_encoders, linked_ffmpeg_version};
-pub use command::{ffmpeg_command, ffmpeg_path, ffprobe_command, ffprobe_path, path_str};
+pub use command::path_str;
+#[cfg(any(test, feature = "cli-test-oracles"))]
+pub use command::{ffmpeg_command, ffmpeg_path, ffprobe_command, ffprobe_path};
 pub use hls::{record_to_hls, HlsRecordingOptions};
 pub use image::normalize_image_to_png;
 pub use media::{

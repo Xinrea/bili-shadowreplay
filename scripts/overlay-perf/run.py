@@ -90,6 +90,13 @@ def build(manifest, name, online):
     if not online:
         args.append("--offline")
     lock = manifest.with_name("Cargo.lock")
+    if lock.exists() and 'name = "async-ffmpeg-sidecar"' in lock.read_text():
+        # Cover both current and previously extracted baseline locks. Cargo
+        # prunes the removed sidecar while retaining other locked versions.
+        metadata = ["cargo", "metadata", "--manifest-path", manifest, "--format-version", "1"]
+        if not online:
+            metadata.append("--offline")
+        command(metadata, cwd=ROOT, stdout=subprocess.DEVNULL)
     if lock.exists() and 'name = "overlay-perf"' in lock.read_text():
         args.append("--locked")
     if name == "baseline":
@@ -159,8 +166,8 @@ def main():
     if current_lock.exists():
         shutil.copy2(current_lock, baseline_lock)
     elif not baseline_lock.exists():
-        # sidecar 0.0.3 depends on yanked krata-tokio-tar 0.4.2. Preserve the
-        # app's already-locked version rather than resolving it from scratch.
+        # Seed known versions from the application before Cargo prunes the
+        # unrelated workspace entries for the standalone benchmark.
         shutil.copy2(ROOT / "src-tauri/Cargo.lock", baseline_lock)
     baseline = build(baseline_manifest, "baseline", args.online)
     shutil.copy2(baseline_lock, current_lock)

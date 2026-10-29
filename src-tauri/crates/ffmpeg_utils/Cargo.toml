@@ -7,17 +7,21 @@ edition = "2021"
 name = "ffmpeg_utils"
 path = "src/lib.rs"
 
+[features]
+# External executable oracles only; production media paths use linked libraries.
+cli-test-oracles = ["tokio/process"]
+
 [dependencies]
 ffmpeg-next = { version = "=9.0.0", default-features = false, features = ["format", "software-resampling", "filter"] }
 ffmpeg-sys-next = { version = "=9.0.1", default-features = false }
 flate2 = "1.1"
-tokio = { version = "1.48.0", features = ["fs", "process", "rt", "time"] }
+tokio = { version = "1.48.0", features = ["fs", "rt", "time"] }
 serde = { version = "1.0.228", features = ["derive"] }
 tempfile = "3.20"
 
 [dev-dependencies]
 serde_json = "1.0.145"
-tokio = { version = "1.48.0", features = ["fs", "macros", "rt-multi-thread", "net", "io-util", "sync", "time"] }
+tokio = { version = "1.48.0", features = ["fs", "macros", "rt-multi-thread", "net", "io-util", "process", "sync", "time"] }
 
 [lints]
 workspace = true

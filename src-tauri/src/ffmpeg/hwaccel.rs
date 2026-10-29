@@ -86,7 +86,8 @@ pub fn output_format_filter(encoder: &str) -> &'static str {
     }
 }
 
-/// 为 FFmpeg 命令追加 VAAPI 设备参数。
+/// Configure the explicit VAAPI device for optional CLI test oracles.
+#[cfg(test)]
 fn apply_vaapi_device(command: &mut tokio::process::Command) {
     if let Some(device_path) = vaapi_device_path() {
         command.args(["-vaapi_device", device_path.to_string_lossy().as_ref()]);
@@ -95,36 +96,15 @@ fn apply_vaapi_device(command: &mut tokio::process::Command) {
     }
 }
 
-/// 只追加视频编码器参数，不追加视频滤镜。
-pub fn apply_x264_encoder_only(command: &mut tokio::process::Command, encoder: &str) {
-    if is_vaapi_encoder(encoder) {
-        apply_vaapi_device(command);
-    }
-    command.args(["-c:v", encoder]);
-}
-
-/// 按编码器类型追加质量参数。
-pub fn apply_x264_quality_args(command: &mut tokio::process::Command, encoder: &str) {
-    apply_x264_quality_args_with_bitrate(command, encoder, None);
+/// Apply the shared profile to an optional CLI test oracle.
+#[cfg(test)]
+pub(super) fn apply_x264_quality_args(command: &mut tokio::process::Command, encoder: &str) {
+    command.args(quality_args_with_bitrate(encoder, None));
 }
 
 fn with_output_gop(mut args: Vec<String>) -> Vec<String> {
     args.extend(OUTPUT_GOP_ARGS.map(str::to_owned));
     args
-}
-
-/// 按编码器类型追加质量参数；指定 `bitrate`（kbps）时改用该目标码率。
-pub fn apply_x264_quality_args_with_bitrate(
-    command: &mut tokio::process::Command,
-    encoder: &str,
-    bitrate: Option<NonZeroU32>,
-) {
-    let quality_args = quality_args_with_bitrate(encoder, bitrate);
-    log::info!(
-        "Applying H.264 quality parameters: encoder={encoder}, args={}",
-        quality_args.join(" ")
-    );
-    command.args(quality_args);
 }
 
 /// The encoder's quality arguments, targeting `bitrate` kbps instead of its
@@ -267,22 +247,8 @@ pub async fn material_encoder(settings: Option<&crate::project::RenderSettings>)
     }
 }
 
-pub fn apply_material_quality(
-    command: &mut tokio::process::Command,
-    encoder: &str,
-    bitrate: Option<NonZeroU32>,
-    settings: Option<&crate::project::RenderSettings>,
-) {
-    match settings {
-        Some(settings) => {
-            command.args(project_quality_args(encoder, settings));
-        }
-        None => apply_x264_quality_args_with_bitrate(command, encoder, bitrate),
-    }
-}
-
-/// The same quality policy as the command-based callers, expressed as native
-/// encoder settings. Hardware selection and quality remain shared by both.
+/// Native encoder settings from the shared profile and cache-identity policy.
+/// The canonical profile strings remain stable for existing segment caches.
 pub fn native_video_options(
     encoder: &str,
     filter: Option<&str>,
@@ -344,8 +310,9 @@ fn native_bit_rate(value: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("Invalid native encoder bit rate: {value}"))
 }
 
-/// 追加视频编码器参数，并在 VAAPI 下补齐硬件上传滤镜。
-pub fn apply_x264_encoder_args(
+/// Configure an encoder/filter for optional CLI test oracles.
+#[cfg(test)]
+pub(super) fn apply_x264_encoder_args(
     command: &mut tokio::process::Command,
     encoder: &str,
     filter: Option<&str>,
@@ -366,9 +333,7 @@ pub fn apply_x264_encoder_args(
     }
 }
 
-/// 检测当前环境下 FFmpeg 支持的 H.264 硬件编码器。
-///
-/// 返回值为可直接用于 `-c:v <value>` 的编码器名称列表。
+/// Hardware H.264/HEVC encoder names registered by the linked FFmpeg SDK.
 pub async fn list_supported_hwaccels() -> Result<Vec<String>, String> {
     let hwaccels: Vec<_> = ffmpeg_utils::available_video_encoders()
         .into_iter()

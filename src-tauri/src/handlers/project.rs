@@ -1238,6 +1238,16 @@ impl ExportSource<'_> {
         );
         extra.push_str(&serde_json::to_string(&self.timeline.render_settings).unwrap());
         extra.push('\0');
+        // Match segment caching: changes to effective encoder defaults (e.g.
+        // GOP length) must also invalidate the complete video prepared for upload.
+        extra.push_str(
+            &serde_json::to_string(&hwaccel::project_quality_args(
+                encoder,
+                &self.timeline.render_settings,
+            ))
+            .unwrap(),
+        );
+        extra.push('\0');
         extra.push_str(self.subtitle_ass.as_deref().unwrap_or_default());
         if self.timeline.danmu {
             extra.push_str(&serde_json::to_string(&self.danmu_options).unwrap_or_default());
@@ -2291,7 +2301,7 @@ mod tests {
     }
 
     #[test]
-    fn a_render_is_identified_by_its_overlay_pictures_too() {
+    fn a_render_is_identified_by_effective_encoding_and_overlay_pictures() {
         let (materials, audio) = (HashMap::new(), HashMap::new());
         let timeline = Timeline::from_materials(&[(1, 10.0)]);
         let source = |images: Vec<OverlayImage>| ExportSource {
@@ -2332,6 +2342,23 @@ mod tests {
             source(vec![image("data:image/png;base64,AAAA", 11.0)]).render_hash("libx265")
         );
         assert_ne!(drawn, source(Vec::new()).render_hash("libx265"));
+        let plain = source(Vec::new());
+        let mut extra = format!(
+            "encoder:libx265\nnative:false:{}\n",
+            native_overlay::RENDERER_VERSION,
+        );
+        extra.push_str(&serde_json::to_string(&timeline.render_settings).unwrap());
+        extra.push('\0');
+        assert_ne!(plain.render_hash("libx265"), timeline.render_hash(&extra));
+        extra.push_str(
+            &serde_json::to_string(&hwaccel::project_quality_args(
+                "libx265",
+                &timeline.render_settings,
+            ))
+            .unwrap(),
+        );
+        extra.push('\0');
+        assert_eq!(plain.render_hash("libx265"), timeline.render_hash(&extra));
     }
 
     #[test]

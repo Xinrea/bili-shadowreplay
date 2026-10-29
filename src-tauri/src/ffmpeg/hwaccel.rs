@@ -33,6 +33,9 @@ const V4L2M2M_ENCODER: &str = "h264_v4l2m2m";
 const VAAPI_DEVICE_DIR: &str = "/dev/dri";
 const VAAPI_RENDER_PREFIX: &str = "renderD";
 const VAAPI_FILTER_SUFFIX: &str = "format=nv12,hwupload";
+/// Maximum distance between keyframes, in frames (not seconds). Scene changes
+/// and new render segments may insert earlier keyframes; B-frame policy is unchanged.
+const OUTPUT_GOP_ARGS: [&str; 2] = ["-g", "120"];
 
 // 缓存选中的编码器，避免重复检查
 static ENCODER_CACHE: OnceLock<String> = OnceLock::new();
@@ -108,6 +111,11 @@ pub fn apply_x264_quality_args(command: &mut tokio::process::Command, encoder: &
     apply_x264_quality_args_with_bitrate(command, encoder, None);
 }
 
+fn with_output_gop(mut args: Vec<String>) -> Vec<String> {
+    args.extend(OUTPUT_GOP_ARGS.map(str::to_owned));
+    args
+}
+
 /// 按编码器类型追加质量参数；指定 `bitrate`（kbps）时改用该目标码率。
 pub fn apply_x264_quality_args_with_bitrate(
     command: &mut tokio::process::Command,
@@ -129,7 +137,7 @@ pub fn apply_x264_quality_args_with_bitrate(
 pub fn quality_args_with_bitrate(encoder: &str, bitrate: Option<NonZeroU32>) -> Vec<String> {
     let defaults = quality_args_for_encoder(encoder);
     let Some(kbps) = bitrate.map(|bitrate| u64::from(bitrate.get())) else {
-        return defaults.iter().map(ToString::to_string).collect();
+        return with_output_gop(defaults.iter().map(ToString::to_string).collect());
     };
     let rate = |flag: &str| match flag {
         "-b:v" => Some(kbps),
@@ -155,7 +163,7 @@ pub fn quality_args_with_bitrate(encoder: &str, bitrate: Option<NonZeroU32>) -> 
             args.push(format!("{}k", rate(flag).unwrap_or(kbps)));
         }
     }
-    args
+    with_output_gop(args)
 }
 
 /// 返回指定 H.264 编码器应使用的质量参数。
@@ -190,7 +198,7 @@ pub fn quality_args_for_encoder(encoder: &str) -> &'static [&'static str] {
 }
 
 /// Explicit material/export/upload settings. Keep legacy H.264 quality helpers
-/// separate: callers without settings retain their historical encoding policy.
+/// separate: callers without settings retain their quality/rate-control policy.
 pub fn project_quality_args(
     encoder: &str,
     settings: &crate::project::RenderSettings,
@@ -223,7 +231,7 @@ pub fn project_quality_args(
     if encoder.starts_with("hevc_") || encoder == "libx265" {
         args.extend(["-tag:v".to_string(), "hvc1".to_string()]);
     }
-    args
+    with_output_gop(args)
 }
 
 /// Choose and probe an encoder for each codec/priority combination. Unlike the
@@ -539,7 +547,7 @@ pub async fn get_x264_encoder() -> &'static str {
     log::info!(
         "Selected H.264 encoder: encoder={}, quality_args={}",
         encoder,
-        quality_args_for_encoder(&encoder).join(" ")
+        quality_args_with_bitrate(&encoder, None).join(" ")
     );
 
     // 存入缓存，如果设置成功则从缓存返回，否则返回刚才得到的值
@@ -594,6 +602,10 @@ mod tests {
             assert_eq!(
                 quality_args_with_bitrate(encoder, None),
                 quality_args_for_encoder(encoder)
+                    .iter()
+                    .copied()
+                    .chain(["-g", "120"])
+                    .collect::<Vec<_>>()
             );
         }
     }
@@ -602,7 +614,10 @@ mod tests {
     fn bitrate_replaces_constant_quality_for_libx264() {
         assert_eq!(
             quality_args_with_bitrate("libx264", NonZeroU32::new(12000)),
-            ["-preset", "medium", "-b:v", "12000k", "-maxrate", "15000k", "-bufsize", "24000k"]
+            [
+                "-preset", "medium", "-b:v", "12000k", "-maxrate", "15000k", "-bufsize", "24000k",
+                "-g", "120"
+            ]
         );
     }
 
@@ -612,12 +627,12 @@ mod tests {
             quality_args_with_bitrate("h264_nvenc", NonZeroU32::new(4000)),
             [
                 "-preset", "p5", "-rc", "vbr", "-b:v", "4000k", "-maxrate", "5000k", "-bufsize",
-                "8000k"
+                "8000k", "-g", "120"
             ]
         );
         assert_eq!(
             quality_args_with_bitrate("h264_v4l2m2m", NonZeroU32::new(4000)),
-            ["-b:v", "4000k"]
+            ["-b:v", "4000k", "-g", "120"]
         );
     }
 
@@ -639,6 +654,8 @@ mod tests {
                 );
                 assert_eq!(args.len() % 2, 0);
                 assert!(args.windows(2).any(|pair| pair == ["-b:v", "12000k"]));
+                assert_eq!(args.iter().filter(|arg| *arg == "-g").count(), 1);
+                assert!(args.windows(2).any(|pair| pair == ["-g", "120"]));
                 assert!(
                     !args.iter().any(|arg| {
                         ["-crf", "-cq", "-maxrate", "-bufsize", "-bf", "-b_ref_mode"]
@@ -646,6 +663,119 @@ mod tests {
                     }),
                     "{encoder}: {args:?}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_encoding_uses_the_same_gop_with_or_without_manual_bitrate() {
+        for encoder in ALL_ENCODERS {
+            for bitrate in [None, NonZeroU32::new(12000)] {
+                let args = quality_args_with_bitrate(encoder, bitrate);
+                assert_eq!(args.iter().filter(|arg| *arg == "-g").count(), 1);
+                assert!(args.windows(2).any(|pair| pair == ["-g", "120"]));
+                assert!(!args
+                    .iter()
+                    .any(|arg| ["-sc_threshold", "-keyint_min", "-bf"].contains(&arg.as_str())));
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires FFmpeg/ffprobe with libx264 and libx265; also tests available NVENC/VideoToolbox"]
+    async fn encoded_keyframe_gaps_respect_the_120_frame_gop() {
+        use crate::project::{EncodingPriority, RenderSettings, VideoCodec};
+        let directory = tempfile::tempdir().unwrap();
+        for encoder in [
+            "libx264",
+            "libx265",
+            "h264_videotoolbox",
+            "hevc_videotoolbox",
+            "h264_nvenc",
+            "hevc_nvenc",
+        ] {
+            for priority in [EncodingPriority::Speed, EncodingPriority::Quality] {
+                let settings = RenderSettings {
+                    codec: if encoder == "libx265" || encoder.starts_with("hevc_") {
+                        VideoCodec::Hevc
+                    } else {
+                        VideoCodec::H264
+                    },
+                    priority,
+                    ..RenderSettings::default()
+                };
+                if !super::test_encoder_with_settings(encoder, Some(&settings)).await {
+                    assert!(
+                        !encoder.starts_with("libx"),
+                        "Required software encoder unavailable: {encoder}"
+                    );
+                    eprintln!("Skipping unavailable hardware encoder: {encoder} {priority:?}");
+                    continue;
+                }
+                let path = directory.path().join("gop.mp4");
+                let encoded = ffmpeg_utils::ffmpeg_command()
+                    .args([
+                        "-v",
+                        "error",
+                        "-f",
+                        "lavfi",
+                        "-i",
+                        "color=c=0x204060:s=128x96:r=60",
+                    ])
+                    .args(["-vf", super::output_format_filter(encoder), "-c:v", encoder])
+                    .args(super::project_quality_args(encoder, &settings))
+                    .args(["-frames:v", "301", "-an", "-y"])
+                    .arg(&path)
+                    .output()
+                    .await
+                    .unwrap();
+                assert!(
+                    encoded.status.success(),
+                    "{encoder}: {}",
+                    String::from_utf8_lossy(&encoded.stderr)
+                );
+                let probed = ffmpeg_utils::ffprobe_command()
+                    .args([
+                        "-v",
+                        "error",
+                        "-select_streams",
+                        "v:0",
+                        "-show_entries",
+                        "frame=key_frame",
+                        "-of",
+                        "json",
+                    ])
+                    .arg(&path)
+                    .output()
+                    .await
+                    .unwrap();
+                assert!(
+                    probed.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&probed.stderr)
+                );
+                let value: serde_json::Value = serde_json::from_slice(&probed.stdout).unwrap();
+                let frames = value["frames"].as_array().unwrap();
+                assert_eq!(frames.len(), 301, "{encoder}");
+                let keyframes: Vec<_> = frames
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, frame)| (frame["key_frame"] == 1).then_some(index))
+                    .collect();
+                assert_eq!(keyframes.first(), Some(&0), "{encoder}");
+                assert!(
+                    keyframes.windows(2).all(|pair| pair[1] - pair[0] <= 120),
+                    "{encoder}: {keyframes:?}"
+                );
+                assert!(
+                    frames.len() - keyframes.last().unwrap() <= 120,
+                    "{encoder}: {keyframes:?}"
+                );
+                assert!(
+                    keyframes.windows(2).any(|pair| pair[1] - pair[0] == 120),
+                    "{encoder}: {keyframes:?}"
+                );
+                eprintln!("GOP 120 verified: {encoder} {priority:?}, keyframes={keyframes:?}");
             }
         }
     }

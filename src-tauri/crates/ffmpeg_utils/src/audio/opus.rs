@@ -4,7 +4,7 @@
 
 use std::{
     collections::VecDeque,
-    ffi::{c_char, CStr, CString},
+    ffi::{c_char, CStr},
     ops::ControlFlow,
     path::Path,
     ptr,
@@ -15,13 +15,10 @@ use ffmpeg_next::{self as ffmpeg, codec, ffi, filter, format, frame, Dictionary,
 use tempfile::NamedTempFile;
 
 use super::{
-    again, audio_stream, check_cancelled, decode_frames, native_error, range::AudioClock,
-    AudioFormat,
+    again, audio_stream, check_cancelled, decode_frames, native_error, output::NativeOutput,
+    range::AudioClock, AudioFormat,
 };
-use crate::{
-    metadata::{open_input, run_media},
-    path_str,
-};
+use crate::metadata::{open_input, run_media};
 
 #[derive(Clone, Copy)]
 enum OpusProfile {
@@ -233,77 +230,8 @@ fn encode_sync(
     Ok(temporary)
 }
 
-struct Muxer {
-    output: format::context::Output,
-    // AVIO keeps the opaque callback until output has closed.
-    _interrupt: ffmpeg::util::interrupt::InterruptGuard,
-}
-
-impl Muxer {
-    fn new(path: &Path, cancelled: Arc<AtomicBool>) -> Result<Self, String> {
-        let filename = CString::new(path_str(path)?).map_err(|error| error.to_string())?;
-        let token = cancelled;
-        let interrupt = ffmpeg::util::interrupt::new(Box::new(move || {
-            token.load(std::sync::atomic::Ordering::Acquire)
-        }));
-        let mut context = ptr::null_mut();
-        let result = unsafe {
-            ffi::avformat_alloc_output_context2(
-                &mut context,
-                ptr::null(),
-                c"opus".as_ptr(),
-                filename.as_ptr(),
-            )
-        };
-        if result < 0 || context.is_null() {
-            return Err(native_error(
-                "创建 Ogg 输出失败",
-                ffmpeg::Error::from(result),
-            ));
-        }
-        // Wrap before opening AVIO, so a failed open still frees the format.
-        let output = unsafe { format::context::Output::wrap(context) };
-        unsafe {
-            (*context).interrupt_callback = interrupt.interrupt;
-            let result = ffi::avio_open2(
-                &mut (*context).pb,
-                filename.as_ptr(),
-                ffi::AVIO_FLAG_WRITE,
-                &(*context).interrupt_callback,
-                ptr::null_mut(),
-            );
-            if result < 0 {
-                return Err(native_error(
-                    "打开 Opus 输出失败",
-                    ffmpeg::Error::from(result),
-                ));
-            }
-        }
-        Ok(Self {
-            output,
-            _interrupt: interrupt.guard,
-        })
-    }
-
-    fn close(&mut self) -> Result<(), String> {
-        unsafe {
-            let context = self.output.as_mut_ptr();
-            ffi::avio_flush((*context).pb);
-            let error = (*(*context).pb).error;
-            let result = ffi::avio_closep(&mut (*context).pb);
-            if error < 0 || result < 0 {
-                return Err(native_error(
-                    "关闭 Opus 输出失败",
-                    ffmpeg::Error::from(if error < 0 { error } else { result }),
-                ));
-            }
-        }
-        Ok(())
-    }
-}
-
 struct OpusOutput {
-    muxer: Muxer,
+    muxer: NativeOutput,
     profile: OpusProfile,
     encoder: Option<codec::encoder::audio::Encoder>,
     encoder_format: Option<AudioFormat>,
@@ -329,7 +257,7 @@ impl OpusOutput {
         metadata: Dictionary<'static>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Self, String> {
-        let mut muxer = Muxer::new(path, cancelled.clone())?;
+        let mut muxer = NativeOutput::new(path, "opus", cancelled.clone())?;
         muxer.output.set_metadata(global);
         Ok(Self {
             muxer,

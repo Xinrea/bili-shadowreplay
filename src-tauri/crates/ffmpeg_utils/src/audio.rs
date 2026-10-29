@@ -19,6 +19,9 @@ mod range;
 pub use range::{decode_audio_range, AudioRange};
 mod opus;
 pub use opus::{encode_opus_sample, encode_opus_upload};
+mod flac_preview;
+mod output;
+pub use flac_preview::{encode_flac_preview, AudioTiming};
 
 pub trait AudioSink: Send + 'static {
     fn write(&mut self, samples: &[i16]) -> Result<(), String>;
@@ -475,3 +478,6 @@ mod opus_tests;
 
 #[cfg(test)]
 mod opus_upload_tests;
+
+#[cfg(test)]
+mod flac_preview_tests;

@@ -109,6 +109,15 @@ surround audio, unsupported layouts, unusual sample rates, empty streams and
 midstream rate/channel changes. Application tests verify the PowerLive call and
 its subtitle-error mapping without making an external upload.
 
+Preview FLAC tests cover 48 kHz stereo PCM, AAC frame-grid trimming, preroll,
+adjacent chunks, first-track selection, metadata, EOF and cancellation. Native
+output uses fixed 4096-sample blocks (with a short final block) on both SDKs.
+FFmpeg 6.1's old CLI instead repacks into 4608-sample blocks: comparisons retain
+exact decoded PCM, counts and metadata, plus a separate CLI encode with explicit
+frame size for strict packet/STREAMINFO comparison. FFmpeg 9 keeps the original
+command as the strict encoded-output oracle. Nonempty clips below 16 output
+samples fail consistently with FFmpeg 9; empty clips write headers only.
+
 To smoke-test Douyu against a **currently live** numeric room using the
 production `DouyuRecorder` loop for five minutes (requires `ffmpeg` on `PATH`):
 

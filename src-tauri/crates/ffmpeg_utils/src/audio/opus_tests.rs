@@ -301,6 +301,14 @@ where
     F: FnOnce(PathBuf, PathBuf) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Result<(), String>> + Send + 'static,
 {
+    assert_cancelled_media(encode, "opus", ".opus-").await;
+}
+
+pub(super) async fn assert_cancelled_media<F, Fut>(encode: F, extension: &str, prefix: &str)
+where
+    F: FnOnce(PathBuf, PathBuf) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<(), String>> + Send + 'static,
+{
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     struct AbortOnDrop(tokio::task::AbortHandle);
     impl Drop for AbortOnDrop {
@@ -314,7 +322,7 @@ where
     let mut data = fs::read(&source).unwrap();
     data[4..8].copy_from_slice(&999_999_992u32.to_le_bytes());
     data[40..44].copy_from_slice(&999_999_956u32.to_le_bytes());
-    let output = directory.path().join("kept.opus");
+    let output = directory.path().join(format!("kept.{extension}"));
     fs::write(&output, b"previous output").unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -349,7 +357,7 @@ where
                 .unwrap()
                 .file_name()
                 .to_string_lossy()
-                .starts_with(".opus-")
+                .starts_with(prefix)
         }) {
             break;
         }
@@ -378,7 +386,7 @@ where
                 .unwrap()
                 .file_name()
                 .to_string_lossy()
-                .starts_with(".opus-")
+                .starts_with(prefix)
         });
         if !partial {
             break;
@@ -390,7 +398,11 @@ where
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(fs::read(&output).unwrap(), b"previous output");
-    assert_clean(directory.path());
+    assert!(fs::read_dir(directory.path()).unwrap().all(|entry| !entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .starts_with(prefix)));
 }
 
 pub(super) fn has_cli() -> bool {

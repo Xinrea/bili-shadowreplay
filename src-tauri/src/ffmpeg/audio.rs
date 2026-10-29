@@ -7,9 +7,10 @@ use std::{
 use tempfile::{tempdir_in, Builder, NamedTempFile, TempDir};
 
 use super::runner::{FfmpegJob, ProgressMode};
+pub(crate) use ffmpeg_utils::AudioTiming;
 use ffmpeg_utils::{
-    decode_audio, decode_audio_range, encode_opus_sample, probe_media, AudioDecodeOptions,
-    AudioRange, AudioSink, AudioStreamMetadata,
+    decode_audio, decode_audio_range, encode_flac_preview, encode_opus_sample, probe_media,
+    AudioDecodeOptions, AudioRange, AudioSink, AudioStreamMetadata,
 };
 
 const TRANSCRIPTION_SAMPLE_RATE: u32 = 16_000;
@@ -294,20 +295,7 @@ impl AudioSink for WavChunkSink {
     }
 }
 
-/// How the samples of a file's sound are placed in time, which cutting it
-/// sample for sample depends on.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct AudioTiming {
-    pub sample_rate: u32,
-    /// Where its first sample is, in samples: a decode of the whole file
-    /// starts there, as after the priming an MP3 encoder leaves.
-    pub start: i64,
-    /// AAC, whose frames all hold 1024 samples. Recordings remuxed from FLV
-    /// stamp them to the millisecond, up to 16 samples off where they are;
-    /// snapped back to their grid they are exact.
-    pub aac: bool,
-}
-
+#[cfg(test)]
 pub(crate) const AAC_FRAME_SAMPLES: i64 = 1024;
 
 /// The timing of a file's first sound stream; `None` without one.
@@ -343,6 +331,7 @@ fn audio_timing(audio: &AudioStreamMetadata) -> Option<AudioTiming> {
 /// each other join sample for sample. Frames of a fixed size, whatever the
 /// decoder gave, keep the FLAC encoder from writing a stream of varying block
 /// sizes, which Apple's decoder, and so WebKit's, cannot read.
+#[cfg(test)]
 fn preview_audio_filters(timing: AudioTiming, start: f64, duration: f64) -> String {
     let rate = timing.sample_rate;
     let origin = timing.start;
@@ -370,39 +359,14 @@ pub(crate) async fn extract_preview_audio(
     pre_roll: f64,
     output_path: &Path,
 ) -> Result<(), String> {
-    // From the start, unseeked: a seek to it drops the priming frame of AAC
-    // with the first one after it, which a decode of the whole file keeps.
-    let seek = start - pre_roll;
-    let seek = (seek > 0.0)
-        .then(|| ["-ss".to_string(), format!("{seek:.6}")])
-        .into_iter()
-        .flatten();
-    let job = FfmpegJob::new()
-        .args(["-noaccurate_seek".to_string(), "-copyts".to_string()])
-        .args(seek)
-        .args([
-            "-i".to_string(),
-            file.to_string_lossy().into_owned(),
-            "-map".to_string(),
-            "0:a:0".to_string(),
-            "-af".to_string(),
-            preview_audio_filters(timing, start, duration),
-            "-ac".to_string(),
-            "2".to_string(),
-            "-c:a".to_string(),
-            "flac".to_string(),
-            "-sample_fmt".to_string(),
-            "s16".to_string(),
-            "-f".to_string(),
-            "flac".to_string(),
-            "-y".to_string(),
-        ])
-        .output(output_path.to_path_buf())
-        .context("Extract preview audio");
-    job.run_without_reporter()
-        .await
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+    encode_flac_preview(
+        file,
+        output_path,
+        timing,
+        AudioRange { start, duration },
+        pre_roll,
+    )
+    .await
 }
 
 /// Get the container duration in whole seconds, rounding up for audio chunks.

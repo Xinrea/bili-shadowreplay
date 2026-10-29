@@ -110,6 +110,9 @@ fn main() {
                 config.cxxflag(format!("-mmacosx-version-min={target}"));
             }
 
+            // Use ggml's pthread pool so local OpenMP installations cannot add an
+            // external runtime dependency to macOS builds.
+            config.define("GGML_OPENMP", "OFF");
             config.define("WHISPER_METAL", "ON");
             config.define("GGML_METAL", "ON");
             println!("cargo:warning=Building whisper.cpp with Metal support");

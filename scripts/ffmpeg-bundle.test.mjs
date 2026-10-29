@@ -17,7 +17,28 @@ test("macOS native FFmpeg dependencies relocate, survive repeated bundling and p
     const source = path.join(directory, "probe.c");
     const binary = path.join(directory, "bili-shadowreplay");
     const runtime = path.join(directory, "runtime");
-    fs.writeFileSync(source, "#include <stdio.h>\n#include <libavcodec/avcodec.h>\n#include <libavformat/avformat.h>\n#include <libswresample/swresample.h>\n#include <libavfilter/avfilter.h>\nint main(void) { if (!avcodec_find_encoder_by_name(\"libopus\") || !av_guess_format(\"opus\", NULL, NULL)) { fputs(\"FFmpeg SDK requires libopus and the Opus muxer\\n\", stderr); return 1; } printf(\"%u %u %u\\n\", avformat_version(), swresample_version(), avfilter_version()); return 0; }\n");
+    fs.writeFileSync(source, String.raw`#include <stdio.h>
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libswresample/swresample.h>
+#include <libavfilter/avfilter.h>
+int main(void) {
+    const char *encoders[] = { "libopus", "libmp3lame", "libx264", "libx265", "aac", "flac", "pcm_s16le", "mjpeg", "png", "ass", "mov_text" };
+    const char *muxers[] = { "opus", "mp3", "wav", "flac", "ipod", "mp4", "mpegts", "hls", "matroska" };
+    const char *filters[] = { "subtitles", "overlay", "concat", "xfade", "acrossfade", "amix", "scale", "pad", "aresample", "color", "anullsrc" };
+    for (size_t i = 0; i < sizeof(encoders) / sizeof(*encoders); i++) {
+        if (!avcodec_find_encoder_by_name(encoders[i])) { fprintf(stderr, "FFmpeg SDK lacks encoder %s\n", encoders[i]); return 1; }
+    }
+    for (size_t i = 0; i < sizeof(muxers) / sizeof(*muxers); i++) {
+        if (!av_guess_format(muxers[i], NULL, NULL)) { fprintf(stderr, "FFmpeg SDK lacks muxer %s\n", muxers[i]); return 1; }
+    }
+    for (size_t i = 0; i < sizeof(filters) / sizeof(*filters); i++) {
+        if (!avfilter_get_by_name(filters[i])) { fprintf(stderr, "FFmpeg SDK lacks filter %s\n", filters[i]); return 1; }
+    }
+    printf("%u %u %u\n", avformat_version(), swresample_version(), avfilter_version());
+    return 0;
+}
+`);
     const include = run("pkg-config", ["--variable=includedir", "libavformat"]).trim();
     const lib = run("pkg-config", ["--variable=libdir", "libavformat"]).trim();
     run("cc", [source, `-I${include}`, `-L${lib}`, "-lavformat", "-lavcodec", "-lswresample", "-lavfilter", "-mmacosx-version-min=15.0", "-Wl,-headerpad_max_install_names", "-o", binary]);
@@ -56,7 +77,7 @@ test("macOS native FFmpeg dependencies relocate, survive repeated bundling and p
     run("codesign", ["--force", "--sign", "-", application]);
     run("codesign", ["--verify", "--deep", "--strict", application]);
     run(process.execPath, [hook, "--verify", application]);
-    const env = { ...process.env, DYLD_PRINT_LIBRARIES: "1" };
+    const env = { ...process.env, PATH: "/nonexistent", DYLD_PRINT_LIBRARIES: "1" };
     delete env.DYLD_LIBRARY_PATH;
     delete env.DYLD_FALLBACK_LIBRARY_PATH;
     const launched = spawnSync(packaged, [], { encoding: "utf8", env });

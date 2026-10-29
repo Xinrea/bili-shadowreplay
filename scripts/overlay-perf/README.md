@@ -47,8 +47,10 @@ PKG_CONFIG_PATH=/path/to/sdk/lib/pkgconfig python3 scripts/overlay-perf/run.py -
 All generated fixtures, extracted source, executables, Cargo artifacts, MP4s and
 JSON results are under ignored `output/`. The local benchmark `Cargo.lock` is
 also ignored. On its first run the script seeds it from `src-tauri/Cargo.lock`
-(the app pins a yanked transitive dependency of sidecar 0.0.3); it then preserves
-that resolution and uses the **same lock for both binaries**. Later builds use
+and uses the **same lock for both binaries**. An older ignored benchmark lock
+that still contains the removed sidecar is pruned once with Cargo metadata;
+remaining dependency versions stay locked. The runner then preserves that
+resolution. Later builds use
 `--locked`. The result records the lock hash; retain the local lock alongside
 results if comparing across machines or future dependency upgrades. No checkout,
 branch switch, source patch, commit or upload is performed.
@@ -87,10 +89,8 @@ preparation time are captured from the production stream; baseline has no such
 instrumentation and no baseline stage numbers are invented.
 
 Every current stream run uses the actual app `runner.rs` and `native_overlay.rs`
-through Rust `#[path]` imports, with actual `ffmpeg_utils`. The runner still
-compiles its legacy sidecar helpers, but this benchmark invokes only its native
-entry point. Only
-app-owned progress types/trait and danmu image structs/constants are stubbed.
+through Rust `#[path]` imports, with actual `ffmpeg_utils`. The benchmark invokes the native
+entry point. Only app-owned progress types/trait and danmu image structs/constants are stubbed.
 The benchmark supplies already-scheduled native image events, passes no progress
 reporter, and **does not validate the real danmu scheduler, task queue, database,
 UI progress reporting or cancellation**. Those need application tests.

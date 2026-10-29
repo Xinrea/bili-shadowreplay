@@ -24,7 +24,7 @@ if (Test-Path $unpacked) { Remove-Item $unpacked -Recurse -Force }
 & 7z x $archive "-o$unpacked" -y | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Failed to unpack FFmpeg SDK" }
 $root = Join-Path $unpacked "ffmpeg-$version-full_build-shared"
-foreach ($required in @("include/libavformat/avformat.h", "include/libswresample/swresample.h", "include/libavfilter/avfilter.h", "lib/avformat.lib", "lib/avcodec.lib", "lib/avutil.lib", "lib/swresample.lib", "lib/avfilter.lib", "bin/ffmpeg.exe", "bin/ffprobe.exe", "bin/ffplay.exe", "bin/avformat-63.dll", "bin/avcodec-63.dll", "bin/avutil-61.dll", "bin/swresample-7.dll", "bin/avfilter-12.dll")) {
+foreach ($required in @("include/libavformat/avformat.h", "include/libswresample/swresample.h", "include/libavfilter/avfilter.h", "lib/avformat.lib", "lib/avcodec.lib", "lib/avutil.lib", "lib/swresample.lib", "lib/avfilter.lib", "bin/avformat-63.dll", "bin/avcodec-63.dll", "bin/avutil-61.dll", "bin/swresample-7.dll", "bin/avfilter-12.dll")) {
     if (-not (Test-Path (Join-Path $root $required))) { throw "Incomplete FFmpeg SDK: $required" }
 }
 if (Test-Path $sdk) { Remove-Item $sdk -Recurse -Force }
@@ -33,7 +33,8 @@ Remove-Item $unpacked -Recurse -Force
 
 $runtime = Join-Path $PSScriptRoot "src-tauri/windows-runtime"
 New-Item -ItemType Directory -Force -Path $runtime | Out-Null
-Copy-Item (Join-Path $sdk "bin/*.exe") -Destination (Join-Path $PSScriptRoot "src-tauri") -Force
+# SDK executables remain available for optional developer oracles on PATH.
+# The application bundles only its native runtime DLLs.
 # Include all DLLs: codec/format depend on avutil and other FFmpeg components.
 Copy-Item (Join-Path $sdk "bin/*.dll") -Destination $runtime -Force
 $env:FFMPEG_DIR = $sdk

@@ -5,7 +5,7 @@ BiliBili ShadowReplay 提供了服务端部署的能力，提供 Web 控制界�
 官方镜像支持 `linux/amd64` 和 `linux/arm64`。Docker 会根据宿主机架构自动
 选择对应镜像；在 Android Termux 中运行请参考 [Termux 部署](./termux)。
 
-镜像的构建和运行环境统一使用 Debian trixie，以提供原生弹幕渲染所需的系统 FreeType、HarfBuzz 和 ICU。容器自带这些用户态依赖，不要求宿主机安装 Ubuntu 24.04 桌面运行库。自行修改镜像时，请保持 builder 与 runtime 的发行版基线一致，详见 [原生弹幕渲染构建](../../development/native-overlay.md)。
+镜像的构建和运行环境统一使用 Debian trixie，以提供原生弹幕渲染所需的系统 FreeType、HarfBuzz 和 ICU。容器自带这些用户态依赖及匹配的 FFmpeg 共享库，正常运行不需要 `ffmpeg` 或 `ffprobe` 可执行文件，也不要求宿主机安装 Ubuntu 24.04 桌面运行库。自行修改镜像时，请保持 builder 与 runtime 的发行版基线一致，详见 [原生弹幕渲染构建](../../development/native-overlay.md)。
 
 ## 镜像获取
 

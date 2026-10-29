@@ -228,32 +228,24 @@ impl Recorder for NewPlatformRecorder {
         // 获取流信息
         let stream_info = self.get_stream_info().await?;
 
-        // 使用 FFmpeg 录制
-        let mut ffmpeg = tokio::process::Command::new("ffmpeg")
-            .args(&[
-                "-i", &stream_info.stream_url,
-                "-c", "copy",
-                "-f", "mp4",
-                output_path.to_str().unwrap(),
-            ])
-            .spawn()
-            .map_err(|e| RecorderError::FfmpegError(e.to_string()))?;
+        // output_path 是本次录制的 .m3u8 播放列表，片段写入同一目录。
+        let enabled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let segment_pattern = output_path.with_file_name("segment-%05d.ts");
+        let recording = ffmpeg_utils::record_to_hls(
+            &stream_info.stream_url,
+            output_path,
+            &segment_pattern,
+            ffmpeg_utils::HlsRecordingOptions::default(),
+            enabled.clone(),
+        );
+        tokio::pin!(recording);
 
-        // 等待录制完成或取消
         tokio::select! {
-            result = ffmpeg.wait() => {
-                match result {
-                    Ok(status) if status.success() => Ok(()),
-                    Ok(status) => Err(RecorderError::FfmpegError(
-                        format!("FFmpeg exited with status: {}", status)
-                    )),
-                    Err(e) => Err(RecorderError::FfmpegError(e.to_string())),
-                }
-            }
+            result = &mut recording => result.map_err(RecorderError::FfmpegError),
             _ = cancel_token.cancelled() => {
-                // 取消录制
-                ffmpeg.kill().await.ok();
-                Ok(())
+                // 停止输入并完成尾段；直接丢弃 future 则中断全部 I/O。
+                enabled.store(false, std::sync::atomic::Ordering::Release);
+                recording.await.map_err(RecorderError::FfmpegError)
             }
         }
     }

@@ -18,7 +18,7 @@ src-tauri/
 │   │   │   └── helpers_test.rs
 │   │   └── Cargo.toml
 │   ├── danmu_stream/      # Danmu provider tests
-│   ├── ffmpeg_utils/      # Native ffmpeg-next probes/audio and FFmpeg CLI helpers;
+│   ├── ffmpeg_utils/      # Native ffmpeg-next media pipeline and optional CLI oracles;
 │   │                      # fixtures in `src-tauri/tests/video/`
 │   └── whisper-cpp-rs/    # (Excluded from CI - requires CMake)
 ```
@@ -31,7 +31,9 @@ src-tauri/
    ```bash
    sudo apt-get update
    sudo apt-get install -y libssl-dev pkg-config clang libclang-dev \
-     libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libavfilter-dev ffmpeg
+     libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libavfilter-dev
+   # Optional: independent fixture generation and CLI parity oracles.
+   sudo apt-get install -y ffmpeg
    ```
 
 2. **Rust Toolchain**:
@@ -89,8 +91,7 @@ samples for AAC (M4A, MP4, FLV, ADTS), MP3 and PCM, covering seek-zero priming,
 fractional starts, delayed/shifted audio, codec tails, EOF and sample-rate changes.
 Fixture-based range and cancellation tests run without a CLI; optional oracle
 tests skip when `ffmpeg` is unavailable. WAV application tests also check atomic
-publication and cleanup after cancelling blocked HTTP input. Other encoding tests
-still require the FFmpeg CLI.
+publication and cleanup after cancelling blocked HTTP input. Historical fixture generation and optional packet/pixel parity tests still use the CLI; production paths and fixture-based native tests do not.
 
 For PCM parity tests, put the CLI from the linked SDK on `PATH`. Different FFmpeg
 releases can schedule the last audio frame differently; each native result is
@@ -187,7 +188,7 @@ publication, and cancellation without a surviving writer. Recorder tests verify
 ENDLIST and complete final duration/size updates without invoking a CLI.
 
 To smoke-test Douyu against a **currently live** numeric room using the
-production `DouyuRecorder` loop for five minutes (requires `ffmpeg` on `PATH`):
+production `DouyuRecorder` loop for five minutes (requires the matching native media libraries and network access):
 
 ```bash
 cd src-tauri
@@ -363,9 +364,9 @@ The following areas need test coverage in future work:
    - Reconnection and error recovery
 
 2. **FFmpeg operations**
-   - Command construction (without actually running FFmpeg)
-   - Argument validation
-   - Error handling for FFmpeg failures
+   - Successful hardware encoding on physical devices beyond the available test host
+   - Longer network interruption/reconnect and codec-change recording soaks
+   - Release installation on Windows/Linux after native library packaging changes
 
 3. **End-to-end recording flows**
    - Would require long-running integration tests

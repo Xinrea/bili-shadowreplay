@@ -14,9 +14,9 @@
 
 ## 三、无法预览直播或是生成切片
 
-如果你是 macOS 或 Linux 用户，请确保你已安装了 `ffmpeg` 和 `ffprobe` 工具；如果不知道如何安装，请参考 [FFmpeg 配置](/getting-started/config/ffmpeg)。
+Windows 和 macOS 安装包已包含媒体处理所需的共享库，无需安装 `ffmpeg` 或 `ffprobe`。Linux 用户请通过包管理器安装官方 `.deb`，以获取匹配的运行库；自行构建请参考 [FFmpeg 配置](/getting-started/config/ffmpeg)。
 
-如果你是 Windows 用户，程序目录下应当自带了 `ffmpeg` 和 `ffprobe` 工具，如果无法预览直播或是生成切片，请向开发者反馈。
+若仍无法预览或生成切片，请提供程序日志和相关素材信息，便于定位网络、媒体格式或编码器问题。
 
 ## 四、添加 B 站直播间出现 -352 错误
 

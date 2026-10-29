@@ -1,11 +1,13 @@
 # FFmpeg 配置
 
 FFmpeg 是一个开源的音视频处理工具，支持多种格式的音视频编解码、转码、剪辑、合并等操作。
-在本项目中，元数据、音频时间信息和 HLS 分片探测，以及波形、转写用完整 WAV、30 秒 WAV 分块、范围 WAV 提取和素材 Opus 音频生成，通过 `ffmpeg-next` 直接链接 `libavformat`、`libavcodec`、`libavutil`、`libswresample` 和 `libavfilter`。录制、转码、实时 PowerLive 的 Opus 提取、预览 FLAC 编码及字幕弹幕压制继续使用 FFmpeg CLI；部分回归测试也用 CLI 对照结果。
+在本项目中，元数据、音频时间信息和 HLS 分片探测，以及波形、转写用完整 WAV、30 秒 WAV 分块、范围 WAV 提取、素材 Opus 音频生成和 PowerLive 上传音频编码，通过 `ffmpeg-next` 直接链接 `libavformat`、`libavcodec`、`libavutil`、`libswresample` 和 `libavfilter`。录制、转码、预览 FLAC 编码及字幕弹幕压制继续使用 FFmpeg CLI；部分回归测试也用 CLI 对照结果。
 
 范围 WAV 提取保留原 `-ss ... -i ... -t ...` 的时间行为，包括 AAC 预滚、容器起点、采样率变化及末帧边界。输出固定为 16 kHz 单声道 PCM；由于沿用 CLI 的逐帧截止规则，样本数不保证恰好等于请求秒数乘以采样率。
 
 素材 Opus 音频保留原来的 16 kHz 单声道、64 kbps VBR、压缩级别 10 配置，通过 Ogg 封装交给浏览器播放。输入的浮点／整数格式协商、音轨延迟和时间戳间隙会保留；编码失败或取消不会替换已有输出。
+
+PowerLive 上传音频使用 128 kbps VBR，保留源声道布局，采样率由滤镜协商为编码器支持的值。首次协商后会固定输出格式，即使输入流中途改变采样率或声道数，也保持同一条 Opus 音轨。其时间戳、标签、章节和尾部补齐处理与素材音频共用原生管线；该调用不再启动 FFmpeg 子进程。
 
 Windows 和 macOS 安装包携带原生媒体处理所需的动态库。macOS 仍需按下文安装 FFmpeg CLI，以使用录制和转码功能；Linux 使用目标发行版的 FFmpeg 运行库，`.deb` 会声明对应依赖。
 

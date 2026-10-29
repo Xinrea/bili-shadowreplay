@@ -103,6 +103,12 @@ comparisons check encoded audio packets and timestamps against the matching CLI;
 Ogg stream serial numbers are random and are excluded from file comparisons.
 The linked SDK must provide the `libopus` encoder and Ogg/Opus muxer.
 
+The 128 kbps upload profile shares this pipeline, retaining source layouts and
+negotiating supported sample rates. Its CLI comparisons also cover stereo and
+surround audio, unsupported layouts, unusual sample rates, empty streams and
+midstream rate/channel changes. Application tests verify the PowerLive call and
+its subtitle-error mapping without making an external upload.
+
 To smoke-test Douyu against a **currently live** numeric room using the
 production `DouyuRecorder` loop for five minutes (requires `ffmpeg` on `PATH`):
 

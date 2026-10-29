@@ -251,6 +251,14 @@ impl From<RecorderManagerError> for String {
     }
 }
 
+async fn prepare_powerlive_audio(input: &Path, output: &Path) -> Result<(), RecorderManagerError> {
+    ffmpeg_utils::encode_opus_upload(input, output)
+        .await
+        .map_err(|error| RecorderManagerError::SubtitleGenerationFailed {
+            error: format!("Failed to extract opus audio: {error}"),
+        })
+}
+
 /// Resolve the session even when the last recording attempt produced no archive.
 async fn live_end_parent_id(
     db: &Database,
@@ -1492,29 +1500,8 @@ impl RecorderManager {
             let opus_file_path = work_dir.with_filename("tmp.opus");
             log::info!("[{}]Extracting opus audio for third-party service", room_id);
 
-            // Extract opus audio using FFmpeg
-            let mut cmd = ffmpeg_utils::ffmpeg_command();
-            cmd.arg("-i")
-                .arg(clip_file_path.full_path())
-                .args([
-                    "-vn", // no video
-                    "-acodec", "libopus", "-b:a", "128k", "-y",
-                ])
-                .arg(opus_file_path.full_path());
-
-            let output =
-                cmd.output()
-                    .await
-                    .map_err(|e| RecorderManagerError::SubtitleGenerationFailed {
-                        error: format!("Failed to run FFmpeg: {}", e),
-                    })?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(RecorderManagerError::SubtitleGenerationFailed {
-                    error: format!("Failed to extract opus audio: {}", stderr),
-                });
-            }
+            prepare_powerlive_audio(&clip_file_path.full_path(), &opus_file_path.full_path())
+                .await?;
 
             log::info!("[{}]Opus audio extracted: {}", room_id, opus_file_path);
             opus_file_path
@@ -1912,6 +1899,102 @@ impl RecorderManager {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod powerlive_audio_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Count(u64);
+    impl ffmpeg_utils::AudioSink for Count {
+        fn write(&mut self, samples: &[i16]) -> Result<(), String> {
+            self.0 += samples.len() as u64;
+            Ok(())
+        }
+    }
+
+    fn assert_no_partial_opus(directory: &Path) {
+        assert!(std::fs::read_dir(directory).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".opus-")));
+    }
+
+    #[tokio::test]
+    async fn powerlive_preparation_keeps_stereo_and_publishes_the_complete_upload() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("录播 音频.wav");
+        let output = directory.path().join("tmp.opus");
+        let mut writer = hound::WavWriter::create(
+            &input,
+            hound::WavSpec {
+                channels: 2,
+                sample_rate: 48_000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for index in 0..48_017 {
+            let sample = (12_000.0 * (index as f64 * 0.031).sin()) as i16;
+            writer.write_sample(sample).unwrap();
+            writer.write_sample(sample / 2).unwrap();
+        }
+        writer.finalize().unwrap();
+        let original = std::fs::read(&input).unwrap();
+        std::fs::write(&output, b"previous upload").unwrap();
+        prepare_powerlive_audio(&input, &output).await.unwrap();
+        let data = std::fs::read(&output).unwrap();
+        assert_eq!(&data[..4], b"OggS");
+        let head = data
+            .windows(8)
+            .position(|part| part == b"OpusHead")
+            .unwrap();
+        assert_eq!(data[head + 9], 2);
+        assert_eq!(
+            u32::from_le_bytes(data[head + 12..head + 16].try_into().unwrap()),
+            48_000
+        );
+        let decoded = ffmpeg_utils::decode_audio(
+            &output,
+            ffmpeg_utils::AudioDecodeOptions {
+                sample_rate: 48_000,
+            },
+            Count::default(),
+        )
+        .await
+        .unwrap();
+        assert!(decoded.has_audio);
+        assert_eq!(decoded.samples, 48_017);
+        assert_eq!(decoded.sink.0, decoded.samples);
+        assert_eq!(std::fs::read(&input).unwrap(), original);
+        assert_no_partial_opus(directory.path());
+    }
+
+    #[tokio::test]
+    async fn failed_powerlive_preparation_reports_a_subtitle_error_and_keeps_previous_upload() {
+        let directory = tempfile::tempdir().unwrap();
+        let invalid = directory.path().join("invalid.wav");
+        std::fs::write(&invalid, b"not media").unwrap();
+        let output = directory.path().join("tmp.opus");
+        std::fs::write(&output, b"previous upload").unwrap();
+        let video = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/video/test.mp4");
+        for source in [
+            &invalid,
+            &directory.path().join("missing.wav"),
+            &video,
+            &output,
+        ] {
+            let error = prepare_powerlive_audio(source, &output).await.unwrap_err();
+            assert!(
+                matches!(error, RecorderManagerError::SubtitleGenerationFailed { error } if error.starts_with("Failed to extract opus audio: "))
+            );
+            assert_eq!(std::fs::read(&output).unwrap(), b"previous upload");
+            assert_no_partial_opus(directory.path());
+        }
     }
 }
 

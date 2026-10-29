@@ -1,4 +1,4 @@
-//! The fixed 16 kHz mono libopus profile used for audio previews. Filter
+//! The libopus profiles used for audio previews and service uploads. Filter
 //! negotiation retains floating-point sources, and timestamps reach the Ogg
 //! muxer unchanged so source delays and gaps remain on the playback timeline.
 
@@ -23,16 +23,39 @@ use crate::{
     path_str,
 };
 
-const RATE: i32 = 16_000;
-const SAMPLE_BASE: ffi::AVRational = ffi::AVRational { num: 1, den: RATE };
+#[derive(Clone, Copy)]
+enum OpusProfile {
+    Sample,
+    Upload,
+}
+
+impl OpusProfile {
+    fn bit_rate(self) -> usize {
+        match self {
+            Self::Sample => 64_000,
+            Self::Upload => 128_000,
+        }
+    }
+}
 
 /// Encode the CLI's automatically selected audio stream as a 64 kbit/s VBR
 /// Opus preview. Publish only after the worker has drained and closed its I/O.
 pub async fn encode_opus_sample(input: &Path, output: &Path) -> Result<(), String> {
+    encode_opus(input, output, OpusProfile::Sample).await
+}
+
+/// Encode a 128 kbit/s VBR Opus upload, negotiating the selected source's
+/// sample rate and channel layout exactly as the FFmpeg CLI does by default.
+pub async fn encode_opus_upload(input: &Path, output: &Path) -> Result<(), String> {
+    encode_opus(input, output, OpusProfile::Upload).await
+}
+
+async fn encode_opus(input: &Path, output: &Path, profile: OpusProfile) -> Result<(), String> {
     let input = input.to_path_buf();
     let output = output.to_path_buf();
     let publish_path = output.clone();
-    let temporary = run_media(move |cancelled| encode_sync(&input, &output, cancelled)).await?;
+    let temporary =
+        run_media(move |cancelled| encode_sync(&input, &output, profile, cancelled)).await?;
     temporary
         .persist(&publish_path)
         .map_err(|error| native_error("发布 Opus 音频失败", error.error))?;
@@ -42,6 +65,7 @@ pub async fn encode_opus_sample(input: &Path, output: &Path) -> Result<(), Strin
 fn encode_sync(
     input_path: &Path,
     output_path: &Path,
+    profile: OpusProfile,
     cancelled: Arc<AtomicBool>,
 ) -> Result<NamedTempFile, String> {
     if input_path == output_path
@@ -82,11 +106,27 @@ fn encode_sync(
     let mut decoder = decoder
         .audio()
         .map_err(|error| native_error("打开音频解码器失败", error))?;
-    let empty_format = if decoder.format() == format::Sample::I16(format::sample::Type::Packed) {
+    // Empty audio streams still negotiate an encoder and write headers, but
+    // must not invent a silent frame. Keep only the decoder's format hints.
+    let mut empty_frame = frame::Audio::empty();
+    empty_frame.set_format(if decoder.format() == format::Sample::None {
         format::Sample::I16(format::sample::Type::Packed)
     } else {
-        format::Sample::F32(format::sample::Type::Packed)
-    };
+        decoder.format()
+    });
+    empty_frame.set_rate(decoder.rate());
+    unsafe {
+        let result = ffi::av_channel_layout_copy(
+            &mut (*empty_frame.as_mut_ptr()).ch_layout,
+            &(*decoder.as_ptr()).ch_layout,
+        );
+        if result < 0 {
+            return Err(native_error(
+                "复制音频声道布局失败",
+                ffmpeg::Error::from(result),
+            ));
+        }
+    }
     let parent = output_path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -98,7 +138,13 @@ fn encode_sync(
         .map_err(|error| native_error("创建 Opus 临时输出失败", error))?;
     // The guard is declared before all native contexts, so unwinding closes
     // their file handles before deleting the file, including on Windows.
-    let mut output = OpusOutput::new(temporary.path(), global, metadata, cancelled.clone())?;
+    let mut output = OpusOutput::new(
+        temporary.path(),
+        profile,
+        global,
+        metadata,
+        cancelled.clone(),
+    )?;
     for chapter in input.chapters() {
         let offset = if origin == ffi::AV_NOPTS_VALUE {
             0
@@ -181,7 +227,7 @@ fn encode_sync(
             Ok(ControlFlow::Continue(()))
         },
     )?;
-    output.finish(empty_format)?;
+    output.finish(&empty_frame)?;
     drop(output);
     check_cancelled(&cancelled)?;
     Ok(temporary)
@@ -258,7 +304,9 @@ impl Muxer {
 
 struct OpusOutput {
     muxer: Muxer,
+    profile: OpusProfile,
     encoder: Option<codec::encoder::audio::Encoder>,
+    encoder_format: Option<AudioFormat>,
     graph: Option<filter::Graph>,
     format: Option<AudioFormat>,
     pending: VecDeque<QueuedAudio>,
@@ -276,6 +324,7 @@ struct QueuedAudio {
 impl OpusOutput {
     fn new(
         path: &Path,
+        profile: OpusProfile,
         global: Dictionary<'static>,
         metadata: Dictionary<'static>,
         cancelled: Arc<AtomicBool>,
@@ -284,7 +333,9 @@ impl OpusOutput {
         muxer.output.set_metadata(global);
         Ok(Self {
             muxer,
+            profile,
             encoder: None,
+            encoder_format: None,
             graph: None,
             format: None,
             pending: VecDeque::new(),
@@ -295,19 +346,28 @@ impl OpusOutput {
         })
     }
 
-    fn open_encoder(&mut self, sample_format: format::Sample) -> Result<(), String> {
+    fn open_encoder(&mut self, format: AudioFormat) -> Result<(), String> {
         let codec = ffmpeg::encoder::find_by_name("libopus").ok_or("FFmpeg 缺少 libopus 编码器")?;
         let mut encoder = codec::context::Context::new_with_codec(codec)
             .encoder()
             .audio()
             .map_err(|error| native_error("创建 Opus 编码器失败", error))?;
-        encoder.set_rate(RATE);
-        encoder.set_format(sample_format);
+        encoder.set_rate(format.sample_rate);
+        encoder.set_format(format.sample_format.into());
         // Set modern channel metadata directly; this works with FFmpeg 6.1
         // and 9 without depending on the wrapper's legacy channel fields.
-        unsafe { ffi::av_channel_layout_default(&mut (*encoder.as_mut_ptr()).ch_layout, 1) };
-        encoder.set_bit_rate(64_000);
-        encoder.set_time_base((1, RATE));
+        unsafe {
+            let result =
+                ffi::av_channel_layout_copy(&mut (*encoder.as_mut_ptr()).ch_layout, &format.layout);
+            if result < 0 {
+                return Err(native_error(
+                    "复制 Opus 编码布局失败",
+                    ffmpeg::Error::from(result),
+                ));
+            }
+        }
+        encoder.set_bit_rate(self.profile.bit_rate());
+        encoder.set_time_base((1, format.sample_rate));
         if self
             .muxer
             .output
@@ -329,7 +389,7 @@ impl OpusOutput {
             .add_stream(codec)
             .map_err(|error| native_error("创建 Opus 音轨失败", error))?;
         stream.set_parameters(&encoder);
-        stream.set_time_base((1, RATE));
+        stream.set_time_base((1, format.sample_rate));
         let mut metadata = self.metadata.take().unwrap_or_default();
         let version = ffmpeg::codec::version();
         metadata.set(
@@ -347,6 +407,7 @@ impl OpusOutput {
             .write_header()
             .map_err(|error| native_error("写入 Opus 文件头失败", error))?;
         self.encoder = Some(encoder);
+        self.encoder_format = Some(format);
         Ok(())
     }
 
@@ -372,27 +433,7 @@ impl OpusOutput {
             self.format = None;
         }
         if self.graph.is_none() {
-            let mut graph = make_graph(
-                frame,
-                &format,
-                self.encoder.as_ref().map(|encoder| encoder.format()),
-            )?;
-            if self.encoder.is_none() {
-                let mut sink = graph.get("out").ok_or("Opus 滤镜输出不存在")?;
-                let negotiated = unsafe { ffi::av_buffersink_get_format(sink.as_mut_ptr()) };
-                let negotiated = match negotiated {
-                    value if value == ffi::AVSampleFormat::AV_SAMPLE_FMT_S16 as i32 => {
-                        format::Sample::I16(format::sample::Type::Packed)
-                    }
-                    value if value == ffi::AVSampleFormat::AV_SAMPLE_FMT_FLT as i32 => {
-                        format::Sample::F32(format::sample::Type::Packed)
-                    }
-                    _ => return Err("Opus 滤镜协商了不支持的采样格式".into()),
-                };
-                self.open_encoder(negotiated)?;
-            }
-            self.graph = Some(graph);
-            self.format = Some(format);
+            self.configure(frame, format)?;
         }
         unsafe {
             if (*frame.as_ptr()).ch_layout.order == ffi::AVChannelOrder::AV_CHANNEL_ORDER_UNSPEC {
@@ -431,6 +472,44 @@ impl OpusOutput {
         self.pull()
     }
 
+    fn configure(&mut self, frame: &frame::Audio, format: AudioFormat) -> Result<(), String> {
+        let mut graph = make_graph(frame, &format, self.profile, self.encoder_format.as_ref())?;
+        if self.encoder.is_none() {
+            let mut output = graph.get("out").ok_or("Opus 滤镜输出不存在")?;
+            let mut negotiated = AudioFormat {
+                layout: unsafe { std::mem::zeroed() },
+                sample_format: ffi::AVSampleFormat::AV_SAMPLE_FMT_NONE,
+                sample_rate: unsafe { ffi::av_buffersink_get_sample_rate(output.as_mut_ptr()) },
+            };
+            let sample_format = unsafe { ffi::av_buffersink_get_format(output.as_mut_ptr()) };
+            negotiated.sample_format = match sample_format {
+                value if value == ffi::AVSampleFormat::AV_SAMPLE_FMT_S16 as i32 => {
+                    ffi::AVSampleFormat::AV_SAMPLE_FMT_S16
+                }
+                value if value == ffi::AVSampleFormat::AV_SAMPLE_FMT_FLT as i32 => {
+                    ffi::AVSampleFormat::AV_SAMPLE_FMT_FLT
+                }
+                _ => return Err("Opus 滤镜协商了不支持的采样格式".into()),
+            };
+            let result = unsafe {
+                ffi::av_buffersink_get_ch_layout(output.as_mut_ptr(), &mut negotiated.layout)
+            };
+            if result < 0 {
+                return Err(native_error(
+                    "读取 Opus 协商声道失败",
+                    ffmpeg::Error::from(result),
+                ));
+            }
+            if negotiated.sample_rate <= 0 || negotiated.layout.nb_channels <= 0 {
+                return Err("Opus 滤镜协商的音频格式无效".into());
+            }
+            self.open_encoder(negotiated)?;
+        }
+        self.graph = Some(graph);
+        self.format = Some(format);
+        Ok(())
+    }
+
     fn pull(&mut self) -> Result<(), String> {
         let mut frame = frame::Audio::empty();
         loop {
@@ -452,9 +531,13 @@ impl OpusOutput {
             }
             let base: ffi::AVRational = output.sink().time_base().into();
             let pts = frame.pts().ok_or("Opus 滤镜未返回时间戳")?;
-            frame.set_pts(Some(unsafe { ffi::av_rescale_q(pts, base, SAMPLE_BASE) }));
+            let sample_base = ffi::AVRational {
+                num: 1,
+                den: self.encoder_format.as_ref().unwrap().sample_rate,
+            };
+            frame.set_pts(Some(unsafe { ffi::av_rescale_q(pts, base, sample_base) }));
             unsafe {
-                (*frame.as_mut_ptr()).time_base = SAMPLE_BASE;
+                (*frame.as_mut_ptr()).time_base = sample_base;
                 (*frame.as_mut_ptr()).duration = frame.samples() as i64;
             }
             self.pending_samples = self
@@ -472,6 +555,8 @@ impl OpusOutput {
         let encoder = self.encoder.as_ref().ok_or("Opus 编码器不存在")?;
         let frame_size = encoder.frame_size() as usize;
         let sample_format = encoder.format();
+        let sample_rate = encoder.rate() as i32;
+        let channels = self.encoder_format.as_ref().unwrap().layout.nb_channels as usize;
         if frame_size == 0 {
             return Err("Opus 编码器帧长度无效".into());
         }
@@ -494,9 +579,12 @@ impl OpusOutput {
                 }
                 let raw = &mut *combined.as_mut_ptr();
                 raw.format = ffi::AVSampleFormat::from(sample_format) as i32;
-                raw.sample_rate = RATE;
+                raw.sample_rate = sample_rate;
                 raw.nb_samples = count as i32;
-                raw.time_base = SAMPLE_BASE;
+                raw.time_base = ffi::AVRational {
+                    num: 1,
+                    den: sample_rate,
+                };
                 raw.pts = first
                     .frame
                     .pts()
@@ -504,7 +592,16 @@ impl OpusOutput {
                     .checked_add(first.offset as i64)
                     .ok_or("音频时间戳溢出")?;
                 raw.duration = count as i64;
-                ffi::av_channel_layout_default(&mut raw.ch_layout, 1);
+                let result = ffi::av_channel_layout_copy(
+                    &mut raw.ch_layout,
+                    &(*first.frame.as_ptr()).ch_layout,
+                );
+                if result < 0 {
+                    return Err(native_error(
+                        "复制 Opus 帧声道失败",
+                        ffmpeg::Error::from(result),
+                    ));
+                }
                 let result = ffi::av_frame_get_buffer(combined.as_mut_ptr(), 0);
                 if result < 0 {
                     return Err(native_error(
@@ -513,7 +610,12 @@ impl OpusOutput {
                     ));
                 }
             }
-            let bytes = sample_format.bytes();
+            // libopus accepts packed s16/float. Each sample frame contains
+            // all negotiated channels, including supported surround layouts.
+            let bytes = sample_format
+                .bytes()
+                .checked_mul(channels)
+                .ok_or("Opus 样本长度溢出")?;
             let mut copied = 0;
             while copied < count {
                 let first = self.pending.front_mut().ok_or("Opus 音频队列为空")?;
@@ -568,7 +670,7 @@ impl OpusOutput {
                 .time_base();
             // Keep duration and AV_PKT_DATA_SKIP_SAMPLES from libopus: the
             // Ogg muxer needs them for pre-skip and the final granule position.
-            packet.rescale_ts((1, RATE), output_base);
+            packet.rescale_ts(self.encoder.as_ref().unwrap().time_base(), output_base);
             packet.set_stream(0);
             packet
                 .write_interleaved(&mut self.muxer.output)
@@ -576,7 +678,7 @@ impl OpusOutput {
         }
     }
 
-    fn finish(&mut self, empty_format: format::Sample) -> Result<(), String> {
+    fn finish(&mut self, empty_frame: &frame::Audio) -> Result<(), String> {
         if let Some(graph) = self.graph.as_mut() {
             graph
                 .get("in")
@@ -587,7 +689,7 @@ impl OpusOutput {
             self.pull()?;
         }
         if self.encoder.is_none() {
-            self.open_encoder(empty_format)?;
+            self.configure(empty_frame, AudioFormat::from_frame(empty_frame)?)?;
         }
         self.reblock(true)?;
         match self.encoder.as_mut().unwrap().send_eof() {
@@ -617,31 +719,10 @@ impl OpusOutput {
 fn make_graph(
     frame: &frame::Audio,
     format: &AudioFormat,
-    locked: Option<format::Sample>,
+    profile: OpusProfile,
+    locked: Option<&AudioFormat>,
 ) -> Result<filter::Graph, String> {
-    let mut description = vec![0 as c_char; 256];
-    let length = unsafe {
-        ffi::av_channel_layout_describe(&format.layout, description.as_mut_ptr(), description.len())
-    };
-    if length < 0 {
-        return Err("无法描述音频声道布局".into());
-    }
-    if length as usize >= description.len() {
-        description.resize(length as usize + 1, 0);
-        let result = unsafe {
-            ffi::av_channel_layout_describe(
-                &format.layout,
-                description.as_mut_ptr(),
-                description.len(),
-            )
-        };
-        if result < 0 {
-            return Err("无法描述音频声道布局".into());
-        }
-    }
-    let layout = unsafe { CStr::from_ptr(description.as_ptr()) }
-        .to_str()
-        .map_err(|error| error.to_string())?;
+    let layout = describe_layout(&format.layout)?;
     let mut graph = filter::Graph::new();
     unsafe {
         (*graph.as_mut_ptr()).nb_threads = 1;
@@ -664,18 +745,75 @@ fn make_graph(
             "",
         )
         .map_err(|error| native_error("创建 Opus 滤镜输出失败", error))?;
-    let formats = locked.map_or("s16|flt", |format| format.name());
+    let spec = if let Some(locked) = locked {
+        let format = format::Sample::from(locked.sample_format);
+        let layout = describe_layout(&locked.layout)?;
+        format!(
+            "aformat=sample_fmts={}:sample_rates={}:channel_layouts={layout}",
+            format.name(),
+            locked.sample_rate
+        )
+    } else {
+        match profile {
+            OpusProfile::Sample => {
+                "aformat=sample_fmts=s16|flt:sample_rates=16000:channel_layouts=mono".to_string()
+            }
+            OpusProfile::Upload => {
+                let codec = ffmpeg::encoder::find_by_name("libopus")
+                    .ok_or("FFmpeg 缺少 libopus 编码器")?
+                    .audio()
+                    .map_err(|error| native_error("读取 libopus 能力失败", error))?;
+                let mut spec = "aformat=sample_fmts=s16|flt".to_string();
+                if let Some(rates) = codec.rates() {
+                    // Keep the codec's preference order. The filter graph's
+                    // closest-rate negotiation also uses that order for ties.
+                    let rates = rates
+                        .map(|rate| rate.to_string())
+                        .collect::<Vec<_>>()
+                        .join("|");
+                    if rates.is_empty() {
+                        return Err("libopus 未提供可用采样率".into());
+                    }
+                    spec.push_str(":sample_rates=");
+                    spec.push_str(&rates);
+                }
+                // Without -ac, the CLI preserves the source layout. libopus
+                // validates its default mapping family rather than silently
+                // downmixing unsupported layouts to mono or stereo.
+                spec
+            }
+        }
+    };
     graph
         .output("in", 0)
         .and_then(|parser| parser.input("out", 0))
-        .and_then(|parser| {
-            parser.parse(&format!(
-                "aformat=sample_fmts={formats}:sample_rates={RATE}:channel_layouts=mono"
-            ))
-        })
+        .and_then(|parser| parser.parse(&spec))
         .map_err(|error| native_error("创建 Opus 滤镜失败", error))?;
     graph
         .validate()
         .map_err(|error| native_error("配置 Opus 滤镜失败", error))?;
     Ok(graph)
+}
+
+fn describe_layout(layout: &ffi::AVChannelLayout) -> Result<String, String> {
+    let mut description = vec![0 as c_char; 256];
+    let length = unsafe {
+        ffi::av_channel_layout_describe(layout, description.as_mut_ptr(), description.len())
+    };
+    if length < 0 {
+        return Err("无法描述音频声道布局".into());
+    }
+    if length as usize >= description.len() {
+        description.resize(length as usize + 1, 0);
+        let result = unsafe {
+            ffi::av_channel_layout_describe(layout, description.as_mut_ptr(), description.len())
+        };
+        if result < 0 {
+            return Err("无法描述音频声道布局".into());
+        }
+    }
+    let layout = unsafe { CStr::from_ptr(description.as_ptr()) }
+        .to_str()
+        .map_err(|error| error.to_string())?;
+    Ok(layout.to_string())
 }

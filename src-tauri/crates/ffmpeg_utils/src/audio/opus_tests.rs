@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn pcm_wav(path: &Path, rate: u32, channels: u16, frames: usize) {
+pub(super) fn pcm_wav(path: &Path, rate: u32, channels: u16, frames: usize) {
     let bytes = (frames * usize::from(channels) * 2) as u32;
     let mut data = Vec::with_capacity(44 + bytes as usize);
     data.extend_from_slice(b"RIFF");
@@ -36,14 +36,14 @@ fn pcm_wav(path: &Path, rate: u32, channels: u16, frames: usize) {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct Ogg {
-    packets: Vec<Vec<u8>>,
-    pages: Vec<(u8, u64)>,
-    vendor: String,
-    tags: BTreeMap<String, String>,
+pub(super) struct Ogg {
+    pub(super) packets: Vec<Vec<u8>>,
+    pub(super) pages: Vec<(u8, u64)>,
+    pub(super) vendor: String,
+    pub(super) tags: BTreeMap<String, String>,
 }
 
-fn ogg(path: &Path) -> Ogg {
+pub(super) fn ogg(path: &Path) -> Ogg {
     let data = fs::read(path).unwrap();
     let mut cursor = 0;
     let mut pages = Vec::new();
@@ -104,23 +104,27 @@ fn ogg(path: &Path) -> Ogg {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct EncodedPacket {
-    data: Vec<u8>,
-    pts: Option<i64>,
-    dts: Option<i64>,
-    duration: i64,
-    skip: Vec<Vec<u8>>,
+pub(super) struct EncodedPacket {
+    pub(super) data: Vec<u8>,
+    pub(super) pts: Option<i64>,
+    pub(super) dts: Option<i64>,
+    pub(super) duration: i64,
+    pub(super) skip: Vec<Vec<u8>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct Timeline {
-    start: i64,
-    duration: i64,
-    time_base: (i32, i32),
-    packets: Vec<EncodedPacket>,
+pub(super) struct Timeline {
+    pub(super) start: i64,
+    pub(super) duration: i64,
+    pub(super) time_base: (i32, i32),
+    pub(super) packets: Vec<EncodedPacket>,
 }
 
 fn timeline(path: &Path) -> Timeline {
+    timeline_channels(path, 1)
+}
+
+pub(super) fn timeline_channels(path: &Path, channels: u16) -> Timeline {
     let mut input = open_input(path, Arc::new(AtomicBool::new(false))).unwrap();
     let stream = input.streams().best(media::Type::Audio).unwrap();
     assert_eq!(stream.parameters().id(), codec::Id::OPUS);
@@ -130,7 +134,7 @@ fn timeline(path: &Path) -> Timeline {
         .audio()
         .unwrap();
     assert_eq!(decoder.rate(), 48_000);
-    assert_eq!(decoder.channels(), 1);
+    assert_eq!(decoder.channels(), channels);
     let index = stream.index();
     let mut result = Timeline {
         start: stream.start_time(),
@@ -174,7 +178,7 @@ impl AudioSink for Count {
     }
 }
 
-fn assert_clean(directory: &Path) {
+pub(super) fn assert_clean(directory: &Path) {
     assert!(fs::read_dir(directory).unwrap().all(|entry| !entry
         .unwrap()
         .file_name()
@@ -288,6 +292,15 @@ async fn native_opus_rejects_invalid_video_and_same_file_without_touching_output
 
 #[tokio::test]
 async fn cancelling_native_opus_closes_http_and_removes_partial_output_without_a_cli() {
+    assert_cancelled_opus(|input, output| async move { encode_opus_sample(&input, &output).await })
+        .await;
+}
+
+pub(super) async fn assert_cancelled_opus<F, Fut>(encode: F)
+where
+    F: FnOnce(PathBuf, PathBuf) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<(), String>> + Send + 'static,
+{
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     struct AbortOnDrop(tokio::task::AbortHandle);
     impl Drop for AbortOnDrop {
@@ -323,7 +336,7 @@ async fn cancelling_native_opus_closes_http_and_removes_partial_output_without_a
     let _server_guard = AbortOnDrop(server.abort_handle());
     let url = PathBuf::from(format!("http://{address}/stalled.wav"));
     let target = output.clone();
-    let task = tokio::spawn(async move { encode_opus_sample(&url, &target).await });
+    let task = tokio::spawn(async move { encode(url, target).await });
     let _task_guard = AbortOnDrop(task.abort_handle());
     tokio::time::timeout(Duration::from_secs(5), ready_rx)
         .await
@@ -380,7 +393,7 @@ async fn cancelling_native_opus_closes_http_and_removes_partial_output_without_a
     assert_clean(directory.path());
 }
 
-fn has_cli() -> bool {
+pub(super) fn has_cli() -> bool {
     Command::new("ffmpeg")
         .arg("-version")
         .stdout(Stdio::null())
@@ -389,7 +402,7 @@ fn has_cli() -> bool {
         .is_ok_and(|status| status.success())
 }
 
-fn cli(args: &[&str], output: &Path) {
+pub(super) fn cli(args: &[&str], output: &Path) {
     let result = Command::new("ffmpeg")
         .args(["-v", "error", "-nostdin", "-y"])
         .args(args)
@@ -429,8 +442,13 @@ async fn assert_cli(source: &Path, directory: &Path, case: &str) {
         ],
         &oracle,
     );
-    let native_ogg = ogg(&native);
-    let oracle_ogg = ogg(&oracle);
+    assert_equivalent(&native, &oracle, case, 1);
+    assert_clean(directory);
+}
+
+pub(super) fn assert_equivalent(native: &Path, oracle: &Path, case: &str, channels: u16) {
+    let native_ogg = ogg(native);
+    let oracle_ogg = ogg(oracle);
     assert_eq!(
         native_ogg.packets[0], oracle_ogg.packets[0],
         "{case}: OpusHead"
@@ -461,8 +479,8 @@ async fn assert_cli(source: &Path, directory: &Path, case: &str) {
         );
     }
     if native_ogg.packets.len() > 2 {
-        let actual = timeline(&native);
-        let expected = timeline(&oracle);
+        let actual = timeline_channels(native, channels);
+        let expected = timeline_channels(oracle, channels);
         assert_eq!(
             (actual.start, actual.duration, actual.time_base),
             (expected.start, expected.duration, expected.time_base),
@@ -488,7 +506,6 @@ async fn assert_cli(source: &Path, directory: &Path, case: &str) {
             );
         }
     }
-    assert_clean(directory);
 }
 
 #[tokio::test]

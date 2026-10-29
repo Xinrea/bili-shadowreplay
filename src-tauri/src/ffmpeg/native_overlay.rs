@@ -59,7 +59,7 @@ pub struct OverlaySpec {
 
 impl OverlaySpec {
     /// Bound allocations and iteration counts before creating a renderer.
-    fn layout(&self) -> Result<(usize, u64), String> {
+    pub(super) fn layout(&self) -> Result<(usize, u64), String> {
         let pixels = u64::from(self.width) * u64::from(self.height);
         if self.width == 0
             || self.height == 0

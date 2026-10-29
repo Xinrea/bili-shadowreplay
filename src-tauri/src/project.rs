@@ -54,6 +54,8 @@ pub struct RenderSettings {
     pub codec: VideoCodec,
     pub priority: EncodingPriority,
     pub bitrate_kbps: u32,
+    #[serde(flatten)]
+    pub encoding: crate::ffmpeg::encoding::VideoEncodingSettings,
 }
 
 impl Default for RenderSettings {
@@ -62,6 +64,7 @@ impl Default for RenderSettings {
             codec: VideoCodec::Hevc,
             priority: EncodingPriority::Speed,
             bitrate_kbps: 10_000,
+            encoding: Default::default(),
         }
     }
 }
@@ -74,6 +77,8 @@ struct StoredRenderSettings {
     quality: Option<String>,
     #[serde(default = "default_bitrate_kbps")]
     bitrate_kbps: u32,
+    #[serde(flatten)]
+    encoding: crate::ffmpeg::encoding::VideoEncodingSettings,
 }
 
 fn default_bitrate_kbps() -> u32 {
@@ -93,6 +98,7 @@ impl From<StoredRenderSettings> for RenderSettings {
                     defaults.priority
                 }
             }),
+            encoding: stored.encoding,
             bitrate_kbps: match stored.bitrate_kbps {
                 0 if legacy => defaults.bitrate_kbps,
                 bitrate => bitrate,
@@ -1046,6 +1052,7 @@ mod tests {
             codec: VideoCodec::H264,
             priority: EncodingPriority::Quality,
             bitrate_kbps: 12_000,
+            encoding: Default::default(),
         };
         edited.clips[0].end = 20.0;
         edited.merge_saved_edits(&base, &saved);

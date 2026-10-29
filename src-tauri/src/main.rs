@@ -1007,6 +1007,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::config::update_whisper_language,
         crate::handlers::config::update_webhook_url,
         crate::handlers::config::update_danmu_ass_options,
+        crate::handlers::config::get_available_video_encoders,
         crate::powerlive::get_powerlive_status,
         crate::powerlive::get_powerlive_account,
         crate::powerlive::begin_powerlive_login,

@@ -469,3 +469,26 @@ pub async fn update_danmu_ass_options(
         .set_danmu_ass_options(Danmu2AssOptions { font_size, opacity });
     Ok(())
 }
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_available_video_encoders(
+    native_gpu: Option<bool>,
+    priority: Option<crate::project::EncodingPriority>,
+) -> Result<Vec<crate::ffmpeg::encoding::AvailableVideoEncoder>, String> {
+    use crate::ffmpeg::encoding::{available_encoders, VideoEncodingSettings};
+    let native_gpu = native_gpu.unwrap_or(false);
+    let mut encoders: Vec<_> = available_encoders()
+        .await?
+        .iter()
+        .filter(|item| native_gpu || !item.is_native())
+        .cloned()
+        .collect();
+    for encoder in &mut encoders {
+        let defaults =
+            VideoEncodingSettings::default().options_for(encoder, priority.unwrap_or_default());
+        for option in &mut encoder.options {
+            option.default = defaults[option.name].clone();
+        }
+    }
+    Ok(encoders)
+}

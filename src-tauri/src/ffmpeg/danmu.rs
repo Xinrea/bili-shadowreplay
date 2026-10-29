@@ -485,7 +485,14 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
         .await
         .map_err(|error| format!("Failed to inspect source video: {error}"))?;
     let fps = danmu_output_fps(metadata.fps);
-    let encoder = hwaccel::material_encoder(settings).await;
+    let selected = match settings {
+        Some(settings) => Some(settings.encoding.encoder(settings.codec, true).await?),
+        None => None,
+    };
+    let encoder = match selected {
+        Some(encoder) => encoder.encoder.as_str(),
+        None => hwaccel::get_x264_encoder().await,
+    };
     let graph = overlay_graph(fps, encoder);
     let spec = OverlaySpec {
         input: native_overlay::RenderInput {
@@ -501,6 +508,19 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
         start: 0.0,
         duration: probe_overlay_duration(file, metadata.duration).await?,
     };
+    if let (Some(settings), Some(encoder)) = (settings, selected) {
+        if encoder.is_native() {
+            return super::native_gpu::encode_video(
+                reporter,
+                super::native_gpu::VideoSource::File(file),
+                spec,
+                &output_path,
+                settings,
+                encoder,
+            )
+            .await;
+        }
+    }
     let mut command = ffmpeg_command();
     command
         .current_dir(directory)

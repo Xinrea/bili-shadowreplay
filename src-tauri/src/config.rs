@@ -560,6 +560,7 @@ mod auto_generate_tests {
             codec: VideoCodec::H264,
             priority: EncodingPriority::Quality,
             bitrate_kbps: 16_000,
+            encoding: Default::default(),
         };
         loaded.try_save().unwrap();
         let reloaded = Config::load(&path, directory.path(), directory.path()).unwrap();

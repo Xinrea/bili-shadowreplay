@@ -168,13 +168,14 @@ pub fn quality_args_with_bitrate(encoder: &str, bitrate: Option<NonZeroU32>) -> 
 
 /// 返回指定 H.264 编码器应使用的质量参数。
 pub fn quality_args_for_encoder(encoder: &str) -> &'static [&'static str] {
-    match encoder {
+    let family = encoder.replacen("hevc_", "h264_", 1);
+    match family.as_str() {
         VAAPI_ENCODER => &["-b:v", "8000k", "-maxrate", "10000k", "-bufsize", "16000k"],
         NVENC_ENCODER => &[
             "-preset", "p5", "-rc", "vbr", "-cq", "23", "-b:v", "8000k", "-maxrate", "10000k",
             "-bufsize", "16000k",
         ],
-        VIDEOTOOLBOX_ENCODER => &["-b:v", "8000k", "-maxrate", "10000k", "-bufsize", "16000k"],
+        VIDEOTOOLBOX_ENCODER => &["-b:v", "8000k", "-g", "240"],
         QSV_ENCODER => &[
             "-preset", "medium", "-b:v", "8000k", "-maxrate", "10000k", "-bufsize", "16000k",
         ],
@@ -226,47 +227,74 @@ pub fn project_quality_args(
         _ => &["-preset", if quality { "slow" } else { "veryfast" }],
     };
     let mut args: Vec<String> = options.iter().map(ToString::to_string).collect();
-    args.extend(["-b:v".to_string(), format!("{}k", settings.bitrate_kbps)]);
-    // Tag HEVC for MP4 playback on Apple clients. Never force B-frame counts.
+    let custom = settings
+        .encoding
+        .encoder
+        .as_deref()
+        .is_none_or(|name| name == encoder);
+    if custom {
+        for (name, value) in &settings.encoding.options {
+            if name == "crf" && value == "-1" {
+                continue;
+            }
+            let flag = format!("-{name}");
+            if let Some(index) = args.iter().position(|arg| *arg == flag) {
+                args[index + 1] = value.clone();
+            } else {
+                args.extend([flag, value.clone()]);
+            }
+        }
+    }
+    let crf = custom
+        && settings
+            .encoding
+            .options
+            .get("crf")
+            .is_some_and(|value| value != "-1");
+    if crf {
+        let kbps = u64::from(settings.bitrate_kbps);
+        args.extend([
+            "-maxrate".to_string(),
+            format!("{}k", kbps * 5 / 4),
+            "-bufsize".to_string(),
+            format!("{}k", kbps * 2),
+        ]);
+    } else {
+        args.extend(["-b:v".to_string(), format!("{}k", settings.bitrate_kbps)]);
+    }
     if encoder.starts_with("hevc_") || encoder == "libx265" {
         args.extend(["-tag:v".to_string(), "hvc1".to_string()]);
     }
-    with_output_gop(args)
+    // GOP and B-frame overrides belong only to the native Metal worker.
+    args
 }
 
-/// Choose and probe an encoder for each codec/priority combination. Unlike the
-/// legacy selector, the probe uses exactly the options the render will use.
-pub async fn get_render_encoder(settings: &crate::project::RenderSettings) -> &'static str {
-    use crate::project::{EncodingPriority, VideoCodec};
-    static CACHES: [tokio::sync::OnceCell<&'static str>; 4] =
-        [const { tokio::sync::OnceCell::const_new() }; 4];
-    let hevc = settings.codec == VideoCodec::Hevc;
-    let index = usize::from(hevc) * 2 + usize::from(settings.priority == EncodingPriority::Quality);
-    CACHES[index]
-        .get_or_init(|| async {
-            let available = list_supported_hwaccels().await.unwrap_or_default();
-            for &candidate in &TARGET_ENCODERS {
-                if candidate.starts_with(if hevc { "hevc_" } else { "h264_" })
-                    && available.iter().any(|name| name == candidate)
-                    && test_encoder_with_settings(candidate, Some(settings)).await
-                {
-                    return candidate;
-                }
-            }
-            if hevc {
-                "libx265"
-            } else {
-                "libx264"
-            }
-        })
-        .await
-}
-
-/// Optional settings keep old material callers on the old H.264 path.
-pub async fn material_encoder(settings: Option<&crate::project::RenderSettings>) -> &'static str {
+/// CPU normalization may precede a native danmaku pass. A GPU-only encoder is
+/// selected only in that final pass, never in the intermediate FFmpeg graph.
+pub async fn material_encoder(
+    settings: Option<&crate::project::RenderSettings>,
+) -> Result<&'static str, String> {
     match settings {
-        Some(settings) => get_render_encoder(settings).await,
-        None => get_x264_encoder().await,
+        Some(settings) => {
+            settings.validate()?;
+            let selected = settings.encoding.encoder(settings.codec, true).await?;
+            let mut encoding = settings.encoding.clone();
+            if selected.is_native()
+                && !super::encoding::available_encoders()
+                    .await?
+                    .iter()
+                    .any(|item| item.encoder == selected.encoder && !item.is_native())
+            {
+                encoding = Default::default();
+            }
+            encoding.render_backend = Some(super::encoding::VideoRenderBackend::Cpu);
+            Ok(encoding
+                .encoder(settings.codec, false)
+                .await?
+                .encoder
+                .as_str())
+        }
+        None => Ok(get_x264_encoder().await),
     }
 }
 
@@ -394,7 +422,7 @@ pub async fn list_supported_hwaccels() -> Result<Vec<String>, String> {
 /// 测试指定的编码器是否在当前硬件上真正可用
 ///
 /// 通过尝试对测试流进行编码来验证编码器可用性
-async fn test_encoder_availability(encoder: &str) -> bool {
+pub(super) async fn test_encoder_availability(encoder: &str) -> bool {
     test_encoder_with_settings(encoder, None).await
 }
 
@@ -654,8 +682,7 @@ mod tests {
                 );
                 assert_eq!(args.len() % 2, 0);
                 assert!(args.windows(2).any(|pair| pair == ["-b:v", "12000k"]));
-                assert_eq!(args.iter().filter(|arg| *arg == "-g").count(), 1);
-                assert!(args.windows(2).any(|pair| pair == ["-g", "120"]));
+                assert!(!args.iter().any(|arg| arg == "-g"));
                 assert!(
                     !args.iter().any(|arg| {
                         ["-crf", "-cq", "-maxrate", "-bufsize", "-bf", "-b_ref_mode"]
@@ -677,105 +704,6 @@ mod tests {
                 assert!(!args
                     .iter()
                     .any(|arg| ["-sc_threshold", "-keyint_min", "-bf"].contains(&arg.as_str())));
-            }
-        }
-    }
-
-    #[tokio::test]
-    #[ignore = "requires FFmpeg/ffprobe with libx264 and libx265; also tests available NVENC/VideoToolbox"]
-    async fn encoded_keyframe_gaps_respect_the_120_frame_gop() {
-        use crate::project::{EncodingPriority, RenderSettings, VideoCodec};
-        let directory = tempfile::tempdir().unwrap();
-        for encoder in [
-            "libx264",
-            "libx265",
-            "h264_videotoolbox",
-            "hevc_videotoolbox",
-            "h264_nvenc",
-            "hevc_nvenc",
-        ] {
-            for priority in [EncodingPriority::Speed, EncodingPriority::Quality] {
-                let settings = RenderSettings {
-                    codec: if encoder == "libx265" || encoder.starts_with("hevc_") {
-                        VideoCodec::Hevc
-                    } else {
-                        VideoCodec::H264
-                    },
-                    priority,
-                    ..RenderSettings::default()
-                };
-                if !super::test_encoder_with_settings(encoder, Some(&settings)).await {
-                    assert!(
-                        !encoder.starts_with("libx"),
-                        "Required software encoder unavailable: {encoder}"
-                    );
-                    eprintln!("Skipping unavailable hardware encoder: {encoder} {priority:?}");
-                    continue;
-                }
-                let path = directory.path().join("gop.mp4");
-                let encoded = ffmpeg_utils::ffmpeg_command()
-                    .args([
-                        "-v",
-                        "error",
-                        "-f",
-                        "lavfi",
-                        "-i",
-                        "color=c=0x204060:s=128x96:r=60",
-                    ])
-                    .args(["-vf", super::output_format_filter(encoder), "-c:v", encoder])
-                    .args(super::project_quality_args(encoder, &settings))
-                    .args(["-frames:v", "301", "-an", "-y"])
-                    .arg(&path)
-                    .output()
-                    .await
-                    .unwrap();
-                assert!(
-                    encoded.status.success(),
-                    "{encoder}: {}",
-                    String::from_utf8_lossy(&encoded.stderr)
-                );
-                let probed = ffmpeg_utils::ffprobe_command()
-                    .args([
-                        "-v",
-                        "error",
-                        "-select_streams",
-                        "v:0",
-                        "-show_entries",
-                        "frame=key_frame",
-                        "-of",
-                        "json",
-                    ])
-                    .arg(&path)
-                    .output()
-                    .await
-                    .unwrap();
-                assert!(
-                    probed.status.success(),
-                    "{}",
-                    String::from_utf8_lossy(&probed.stderr)
-                );
-                let value: serde_json::Value = serde_json::from_slice(&probed.stdout).unwrap();
-                let frames = value["frames"].as_array().unwrap();
-                assert_eq!(frames.len(), 301, "{encoder}");
-                let keyframes: Vec<_> = frames
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, frame)| (frame["key_frame"] == 1).then_some(index))
-                    .collect();
-                assert_eq!(keyframes.first(), Some(&0), "{encoder}");
-                assert!(
-                    keyframes.windows(2).all(|pair| pair[1] - pair[0] <= 120),
-                    "{encoder}: {keyframes:?}"
-                );
-                assert!(
-                    frames.len() - keyframes.last().unwrap() <= 120,
-                    "{encoder}: {keyframes:?}"
-                );
-                assert!(
-                    keyframes.windows(2).any(|pair| pair[1] - pair[0] == 120),
-                    "{encoder}: {keyframes:?}"
-                );
-                eprintln!("GOP 120 verified: {encoder} {priority:?}, keyframes={keyframes:?}");
             }
         }
     }

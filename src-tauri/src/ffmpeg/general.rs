@@ -360,7 +360,7 @@ async fn concat_videos_with_demuxer(
             .ok_or_else(|| format!("Invalid filelist path (non-UTF8): {}", filelist.display()))?,
     ]);
     if should_encode {
-        let video_encoder = hwaccel::material_encoder(settings).await;
+        let video_encoder = hwaccel::material_encoder(settings).await?;
         hwaccel::apply_x264_encoder_args(
             &mut ffmpeg_process,
             video_encoder,
@@ -402,7 +402,7 @@ async fn encode_filter_concat(
         ]);
     }
 
-    let video_encoder = hwaccel::material_encoder(settings).await;
+    let video_encoder = hwaccel::material_encoder(settings).await?;
     if hwaccel::is_vaapi_encoder(video_encoder) {
         let filter_complex = format!(
             "{filter_complex};[outv]{}[outv_hw]",

@@ -1,0 +1,36 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+// FFmpeg enables storage-image access without format, but does not enable
+// shaderStorageImageExtendedFormats (required for explicitly typed r8/rg8).
+#extension GL_EXT_shader_image_load_formatted : require
+layout(set = 0, binding = 0) readonly uniform image2D source_y;
+layout(set = 0, binding = 1) readonly uniform image2D source_uv;
+layout(set = 0, binding = 2, rgba8) readonly uniform image2D overlay;
+layout(set = 0, binding = 3) writeonly uniform image2D output_y;
+layout(set = 0, binding = 4) writeonly uniform image2D output_uv;
+
+layout(push_constant) uniform Dimensions { ivec2 size; } dimensions;
+
+// Premultiplied Skia RGBA, BT.709 limited-range NV12, 2x2 chroma averaging.
+void main() {
+    ivec2 chroma = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(chroma, imageSize(output_uv)))) return;
+    const vec3 yc = vec3(.2126, .7152, .0722) * (219.0 / 255.0);
+    const vec3 uc = vec3(-.114572, -.385428, .5) * (224.0 / 255.0);
+    const vec3 vc = vec3(.5, -.454153, -.045847) * (224.0 / 255.0);
+    vec4 average = vec4(0);
+    for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) {
+        ivec2 p = chroma * 2 + ivec2(x, y);
+        // Replicate the edge into encoder alignment padding on the GPU.
+        ivec2 sample_p = min(p, dimensions.size - 1);
+        vec4 color = imageLoad(overlay, sample_p);
+        float value = imageLoad(source_y, sample_p).r * (1.0 - color.a)
+            + dot(color.rgb, yc) + (16.0 / 255.0) * color.a;
+        imageStore(output_y, p, vec4(value, 0, 0, 1));
+        average += color * .25;
+    }
+    vec2 uv = imageLoad(source_uv, min(chroma, dimensions.size / 2 - 1)).rg * (1.0 - average.a)
+        + vec2(dot(average.rgb, uc), dot(average.rgb, vc))
+        + (128.0 / 255.0) * average.a;
+    imageStore(output_uv, chroma, vec4(uv, 0, 1));
+}

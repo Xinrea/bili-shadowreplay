@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/danmu_stream", "crates/ffmpeg_utils", "crates/native-overlay", "crates/recorder", "crates/whisper-cpp-rs"]
+members = ["crates/danmu_stream", "crates/ffmpeg_utils", "crates/native-overlay", "crates/gpu-export", "crates/recorder", "crates/whisper-cpp-rs"]
 resolver = "2"
 
 [workspace.lints.clippy]
@@ -27,6 +27,7 @@ workspace = true
 danmu_stream = { path = "crates/danmu_stream" }
 ffmpeg_utils = { path = "crates/ffmpeg_utils" }
 native-overlay = { path = "crates/native-overlay" }
+gpu-export = { path = "crates/gpu-export" }
 recorder = { path = "crates/recorder" }
 serde_json = "1.0"
 sha2 = "0.10"
@@ -85,6 +86,7 @@ libc = "0.2"
 liblzma-sys = { version = "0.4", features = ["static"] }
 
 [features]
+vulkan-export = ["gpu-export/vulkan"]
 # this feature is used for production builds or when `devPath` points to the filesystem
 # DO NOT REMOVE!!
 custom-protocol = ["tauri/custom-protocol"]

@@ -1147,6 +1147,14 @@ fn init_sentry_from_env() -> Option<sentry::ClientInitGuard> {
 
 #[cfg(feature = "gui")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(any(
+        target_os = "macos",
+        all(
+            feature = "vulkan-export",
+            any(target_os = "linux", target_os = "windows")
+        )
+    ))]
+    gpu_export::worker_entry();
     use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
     let _guard = init_sentry_from_env();
@@ -1292,6 +1300,14 @@ async fn shutdown_signal() {
 #[cfg(feature = "headless")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(any(
+        target_os = "macos",
+        all(
+            feature = "vulkan-export",
+            any(target_os = "linux", target_os = "windows")
+        )
+    ))]
+    gpu_export::worker_entry();
     let _guard = init_sentry_from_env();
     // get params from command line
     let args = Args::parse();

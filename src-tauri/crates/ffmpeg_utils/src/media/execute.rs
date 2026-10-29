@@ -962,7 +962,7 @@ fn execute(
         .iter()
         .map(|r| {
             if let RouteMode::Audio(stage) = &r.mode {
-                stage.samples
+                stage.samples()
             } else {
                 0
             }

@@ -4,6 +4,7 @@
 use std::{collections::BTreeMap, fmt, path::PathBuf, sync::Arc};
 
 mod audio;
+mod audio_encoder;
 mod execute;
 mod input;
 mod packet_clock;

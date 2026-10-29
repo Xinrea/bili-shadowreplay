@@ -12,6 +12,10 @@ and complete draining. Muxing retains stream metadata, chapters, dispositions,
 codec tags and side data. Missing copied DTS uses the demux-side estimate from
 fftools; coarse audio packet clocks use av_rescale_delta.
 
+Audio encoding owns format negotiation, sample framing, duration cutoff and
+encoder draining independently of file decoding. File and graph callers can
+feed the same encoder stage directly after their respective filter sinks.
+
 Encoder AVOptions are validated against the linked codec and unused options
 are rejected. Hardware readiness opens the actual configured encoder, feeds
 three synthetic frames and drains it. It is not inferred from registry

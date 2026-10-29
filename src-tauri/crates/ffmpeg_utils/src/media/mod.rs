@@ -1,10 +1,11 @@
 //! Structured native media jobs. Plans describe stream routes and options;
 //! they never contain FFmpeg command-line arguments.
 
-use std::{collections::BTreeMap, fmt, path::PathBuf};
+use std::{collections::BTreeMap, fmt, path::PathBuf, sync::Arc};
 
 mod audio;
 mod execute;
+mod input;
 mod packet_clock;
 mod subtitle;
 mod util;
@@ -28,19 +29,34 @@ pub struct MediaPlan {
 #[derive(Debug, Clone)]
 pub struct MediaInput {
     pub path: PathBuf,
+    pub format: Option<String>,
+    pub options: AvOptions,
     pub seek: Option<InputSeek>,
     pub duration: Option<f64>,
     pub copy_timestamps: bool,
+    // Dropped with the worker's plan, after its input context has closed.
+    _lease: Option<Arc<tempfile::TempPath>>,
 }
 
 impl MediaInput {
     pub fn file(path: impl Into<PathBuf>) -> Self {
         Self {
             path: path.into(),
+            format: None,
+            options: AvOptions::new(),
             seek: None,
             duration: None,
             copy_timestamps: false,
+            _lease: None,
         }
+    }
+
+    /// Keep a temporary input alive until the native worker has closed it,
+    /// including when its asynchronous caller has already been cancelled.
+    pub fn owned_file(path: tempfile::TempPath) -> Self {
+        let mut input = Self::file(path.to_path_buf());
+        input._lease = Some(Arc::new(path));
+        input
     }
 }
 

@@ -7,7 +7,7 @@ use super::{
 };
 use crate::{
     audio::{audio_stream, copy_chapters, input_metadata, remux::AudioPacketClock},
-    metadata::{open_input, run_media},
+    metadata::run_media,
     output::NativeOutput,
     video_frame::video_stream,
 };
@@ -91,6 +91,7 @@ fn validate(plan: &MediaPlan) -> Result<(), String> {
     }
     let input = &plan.inputs[0];
     let output = &plan.outputs[0];
+    util::options(&input.options)?;
     if input.path == output.path
         || input
             .path
@@ -550,7 +551,7 @@ fn execute(
 ) -> Result<Completed, String> {
     let source = &plan.inputs[0];
     let target = &plan.outputs[0];
-    let mut input = open_input(&source.path, cancelled.clone())?;
+    let mut input = super::input::open(source, cancelled.clone())?;
     let origin = unsafe { (*input.as_ptr()).start_time };
     let origin = if origin == ffi::AV_NOPTS_VALUE {
         0
@@ -635,6 +636,9 @@ fn execute(
         .flags()
         .contains(format::flag::Flags::GLOBAL_HEADER);
     unsafe {
+        // Match fftools' default mux delay; MPEG-TS uses it to establish its
+        // initial PCR/PTS offset even for a pure stream-copy job.
+        (*native.output.as_mut_ptr()).max_delay = 700_000;
         (*native.output.as_mut_ptr()).avoid_negative_ts = match target.negative_ts {
             NegativeTs::Auto => ffi::AVFMT_AVOID_NEG_TS_AUTO,
             NegativeTs::Disabled => ffi::AVFMT_AVOID_NEG_TS_DISABLED,

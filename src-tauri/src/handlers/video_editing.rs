@@ -3,8 +3,6 @@ use crate::state_type;
 use base64::Engine;
 use ffmpeg_utils::{extract_video_metadata, VideoMetadata};
 #[cfg(feature = "gui")]
-use ffmpeg_utils::{ffmpeg_command, path_str};
-#[cfg(feature = "gui")]
 use recorder::platforms::PlatformType;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -290,55 +288,13 @@ pub async fn merge_videos(
 
     // If no transition or only one video, use simple concat
     if transition_type == "none" || videos.len() == 1 {
-        // Create concat file list
-        let concat_file = std::env::temp_dir().join(format!("concat_{}.txt", uuid::Uuid::new_v4()));
-        let mut concat_content = String::new();
-
-        for video_path in &video_paths {
-            // Escape path for FFmpeg concat demuxer
-            // Only escape backslashes and single quotes
-            // Square brackets work fine inside single quotes
-            let path_str = video_path
-                .to_string_lossy()
-                .replace('\\', "\\\\")
-                .replace('\'', "'\\''");
-            concat_content.push_str(&format!("file '{}'\n", path_str));
-        }
-
-        tokio::fs::write(&concat_file, concat_content)
-            .await
-            .map_err(|e| format!("Failed to write concat file: {}", e))?;
-
-        // Run ffmpeg concat
-        let mut cmd = ffmpeg_command();
-
-        cmd.args([
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            path_str(&concat_file)?,
-            "-c",
-            "copy",
-            "-y",
-            path_str(&output_path)?,
-        ]);
-
-        let output = cmd
-            .output()
-            .await
-            .map_err(|e| format!("Failed to run ffmpeg: {}", e))?;
-
-        // Cleanup concat file
-        let _ = tokio::fs::remove_file(&concat_file).await;
-
-        if !output.status.success() {
-            return Err(format!(
-                "FFmpeg merge failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
+        crate::ffmpeg::general::concat_copy_videos(
+            None::<&crate::progress::progress_reporter::ProgressReporter>,
+            &video_paths,
+            &output_path,
+        )
+        .await
+        .map_err(|error| format!("Video merge failed: {error}"))?;
     } else {
         // Only pass known xfade transitions into the filter graph
         let xfade_transition = match transition_type {

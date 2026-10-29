@@ -148,6 +148,13 @@ cases for CFR/VFR, gaps, initial offsets, EOF tails and trim rounding. Native
 application tests run without a CLI and check publication before 100% progress,
 failed-output retention and cancellation of stalled network input.
 
+Concat-demuxer tests compare MP4 and MPEG-TS packets, stream headers, duration
+hints and the default mux delay on FFmpeg 6/9. The library-only fixture checks
+coded NALs across both files while accounting for the demuxer's SPS/PPS insertion.
+Cancellation verifies that network input closes before its worker-owned list is
+released; application tests also run with an empty PATH and retain prior output
+when a later input is missing.
+
 Native FLV-to-HLS tests use a six-second checked-in audiovisual fixture. They
 compare the playlist, segment durations and every copied packet with the CLI,
 including timestamps, and verify append behavior without replacing old segments.

@@ -320,8 +320,58 @@ async fn concat_videos_with_demuxer(
         return concat_mismatched_videos(reporter, videos, output_path, settings).await;
     }
 
-    let mut ffmpeg_process = ffmpeg_command();
+    let (video, audio) = if should_encode {
+        let encoder = hwaccel::material_encoder(settings).await;
+        let mut video = hwaccel::native_video_options(
+            encoder,
+            Some(hwaccel::H264_SCALE_PAD_FILTER),
+            None,
+            settings,
+        )?;
+        video.threads = Some(0);
+        (
+            ffmpeg_utils::StreamMode::Video(video),
+            ffmpeg_utils::StreamMode::Audio(ffmpeg_utils::AudioEncodeOptions::default()),
+        )
+    } else {
+        (
+            ffmpeg_utils::StreamMode::Copy,
+            ffmpeg_utils::StreamMode::Copy,
+        )
+    };
+    run_concat_demuxer(reporter, videos, output_path, video, audio, !should_encode).await
+}
 
+/// Join compatible complete files with the concat demuxer and copy streams.
+/// This deliberately retains demuxer/edit-list behavior rather than using the
+/// decoded concat filter employed by timeline clip joins.
+pub async fn concat_copy_videos(
+    reporter: Option<&impl ProgressReporterTrait>,
+    videos: &[PathBuf],
+    output_path: &Path,
+) -> Result<(), String> {
+    if videos.is_empty() {
+        return Err("No videos to concatenate".into());
+    }
+    run_concat_demuxer(
+        reporter,
+        videos,
+        output_path,
+        ffmpeg_utils::StreamMode::Copy,
+        ffmpeg_utils::StreamMode::Copy,
+        true,
+    )
+    .await
+}
+
+async fn run_concat_demuxer(
+    reporter: Option<&impl ProgressReporterTrait>,
+    videos: &[PathBuf],
+    output_path: &Path,
+    video: ffmpeg_utils::StreamMode,
+    audio: ffmpeg_utils::StreamMode,
+    copy_subtitles: bool,
+) -> Result<(), String> {
     let output_folder = ensure_output_folder(output_path)?;
     let filelist = Builder::new()
         .prefix(".bili-filelist-")
@@ -348,36 +398,29 @@ async fn concat_videos_with_demuxer(
         .flush()
         .await
         .map_err(|e| format!("Failed to flush filelist: {e}"))?;
+    drop(filelist_writer);
 
-    ffmpeg_process.args([
-        "-f",
-        "concat",
-        "-safe",
-        "0",
-        "-i",
-        filelist
-            .to_str()
-            .ok_or_else(|| format!("Invalid filelist path (non-UTF8): {}", filelist.display()))?,
-    ]);
-    if should_encode {
-        let video_encoder = hwaccel::material_encoder(settings).await;
-        hwaccel::apply_x264_encoder_args(
-            &mut ffmpeg_process,
-            video_encoder,
-            Some(hwaccel::H264_SCALE_PAD_FILTER),
-        );
-        ffmpeg_process.args(["-c:a", "aac"]);
-        hwaccel::apply_material_quality(&mut ffmpeg_process, video_encoder, None, settings);
-        ffmpeg_process.args(["-threads", "0"]);
-    } else {
-        ffmpeg_process.args(["-c", "copy"]);
+    let mut plan = super::clip::single_input_plan(&filelist, output_path, video, audio);
+    plan.inputs[0] = ffmpeg_utils::MediaInput::owned_file(filelist);
+    plan.inputs[0].format = Some("concat".into());
+    plan.inputs[0].options.insert("safe".into(), "0".into());
+    if copy_subtitles {
+        for route in &mut plan.routes {
+            if matches!(route.selector, ffmpeg_utils::StreamSelector::AutoSubtitle) {
+                route.mode = ffmpeg_utils::StreamMode::Copy;
+            }
+        }
     }
-    ffmpeg_process.args([output_path
-        .to_str()
-        .ok_or_else(|| format!("Invalid output path (non-UTF8): {}", output_path.display()))?]);
-    ffmpeg_process.args(["-y"]);
-
-    handle_ffmpeg_process(reporter, ffmpeg_process, ProgressTotal::FirstInput).await
+    // The worker retains the list until its input context has closed, even
+    // when cancellation has already dropped this asynchronous caller.
+    super::runner::run_native_media(
+        plan,
+        ProgressMode::stage("合并视频", ProgressTotal::FirstInput),
+        "Concat video",
+        reporter,
+    )
+    .await
+    .map(|_| ())
 }
 
 async fn encode_filter_concat(
@@ -1192,5 +1235,63 @@ mod concat_videos_tests {
             (decoded_duration - video_duration).abs() < 0.2,
             "decoded audio {decoded_duration}s must fill the silent recording, not skip it"
         );
+    }
+}
+
+#[cfg(test)]
+mod native_concat_tests {
+    use super::*;
+
+    fn fixture() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("crates/ffmpeg_utils/src/video_frame/fixtures/seek.mp4")
+    }
+
+    #[tokio::test]
+    async fn native_copy_concat_handles_special_paths_and_cleans_lists_without_cli() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("素材 [one]'s.mp4");
+        std::fs::copy(fixture(), &source).unwrap();
+        let output = directory.path().join("nested/joined.mp4");
+        let source_metadata = ffmpeg_utils::extract_video_metadata(&source).await.unwrap();
+        concat_copy_videos(
+            None::<&crate::progress::progress_reporter::ProgressReporter>,
+            &[source.clone(), source.clone()],
+            &output,
+        )
+        .await
+        .unwrap();
+        let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+        assert_eq!(metadata.video_codec, source_metadata.video_codec);
+        assert!((metadata.duration - 2.0 * source_metadata.duration).abs() < 0.001);
+        let other = directory.path().join("nested/compatible.mp4");
+        concat_videos(
+            None::<&crate::progress::progress_reporter::ProgressReporter>,
+            &[source.clone(), source],
+            &other,
+        )
+        .await
+        .unwrap();
+        assert!(other.is_file());
+        assert_eq!(
+            std::fs::read_dir(output.parent().unwrap()).unwrap().count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_native_concat_keeps_previous_output_without_cli() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("kept.mp4");
+        std::fs::write(&output, b"previous media").unwrap();
+        let result = concat_copy_videos(
+            None::<&crate::progress::progress_reporter::ProgressReporter>,
+            &[fixture(), directory.path().join("missing.mp4")],
+            &output,
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&output).unwrap(), b"previous media");
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
     }
 }

@@ -1050,3 +1050,5 @@ async fn native_rotation_matrix_copy_and_autorotate_match_cli() {
     );
     assert_clean(directory.path());
 }
+
+mod concat;

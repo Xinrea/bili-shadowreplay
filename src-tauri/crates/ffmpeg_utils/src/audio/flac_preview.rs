@@ -8,7 +8,6 @@ use std::{
     sync::{atomic::AtomicBool, Arc},
 };
 
-use crate::output::NativeOutput;
 use ffmpeg_next::{self as ffmpeg, codec, ffi, filter, format, frame, media, Dictionary, Packet};
 use tempfile::NamedTempFile;
 
@@ -16,6 +15,7 @@ use super::{
     again, check_cancelled, decode_frames, native_error, range::AudioClock, AudioFormat, AudioRange,
 };
 use crate::metadata::{open_input, run_media};
+use crate::output::NativeOutput;
 
 const RATE: i32 = 48_000;
 const SAMPLE_BASE: ffi::AVRational = ffi::AVRational { num: 1, den: RATE };

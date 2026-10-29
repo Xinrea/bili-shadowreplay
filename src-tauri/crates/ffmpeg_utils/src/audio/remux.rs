@@ -6,7 +6,6 @@ use std::{
     sync::{atomic::AtomicBool, Arc},
 };
 
-use crate::output::NativeOutput;
 use ffmpeg_next::packet::Mut;
 use ffmpeg_next::{self as ffmpeg, codec, ffi, media, Dictionary, Packet, Rational};
 use tempfile::NamedTempFile;
@@ -17,6 +16,7 @@ use super::{
     native_error,
 };
 use crate::metadata::{open_input, run_media};
+use crate::output::NativeOutput;
 
 pub(super) enum CopyAudioFormat {
     Wav,

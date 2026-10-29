@@ -1,5 +1,6 @@
-//! Native media probing, audio decoding/encoding and FFmpeg CLI plumbing
-//! shared by the application and recorder.
+//! Native media probing, image/audio profiles and structured media execution
+//! shared by the application and recorder. CLI helpers remain for callers
+//! that have not yet migrated and for optional test oracles.
 //!
 //! The recorder probes every downloaded HLS segment to notice a resolution
 //! change; the application uses the same description for finished recordings.
@@ -12,6 +13,7 @@ mod capabilities;
 mod command;
 mod hls;
 mod image;
+mod media;
 mod metadata;
 mod output;
 mod video_frame;
@@ -25,6 +27,12 @@ pub use capabilities::{available_video_encoders, linked_ffmpeg_version};
 pub use command::{ffmpeg_command, ffmpeg_path, ffprobe_command, ffprobe_path, path_str};
 pub use hls::{record_to_hls, HlsRecordingOptions};
 pub use image::normalize_image_to_png;
+pub use media::{
+    execute_media_plan, probe_video_encoder, AudioEncodeOptions, AvOptions, FrameRatePolicy,
+    HardwareDevice, InputSeek, MediaError, MediaInput, MediaJobResult, MediaOutput, MediaPlan,
+    MediaProgress, MediaProgressCallback, MediaStage, NegativeTs, StreamMode, StreamRoute,
+    StreamSelector, SubtitleEncodeOptions, VideoEncodeOptions,
+};
 pub use metadata::{
     extract_video_metadata, extract_video_metadata_with_init, probe_media, AudioStreamMetadata,
     MediaProbe, VideoMetadata,

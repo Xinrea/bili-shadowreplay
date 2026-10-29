@@ -2,22 +2,21 @@
 //! decoder clocks and output guards are common to the fixed business profiles.
 
 use std::{
-    collections::VecDeque,
     ffi::{c_char, CStr},
     ops::ControlFlow,
     path::Path,
     sync::{atomic::AtomicBool, Arc},
 };
 
-use crate::output::NativeOutput;
 use ffmpeg_next::{self as ffmpeg, codec, ffi, filter, format, frame, Dictionary, Packet};
 use tempfile::NamedTempFile;
 
 use super::{
     again, audio_stream, check_cancelled, decode_frames, native_error, range::AudioClock,
-    AudioFormat,
+    AudioFormat, AudioFrameQueue,
 };
 use crate::metadata::{open_input, run_media};
+use crate::output::NativeOutput;
 
 #[derive(Clone, Copy)]
 pub(super) enum EncodeProfile {
@@ -213,16 +212,10 @@ struct AudioEncoder {
     encoder_format: Option<AudioFormat>,
     graph: Option<filter::Graph>,
     format: Option<AudioFormat>,
-    pending: VecDeque<QueuedAudio>,
-    pending_samples: usize,
+    queue: AudioFrameQueue,
     metadata: Option<Dictionary<'static>>,
     clock: AudioClock,
     cancelled: Arc<AtomicBool>,
-}
-
-struct QueuedAudio {
-    frame: frame::Audio,
-    offset: usize,
 }
 
 impl AudioEncoder {
@@ -242,8 +235,7 @@ impl AudioEncoder {
             encoder_format: None,
             graph: None,
             format: None,
-            pending: VecDeque::new(),
-            pending_samples: 0,
+            queue: AudioFrameQueue::default(),
             metadata: Some(metadata),
             clock: AudioClock::new(),
             cancelled,
@@ -465,11 +457,7 @@ impl AudioEncoder {
                 // PCM accepts natural filter frames and has no fixed queue.
                 self.encode_frame(&frame)?;
             } else {
-                self.pending_samples = self
-                    .pending_samples
-                    .checked_add(frame.samples())
-                    .ok_or("音频队列溢出")?;
-                self.pending.push_back(QueuedAudio { frame, offset: 0 });
+                self.queue.push(frame)?;
                 self.reblock(false)?;
                 frame = frame::Audio::empty();
             }
@@ -478,96 +466,14 @@ impl AudioEncoder {
     }
 
     fn reblock(&mut self, eof: bool) -> Result<(), String> {
-        if self.pending_samples == 0 {
-            return Ok(());
-        }
-        let encoder = self.encoder.as_ref().ok_or("音频编码器不存在")?;
-        let frame_size = encoder.frame_size() as usize;
-        let sample_format = encoder.format();
-        let sample_rate = encoder.rate() as i32;
-        let channels = self.encoder_format.as_ref().unwrap().layout.nb_channels as usize;
-        if frame_size == 0 {
-            return Err("音频编码器帧长度无效".into());
-        }
-        while self.pending_samples >= frame_size || (eof && self.pending_samples != 0) {
+        let size = self
+            .encoder
+            .as_ref()
+            .ok_or("音频编码器不存在")?
+            .frame_size() as usize;
+        while let Some(frame) = self.queue.pop(size, eof)? {
             check_cancelled(&self.cancelled)?;
-            let count = self.pending_samples.min(frame_size);
-            let first = self.pending.front().ok_or("音频队列为空")?;
-            let mut combined = frame::Audio::empty();
-            // Match fftools/sync_queue.c receive_samples: copy complete
-            // source blocks without filling timestamp gaps. A combined frame
-            // inherits the first remaining block's PTS and properties, and
-            // partial consumption advances that block on the sample grid.
-            unsafe {
-                let result = ffi::av_frame_copy_props(combined.as_mut_ptr(), first.frame.as_ptr());
-                if result < 0 {
-                    return Err(native_error(
-                        "复制音频帧属性失败",
-                        ffmpeg::Error::from(result),
-                    ));
-                }
-                let raw = &mut *combined.as_mut_ptr();
-                raw.format = ffi::AVSampleFormat::from(sample_format) as i32;
-                raw.sample_rate = sample_rate;
-                raw.nb_samples = count as i32;
-                raw.time_base = ffi::AVRational {
-                    num: 1,
-                    den: sample_rate,
-                };
-                raw.pts = first
-                    .frame
-                    .pts()
-                    .ok_or("音频队列缺少时间戳")?
-                    .checked_add(first.offset as i64)
-                    .ok_or("音频时间戳溢出")?;
-                raw.duration = count as i64;
-                let result = ffi::av_channel_layout_copy(
-                    &mut raw.ch_layout,
-                    &(*first.frame.as_ptr()).ch_layout,
-                );
-                if result < 0 {
-                    return Err(native_error(
-                        "复制音频帧声道失败",
-                        ffmpeg::Error::from(result),
-                    ));
-                }
-                let result = ffi::av_frame_get_buffer(combined.as_mut_ptr(), 0);
-                if result < 0 {
-                    return Err(native_error("分配音频帧失败", ffmpeg::Error::from(result)));
-                }
-            }
-            let mut copied = 0;
-            while copied < count {
-                let first = self.pending.front_mut().ok_or("音频队列为空")?;
-                let available = first.frame.samples() - first.offset;
-                let take = available.min(count - copied);
-                unsafe {
-                    // Handles both interleaved Opus/PCM and planar AAC/LAME,
-                    // including layouts with more than AV_NUM_DATA_POINTERS.
-                    let result = ffi::av_samples_copy(
-                        (*combined.as_mut_ptr()).extended_data,
-                        (*first.frame.as_ptr()).extended_data,
-                        copied as i32,
-                        first.offset as i32,
-                        take as i32,
-                        channels as i32,
-                        sample_format.into(),
-                    );
-                    if result < 0 {
-                        return Err(native_error(
-                            "复制音频样本失败",
-                            ffmpeg::Error::from(result),
-                        ));
-                    }
-                }
-                copied += take;
-                first.offset += take;
-                if first.offset == first.frame.samples() {
-                    self.pending.pop_front();
-                }
-            }
-            self.pending_samples -= count;
-            self.encode_frame(&combined)?;
+            self.encode_frame(&frame)?;
         }
         Ok(())
     }
@@ -765,7 +671,7 @@ fn describe_layout(layout: &ffi::AVChannelLayout) -> Result<String, String> {
     Ok(layout.to_string())
 }
 
-pub(super) fn copy_chapters(
+pub(crate) fn copy_chapters(
     input: &format::context::Input,
     output: &mut format::context::Output,
     origin: i64,
@@ -820,7 +726,7 @@ pub(super) fn copy_chapters(
     Ok(())
 }
 
-pub(super) fn input_metadata(
+pub(crate) fn input_metadata(
     input: &format::context::Input,
     index: usize,
 ) -> Result<(Dictionary<'static>, Dictionary<'static>), String> {

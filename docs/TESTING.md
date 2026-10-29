@@ -138,6 +138,16 @@ exercise encoded-byte/pixel limits, compressed PNG metadata expansion, deadlines
 cancellation and preservation of existing output on failure. Native calls cancel
 cooperatively; these bounds do not provide a hard per-job memory or time limit.
 
+Single-input media tests compare copied and encoded streams with the matching
+FFmpeg 6/9 CLI, including packet payloads, codec headers, timestamps, durations,
+key flags, side data and metadata. They cover input-side copy seeks, output-side
+encoded seeks, negative timestamps, default subtitle selection and explicitly
+incompatible subtitle copies. Matroska's initially missing B-frame DTS is
+predicted before copying. Frame scheduling has 25 additional exact framehash
+cases for CFR/VFR, gaps, initial offsets, EOF tails and trim rounding. Native
+application tests run without a CLI and check publication before 100% progress,
+failed-output retention and cancellation of stalled network input.
+
 Native FLV-to-HLS tests use a six-second checked-in audiovisual fixture. They
 compare the playlist, segment durations and every copied packet with the CLI,
 including timestamps, and verify append behavior without replacing old segments.

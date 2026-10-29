@@ -1,6 +1,4 @@
-use std::{num::NonZeroU32, path::PathBuf, process::Stdio, sync::OnceLock};
-
-use ffmpeg_utils::ffmpeg_command;
+use std::{num::NonZeroU32, path::PathBuf, sync::OnceLock};
 
 const TARGET_ENCODERS: [&str; 14] = [
     "h264_nvenc",
@@ -283,6 +281,69 @@ pub fn apply_material_quality(
     }
 }
 
+/// The same quality policy as the command-based callers, expressed as native
+/// encoder settings. Hardware selection and quality remain shared by both.
+pub fn native_video_options(
+    encoder: &str,
+    filter: Option<&str>,
+    bitrate: Option<NonZeroU32>,
+    settings: Option<&crate::project::RenderSettings>,
+) -> Result<ffmpeg_utils::VideoEncodeOptions, String> {
+    let args = match settings {
+        Some(settings) => project_quality_args(encoder, settings),
+        None => quality_args_with_bitrate(encoder, bitrate),
+    };
+    let mut options = ffmpeg_utils::VideoEncodeOptions {
+        encoder: encoder.to_owned(),
+        filter: filter.map(str::to_owned),
+        ..Default::default()
+    };
+    for pair in args.chunks_exact(2) {
+        let (flag, value) = (pair[0].as_str(), pair[1].as_str());
+        match flag {
+            "-b:v" => options.bit_rate = Some(native_bit_rate(value)?),
+            "-maxrate" => options.max_rate = Some(native_bit_rate(value)?),
+            "-bufsize" => options.buffer_size = Some(native_bit_rate(value)?),
+            "-g" => {
+                options.gop = Some(
+                    value
+                        .parse()
+                        .map_err(|error| format!("Invalid encoder GOP: {error}"))?,
+                )
+            }
+            "-tag:v" => options.tag = Some(value.to_owned()),
+            "-preset" | "-crf" | "-cq" | "-rc" | "-quality" | "-prio_speed" | "-rate_control"
+            | "-compression_level" => {
+                options
+                    .options
+                    .insert(flag[1..].to_owned(), value.to_owned());
+            }
+            _ => return Err(format!("Unsupported native encoder quality option: {flag}")),
+        }
+    }
+    if is_vaapi_encoder(encoder) {
+        let device = vaapi_device_path()
+            .ok_or("VAAPI encoder selected but no /dev/dri/renderD* device was found")?;
+        options.hardware_device = Some(ffmpeg_utils::HardwareDevice {
+            kind: "vaapi".into(),
+            device: Some(device.to_string_lossy().into_owned()),
+        });
+        options.filter = Some(build_vaapi_filter(filter.unwrap_or_default()));
+    }
+    Ok(options)
+}
+
+fn native_bit_rate(value: &str) -> Result<u64, String> {
+    let (digits, multiplier) = value
+        .strip_suffix('k')
+        .map_or((value, 1), |digits| (digits, 1000));
+    digits
+        .parse::<u64>()
+        .ok()
+        .and_then(|value| value.checked_mul(multiplier))
+        .ok_or_else(|| format!("Invalid native encoder bit rate: {value}"))
+}
+
 /// 追加视频编码器参数，并在 VAAPI 下补齐硬件上传滤镜。
 pub fn apply_x264_encoder_args(
     command: &mut tokio::process::Command,
@@ -337,87 +398,17 @@ async fn test_encoder_with_settings(
     encoder: &str,
     settings: Option<&crate::project::RenderSettings>,
 ) -> bool {
-    let mut command = ffmpeg_command();
-
-    // 使用合成输入源 (testsrc2) 测试编码器
-    // -frames:v 3 只编码3帧，快速测试
-    // -f null 丢弃输出，不需要实际文件
-    command.arg("-hide_banner").arg("-loglevel").arg("error");
-
-    let filter = if is_vaapi_encoder(encoder) {
-        if let Some(device_path) = vaapi_device_path() {
-            command.args(["-vaapi_device", device_path.to_string_lossy().as_ref()]);
-            Some(vaapi_filter_suffix())
-        } else {
-            log::warn!(
-                "H.264 encoder test skipped: encoder={encoder}, reason=no /dev/dri/renderD* device"
-            );
+    let options = match native_video_options(encoder, None, None, settings) {
+        Ok(options) => options,
+        Err(error) => {
+            log::warn!("Native video encoder probe failed: encoder={encoder}, error={error}");
             return false;
         }
-    } else {
-        None
     };
-
-    command
-        .arg("-f")
-        .arg("lavfi")
-        .arg("-i")
-        .arg("testsrc2=duration=1:size=320x240:rate=30");
-
-    if let Some(filter) = filter {
-        command.args(["-vf", filter]);
-    }
-    command.args(["-c:v", encoder]);
-    let quality_args = match settings {
-        Some(settings) => project_quality_args(encoder, settings),
-        None => quality_args_with_bitrate(encoder, None),
-    };
-    log::info!(
-        "Testing H.264 encoder: encoder={encoder}, quality_args={}",
-        quality_args.join(" ")
-    );
-    command.args(&quality_args);
-
-    let child = command
-        .arg("-frames:v")
-        .arg("3")
-        .arg("-f")
-        .arg("null")
-        .arg("-")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
-
-    match child {
-        Ok(process) => {
-            let output = process.wait_with_output().await;
-            match output {
-                Ok(output) => {
-                    // 如果退出码为0，说明编码器可用
-                    if output.status.success() {
-                        log::info!(
-                            "H.264 encoder test succeeded: encoder={encoder}, quality_args={}",
-                            quality_args.join(" ")
-                        );
-                        true
-                    } else {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        log::warn!(
-                            "H.264 encoder test failed: encoder={encoder}, quality_args={}, stderr={}",
-                            quality_args.join(" "),
-                            stderr.trim()
-                        );
-                        false
-                    }
-                }
-                Err(err) => {
-                    log::warn!("H.264 encoder test error: encoder={encoder}, error={err}");
-                    false
-                }
-            }
-        }
-        Err(err) => {
-            log::warn!("Failed to start H.264 encoder test: encoder={encoder}, error={err}");
+    match ffmpeg_utils::probe_video_encoder(options).await {
+        Ok(()) => true,
+        Err(error) => {
+            log::warn!("Native video encoder probe failed: encoder={encoder}, error={error}");
             false
         }
     }
@@ -554,6 +545,50 @@ mod tests {
                 "-g", "120"
             ]
         );
+    }
+
+    #[test]
+    fn native_profiles_preserve_quality_units_and_explicit_hevc_settings() {
+        let legacy = super::native_video_options("libx264", None, None, None).unwrap();
+        assert_eq!(legacy.options.get("crf").map(String::as_str), Some("20"));
+        assert_eq!(
+            legacy.options.get("preset").map(String::as_str),
+            Some("medium")
+        );
+        assert_eq!(legacy.gop, Some(120));
+        assert!(legacy.bit_rate.is_none());
+        let target =
+            super::native_video_options("libx264", None, NonZeroU32::new(12000), None).unwrap();
+        assert_eq!(
+            (target.bit_rate, target.max_rate, target.buffer_size),
+            (Some(12_000_000), Some(15_000_000), Some(24_000_000))
+        );
+        assert!(!target.options.contains_key("crf"));
+        let settings = crate::project::RenderSettings {
+            codec: crate::project::VideoCodec::Hevc,
+            priority: crate::project::EncodingPriority::Quality,
+            bitrate_kbps: 6000,
+        };
+        let explicit = super::native_video_options(
+            "libx265",
+            Some(super::H264_SCALE_PAD_FILTER),
+            NonZeroU32::new(12000),
+            Some(&settings),
+        )
+        .unwrap();
+        assert_eq!(explicit.encoder, "libx265");
+        assert_eq!(explicit.bit_rate, Some(6_000_000));
+        assert_eq!((explicit.max_rate, explicit.buffer_size), (None, None));
+        assert_eq!(explicit.tag.as_deref(), Some("hvc1"));
+        assert_eq!(
+            explicit.options.get("preset").map(String::as_str),
+            Some("slow")
+        );
+        assert_eq!(
+            explicit.filter.as_deref(),
+            Some(super::H264_SCALE_PAD_FILTER)
+        );
+        assert_eq!(explicit.gop, Some(120));
     }
 
     #[test]

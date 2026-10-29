@@ -159,7 +159,7 @@ fn decode_range_sync<S: AudioSink>(
     output.finish()
 }
 
-pub(super) struct AudioClock {
+pub(crate) struct AudioClock {
     base: ffi::AVRational,
     rate: i32,
     last: i64,
@@ -168,7 +168,7 @@ pub(super) struct AudioClock {
 }
 
 impl AudioClock {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             base: ffi::AVRational { num: 1, den: 1 },
             rate: 0,
@@ -180,7 +180,7 @@ impl AudioClock {
 
     /// Same rescale state as fftools/ffmpeg_dec.c audio_ts_process (6.1/9).
     /// In particular, FLV's millisecond timestamps need sample-grid recovery.
-    pub(super) fn normalize(
+    pub(crate) fn normalize(
         &mut self,
         frame: &mut frame::Audio,
         packet_base: ffi::AVRational,

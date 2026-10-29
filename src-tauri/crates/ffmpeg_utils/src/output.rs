@@ -51,7 +51,11 @@ impl NativeOutput {
             (*context).interrupt_callback = interrupt.interrupt;
             // Muxers such as HLS own their playlists and segment I/O. Opening
             // an extra outer file would truncate the existing event playlist.
-            if !output.format().flags().contains(format::flag::Flags::NO_FILE) {
+            if !output
+                .format()
+                .flags()
+                .contains(format::flag::Flags::NO_FILE)
+            {
                 let result = ffi::avio_open2(
                     &mut (*context).pb,
                     filename.as_ptr(),
@@ -60,7 +64,10 @@ impl NativeOutput {
                     ptr::null_mut(),
                 );
                 if result < 0 {
-                    return Err(native_error("打开媒体输出失败", ffmpeg::Error::from(result)));
+                    return Err(native_error(
+                        "打开媒体输出失败",
+                        ffmpeg::Error::from(result),
+                    ));
                 }
             }
         }

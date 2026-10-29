@@ -31,7 +31,100 @@ use tokio::{
 };
 
 use crate::progress::progress_reporter::{ProgressReporterTrait, StageProgress};
+#[cfg(test)]
 use ffmpeg_utils::ffmpeg_command;
+
+/// Run a native media job while keeping asynchronous reporters off its worker.
+/// A watch channel retains only the newest update when rendering outruns UI I/O.
+pub async fn run_native_media<R: ProgressReporterTrait>(
+    plan: ffmpeg_utils::MediaPlan,
+    mode: ProgressMode,
+    context: impl Into<String>,
+    reporter: Option<&R>,
+) -> Result<ffmpeg_utils::MediaJobResult, String> {
+    let context = context.into();
+    let Some(reporter) = reporter.filter(|_| !matches!(mode, ProgressMode::None)) else {
+        return ffmpeg_utils::execute_media_plan(plan, None)
+            .await
+            .map_err(|error| format!("{context}: {error}"));
+    };
+    let (sender, mut receiver) = tokio::sync::watch::channel(None::<ffmpeg_utils::MediaProgress>);
+    let job = ffmpeg_utils::execute_media_plan(
+        plan,
+        Some(Box::new(move |progress| {
+            sender.send_replace(Some(progress));
+        })),
+    );
+    tokio::pin!(job);
+    let mut latest = None;
+    let mut closed = false;
+    loop {
+        tokio::select! {
+            result = &mut job => {
+                let result = result.map_err(|error| format!("{context}: {error}"))?;
+                let progress = receiver.borrow_and_update().clone().or(latest).unwrap_or(ffmpeg_utils::MediaProgress {
+                    processed: result.processed,
+                    total: None,
+                    speed: None,
+                    stage: ffmpeg_utils::MediaStage::Completed,
+                });
+                report_native_progress(reporter, &mode, progress, true).await;
+                return Ok(result);
+            }
+            changed = receiver.changed(), if !closed => {
+                if changed.is_err() { closed = true; continue; }
+                let Some(progress) = receiver.borrow_and_update().clone() else { continue; };
+                latest = Some(progress.clone());
+                if progress.stage != ffmpeg_utils::MediaStage::Completed {
+                    report_native_progress(reporter, &mode, progress, false).await;
+                }
+            }
+        }
+    }
+}
+
+async fn report_native_progress<R: ProgressReporterTrait>(
+    reporter: &R,
+    mode: &ProgressMode,
+    progress: ffmpeg_utils::MediaProgress,
+    completed: bool,
+) {
+    match mode {
+        ProgressMode::None => (),
+        #[cfg(test)]
+        ProgressMode::Time => {
+            reporter
+                .update(&format!("{:.6}", progress.processed.max(0.0)))
+                .await
+        }
+        ProgressMode::Stage { name, total } => {
+            let total = match total {
+                ProgressTotal::Known(total) => Some(*total),
+                ProgressTotal::FirstInput | ProgressTotal::AllInputs => progress.total,
+            }
+            .filter(|total| total.is_finite() && *total > 0.0);
+            let processed = if completed {
+                total.unwrap_or(progress.processed.max(0.0))
+            } else if let Some(total) = total {
+                // Publishing happens after trailer/AVIO close. Reserve 100%
+                // until execute_media_plan has also published the output.
+                progress.processed.max(0.0).min(total * 0.999_999)
+            } else {
+                progress.processed.max(0.0)
+            };
+            reporter
+                .progress(StageProgress {
+                    stage: name.clone(),
+                    processed,
+                    total,
+                    speed: progress
+                        .speed
+                        .filter(|speed| speed.is_finite() && *speed > 0.0),
+                })
+                .await;
+        }
+    }
+}
 
 /// How a job turns parsed ffmpeg events into progress updates.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -208,6 +301,7 @@ impl FfmpegJob {
     }
 
     /// Add arguments to this job.
+    #[cfg(test)]
     pub fn args<I, S>(mut self, args: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -218,6 +312,7 @@ impl FfmpegJob {
     }
 
     /// Set the output path appended to the ffmpeg command.
+    #[cfg(test)]
     pub fn output<P>(mut self, output: P) -> Self
     where
         P: Into<PathBuf>,
@@ -246,6 +341,7 @@ impl FfmpegJob {
     /// The reporter is borrowed for the duration of the run.  It is generic
     /// rather than a trait object because [`ProgressReporterTrait`] requires
     /// `Clone` and is therefore not object-safe.
+    #[cfg(test)]
     pub async fn run<R>(&self, reporter: Option<&R>) -> Result<JobOutput, FfmpegError>
     where
         R: ProgressReporterTrait,
@@ -693,6 +789,102 @@ impl ProgressReporterTrait for NoopReporter {
     async fn update(&self, _content: &str) {}
 
     async fn finish(&self, _success: bool, _message: &str) {}
+}
+
+#[cfg(test)]
+mod native_media_tests {
+    use super::*;
+    use ffmpeg_utils::{
+        MediaInput, MediaOutput, MediaPlan, StreamMode, StreamRoute, StreamSelector,
+    };
+
+    #[derive(Clone)]
+    struct Reporter {
+        output: PathBuf,
+        progress: Arc<Mutex<Vec<StageProgress>>>,
+    }
+    #[async_trait]
+    impl ProgressReporterTrait for Reporter {
+        async fn update(&self, _: &str) {}
+        async fn progress(&self, progress: StageProgress) {
+            if progress.percent() == Some(100) {
+                assert!(self.output.is_file());
+                assert_ne!(std::fs::read(&self.output).unwrap(), b"previous video");
+            }
+            self.progress.lock().unwrap().push(progress);
+        }
+        async fn finish(&self, _: bool, _: &str) {}
+    }
+
+    fn plan(input: PathBuf, output: PathBuf) -> MediaPlan {
+        MediaPlan {
+            inputs: vec![MediaInput::file(input)],
+            outputs: vec![MediaOutput::file(output)],
+            routes: vec![StreamRoute {
+                input: 0,
+                output: 0,
+                selector: StreamSelector::AutoVideo,
+                required: true,
+                mode: StreamMode::Copy,
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn native_progress_finishes_only_after_publication_without_cli() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/video/test.mp4");
+        let output = directory.path().join("output.mp4");
+        let reporter = Reporter {
+            output: output.clone(),
+            progress: Default::default(),
+        };
+        run_native_media(
+            plan(input, output),
+            ProgressMode::stage("原生转封装", ProgressTotal::Known(5.45)),
+            "Native test",
+            Some(&reporter),
+        )
+        .await
+        .unwrap();
+        let progress = reporter.progress.lock().unwrap();
+        assert!(!progress.is_empty());
+        assert_eq!(progress.last().unwrap().percent(), Some(100));
+        assert!(progress[..progress.len() - 1]
+            .iter()
+            .all(|progress| progress.percent().is_none_or(|percent| percent < 100)));
+        assert!(progress
+            .iter()
+            .all(|progress| progress.stage == "原生转封装"));
+    }
+
+    #[tokio::test]
+    async fn failed_native_progress_preserves_output_and_does_not_claim_completion() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("missing.mp4");
+        let output = directory.path().join("kept.mp4");
+        std::fs::write(&output, b"previous video").unwrap();
+        let reporter = Reporter {
+            output: output.clone(),
+            progress: Default::default(),
+        };
+        let error = run_native_media(
+            plan(input, output.clone()),
+            ProgressMode::stage("原生转封装", ProgressTotal::Known(1.0)),
+            "Native test",
+            Some(&reporter),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.starts_with("Native test: "));
+        assert!(reporter
+            .progress
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|progress| progress.percent() != Some(100)));
+        assert_eq!(std::fs::read(&output).unwrap(), b"previous video");
+    }
 }
 
 #[cfg(test)]

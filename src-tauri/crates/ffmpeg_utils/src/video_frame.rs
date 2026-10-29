@@ -113,7 +113,7 @@ fn again(error: ffmpeg::Error) -> bool {
 
 /// Match fftools' auto-video mapping for an ordinary image output, including
 /// default tracks, newly seen packets, and attached cover art.
-fn video_stream(input: &format::context::Input) -> Option<usize> {
+pub(crate) fn video_stream(input: &format::context::Input) -> Option<usize> {
     let mut best = None;
     let mut best_score = 0;
     for stream in input.streams() {
@@ -335,14 +335,14 @@ fn receive_frame(
     }
 }
 
-fn display_matrix(data: &[u8]) -> Option<[i32; 9]> {
+pub(crate) fn display_matrix(data: &[u8]) -> Option<[i32; 9]> {
     let bytes = data.get(..36)?;
     Some(std::array::from_fn(|i| {
         i32::from_ne_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap())
     }))
 }
 
-fn rotation_filters(matrix: Option<[i32; 9]>) -> Vec<String> {
+pub(crate) fn rotation_filters(matrix: Option<[i32; 9]>) -> Vec<String> {
     let Some(matrix) = matrix else {
         return Vec::new();
     };

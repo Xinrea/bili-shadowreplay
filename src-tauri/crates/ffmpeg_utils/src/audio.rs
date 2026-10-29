@@ -20,6 +20,10 @@ pub use range::{decode_audio_range, AudioRange};
 mod opus;
 pub use opus::{encode_opus_sample, encode_opus_upload};
 mod encode;
+mod queue;
+pub(crate) use encode::{copy_chapters, input_metadata};
+pub(crate) use queue::AudioFrameQueue;
+pub(crate) use range::AudioClock;
 mod import;
 pub(crate) mod remux;
 pub use encode::encode_mp3;
@@ -237,14 +241,14 @@ where
     Ok(ControlFlow::Continue(()))
 }
 
-struct AudioFormat {
-    layout: ffi::AVChannelLayout,
-    sample_format: ffi::AVSampleFormat,
-    sample_rate: i32,
+pub(crate) struct AudioFormat {
+    pub(crate) layout: ffi::AVChannelLayout,
+    pub(crate) sample_format: ffi::AVSampleFormat,
+    pub(crate) sample_rate: i32,
 }
 
 impl AudioFormat {
-    fn from_frame(frame: &frame::Audio) -> Result<Self, String> {
+    pub(crate) fn from_frame(frame: &frame::Audio) -> Result<Self, String> {
         let mut layout = unsafe { std::mem::zeroed::<ffi::AVChannelLayout>() };
         // SAFETY: decoded owns valid codec-provided channel metadata. Own a
         // copy, including custom channel maps, beyond this frame's lifetime.
@@ -272,7 +276,7 @@ impl AudioFormat {
         })
     }
 
-    fn matches(&self, other: &Self) -> bool {
+    pub(crate) fn matches(&self, other: &Self) -> bool {
         self.sample_format == other.sample_format
             && self.sample_rate == other.sample_rate
             && unsafe { ffi::av_channel_layout_compare(&self.layout, &other.layout) == 0 }
@@ -478,7 +482,7 @@ mod tests;
 mod range_tests;
 
 #[cfg(test)]
-mod opus_tests;
+pub(crate) mod opus_tests;
 
 #[cfg(test)]
 mod opus_upload_tests;

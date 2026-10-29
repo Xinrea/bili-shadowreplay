@@ -255,15 +255,21 @@ async fn native_jpeg_matches_cli_rotations_offsets_and_automatic_video_mapping()
         let source = directory.path().join(format!("rotated-{angle}.mp4"));
         cli(
             &[
+                "-display_rotation",
+                &angle.to_string(),
                 "-i",
                 fixture().to_str().unwrap(),
                 "-c",
                 "copy",
-                "-metadata:s:v:0",
-                &format!("rotate={angle}"),
             ],
             &source,
         );
+        if angle != 0 {
+            let input = crate::metadata::open_input(&source, Arc::new(AtomicBool::new(false)))
+                .unwrap();
+            assert!(input.streams().any(|stream| stream.side_data().any(|data|
+                data.kind() == ffmpeg_next::packet::side_data::Type::DisplayMatrix)));
+        }
         for quality in [None, Some(2)] {
             assert_oracle(&source, 0.45, quality, directory.path()).await;
         }

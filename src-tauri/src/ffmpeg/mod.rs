@@ -32,10 +32,9 @@ use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait
 use crate::subtitle_generator::SubtitleGeneratorType;
 #[cfg(test)]
 use ffmpeg_utils::extract_video_metadata;
-use ffmpeg_utils::ffmpeg_command;
 use serde::{Deserialize, Serialize};
 
-use self::runner::{run_command, ProgressMode, ProgressTotal};
+use self::runner::{run_native_media, ProgressMode, ProgressTotal};
 
 /// File name of `path` as UTF-8, for display and ffmpeg filter strings.
 #[cfg(test)]
@@ -92,13 +91,13 @@ pub fn clip_timeline_anchors(ranges: &[Range], transition: Option<&str>) -> Vec<
 }
 
 // 执行FFmpeg转换的通用函数
-pub async fn execute_ffmpeg_conversion(
-    cmd: tokio::process::Command,
+async fn execute_native_conversion(
+    plan: ffmpeg_utils::MediaPlan,
     reporter: &ProgressReporter,
     mode_name: &str,
 ) -> Result<(), String> {
-    run_command(
-        cmd,
+    run_native_media(
+        plan,
         ProgressMode::stage(
             format!("转换视频格式（{mode_name}）"),
             ProgressTotal::FirstInput,
@@ -106,8 +105,7 @@ pub async fn execute_ffmpeg_conversion(
         format!("视频格式转换失败 ({mode_name})"),
         Some(reporter),
     )
-    .await
-    .map_err(|error| error.to_string())?;
+    .await?;
 
     reporter
         .update(&format!("视频格式转换完成 100% ({mode_name})"))
@@ -123,25 +121,15 @@ pub async fn try_stream_copy_conversion(
 ) -> Result<(), String> {
     reporter.update("正在转换视频格式... 0% (无损模式)").await;
 
-    // 构建ffmpeg命令 - 流复制模式
-    let mut cmd = ffmpeg_command();
-
-    cmd.args([
-        "-i",
-        &source.to_string_lossy(),
-        "-c:v",
-        "copy", // 直接复制视频流，零损失
-        "-c:a",
-        "copy", // 直接复制音频流，零损失
-        "-avoid_negative_ts",
-        "make_zero", // 修复时间戳问题
-        "-movflags",
-        "+faststart", // 优化web播放
-        "-y",         // 覆盖输出文件
-        &dest.to_string_lossy(),
-    ]);
-
-    execute_ffmpeg_conversion(cmd, reporter, "无损转换").await
+    let mut plan = clip::single_input_plan(
+        source,
+        dest,
+        ffmpeg_utils::StreamMode::Copy,
+        ffmpeg_utils::StreamMode::Copy,
+    );
+    plan.outputs[0].negative_ts = ffmpeg_utils::NegativeTs::MakeZero;
+    plan.outputs[0].faststart = true;
+    execute_native_conversion(plan, reporter, "无损转换").await
 }
 
 // 高质量重编码转换（兼容性好，质量高）
@@ -152,31 +140,29 @@ pub async fn try_high_quality_conversion(
 ) -> Result<(), String> {
     reporter.update("正在转换视频格式... 0% (高质量模式)").await;
 
-    // 构建ffmpeg命令 - 高质量重编码
-    let mut cmd = ffmpeg_command();
-
-    cmd.args([
-        "-i",
-        &source.to_string_lossy(),
-        "-c:v",
-        "libx264", // H.264编码器
-        "-preset",
-        "slow", // 慢速预设，更好的压缩效率
-        "-crf",
-        "18", // 高质量设置 (18-23范围，越小质量越高)
-        "-c:a",
-        "aac", // AAC音频编码器
-        "-b:a",
-        "192k", // 高音频码率
-        "-avoid_negative_ts",
-        "make_zero", // 修复时间戳问题
-        "-movflags",
-        "+faststart", // 优化web播放
-        "-y",         // 覆盖输出文件
-        &dest.to_string_lossy(),
-    ]);
-
-    execute_ffmpeg_conversion(cmd, reporter, "高质量转换").await
+    let video = ffmpeg_utils::VideoEncodeOptions {
+        encoder: "libx264".into(),
+        options: [
+            ("preset".into(), "slow".into()),
+            ("crf".into(), "18".into()),
+        ]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    };
+    let audio = ffmpeg_utils::AudioEncodeOptions {
+        bit_rate: Some(192_000),
+        ..Default::default()
+    };
+    let mut plan = clip::single_input_plan(
+        source,
+        dest,
+        ffmpeg_utils::StreamMode::Video(video),
+        ffmpeg_utils::StreamMode::Audio(audio),
+    );
+    plan.outputs[0].negative_ts = ffmpeg_utils::NegativeTs::MakeZero;
+    plan.outputs[0].faststart = true;
+    execute_native_conversion(plan, reporter, "高质量转换").await
 }
 
 // 带进度的视频格式转换函数（智能质量保持策略）

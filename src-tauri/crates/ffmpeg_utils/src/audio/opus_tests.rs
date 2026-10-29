@@ -304,7 +304,7 @@ where
     assert_cancelled_media(encode, "opus", ".opus-").await;
 }
 
-pub(super) async fn assert_cancelled_media<F, Fut>(encode: F, extension: &str, prefix: &str)
+pub(crate) async fn assert_cancelled_media<F, Fut>(encode: F, extension: &str, prefix: &str)
 where
     F: FnOnce(PathBuf, PathBuf) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Result<(), String>> + Send + 'static,

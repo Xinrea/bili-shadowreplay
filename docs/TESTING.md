@@ -118,6 +118,13 @@ frame size for strict packet/STREAMINFO comparison. FFmpeg 9 keeps the original
 command as the strict encoded-output oracle. Nonempty clips below 16 output
 samples fail consistently with FFmpeg 9; empty clips write headers only.
 
+Audio import/export tests compare copied packets, codec extradata, timestamps,
+metadata/chapters, M4A faststart and exact converted PCM. AAC256 and MP3 q2
+comparisons retain encoded-packet equality, including MP3 Xing/Info headers and
+LAME delay/padding. The tests distinguish explicit first-track imports from
+automatic export selection and exercise planar audio across input format changes.
+Application import/export and WAV chunk tests also execute without a CLI.
+
 To smoke-test Douyu against a **currently live** numeric room using the
 production `DouyuRecorder` loop for five minutes (requires `ffmpeg` on `PATH`):
 

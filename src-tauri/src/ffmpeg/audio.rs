@@ -6,7 +6,6 @@ use std::{
 
 use tempfile::{tempdir_in, Builder, NamedTempFile, TempDir};
 
-use super::runner::{FfmpegJob, ProgressMode};
 pub(crate) use ffmpeg_utils::AudioTiming;
 use ffmpeg_utils::{
     decode_audio, decode_audio_range, encode_flac_preview, encode_opus_sample, probe_media,
@@ -25,108 +24,44 @@ pub async fn extract_audio_sample(file: &Path) -> Result<PathBuf, String> {
     Ok(output_path)
 }
 
-/// Extract 16 kHz mono audio chunks into an RAII-managed temporary directory.
+/// Extract 16 kHz mono WAV chunks into an RAII-managed temporary directory.
 ///
 /// The directory is deleted when the returned [`TempDir`] is dropped, so a
 /// failed or cancelled transcription cannot leave chunk files behind.
-pub(crate) async fn extract_audio_chunks_guarded(
-    file: &Path,
-    format: &str,
-) -> Result<TempDir, String> {
+pub(crate) async fn extract_audio_chunks_guarded(file: &Path) -> Result<TempDir, String> {
     log::info!("Extract audio task start: {}", file.display());
-    let output_path = file.with_extension(format);
+    let output_path = file.with_extension("wav");
     let output_dir = output_path
         .parent()
         .ok_or_else(|| format!("Output path has no parent: {}", output_path.display()))?;
     std::fs::create_dir_all(output_dir)
         .map_err(|error| format!("Failed to create output directory: {error}"))?;
 
-    if format == "wav" {
-        let directory = tempdir_in(output_dir)
-            .map_err(|error| format!("Failed to create chunk directory: {error}"))?;
-        let stem = output_path
-            .file_stem()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| format!("Invalid output file name: {}", output_path.display()))?;
-        let decoded = decode_audio(
-            file,
-            AudioDecodeOptions {
-                sample_rate: TRANSCRIPTION_SAMPLE_RATE,
-            },
-            WavChunkSink {
-                current: None,
-                directory,
-                stem: stem.to_string(),
-                index: 0,
-                samples_in_chunk: 0,
-            },
-        )
-        .await?;
-        if !decoded.has_audio {
-            return Err("Audio chunk extraction failed: input has no audio stream".into());
-        }
-        log::info!("Extracted {} native WAV chunks", decoded.sink.index);
-        return Ok(decoded.sink.directory);
-    }
-
-    let duration = get_audio_duration(file).await?;
-    log::info!("Audio duration: {duration} seconds");
-    let chunk_duration = 30;
-    let chunk_count = (duration as f64 / f64::from(chunk_duration)).ceil() as usize;
-    log::info!("Splitting into {chunk_count} chunks of {chunk_duration} seconds each");
-
-    let chunk_dir = tempdir_in(output_dir)
+    let directory = tempdir_in(output_dir)
         .map_err(|error| format!("Failed to create chunk directory: {error}"))?;
-    let base_name = output_path
+    let stem = output_path
         .file_stem()
         .and_then(|name| name.to_str())
         .ok_or_else(|| format!("Invalid output file name: {}", output_path.display()))?;
-    let segment_pattern = chunk_dir.path().join(format!("{base_name}_%03d.{format}"));
-
-    let mut args = vec![
-        "-i".to_string(),
-        file.to_string_lossy().into_owned(),
-        "-ar".to_string(),
-        "16000".to_string(),
-        "-ac".to_string(),
-        "1".to_string(),
-        "-vn".to_string(),
-        "-f".to_string(),
-        "segment".to_string(),
-        "-segment_time".to_string(),
-        chunk_duration.to_string(),
-        "-reset_timestamps".to_string(),
-        "1".to_string(),
-        "-y".to_string(),
-    ];
-    if format == "mp3" {
-        args.extend([
-            "-c:a".to_string(),
-            "mp3".to_string(),
-            "-b:a".to_string(),
-            "64k".to_string(),
-            "-compression_level".to_string(),
-            "0".to_string(),
-        ]);
-    } else {
-        args.extend(["-c:a".to_string(), "pcm_s16le".to_string()]);
+    let decoded = decode_audio(
+        file,
+        AudioDecodeOptions {
+            sample_rate: TRANSCRIPTION_SAMPLE_RATE,
+        },
+        WavChunkSink {
+            current: None,
+            directory,
+            stem: stem.to_string(),
+            index: 0,
+            samples_in_chunk: 0,
+        },
+    )
+    .await?;
+    if !decoded.has_audio {
+        return Err("Audio chunk extraction failed: input has no audio stream".into());
     }
-    args.extend(["-threads".to_string(), "0".to_string()]);
-
-    FfmpegJob::with_args(args)
-        .output(segment_pattern)
-        .progress(ProgressMode::Time)
-        .context("Extract audio chunks")
-        .run_without_reporter()
-        .await
-        .map_err(|error| error.to_string())?;
-
-    log::info!(
-        "Extract audio task end: {} chunks created in {}",
-        chunk_count,
-        chunk_dir.path().display()
-    );
-    Ok(chunk_dir)
+    log::info!("Extracted {} native WAV chunks", decoded.sink.index);
+    Ok(decoded.sink.directory)
 }
 
 /// Extract the full audio track as a single 16 kHz mono WAV file.
@@ -370,6 +305,7 @@ pub(crate) async fn extract_preview_audio(
 }
 
 /// Get the container duration in whole seconds, rounding up for audio chunks.
+#[cfg(test)]
 pub(crate) async fn get_audio_duration(file: &Path) -> Result<u64, String> {
     probe_media(file)
         .await?
@@ -511,7 +447,7 @@ mod native_wav_tests {
 
         let full = extract_full_audio(&source).await.unwrap();
         assert_eq!(read_wav(&full), expected);
-        let chunks = extract_audio_chunks_guarded(&source, "wav").await.unwrap();
+        let chunks = extract_audio_chunks_guarded(&source).await.unwrap();
         let chunk_dir = chunks.path().to_path_buf();
         let mut files = std::fs::read_dir(&chunk_dir)
             .unwrap()

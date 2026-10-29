@@ -422,7 +422,7 @@ pub async fn generate_video_subtitle(
             )
             .await
             .map_err(|_| "Failed to initialize Whisper Online".to_string())?;
-            let chunk_dir = super::audio::extract_audio_chunks_guarded(file, "wav").await?;
+            let chunk_dir = super::audio::extract_audio_chunks_guarded(file).await?;
             let mut chunk_paths = std::fs::read_dir(chunk_dir.path())
                 .map_err(|error| format!("Failed to read chunk directory: {error}"))?
                 .map(|entry| entry.map(|entry| entry.path()))

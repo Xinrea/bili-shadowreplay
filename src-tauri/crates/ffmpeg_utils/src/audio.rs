@@ -19,6 +19,11 @@ mod range;
 pub use range::{decode_audio_range, AudioRange};
 mod opus;
 pub use opus::{encode_opus_sample, encode_opus_upload};
+mod encode;
+mod import;
+pub(crate) mod remux;
+pub use encode::encode_mp3;
+pub use import::{import_audio, ImportAudioMode};
 mod flac_preview;
 mod output;
 pub use flac_preview::{encode_flac_preview, AudioTiming};
@@ -73,7 +78,7 @@ fn again(error: ffmpeg::Error) -> bool {
 
 /// Match fftools' auto-audio mapping, including its preference for default
 /// tracks. av_find_best_stream has different tie breakers (e.g. bit rate).
-fn audio_stream(input: &format::context::Input) -> Option<usize> {
+pub(crate) fn audio_stream(input: &format::context::Input) -> Option<usize> {
     let mut selected = None;
     let mut highest = i64::MIN;
     for stream in input.streams() {
@@ -481,3 +486,12 @@ mod opus_upload_tests;
 
 #[cfg(test)]
 mod flac_preview_tests;
+
+#[cfg(test)]
+mod file_test_helpers;
+
+#[cfg(test)]
+mod import_tests;
+
+#[cfg(test)]
+mod mp3_tests;

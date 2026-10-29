@@ -43,6 +43,7 @@ pub enum ProgressMode {
     /// The parser also recognizes the `out_time=` key emitted by
     /// `-progress pipe:2`, so that value is used when no summary progress event
     /// is available.
+    #[cfg(test)]
     Time,
     /// Report [`StageProgress`] under a user-facing stage name such as "压制弹幕".
     Stage { name: String, total: ProgressTotal },
@@ -86,6 +87,7 @@ impl ProgressMode {
 }
 
 enum ProgressReport {
+    #[cfg(test)]
     Text(String),
     Stage(StageProgress),
 }
@@ -102,6 +104,7 @@ impl ProgressTracker {
     fn observe(&mut self, mode: &ProgressMode, event: &FfmpegEvent) -> Option<ProgressReport> {
         let (name, total) = match mode {
             ProgressMode::None => return None,
+            #[cfg(test)]
             ProgressMode::Time => {
                 return ProgressMode::progress_time(event)
                     .map(|time| ProgressReport::Text(time.to_owned()));
@@ -194,6 +197,7 @@ impl FfmpegJob {
     }
 
     /// Create a job with an initial argument list.
+    #[cfg(test)]
     pub fn with_args<I, S>(args: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -357,6 +361,7 @@ impl FfmpegJob {
                         }
                         if let Some(reporter) = reporter {
                             match tracker.observe(&self.progress, &event) {
+                                #[cfg(test)]
                                 Some(ProgressReport::Text(message)) => {
                                     reporter.update(&message).await
                                 }

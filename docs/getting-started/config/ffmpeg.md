@@ -1,7 +1,7 @@
 # FFmpeg 配置
 
 FFmpeg 是一个开源的音视频处理工具，支持多种格式的音视频编解码、转码、剪辑、合并等操作。
-在本项目中，元数据、音频时间信息和 HLS 分片探测，以及波形、转写用完整 WAV、30 秒 WAV 分块、范围 WAV 提取、素材和 PowerLive 的 Opus 编码、编辑器预览 FLAC 分块，通过 `ffmpeg-next` 直接链接 `libavformat`、`libavcodec`、`libavutil`、`libswresample` 和 `libavfilter`。录制、转码及字幕弹幕压制继续使用 FFmpeg CLI；部分回归测试也用 CLI 对照结果。
+在本项目中，元数据、音频时间信息和 HLS 分片探测，以及波形、转写用完整 WAV、30 秒 WAV 分块、范围 WAV 提取、素材和 PowerLive 的 Opus 编码、编辑器预览 FLAC 分块、音频库导入和 MP3 导出，通过 `ffmpeg-next` 直接链接 `libavformat`、`libavcodec`、`libavutil`、`libswresample` 和 `libavfilter`。录制、转码及字幕弹幕压制继续使用 FFmpeg CLI；部分回归测试也用 CLI 对照结果。
 
 范围 WAV 提取保留原 `-ss ... -i ... -t ...` 的时间行为，包括 AAC 预滚、容器起点、采样率变化及末帧边界。输出固定为 16 kHz 单声道 PCM；由于沿用 CLI 的逐帧截止规则，样本数不保证恰好等于请求秒数乘以采样率。
 
@@ -10,6 +10,8 @@ FFmpeg 是一个开源的音视频处理工具，支持多种格式的音视频�
 PowerLive 上传音频使用 128 kbps VBR，保留源声道布局，采样率由滤镜协商为编码器支持的值。首次协商后会固定输出格式，即使输入流中途改变采样率或声道数，也保持同一条 Opus 音轨。其时间戳、标签、章节和尾部补齐处理与素材音频共用原生管线；该调用不再启动 FFmpeg 子进程。
 
 编辑器预览按首音轨的样本网格裁剪，保留 AAC 预滚，输出 48 kHz 双声道 16 位 FLAC。正常分块使用固定的 4096 样本编码块，尾块可短于该长度，空结果只写文件头；编码失败或取消不会发布半成品。实现统一采用 FFmpeg 9 的首帧块长规则：FFmpeg 6.1 旧 CLI 默认会重新拼成 4608 样本，原生输出改用 4096；不足 16 个输出样本的非空短片按编码器规则报错。
+
+音频库始终导入第一音轨：16 位 WAV、FLAC 与 AAC 直接转封装，其他 PCM WAV 转成 16 位，其他编码转成 256 kbps AAC；M4A 写入 faststart 索引。MP3 导出沿用自动选轨和 libmp3lame 的 q2 质量配置，保留延迟、尾部 padding 和 Xing/Info 信息。WAV 转写分块只有原生路径，不再保留未使用的 MP3 分块命令。
 
 Windows 和 macOS 安装包携带原生媒体处理所需的动态库。macOS 仍需按下文安装 FFmpeg CLI，以使用录制和转码功能；Linux 使用目标发行版的 FFmpeg 运行库，`.deb` 会声明对应依赖。
 
@@ -67,7 +69,7 @@ Windows 版本安装后，FFmpeg 已经放置在了程序目录下，因此不�
 
 `ffmpeg-next` 需要 FFmpeg 开发头文件和动态库，只有 `ffmpeg`/`ffprobe` 可执行文件不能编译原生媒体层。绑定使用 Clang 生成，开发库必须匹配目标架构；升级 FFmpeg 主版本后需重新编译应用。
 
-所链接的 SDK 还必须启用 `libopus` 编码器和 Ogg/Opus muxer。系统 `ffmpeg` 可执行文件具备这些能力，不代表另一个自定义 SDK 也已启用；原生实现缺少组件时会返回错误。
+所链接的 SDK 还必须启用 `libopus`、`libmp3lame`、AAC、FLAC、PCM S16 编码器，以及 Ogg/Opus、MP3、WAV、FLAC、M4A muxer。系统 `ffmpeg` 可执行文件具备这些能力，不代表另一个自定义 SDK 也已启用；原生实现缺少组件时会返回错误。
 
 ### macOS
 

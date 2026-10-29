@@ -452,6 +452,13 @@ pub async fn merge_videos(
     Ok(result.id)
 }
 
+#[cfg(any(feature = "gui", test))]
+async fn write_mp3_audio(input: &Path, output: &Path) -> Result<(), String> {
+    ffmpeg_utils::encode_mp3(input, output)
+        .await
+        .map_err(|error| format!("FFmpeg audio extraction failed: {error}"))
+}
+
 /// Extract audio from video
 #[cfg(feature = "gui")]
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -476,32 +483,7 @@ pub async fn extract_video_audio(state: state_type!(), video_id: i64) -> Result<
     );
     let output_path = output_dir.join(&output_filename);
 
-    // Extract audio using ffmpeg
-    let mut cmd = ffmpeg_command();
-
-    cmd.args([
-        "-i",
-        path_str(&video_path)?,
-        "-vn",
-        "-acodec",
-        "libmp3lame",
-        "-q:a",
-        "2",
-        "-y",
-        path_str(&output_path)?,
-    ]);
-
-    let output = cmd
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run ffmpeg: {}", e))?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "FFmpeg audio extraction failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
+    write_mp3_audio(&video_path, &output_path).await?;
 
     Ok(output_path.to_string_lossy().to_string())
 }
@@ -615,5 +597,75 @@ mod tests {
             ),
             video_path
         );
+    }
+}
+
+#[cfg(test)]
+mod mp3_audio_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Count(u64);
+    impl ffmpeg_utils::AudioSink for Count {
+        fn write(&mut self, samples: &[i16]) -> Result<(), String> {
+            self.0 += samples.len() as u64;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn native_video_audio_export_keeps_the_complete_mp3_without_a_cli() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("视频 音轨.wav");
+        let output = directory.path().join("audio.mp3");
+        let mut writer = hound::WavWriter::create(
+            &input,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 48_000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for index in 0..48_017 {
+            writer
+                .write_sample((12_000.0 * (index as f64 * 0.031).sin()) as i16)
+                .unwrap();
+        }
+        writer.finalize().unwrap();
+        write_mp3_audio(&input, &output).await.unwrap();
+        assert_eq!(&std::fs::read(&output).unwrap()[..3], b"ID3");
+        let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+        assert_eq!(metadata.audio_codec, "mp3");
+        let decoded = ffmpeg_utils::decode_audio(
+            &output,
+            ffmpeg_utils::AudioDecodeOptions {
+                sample_rate: 48_000,
+            },
+            Count::default(),
+        )
+        .await
+        .unwrap();
+        assert!(decoded.has_audio);
+        assert_eq!(decoded.samples, 48_017);
+        assert_eq!(decoded.sink.0, decoded.samples);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 2);
+    }
+
+    #[tokio::test]
+    async fn failed_native_mp3_export_keeps_existing_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("kept.mp3");
+        std::fs::write(&output, b"previous export").unwrap();
+        let video = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/video/test.mp4");
+        for input in [&video, &directory.path().join("missing.wav"), &output] {
+            assert!(write_mp3_audio(input, &output)
+                .await
+                .unwrap_err()
+                .starts_with("FFmpeg audio extraction failed: "));
+            assert_eq!(std::fs::read(&output).unwrap(), b"previous export");
+            assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+        }
     }
 }

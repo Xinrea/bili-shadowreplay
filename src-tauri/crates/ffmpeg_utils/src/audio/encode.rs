@@ -9,12 +9,13 @@ use std::{
     sync::{atomic::AtomicBool, Arc},
 };
 
+use crate::output::NativeOutput;
 use ffmpeg_next::{self as ffmpeg, codec, ffi, filter, format, frame, Dictionary, Packet};
 use tempfile::NamedTempFile;
 
 use super::{
-    again, audio_stream, check_cancelled, decode_frames, native_error, output::NativeOutput,
-    range::AudioClock, AudioFormat,
+    again, audio_stream, check_cancelled, decode_frames, native_error, range::AudioClock,
+    AudioFormat,
 };
 use crate::metadata::{open_input, run_media};
 

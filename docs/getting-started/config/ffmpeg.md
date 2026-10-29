@@ -1,7 +1,7 @@
 # FFmpeg 配置
 
 FFmpeg 是一个开源的音视频处理工具，支持多种格式的音视频编解码、转码、剪辑、合并等操作。
-在本项目中，元数据、音频时间信息和 HLS 分片探测，以及波形、转写用完整 WAV、30 秒 WAV 分块、范围 WAV 提取、素材和 PowerLive 的 Opus 编码、编辑器预览 FLAC 分块、音频库导入、MP3 导出、缩略图和视频提帧，通过 `ffmpeg-next` 直接链接 `libavformat`、`libavcodec`、`libavutil`、`libswresample` 和 `libavfilter`。录制、转码及字幕弹幕压制继续使用 FFmpeg CLI；部分回归测试也用 CLI 对照结果。
+在本项目中，元数据、音频时间信息和 HLS 分片探测，以及波形、转写用完整 WAV、30 秒 WAV 分块、范围 WAV 提取、素材和 PowerLive 的 Opus 编码、编辑器预览 FLAC 分块、音频库导入、MP3 导出、缩略图、视频提帧和 FLV 到 HLS 的录制，通过 `ffmpeg-next` 直接链接 `libavformat`、`libavcodec`、`libavutil`、`libswresample` 和 `libavfilter`。视频转码、合成及字幕弹幕压制继续使用 FFmpeg CLI；部分回归测试也用 CLI 对照结果。
 
 范围 WAV 提取保留原 `-ss ... -i ... -t ...` 的时间行为，包括 AAC 预滚、容器起点、采样率变化及末帧边界。输出固定为 16 kHz 单声道 PCM；由于沿用 CLI 的逐帧截止规则，样本数不保证恰好等于请求秒数乘以采样率。
 
@@ -14,6 +14,8 @@ PowerLive 上传音频使用 128 kbps VBR，保留源声道布局，采样率由
 音频库始终导入第一音轨：16 位 WAV、FLAC 与 AAC 直接转封装，其他 PCM WAV 转成 16 位，其他编码转成 256 kbps AAC；M4A 写入 faststart 索引。MP3 导出沿用自动选轨和 libmp3lame 的 q2 质量配置，保留延迟、尾部 padding 和 Xing/Info 信息。WAV 转写分块只有原生路径，不再保留未使用的 MP3 分块命令。
 
 缩略图保留默认 JPEG 质量，面向客户端的提帧保留 q2，按输入时间定位并处理旋转、颜色范围及像素比例；图片成功编码后才原子发布，base64 提帧直接返回内存中的 JPEG。FFmpeg 6.1 对单图 `seek(0)` 的丢帧行为被修正：单图零时刻直接解码，视频仍执行准确定位。
+
+FLV 直播录制直接复制音视频包到 event HLS，保留请求头、User-Agent、读取超时、四秒目标分片和已有列表追加行为，忽略字幕流。关闭录制开关会中断网络读取并完成最后一个分片，再关闭播放列表；任务取消则中断输入／输出。录制器在结束时补报最后分片的时长和大小，避免快速结束或尾段未进入定时进度更新。
 
 Windows 和 macOS 安装包携带原生媒体处理所需的动态库。macOS 仍需按下文安装 FFmpeg CLI，以使用录制和转码功能；Linux 使用目标发行版的 FFmpeg 运行库，`.deb` 会声明对应依赖。
 

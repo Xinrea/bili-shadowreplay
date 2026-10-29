@@ -1,4 +1,4 @@
-//! Native output I/O shared by the audio encoders. The interrupt closure
+//! Native output I/O shared by media encoders and muxers. The interrupt closure
 //! outlives AVIO, and explicit close reports buffered write failures.
 
 use std::{
@@ -13,16 +13,15 @@ use std::{
 
 use ffmpeg_next::{self as ffmpeg, ffi, format};
 
-use super::native_error;
 use crate::path_str;
 
-pub(super) struct NativeOutput {
-    pub(super) output: format::context::Output,
+pub(crate) struct NativeOutput {
+    pub(crate) output: format::context::Output,
     _interrupt: ffmpeg::util::interrupt::InterruptGuard,
 }
 
 impl NativeOutput {
-    pub(super) fn new(
+    pub(crate) fn new(
         path: &Path,
         format: &str,
         cancelled: Arc<AtomicBool>,
@@ -42,7 +41,7 @@ impl NativeOutput {
         };
         if result < 0 || context.is_null() {
             return Err(native_error(
-                "创建音频输出失败",
+                "创建媒体输出失败",
                 ffmpeg::Error::from(result),
             ));
         }
@@ -50,18 +49,19 @@ impl NativeOutput {
         let output = unsafe { format::context::Output::wrap(context) };
         unsafe {
             (*context).interrupt_callback = interrupt.interrupt;
-            let result = ffi::avio_open2(
-                &mut (*context).pb,
-                filename.as_ptr(),
-                ffi::AVIO_FLAG_WRITE,
-                &(*context).interrupt_callback,
-                ptr::null_mut(),
-            );
-            if result < 0 {
-                return Err(native_error(
-                    "打开音频输出失败",
-                    ffmpeg::Error::from(result),
-                ));
+            // Muxers such as HLS own their playlists and segment I/O. Opening
+            // an extra outer file would truncate the existing event playlist.
+            if !output.format().flags().contains(format::flag::Flags::NO_FILE) {
+                let result = ffi::avio_open2(
+                    &mut (*context).pb,
+                    filename.as_ptr(),
+                    ffi::AVIO_FLAG_WRITE,
+                    &(*context).interrupt_callback,
+                    ptr::null_mut(),
+                );
+                if result < 0 {
+                    return Err(native_error("打开媒体输出失败", ffmpeg::Error::from(result)));
+                }
             }
         }
         Ok(Self {
@@ -70,19 +70,26 @@ impl NativeOutput {
         })
     }
 
-    pub(super) fn close(&mut self) -> Result<(), String> {
+    pub(crate) fn close(&mut self) -> Result<(), String> {
         unsafe {
             let context = self.output.as_mut_ptr();
+            if (*context).pb.is_null() {
+                return Ok(());
+            }
             ffi::avio_flush((*context).pb);
             let error = (*(*context).pb).error;
             let result = ffi::avio_closep(&mut (*context).pb);
             if error < 0 || result < 0 {
                 return Err(native_error(
-                    "关闭音频输出失败",
+                    "关闭媒体输出失败",
                     ffmpeg::Error::from(if error < 0 { error } else { result }),
                 ));
             }
         }
         Ok(())
     }
+}
+
+fn native_error(context: &str, error: ffmpeg::Error) -> String {
+    format!("{context}: {error}")
 }

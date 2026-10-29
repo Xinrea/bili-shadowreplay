@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 #[cfg(test)]
 use tokio::sync::broadcast;
 
-use ffmpeg_utils::ffmpeg_command;
+use ffmpeg_utils::{record_to_hls, HlsRecordingOptions};
 use m3u8_rs::MediaPlaylist;
 
 use crate::core::playlist::HlsPlaylist;
@@ -50,21 +50,11 @@ impl FlvRecorder {
         self
     }
 
-    fn configure_input(&self, cmd: &mut tokio::process::Command) {
-        if let Some(timeout) = self.read_timeout {
-            let micros = timeout.as_micros().min(i64::MAX as u128).to_string();
-            cmd.args(["-rw_timeout", &micros]);
-        }
-        if let Some(user_agent) = &self.user_agent {
-            cmd.args(["-user_agent", user_agent]);
-        }
-        if !self.http_headers.is_empty() {
-            let headers: String = self
-                .http_headers
-                .iter()
-                .map(|(name, value)| format!("{name}: {value}\r\n"))
-                .collect();
-            cmd.args(["-headers", &headers]);
+    fn input_options(&self) -> HlsRecordingOptions {
+        HlsRecordingOptions {
+            user_agent: self.user_agent.clone(),
+            http_headers: self.http_headers.clone(),
+            read_timeout: self.read_timeout,
         }
     }
 
@@ -81,95 +71,56 @@ impl FlvRecorder {
             playlist.flush().await?;
         }
 
-        let mut cmd = ffmpeg_command();
-
-        // FFmpeg's network options must precede the input. Douyu opts into
-        // an idle read limit so a dead CDN cannot stall the recorder forever.
-        self.configure_input(&mut cmd);
-
-        cmd.args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
+        let recording = record_to_hls(
             &self.url,
-            "-c",
-            "copy",
-            // Huya's FLV carries a webvtt-like subtitle track that the HLS
-            // muxer rejects with `-c copy`; drop subtitle streams entirely.
-            "-sn",
-            "-f",
-            "hls",
-            "-hls_time",
-            "4",
-            "-hls_list_size",
-            "0",
-            "-hls_playlist_type",
-            "event",
-            "-hls_flags",
-            "append_list+omit_endlist",
-            "-hls_segment_filename",
-            segment_pattern.to_string_lossy().as_ref(),
-            playlist_path.to_string_lossy().as_ref(),
-            "-y",
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| RecorderError::FfmpegError(e.to_string()))?;
+            &playlist_path,
+            &segment_pattern,
+            self.input_options(),
+            self.enabled.clone(),
+        );
+        tokio::pin!(recording);
         let mut processed_segments = 0usize;
-
-        loop {
-            if !self.enabled.load(Ordering::Relaxed) {
-                let _ = child.kill().await;
-                break;
-            }
-
-            if let Ok(bytes) = tokio::fs::read(&playlist_path).await {
-                if let Ok((_, playlist)) = m3u8_rs::parse_media_playlist(&bytes) {
-                    let duration_delta = Self::update_from_playlist(
-                        &self.work_dir,
-                        &playlist,
-                        &mut processed_segments,
-                    )
-                    .await;
-                    if let Some((duration_secs, cached_size_bytes)) = duration_delta {
-                        let _ = self
-                            .event_channel
-                            .send(RecorderEvent::RecordUpdate {
-                                live_id: self.live_id.clone(),
-                                duration_secs,
-                                cached_size_bytes,
-                            })
-                            .await;
-                    }
+        let result = loop {
+            tokio::select! {
+                result = &mut recording => break result,
+                _ = tokio::time::sleep(Duration::from_millis(500)) => {
+                    self.publish_updates(&playlist_path, &mut processed_segments).await;
                 }
             }
-
-            if let Some(status) = child
-                .try_wait()
-                .map_err(|e| RecorderError::FfmpegError(format!("ffmpeg wait failed: {e}")))?
-            {
-                if !status.success() {
-                    return Err(RecorderError::FfmpegError(format!(
-                        "ffmpeg exited with status: {status}"
-                    )));
-                }
-                break;
-            }
-
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
+        };
+        // The native worker can finish before the first poll and also closes
+        // its pending final segment on a graceful stop. Account for it once.
+        self.publish_updates(&playlist_path, &mut processed_segments)
+            .await;
+        result.map_err(RecorderError::FfmpegError)?;
 
         if playlist_path.exists() {
-            let mut playlist = HlsPlaylist::new(playlist_path).await?;
+            let mut playlist = HlsPlaylist::new(playlist_path.clone()).await?;
             playlist.close().await?;
         }
 
         Ok(())
+    }
+
+    async fn publish_updates(&self, playlist_path: &Path, processed_segments: &mut usize) {
+        let Ok(bytes) = tokio::fs::read(playlist_path).await else {
+            return;
+        };
+        let Ok((_, playlist)) = m3u8_rs::parse_media_playlist(&bytes) else {
+            return;
+        };
+        if let Some((duration_secs, cached_size_bytes)) =
+            Self::update_from_playlist(&self.work_dir, &playlist, processed_segments).await
+        {
+            let _ = self
+                .event_channel
+                .send(RecorderEvent::RecordUpdate {
+                    live_id: self.live_id.clone(),
+                    duration_secs,
+                    cached_size_bytes,
+                })
+                .await;
+        }
     }
 
     async fn update_from_playlist(
@@ -204,39 +155,81 @@ impl FlvRecorder {
 mod tests {
     use super::*;
 
-    #[test]
-    fn douyu_read_timeout_precedes_the_ffmpeg_input() {
-        let (events, _) = broadcast::channel(1);
+    #[tokio::test]
+    async fn native_recording_closes_the_playlist_and_reports_the_complete_tail() {
+        let directory = tempfile::tempdir().unwrap();
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../ffmpeg_utils/src/hls/fixtures/live.flv");
+        let (events, mut received) = broadcast::channel(16);
         let recorder = FlvRecorder::new(
-            "https://cdn.example/live.flv".into(),
-            Some("viewer".into()),
-            vec![("Referer".into(), "https://www.douyu.com/".into())],
-            PathBuf::new(),
+            fixture.to_string_lossy().into_owned(),
+            None,
+            Vec::new(),
+            directory.path().to_owned(),
             Arc::new(AtomicBool::new(true)),
             events,
-            "test".into(),
-        )
-        .with_read_timeout(Duration::from_secs(15));
-        let mut command = ffmpeg_command();
-        recorder.configure_input(&mut command);
-        command.args(["-i", "https://cdn.example/live.flv"]);
-        let args: Vec<_> = command
-            .as_std()
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(
-            args,
-            [
-                "-rw_timeout",
-                "15000000",
-                "-user_agent",
-                "viewer",
-                "-headers",
-                "Referer: https://www.douyu.com/\r\n",
-                "-i",
-                "https://cdn.example/live.flv"
-            ]
+            "native-live".into(),
         );
+        recorder.start().await.unwrap();
+        let bytes = std::fs::read(directory.path().join("playlist.m3u8")).unwrap();
+        let (_, playlist) = m3u8_rs::parse_media_playlist(&bytes).unwrap();
+        assert!(playlist.end_list);
+        assert!(playlist.segments.len() >= 2);
+        let expected_duration: f64 = playlist
+            .segments
+            .iter()
+            .map(|s| f64::from(s.duration))
+            .sum();
+        let expected_size: u64 = playlist
+            .segments
+            .iter()
+            .map(|s| {
+                std::fs::metadata(directory.path().join(&s.uri))
+                    .unwrap()
+                    .len()
+            })
+            .sum();
+        let mut duration = 0.0;
+        let mut size = 0;
+        while let Ok(event) = received.try_recv() {
+            if let RecorderEvent::RecordUpdate {
+                live_id,
+                duration_secs,
+                cached_size_bytes,
+            } = event
+            {
+                assert_eq!(live_id, "native-live");
+                duration += duration_secs;
+                size += cached_size_bytes;
+            }
+        }
+        assert!((duration - expected_duration).abs() < 0.0001);
+        assert_eq!(size, expected_size);
+        assert!((duration - 6.0).abs() < 0.2);
+        assert!(size > 0);
+    }
+
+    #[tokio::test]
+    async fn disabled_recording_does_not_open_the_url_and_closes_its_empty_playlist() {
+        let directory = tempfile::tempdir().unwrap();
+        let (events, _) = broadcast::channel(1);
+        let recorder = FlvRecorder::new(
+            "http://127.0.0.1:1/must-not-open".into(),
+            Some("viewer".into()),
+            vec![("Referer".into(), "https://www.douyu.com/".into())],
+            directory.path().to_owned(),
+            Arc::new(AtomicBool::new(false)),
+            events,
+            "disabled".into(),
+        )
+        .with_read_timeout(Duration::from_millis(50));
+        tokio::time::timeout(Duration::from_secs(2), recorder.start())
+            .await
+            .unwrap()
+            .unwrap();
+        let bytes = std::fs::read(directory.path().join("playlist.m3u8")).unwrap();
+        let (_, playlist) = m3u8_rs::parse_media_playlist(&bytes).unwrap();
+        assert!(playlist.end_list);
+        assert!(playlist.segments.is_empty());
     }
 }

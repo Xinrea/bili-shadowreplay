@@ -132,6 +132,13 @@ On FFmpeg 6, the single-image zero-position oracle omits the broken `-ss 0`;
 video seek comparisons retain the original command. Native tests also cover
 concurrent extraction, atomic publication, EOF fallback and interrupting HTTP I/O.
 
+Native FLV-to-HLS tests use a six-second checked-in audiovisual fixture. They
+compare the playlist, segment durations and every copied packet with the CLI,
+including timestamps, and verify append behavior without replacing old segments.
+Local HTTP tests check headers, idle timeout, graceful input stop with final-tail
+publication, and cancellation without a surviving writer. Recorder tests verify
+ENDLIST and complete final duration/size updates without invoking a CLI.
+
 To smoke-test Douyu against a **currently live** numeric room using the
 production `DouyuRecorder` loop for five minutes (requires `ffmpeg` on `PATH`):
 

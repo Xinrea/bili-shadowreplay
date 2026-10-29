@@ -6,6 +6,7 @@ use std::{
     sync::{atomic::AtomicBool, Arc},
 };
 
+use crate::output::NativeOutput;
 use ffmpeg_next::packet::Mut;
 use ffmpeg_next::{self as ffmpeg, codec, ffi, media, Dictionary, Packet, Rational};
 use tempfile::NamedTempFile;
@@ -14,7 +15,6 @@ use super::{
     check_cancelled,
     encode::{copy_chapters, input_metadata},
     native_error,
-    output::NativeOutput,
 };
 use crate::metadata::{open_input, run_media};
 

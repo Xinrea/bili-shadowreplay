@@ -128,7 +128,7 @@ where
     result
 }
 
-fn initialize() -> Result<(), String> {
+pub(crate) fn initialize() -> Result<(), String> {
     static INITIALIZED: OnceLock<Result<(), String>> = OnceLock::new();
     INITIALIZED
         .get_or_init(|| ffmpeg::init().map_err(|error| format!("初始化 FFmpeg 失败: {error}")))

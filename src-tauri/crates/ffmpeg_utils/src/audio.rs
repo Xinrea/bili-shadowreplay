@@ -25,7 +25,6 @@ pub(crate) mod remux;
 pub use encode::encode_mp3;
 pub use import::{import_audio, ImportAudioMode};
 mod flac_preview;
-mod output;
 pub use flac_preview::{encode_flac_preview, AudioTiming};
 
 pub trait AudioSink: Send + 'static {

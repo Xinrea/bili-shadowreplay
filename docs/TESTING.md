@@ -155,6 +155,13 @@ Cancellation verifies that network input closes before its worker-owned list is
 released; application tests also run with an empty PATH and retain prior output
 when a later input is missing.
 
+Native libass burn tests use a generated black-video/AAC fixture. They verify
+ASS styles, force-style overrides, event boundaries, escaped paths and fonts
+directories, exact retained audio samples and preservation of existing output
+when subtitles are invalid. On FFmpeg 6/9, ten rendered JPEG frames across two
+styles also match the former CLI byte for byte. Library-only checks run without
+an executable; the pixel oracle is optional when the matching CLI is available.
+
 Native FLV-to-HLS tests use a six-second checked-in audiovisual fixture. They
 compare the playlist, segment durations and every copied packet with the CLI,
 including timestamps, and verify append behavior without replacing old segments.

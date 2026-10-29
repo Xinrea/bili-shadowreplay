@@ -69,11 +69,10 @@ use crate::{
         },
         video::{
             batch_import_external_videos, cancel, clip_range, clip_video, delete_video,
-            encode_video_subtitle, generate_audio_sample, generate_video_subtitle,
-            generic_ffmpeg_command, get_all_videos, get_file_size, get_import_progress, get_video,
-            get_video_cover, get_video_subtitle, get_video_typelist, get_videos,
-            import_external_video, update_video_cover, update_video_note, update_video_subtitle,
-            upload_procedure,
+            encode_video_subtitle, generate_audio_sample, generate_video_subtitle, get_all_videos,
+            get_file_size, get_import_progress, get_video, get_video_cover, get_video_subtitle,
+            get_video_typelist, get_videos, import_external_video, update_video_cover,
+            update_video_note, update_video_subtitle, upload_procedure,
         },
         AccountInfo,
     },
@@ -2292,20 +2291,6 @@ async fn handler_get_tasks(
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GenericFfmpegCommandRequest {
-    args: Vec<String>,
-}
-
-async fn handler_generic_ffmpeg_command(
-    state: axum::extract::State<State>,
-    Json(params): Json<GenericFfmpegCommandRequest>,
-) -> Result<Json<ApiResponse<String>>, ApiError> {
-    let result = generic_ffmpeg_command(state.0, params.args).await?;
-    Ok(Json(ApiResponse::success(result)))
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
 struct ListFolderRequest {
     path: String,
 }
@@ -2566,10 +2551,6 @@ pub async fn start_api_server(state: State) {
             .route(
                 "/api/generate_archive_subtitle",
                 post(handler_generate_archive_subtitle),
-            )
-            .route(
-                "/api/generic_ffmpeg_command",
-                post(handler_generic_ffmpeg_command),
             )
             .route(
                 "/api/update_video_subtitle",

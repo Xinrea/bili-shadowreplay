@@ -91,15 +91,6 @@ pub fn clip_timeline_anchors(ranges: &[Range], transition: Option<&str>) -> Vec<
     anchors
 }
 
-pub async fn generic_ffmpeg_command(args: &[&str]) -> Result<String, String> {
-    let output = runner::FfmpegJob::with_args(args.iter().map(|arg| (*arg).to_string()))
-        .context("Generic ffmpeg command")
-        .run_without_reporter()
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(output.logs.join("\n"))
-}
-
 // 执行FFmpeg转换的通用函数
 pub async fn execute_ffmpeg_conversion(
     cmd: tokio::process::Command,
@@ -413,22 +404,6 @@ mod tests {
                 assert!(!version.is_empty());
                 // FFmpeg 版本字符串可能不包含 "ffmpeg" 这个词，所以检查是否包含数字
                 assert!(version.chars().any(|c| c.is_ascii_digit()));
-            }
-            Err(_) => {
-                // FFmpeg 可能没有安装，这是正常的
-                println!("FFmpeg not available for testing");
-            }
-        }
-    }
-
-    // 测试通用 FFmpeg 命令
-    #[tokio::test]
-    async fn test_generic_ffmpeg_command() {
-        let result = generic_ffmpeg_command(&["-version"]).await;
-        match result {
-            Ok(_output) => {
-                // 输出可能为空或者不包含 "ffmpeg" 字符串，我们只检查函数能正常执行
-                println!("FFmpeg command executed successfully");
             }
             Err(_) => {
                 // FFmpeg 可能没有安装，这是正常的

@@ -385,7 +385,6 @@ impl FfmpegJob {
             Ok(JobOutput {
                 output: self.output.clone(),
                 status,
-                logs,
             })
         };
         tokio::pin!(process);
@@ -640,8 +639,6 @@ pub struct JobOutput {
     /// The successful process status.
     #[allow(dead_code)]
     pub status: ExitStatus,
-    /// Log lines parsed from ffmpeg stderr.
-    pub logs: Vec<String>,
 }
 
 /// A best-effort RAII guard for a temporary file produced by ffmpeg.

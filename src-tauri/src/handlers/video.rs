@@ -1585,15 +1585,6 @@ async fn encode_video_subtitle_inner(
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn generic_ffmpeg_command(
-    _state: state_type!(),
-    args: Vec<String>,
-) -> Result<String, String> {
-    let args_str: Vec<&str> = args.iter().map(std::string::String::as_str).collect();
-    ffmpeg::generic_ffmpeg_command(&args_str).await
-}
-
-#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn import_external_video(
     state: state_type!(),
     event_id: String,

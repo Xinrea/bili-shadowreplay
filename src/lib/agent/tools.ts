@@ -127,11 +127,6 @@ const confirmedToolExecutors: Record<string, ToolExecutor> = {
     }),
   ),
 
-  generic_ffmpeg_command: executor(
-    async ({ args }: { args: string[] }) =>
-      invoke("generic_ffmpeg_command", { args }),
-  ),
-
   open_clip: executor(
     async ({ video_id }: { video_id: number }) =>
       invoke("open_clip", { videoId: video_id }),

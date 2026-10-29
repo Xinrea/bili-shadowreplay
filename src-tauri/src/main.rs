@@ -1060,7 +1060,6 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::subtitle_fonts::get_subtitle_preview_fonts,
         crate::handlers::native_overlay_preview::render_generated_subtitle_preview,
         crate::handlers::subtitle_fonts::get_subtitle_font_families,
-        crate::handlers::video::generic_ffmpeg_command,
         crate::handlers::video::import_external_video,
         crate::handlers::video::batch_import_external_videos,
         crate::handlers::video::clip_video,

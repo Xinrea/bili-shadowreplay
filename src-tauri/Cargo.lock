@@ -2455,6 +2455,7 @@ name = "ffmpeg_utils"
 version = "0.1.0"
 dependencies = [
  "ffmpeg-next",
+ "flate2",
  "serde",
  "serde_json",
  "tempfile",

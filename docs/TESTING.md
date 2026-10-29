@@ -132,6 +132,12 @@ On FFmpeg 6, the single-image zero-position oracle omits the broken `-ss 0`;
 video seek comparisons retain the original command. Native tests also cover
 concurrent extraction, atomic publication, EOF fallback and interrupting HTTP I/O.
 
+Image normalization tests compare PNG bytes against the former CLI for alpha,
+animated PNG/GIF, JPEG, WebP, scaling and ICC profiles on FFmpeg 6 and 9. They also
+exercise encoded-byte/pixel limits, compressed PNG metadata expansion, deadlines,
+cancellation and preservation of existing output on failure. Native calls cancel
+cooperatively; these bounds do not provide a hard per-job memory or time limit.
+
 Native FLV-to-HLS tests use a six-second checked-in audiovisual fixture. They
 compare the playlist, segment durations and every copied packet with the CLI,
 including timestamps, and verify append behavior without replacing old segments.

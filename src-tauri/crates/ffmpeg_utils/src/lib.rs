@@ -11,6 +11,7 @@ mod audio;
 mod capabilities;
 mod command;
 mod hls;
+mod image;
 mod metadata;
 mod output;
 mod video_frame;
@@ -23,6 +24,7 @@ pub use audio::{
 pub use capabilities::{available_video_encoders, linked_ffmpeg_version};
 pub use command::{ffmpeg_command, ffmpeg_path, ffprobe_command, ffprobe_path, path_str};
 pub use hls::{record_to_hls, HlsRecordingOptions};
+pub use image::normalize_image_to_png;
 pub use metadata::{
     extract_video_metadata, extract_video_metadata_with_init, probe_media, AudioStreamMetadata,
     MediaProbe, VideoMetadata,

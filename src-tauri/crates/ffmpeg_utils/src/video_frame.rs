@@ -387,7 +387,7 @@ fn rotation_filters(matrix: Option<[i32; 9]>) -> Vec<String> {
     }
 }
 
-fn filter_has_option(filter: &filter::Filter, option: &std::ffi::CStr) -> bool {
+pub(crate) fn filter_has_option(filter: &filter::Filter, option: &std::ffi::CStr) -> bool {
     let mut class = unsafe { (*filter.as_ptr()).priv_class };
     !class.is_null()
         && unsafe {

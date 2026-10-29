@@ -7,7 +7,6 @@ use std::{
     collections::{HashMap, HashSet},
     num::NonZeroU32,
     path::{Path, PathBuf},
-    process::Stdio,
     sync::OnceLock,
     time::Duration,
 };
@@ -223,39 +222,14 @@ async fn download_image(
 /// FFmpeg versions cannot decode animated WebP; those images fall back to text.
 /// The PNG can be held by FFmpeg without a looping decoder.
 async fn decode_image(source: &Path, output: &Path) -> Result<(), String> {
-    let mut command = ffmpeg_command();
-    command
-        .args(["-hide_banner", "-loglevel", "error", "-nostdin"])
-        .args(["-max_alloc", "67108864", "-protocol_whitelist", "file"])
-        .args(["-format_whitelist", "image2,png_pipe,jpeg_pipe,webp_pipe,gif,apng"])
-        .args(["-max_pixels", "4194304", "-threads", "1", "-i"])
-        .arg(source)
-        .args([
-            "-vf", "scale=w='min(iw,512)':h='min(ih,512)':force_original_aspect_ratio=decrease,format=rgba",
-            "-frames:v", "1", "-threads", "1", "-update", "1", "-y",
-        ])
-        .arg(output)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
-    let result = tokio::time::timeout(IMAGE_TIMEOUT, command.output())
-        .await
-        .map_err(|_| "image decode timed out".to_string())?
-        .map_err(|error| error.to_string())?;
-    if !result.status.success() {
-        return Err(format!(
-            "image decode failed: {}",
-            String::from_utf8_lossy(&result.stderr)
-        ));
-    }
-    if tokio::fs::metadata(output)
-        .await
-        .map_err(|error| error.to_string())?
-        .len()
-        == 0
-    {
-        return Err("image decoder produced no frame".into());
-    }
-    Ok(())
+    // The linked decoder enforces image/byte/pixel/thread limits. Dropping its
+    // future cancels publication and interrupts cooperative native work.
+    tokio::time::timeout(
+        IMAGE_TIMEOUT,
+        ffmpeg_utils::normalize_image_to_png(source, output),
+    )
+    .await
+    .map_err(|_| "image decode timed out".to_string())?
 }
 
 fn image_urls(danmus: &[DanmuEntry]) -> Vec<Url> {
@@ -513,6 +487,21 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn native_image_normalization_works_without_a_cli_and_keeps_prior_output_on_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("crates/ffmpeg_utils/src/image/fixtures/animated.png");
+        let output = directory.path().join("normalized.png");
+        decode_image(&source, &output).await.unwrap();
+        let retained = std::fs::read(&output).unwrap();
+        assert!(retained.starts_with(b"\x89PNG\r\n\x1a\n"));
+        let invalid = directory.path().join("invalid.png");
+        std::fs::write(&invalid, b"\x89PNG\r\n\x1a\nnot an image").unwrap();
+        assert!(decode_image(&invalid, &output).await.is_err());
+        assert_eq!(std::fs::read(&output).unwrap(), retained);
+    }
 
     fn emoji(url: &str) -> EmojiContent {
         EmojiContent {

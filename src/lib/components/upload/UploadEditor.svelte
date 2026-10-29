@@ -403,6 +403,7 @@
               <span class="ui-label">画质与码率</span>
               <div class="ui-card space-y-2 bg-control/50 p-3">
                 <RenderSettingsFields
+                  nativeGpu
                   bind:value={renderSettings}
                   disabled={!editable || posting || savingRenderSettings}
                   onChange={saveRenderSettings}

@@ -311,7 +311,7 @@
             </div>
 
             <div class="space-y-1.5">
-              <RenderSettingsFields bind:value={renderSettings} />
+              <RenderSettingsFields bind:value={renderSettings} nativeGpu={embedDanmu} />
               <p class="text-[11px] text-fg-muted">
                 素材将按以上设置重新编码，无论是否内嵌弹幕。
               </p>

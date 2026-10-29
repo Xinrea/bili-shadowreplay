@@ -1694,6 +1694,7 @@
                   <div data-setting="auto-generate-encoding">
                     <RenderSettingsFields
                       layout="rows"
+                      nativeGpu={setting_model.auto_generate.encode_danmu}
                       showHint={false}
                       bind:value={setting_model.auto_generate.render_settings}
                       disabled={autoGenerateLoading || autoGenerateSaving}

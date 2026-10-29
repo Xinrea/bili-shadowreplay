@@ -376,7 +376,7 @@
                 </span>
               </label>
             </div>
-            <RenderSettingsFields layout="columns" bind:value={renderSettings} disabled={isLoading || isSubmitting} />
+            <RenderSettingsFields layout="columns" bind:value={renderSettings} nativeGpu={encodeDanmu} disabled={isLoading || isSubmitting} />
           </div>
         </div>
 

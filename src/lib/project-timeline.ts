@@ -65,7 +65,7 @@ export function newId(): string {
 }
 
 export function defaultRenderSettings(): RenderSettings {
-  return { codec: "hevc", priority: "speed", bitrate_kbps: 10000 };
+  return { codec: "hevc", priority: "speed", bitrate_kbps: 10000, render_backend: null, encoder: null, options: {} };
 }
 
 /** Read timelines saved before codec and encoding priority were configurable. */
@@ -73,6 +73,9 @@ export function normalizeRenderSettings(value?: Partial<RenderSettings> & { qual
   const defaults = defaultRenderSettings();
   const legacy = value?.codec == null && value?.priority == null;
   return {
+    render_backend: value?.render_backend ?? null,
+    encoder: value?.encoder ?? null,
+    options: { ...value?.options },
     codec: value?.codec ?? defaults.codec,
     priority: value?.priority ?? (legacy && value?.quality === "high" ? "quality" : defaults.priority),
     bitrate_kbps: legacy && value?.bitrate_kbps === 0

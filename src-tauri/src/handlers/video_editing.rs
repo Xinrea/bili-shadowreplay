@@ -1,7 +1,9 @@
 use crate::state::State;
 use crate::state_type;
 use base64::Engine;
-use ffmpeg_utils::{extract_video_metadata, ffmpeg_command, path_str, VideoMetadata};
+use ffmpeg_utils::{extract_video_metadata, VideoMetadata};
+#[cfg(feature = "gui")]
+use ffmpeg_utils::{ffmpeg_command, path_str};
 #[cfg(feature = "gui")]
 use recorder::platforms::PlatformType;
 use serde::{Deserialize, Serialize};
@@ -89,7 +91,7 @@ pub async fn extract_video_frames(
             continue;
         }
 
-        // Extract frame using ffmpeg
+        // Extract directly into memory, including concurrent requests.
         let frame_data = extract_frame_at_timestamp(&video_path, ts).await?;
         frames.push(VideoFrame {
             timestamp: ts,
@@ -102,47 +104,7 @@ pub async fn extract_video_frames(
 
 /// Extract a single frame at a specific timestamp
 async fn extract_frame_at_timestamp(video_path: &Path, timestamp: f64) -> Result<String, String> {
-    // Give every extraction its own directory: MCP clients may request the
-    // same timestamp concurrently. No open file handle blocks FFmpeg on
-    // Windows, and the directory is removed on both success and failure.
-    let temporary_dir = tempfile::Builder::new()
-        .prefix("bsr-frame-")
-        .tempdir()
-        .map_err(|error| format!("Failed to create frame directory: {error}"))?;
-    let output_path = temporary_dir.path().join("frame.jpg");
-
-    let mut cmd = ffmpeg_command();
-
-    cmd.args([
-        "-ss",
-        &timestamp.to_string(),
-        "-i",
-        path_str(video_path)?,
-        "-vframes",
-        "1",
-        "-q:v",
-        "2",
-        "-y",
-        path_str(&output_path)?,
-    ]);
-
-    let output = cmd
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run ffmpeg: {}", e))?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "FFmpeg failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    // Read and encode to base64
-    let image_data = tokio::fs::read(&output_path)
-        .await
-        .map_err(|e| format!("Failed to read frame: {}", e))?;
-
+    let image_data = ffmpeg_utils::extract_jpeg(video_path, timestamp, Some(2)).await?;
     let base64_data = base64::engine::general_purpose::STANDARD.encode(&image_data);
 
     Ok(base64_data)
@@ -542,40 +504,26 @@ mod tests {
 
     #[tokio::test]
     async fn frame_extraction_returns_base64_jpeg_without_gui() {
-        // Match ffmpeg_utils tests: CI installs FFmpeg, but local contributors
-        // can still run the test suite without the optional media executable.
-        let available = ffmpeg_command()
-            .arg("-version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await;
-        if let Err(error) = &available {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                eprintln!("Skipping frame extraction test: FFmpeg is not installed");
-                return;
-            }
-        }
-        assert!(available.unwrap().success(), "FFmpeg version check failed");
-        let directory = tempfile::tempdir().unwrap();
-        let video_path = directory.path().join("test.mp4");
-        let output = ffmpeg_command()
-            .args(["-f", "lavfi", "-i", "color=c=red:s=32x32:d=1", "-y"])
-            .arg(&video_path)
-            .output()
-            .await
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
+        let video_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("crates/ffmpeg_utils/src/video_frame/fixtures/seek.mp4");
+        let (first, second) = tokio::join!(
+            extract_frame_at_timestamp(&video_path, 0.0),
+            extract_frame_at_timestamp(&video_path, 0.5)
         );
-        let data = extract_frame_at_timestamp(&video_path, 0.5).await.unwrap();
+        let data = second.unwrap();
+        assert_ne!(first.unwrap(), data);
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(data)
             .unwrap();
         assert!(bytes.starts_with(&[0xff, 0xd8, 0xff]));
         assert!(bytes.ends_with(&[0xff, 0xd9]));
+        assert_eq!(
+            bytes,
+            ffmpeg_utils::extract_jpeg(&video_path, 0.5, Some(2))
+                .await
+                .unwrap()
+        );
+        assert!(extract_frame_at_timestamp(&video_path, 20.0).await.is_err());
     }
 
     #[test]

@@ -11,6 +11,7 @@ mod audio;
 mod capabilities;
 mod command;
 mod metadata;
+mod video_frame;
 
 pub use audio::{
     decode_audio, decode_audio_range, encode_flac_preview, encode_mp3, encode_opus_sample,
@@ -23,3 +24,4 @@ pub use metadata::{
     extract_video_metadata, extract_video_metadata_with_init, probe_media, AudioStreamMetadata,
     MediaProbe, VideoMetadata,
 };
+pub use video_frame::{extract_jpeg, write_jpeg};

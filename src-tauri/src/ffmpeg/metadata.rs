@@ -1,9 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use super::runner::FfmpegJob;
 use ffmpeg_utils::extract_video_metadata;
-#[cfg(test)]
-use ffmpeg_utils::ffmpeg_command;
 
 /// Pick a random point in the video's middle 80% to avoid intros and outros.
 pub fn get_random_thumbnail_timestamp(duration: f64) -> f64 {
@@ -35,33 +32,13 @@ pub async fn extract_frame(
     timestamp: f64,
     target: &Path,
 ) -> Result<(), String> {
-    let thumbnail_full_path = target.to_path_buf();
-    FfmpegJob::new()
-        .args([
-            "-ss".to_string(),
-            timestamp.to_string(),
-            "-i".to_string(),
-            video_full_path.to_string_lossy().into_owned(),
-            "-vframes".to_string(),
-            "1".to_string(),
-            "-y".to_string(),
-        ])
-        .output(thumbnail_full_path.clone())
-        .context("生成缩略图")
-        .run_without_reporter()
+    ffmpeg_utils::write_jpeg(video_full_path, timestamp, None, target).await?;
+    let metadata = tokio::fs::metadata(target)
         .await
-        .map_err(|error| format!("ffmpeg生成缩略图失败: {error}"))?;
-
-    // FFmpeg may exit successfully after seeking past EOF without writing a frame.
-    let metadata = tokio::fs::metadata(&thumbnail_full_path)
-        .await
-        .map_err(|e| format!("缩略图文件未生成: {} ({e})", thumbnail_full_path.display()))?;
-    if !metadata.is_file() || metadata.len() == 0 {
-        return Err(format!("缩略图文件为空: {}", thumbnail_full_path.display()));
-    }
+        .map_err(|error| format!("读取缩略图失败: {error}"))?;
     log::info!(
         "生成缩略图完成: {} (文件大小: {} bytes)",
-        thumbnail_full_path.display(),
+        target.display(),
         metadata.len()
     );
     Ok(())
@@ -132,34 +109,27 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore = "requires FFmpeg with libx264"]
     async fn thumbnail_recovers_from_a_seek_past_eof_and_reports_missing_frames() {
         let directory = tempfile::tempdir().unwrap();
         let video = directory.path().join("short.mp4");
-        let output = ffmpeg_command()
-            .args([
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-f",
-                "lavfi",
-                "-i",
-                "color=c=red:s=64x64:r=25:d=0.5",
-                "-c:v",
-                "libx264",
-                "-y",
-            ])
-            .arg(&video)
-            .output()
-            .await
-            .unwrap();
-        assert!(output.status.success());
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("crates/ffmpeg_utils/src/video_frame/fixtures/seek.mp4"),
+            &video,
+        )
+        .unwrap();
 
         let missing_frame = directory.path().join("missing-frame.jpg");
         assert!(extract_frame(&video, 60.0, &missing_frame).await.is_err());
 
         let thumbnail = generate_thumbnail(&video, 60.0).await.unwrap();
-        assert!(std::fs::metadata(thumbnail).unwrap().len() > 0);
+        assert_eq!(
+            std::fs::read(&thumbnail).unwrap(),
+            ffmpeg_utils::extract_jpeg(&video, 0.0, None).await.unwrap()
+        );
+        let retained = std::fs::read(&thumbnail).unwrap();
+        assert!(extract_frame(&video, 60.0, &thumbnail).await.is_err());
+        assert_eq!(std::fs::read(&thumbnail).unwrap(), retained);
 
         // Neither the random position nor the first frame can read a missing video.
         assert!(

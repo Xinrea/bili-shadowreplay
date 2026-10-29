@@ -21,6 +21,7 @@ use async_ffmpeg_sidecar::{
     event::FfmpegEvent,
     log_parser::{parse_time_str, FfmpegLogParser},
 };
+#[cfg(test)]
 use async_trait::async_trait;
 use thiserror::Error;
 use tokio::{
@@ -256,6 +257,7 @@ impl FfmpegJob {
     ///
     /// This is also the convenient alternative to `run(None::<&Reporter>)`
     /// when the reporter type is not otherwise available at the call site.
+    #[cfg(test)]
     pub async fn run_without_reporter(&self) -> Result<JobOutput, FfmpegError> {
         self.run_with_command(ffmpeg_command(), None::<&NoopReporter>)
             .await
@@ -682,8 +684,10 @@ impl Drop for TempArtifact {
 /// A private reporter used only by `run_without_reporter` to keep the runner's
 /// implementation generic without requiring a trait object.
 #[derive(Clone, Copy)]
+#[cfg(test)]
 struct NoopReporter;
 
+#[cfg(test)]
 #[async_trait]
 impl ProgressReporterTrait for NoopReporter {
     async fn update(&self, _content: &str) {}

@@ -125,6 +125,13 @@ LAME delay/padding. The tests distinguish explicit first-track imports from
 automatic export selection and exercise planar audio across input format changes.
 Application import/export and WAV chunk tests also execute without a CLI.
 
+JPEG tests use a small checked-in H.264 B-frame clip and generated PPM images.
+Both quality modes, accurate seeking, display matrices, color range, SAR and
+automatic video selection are compared byte-for-byte with the matching CLI.
+On FFmpeg 6, the single-image zero-position oracle omits the broken `-ss 0`;
+video seek comparisons retain the original command. Native tests also cover
+concurrent extraction, atomic publication, EOF fallback and interrupting HTTP I/O.
+
 To smoke-test Douyu against a **currently live** numeric room using the
 production `DouyuRecorder` loop for five minutes (requires `ffmpeg` on `PATH`):
 

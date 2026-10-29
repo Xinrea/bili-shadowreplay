@@ -14,6 +14,7 @@
     Range,
   } from "../interface";
   import { keepEventSubscription } from "../event-subscription";
+  import { PLAYBACK_RATES } from "../playback-rates";
   import { createFloatingOverlay, observeResize } from "../floating-overlay";
   import { createDanmakuFeed, FEED_TICK_MS } from "../danmaku-feed";
   import {
@@ -82,6 +83,7 @@
     danmu_enabled?: boolean;
     local_offset?: number;
     volume?: number;
+    playback_rate?: number;
     is_playing?: boolean;
     playback_time?: number;
     duration?: number;
@@ -105,6 +107,7 @@
     danmu_enabled = $bindable(true),
     local_offset = $bindable(0),
     volume = $bindable(1),
+    playback_rate = $bindable(1),
     is_playing = $bindable(false),
     playback_time = $bindable(0),
     duration = $bindable(0),
@@ -141,6 +144,11 @@
     if (!video) return;
     volume = Math.min(1, Math.max(0, nextVolume));
     video.volume = volume;
+  }
+  export function setPlaybackRate(rate: number) {
+    if (!video || !PLAYBACK_RATES.some((preset) => preset === rate)) return;
+    video.playbackRate = rate;
+    playback_rate = video.playbackRate;
   }
   export function toggleDanmu() {
     danmu_enabled = !danmu_enabled;
@@ -993,7 +1001,7 @@ ${mediaPlaylistUrl}`;
     SettingMenu.appendChild(divider);
 
     // Add playback rate options
-    const rates = [0.5, 1, 1.5, 2, 5];
+    const rates = PLAYBACK_RATES;
     rates.forEach((rate) => {
       const rateButton = document.createElement("button");
       rateButton.innerText = `${rate}x`;
@@ -1012,7 +1020,7 @@ ${mediaPlaylistUrl}`;
       }
 
       rateButton.addEventListener("click", () => {
-        video.playbackRate = rate;
+        setPlaybackRate(rate);
         // Update active state
         rates.forEach((r) => {
           const btn = SettingMenu.querySelector(
@@ -1124,7 +1132,8 @@ ${mediaPlaylistUrl}`;
       if (
         target.tagName.toLowerCase() === "input" ||
         target.tagName.toLowerCase() === "textarea" ||
-        target.tagName.toLowerCase() === "select"
+        target.tagName.toLowerCase() === "select" ||
+        target.closest("button")
       ) {
         return;
       }
@@ -1649,6 +1658,7 @@ ${mediaPlaylistUrl}`;
       disablepictureinpicture
       disableRemotePlayback
       playsinline
+      onratechange={(event) => (playback_rate = event.currentTarget.playbackRate)}
     ></video>
   </div>
 </section>

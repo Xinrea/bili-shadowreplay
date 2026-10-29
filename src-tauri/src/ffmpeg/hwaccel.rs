@@ -1,7 +1,6 @@
-use std::{collections::HashSet, num::NonZeroU32, path::PathBuf, process::Stdio, sync::OnceLock};
+use std::{num::NonZeroU32, path::PathBuf, process::Stdio, sync::OnceLock};
 
 use ffmpeg_utils::ffmpeg_command;
-use tokio::io::AsyncReadExt;
 
 const TARGET_ENCODERS: [&str; 14] = [
     "h264_nvenc",
@@ -310,80 +309,16 @@ pub fn apply_x264_encoder_args(
 ///
 /// 返回值为可直接用于 `-c:v <value>` 的编码器名称列表。
 pub async fn list_supported_hwaccels() -> Result<Vec<String>, String> {
-    let mut command = ffmpeg_command();
-
-    let mut child = command
-        .arg("-hide_banner")
-        .arg("-encoders")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("无法启动 ffmpeg 进程: {e}"))?;
-
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "无法获取 ffmpeg 标准输出".to_string())?;
-    let mut stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "无法获取 ffmpeg 标准错误输出".to_string())?;
-
-    let (mut stdout_buf, mut stderr_buf) = (String::new(), String::new());
-
-    let stdout_future = stdout.read_to_string(&mut stdout_buf);
-    let stderr_future = stderr.read_to_string(&mut stderr_buf);
-
-    let (stdout_res, stderr_res, status) = tokio::join!(stdout_future, stderr_future, child.wait());
-
-    stdout_res.map_err(|e| format!("读取 ffmpeg 标准输出失败: {e}"))?;
-    stderr_res.map_err(|e| format!("读取 ffmpeg 标准错误输出失败: {e}"))?;
-
-    let status = status.map_err(|e| format!("等待 ffmpeg 进程退出失败: {e}"))?;
-
-    if !status.success() {
-        let err = if stderr_buf.trim().is_empty() {
-            stdout_buf.trim().to_string()
-        } else {
-            stderr_buf.trim().to_string()
-        };
-        log::error!("ffmpeg -encoders 运行失败: {err}");
-        return Err(format!("ffmpeg -encoders 运行失败: {err}"));
-    }
-
-    let mut hwaccels = Vec::new();
-
-    for line in stdout_buf.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.is_empty() || !trimmed.starts_with('V') {
-            continue;
-        }
-
-        let mut parts = trimmed.split_whitespace();
-        let flags = parts.next().unwrap_or_default();
-        if !flags.starts_with('V') {
-            continue;
-        }
-
-        if let Some(name) = parts.next() {
-            if TARGET_ENCODERS
-                .iter()
-                .any(|candidate| candidate.eq_ignore_ascii_case(name))
-            {
-                hwaccels.push(name.to_string());
-            }
-        }
-    }
-
-    // 去重并保持原有顺序（即第一次出现时保留）
-    let mut seen = HashSet::new();
-    hwaccels.retain(|value| seen.insert(value.clone()));
+    let hwaccels: Vec<_> = ffmpeg_utils::available_video_encoders()
+        .into_iter()
+        .filter(|name| TARGET_ENCODERS.iter().any(|candidate| candidate == name))
+        .collect();
 
     if hwaccels.is_empty() {
-        log::info!("No supported H.264 hardware encoders reported by FFmpeg");
+        log::info!("No H.264/HEVC hardware encoders registered in the FFmpeg SDK");
     } else {
         log::info!(
-            "FFmpeg reported supported H.264 hardware encoders: {}",
+            "FFmpeg SDK registered H.264/HEVC hardware encoders: {}",
             hwaccels.join(", ")
         );
     }

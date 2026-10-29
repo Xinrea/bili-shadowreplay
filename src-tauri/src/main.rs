@@ -1202,10 +1202,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 #[cfg(target_os = "macos")]
                 remove_legacy_macos_launch_agent();
 
-                // check ffmpeg status
+                // Identify the linked SDK; this does not launch a CLI process.
                 match ffmpeg::check_ffmpeg().await {
-                    Err(e) => log::error!("Failed to check ffmpeg version: {e}"),
-                    Ok(v) => log::info!("Checked ffmpeg version: {v}"),
+                    Err(e) => log::error!("Failed to check FFmpeg SDK version: {e}"),
+                    Ok(v) => log::info!("Linked FFmpeg SDK version: {v}"),
                 }
 
                 app.manage(state.clone());
@@ -1297,10 +1297,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = setup_server_state(args).await?;
     state.mcp_server.restore(state.clone()).await;
 
-    // check ffmpeg status
+    // Identify the linked SDK; this does not launch a CLI process.
     match ffmpeg::check_ffmpeg().await {
-        Err(e) => log::error!("Failed to check ffmpeg version: {e}"),
-        Ok(v) => log::info!("Checked ffmpeg version: {v}"),
+        Err(e) => log::error!("Failed to check FFmpeg SDK version: {e}"),
+        Ok(v) => log::info!("Linked FFmpeg SDK version: {v}"),
     }
 
     let recorder_manager = state.recorder_manager.clone();

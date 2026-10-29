@@ -13,6 +13,8 @@ PowerLive 上传音频使用 128 kbps VBR，保留源声道布局，采样率由
 
 Windows 和 macOS 安装包携带原生媒体处理所需的动态库。macOS 仍需按下文安装 FFmpeg CLI，以使用录制和转码功能；Linux 使用目标发行版的 FFmpeg 运行库，`.deb` 会声明对应依赖。
 
+启动日志中的版本和可编译编码器列表直接读取所链接的 FFmpeg SDK，与 `PATH` 上的可执行文件无关。编码器已注册并不代表对应硬件可用；设备实际编码能力仍需单独验证。
+
 ## MacOS
 
 在 MacOS 上安装 FFmpeg 非常简单，可以使用 Homebrew 来安装：

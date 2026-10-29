@@ -1,13 +1,9 @@
-use std::{
-    path::{Path, PathBuf},
-    process::Stdio,
-};
-
-use async_ffmpeg_sidecar::{event::FfmpegEvent, log_parser::FfmpegLogParser};
-use tokio::io::BufReader;
+use std::path::{Path, PathBuf};
 
 use super::runner::FfmpegJob;
-use ffmpeg_utils::{extract_video_metadata, ffmpeg_command};
+use ffmpeg_utils::extract_video_metadata;
+#[cfg(test)]
+use ffmpeg_utils::ffmpeg_command;
 
 /// Pick a random point in the video's middle 80% to avoid intros and outros.
 pub fn get_random_thumbnail_timestamp(duration: f64) -> f64 {
@@ -71,40 +67,9 @@ pub async fn extract_frame(
     Ok(())
 }
 
-/// Trying to run ffmpeg for version
+/// Identify the linked FFmpeg SDK without requiring a command-line executable.
 pub async fn check_ffmpeg() -> Result<String, String> {
-    let mut child = ffmpeg_command()
-        .arg("-version")
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            log::error!("Failed to spawn ffmpeg process: {e}");
-            e.to_string()
-        })?;
-
-    let stdout = child.stdout.take().ok_or_else(|| {
-        log::error!("Failed to take ffmpeg output");
-        "Failed to take ffmpeg output".to_string()
-    })?;
-    let reader = BufReader::new(stdout);
-    let mut parser = FfmpegLogParser::new(reader);
-
-    let mut version = None;
-    while let Ok(event) = parser.parse_next_event().await {
-        match event {
-            FfmpegEvent::ParsedVersion(v) => version = Some(v.version),
-            FfmpegEvent::LogEOF => break,
-            _ => {}
-        }
-    }
-
-    let _ = child.wait().await;
-
-    if let Some(version) = version {
-        Ok(version)
-    } else {
-        Err("Failed to parse version from output".into())
-    }
+    Ok(ffmpeg_utils::linked_ffmpeg_version())
 }
 
 /// Check if all videos have same encoding and resolution

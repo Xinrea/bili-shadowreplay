@@ -200,6 +200,55 @@ It requires one archive and roughly one minute of new HLS segments each minute,
 and removes the temporary recording when the test finishes. Replace `1667826`
 if it is offline.
 
+### Windows native media validation
+
+Use an x64 MSVC developer PowerShell and the pinned Gyan **FFmpeg 9.0.2
+shared SDK**. Run setup and Cargo in the same shell: `ffmpeg_setup.ps1` sets
+`FFMPEG_DIR` and the SDK DLL/optional CLI search path for that process. It locates
+`LIBCLANG_PATH` when LLVM is available; otherwise set it to LLVM's `bin` directory.
+The recorded run used Rust 1.90.0 and Node 22.16.0.
+The Skia preparation script prints its URL; explicitly set
+`SKIA_BINARIES_URL` to that value, preserving the `{key}` placeholder.
+
+From the repository root:
+
+```powershell
+& .\ffmpeg_setup.ps1
+rustup component add llvm-tools
+$skia = node scripts/prepare-windows-skia.mjs
+$env:SKIA_BINARIES_URL = ($skia | Where-Object { $_ -like 'SKIA_BINARIES_URL=*' }) -replace '^SKIA_BINARIES_URL=', ''
+cargo test --manifest-path src-tauri/Cargo.toml -p ffmpeg_utils --locked --lib
+cargo test --manifest-path src-tauri/Cargo.toml -p bili-shadowreplay --locked ffmpeg:: -- --include-ignored --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml -p recorder --locked
+
+# Targeted GOP check: both CLI and native plans must retain 301 frames and GOP <=120.
+cargo test --manifest-path src-tauri/Cargo.toml -p bili-shadowreplay --locked encoded_keyframe_gaps_respect_the_120_frame_gop -- --include-ignored
+```
+
+The GOP test covers both priorities for software encoders and available
+NVENC/VideoToolbox encoders. Both paths require a first keyframe at zero, gaps
+and a final tail of at most 120 frames, and at least one exact 120-frame gap.
+Its 320x240 fixture matches the native probe's supported geometry.
+The validated Windows host produced keyframes `[0, 120, 240]` for H.264/HEVC
+NVENC at both priorities, in both CLI and native outputs.
+
+On **2026-10-30**, Windows validation with this SDK passed 132 core tests,
+184 application media tests built with GUI features (including opt-in cases),
+and 204 recorder unit plus 18 integration tests; five live-network recorder
+tests remained ignored. A separate directory containing the core test executable
+and matching DLLs also passed with SDK variables and SDK/CLI paths removed;
+optional CLI oracles skip when the executables are absent. This deployment
+check requires DLLs beside the executable, not just in a repository directory.
+
+A debug NSIS package was built and unpacked with 7-Zip: it contained no
+`ffmpeg.exe`, `ffprobe.exe` or `ffplay.exe`, and all 11 runtime DLL hashes matched
+their build/SDK sources. The compiled GUI-feature test executable also passed
+23 media smoke cases using only these unpacked DLLs and a `PATH` containing only
+Windows system directories, covering subtitles, overlays, clips, concat, progress and project
+render/cancellation. This verifies a **debug package**, not a signed release
+or an installer/interactive GUI end-to-end run; it does not claim that the full
+business GUI was launched.
+
 ### Running All Tests (including integration)
 
 ```bash

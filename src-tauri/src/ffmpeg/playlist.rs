@@ -528,6 +528,94 @@ seg-3.mp4
         playlist
     }
 
+    async fn video_timeline(path: &Path) -> (serde_json::Value, Vec<serde_json::Value>) {
+        let output = ffmpeg_utils::ffprobe_command()
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_streams",
+                "-show_frames",
+                "-show_entries",
+                "stream=codec_name,width,height,pix_fmt,has_b_frames,time_base,r_frame_rate,avg_frame_rate,start_pts,start_time,duration_ts,duration,nb_frames:frame=pts,best_effort_timestamp,duration,pkt_duration",
+                "-of",
+                "json",
+            ])
+            .arg(path)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let streams = value["streams"].as_array().unwrap();
+        assert_eq!(streams.len(), 1);
+        let frames = value["frames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|frame| {
+                serde_json::json!({
+                    "pts": frame["pts"],
+                    "best_effort_timestamp": frame["best_effort_timestamp"],
+                    "duration": frame["duration"],
+                    "pkt_duration": frame["pkt_duration"],
+                })
+            })
+            .collect();
+        (streams[0].clone(), frames)
+    }
+
+    async fn join_cli_reference(clips: &[std::path::PathBuf], output: &Path) {
+        let encoder = super::super::hwaccel::get_x264_encoder().await;
+        let mut command = ffmpeg_utils::ffmpeg_command();
+        let mut graph = "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[outv][outa]".to_string();
+        let video_label = if super::super::hwaccel::is_vaapi_encoder(encoder) {
+            let options =
+                super::super::hwaccel::native_video_options(encoder, None, None, None).unwrap();
+            let device = options.hardware_device.unwrap().device.unwrap();
+            command.args(["-vaapi_device", &device]);
+            graph.push_str(&format!(
+                ";[outv]{}[outv_hw]",
+                super::super::hwaccel::vaapi_filter_suffix()
+            ));
+            "[outv_hw]"
+        } else {
+            "[outv]"
+        };
+        for clip in clips {
+            command.arg("-i").arg(clip);
+        }
+        let result = command
+            .args([
+                "-filter_complex",
+                &graph,
+                "-map",
+                video_label,
+                "-map",
+                "[outa]",
+            ])
+            .args(["-c:v", encoder])
+            .args(super::super::hwaccel::quality_args_with_bitrate(
+                encoder, None,
+            ))
+            .args(["-c:a", "aac", "-y"])
+            .arg(output)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "CLI reference failed for {encoder}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
     #[tokio::test]
     async fn joined_ranges_report_the_recording_the_output_covers() {
         let dir = tempfile::tempdir().unwrap();
@@ -555,13 +643,42 @@ seg-3.mp4
         .await
         .unwrap();
 
-        // Danmaku are anchored on these, so they must add up to the output.
+        // Keep the returned recording boundaries tied to each measured cut.
+        // Copied MP4 edit lists/B-frame tails make those track durations
+        // non-additive; the old CLI join has the same property.
+        let mut reference_cuts = Vec::new();
+        for (index, (covered, asked)) in covered.iter().zip(&ranges).enumerate() {
+            let cut = dir.path().join(format!("reference-cut-{index}.mp4"));
+            clip_from_playlist(
+                None::<&crate::progress::progress_reporter::ProgressReporter>,
+                &playlist,
+                &cut,
+                Some(asked.clone()),
+            )
+            .await
+            .unwrap();
+            let metadata = ffmpeg_utils::extract_video_metadata(&cut).await.unwrap();
+            assert_eq!(covered.end, asked.start + metadata.duration);
+            reference_cuts.push(cut);
+        }
+        let oracle = dir.path().join("cli-joined.mp4");
+        join_cli_reference(&reference_cuts, &oracle).await;
+        let (actual_stream, actual_frames) = video_timeline(&output).await;
+        let (expected_stream, expected_frames) = video_timeline(&oracle).await;
+        assert_eq!(actual_stream, expected_stream, "joined video stream");
+        assert_eq!(actual_frames.len(), expected_frames.len(), "joined frames");
+        for (index, (actual, expected)) in actual_frames.iter().zip(&expected_frames).enumerate() {
+            assert_eq!(actual, expected, "joined frame {index}");
+        }
         let joined = ffmpeg_utils::extract_video_metadata(&output)
             .await
             .unwrap()
             .duration;
-        let total: f64 = covered.iter().map(Range::duration).sum();
-        assert!((joined - total).abs() < 0.05, "{joined} {total}");
+        let expected = ffmpeg_utils::extract_video_metadata(&oracle)
+            .await
+            .unwrap()
+            .duration;
+        assert_eq!(joined, expected, "joined metadata duration");
         for (covered, asked) in covered.iter().zip(&ranges) {
             assert_eq!(covered.start, asked.start);
             assert!(covered.end >= asked.end - 0.05, "{covered:?} {asked:?}");

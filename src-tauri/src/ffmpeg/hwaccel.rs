@@ -616,10 +616,59 @@ mod tests {
         }
     }
 
+    async fn assert_encoded_keyframe_gaps(path: &std::path::Path, context: &str) {
+        let probed = ffmpeg_utils::ffprobe_command()
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "frame=key_frame",
+                "-of",
+                "json",
+            ])
+            .arg(path)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            probed.status.success(),
+            "{context}: {}",
+            String::from_utf8_lossy(&probed.stderr)
+        );
+        let value: serde_json::Value = serde_json::from_slice(&probed.stdout).unwrap();
+        let frames = value["frames"].as_array().unwrap();
+        assert_eq!(frames.len(), 301, "{context}");
+        let keyframes: Vec<_> = frames
+            .iter()
+            .enumerate()
+            .filter_map(|(index, frame)| (frame["key_frame"] == 1).then_some(index))
+            .collect();
+        assert_eq!(keyframes.first(), Some(&0), "{context}");
+        assert!(
+            keyframes.windows(2).all(|pair| pair[1] - pair[0] <= 120),
+            "{context}: {keyframes:?}"
+        );
+        assert!(
+            frames.len() - keyframes.last().unwrap() <= 120,
+            "{context}: {keyframes:?}"
+        );
+        assert!(
+            keyframes.windows(2).any(|pair| pair[1] - pair[0] == 120),
+            "{context}: {keyframes:?}"
+        );
+        eprintln!("GOP 120 verified: {context}, keyframes={keyframes:?}");
+    }
+
     #[tokio::test]
     #[ignore = "requires FFmpeg/ffprobe with libx264 and libx265; also tests available NVENC/VideoToolbox"]
     async fn encoded_keyframe_gaps_respect_the_120_frame_gop() {
         use crate::project::{EncodingPriority, RenderSettings, VideoCodec};
+        use ffmpeg_utils::{
+            ColorSource, FilterGraphPlan, GraphInput, GraphOutput, MediaInput, MediaKind,
+            MediaOutput, MediaPlan, StreamMode, StreamRoute, StreamSelector, StreamSource,
+        };
         let directory = tempfile::tempdir().unwrap();
         for encoder in [
             "libx264",
@@ -647,7 +696,7 @@ mod tests {
                     eprintln!("Skipping unavailable hardware encoder: {encoder} {priority:?}");
                     continue;
                 }
-                let path = directory.path().join("gop.mp4");
+                let path = directory.path().join("gop-cli.mp4");
                 let encoded = ffmpeg_utils::ffmpeg_command()
                     .args([
                         "-v",
@@ -655,7 +704,9 @@ mod tests {
                         "-f",
                         "lavfi",
                         "-i",
-                        "color=c=0x204060:s=128x96:r=60",
+                        // Match the native probe's supported 320x240 geometry.
+                        // Some NVENC devices reject the old 128x96 fixture.
+                        "color=c=0x204060:s=320x240:r=60",
                     ])
                     .args(["-vf", super::output_format_filter(encoder), "-c:v", encoder])
                     .args(super::project_quality_args(encoder, &settings))
@@ -669,48 +720,57 @@ mod tests {
                     "{encoder}: {}",
                     String::from_utf8_lossy(&encoded.stderr)
                 );
-                let probed = ffmpeg_utils::ffprobe_command()
-                    .args([
-                        "-v",
-                        "error",
-                        "-select_streams",
-                        "v:0",
-                        "-show_entries",
-                        "frame=key_frame",
-                        "-of",
-                        "json",
-                    ])
-                    .arg(&path)
-                    .output()
+                assert_encoded_keyframe_gaps(&path, &format!("{encoder} {priority:?} CLI")).await;
+
+                let native_path = directory.path().join("gop-native.mp4");
+                let mut input = MediaInput::generated_video(ColorSource {
+                    color: "0x204060".into(),
+                    width: 320,
+                    height: 240,
+                    frame_rate_num: 60,
+                    frame_rate_den: 1,
+                });
+                input.duration = Some(301.0 / 60.0);
+                let options = super::native_video_options(
+                    encoder,
+                    Some(super::output_format_filter(encoder)),
+                    None,
+                    Some(&settings),
+                )
+                .unwrap();
+                let plan = MediaPlan {
+                    inputs: vec![input],
+                    outputs: vec![MediaOutput::file(&native_path)],
+                    routes: vec![StreamRoute {
+                        source: StreamSource::Filter { label: "v".into() },
+                        output: 0,
+                        required: true,
+                        mode: StreamMode::Video(options),
+                    }],
+                    filter_graph: Some(FilterGraphPlan {
+                        spec: "[0:v]null[v]".into(),
+                        inputs: vec![GraphInput {
+                            input: 0,
+                            selector: StreamSelector::FirstVideo,
+                            label: "0:v".into(),
+                            required: true,
+                        }],
+                        outputs: vec![GraphOutput {
+                            label: "v".into(),
+                            kind: MediaKind::Video,
+                        }],
+                    }),
+                    ..Default::default()
+                };
+                let result = ffmpeg_utils::execute_media_plan(plan, None)
                     .await
-                    .unwrap();
-                assert!(
-                    probed.status.success(),
-                    "{}",
-                    String::from_utf8_lossy(&probed.stderr)
-                );
-                let value: serde_json::Value = serde_json::from_slice(&probed.stdout).unwrap();
-                let frames = value["frames"].as_array().unwrap();
-                assert_eq!(frames.len(), 301, "{encoder}");
-                let keyframes: Vec<_> = frames
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, frame)| (frame["key_frame"] == 1).then_some(index))
-                    .collect();
-                assert_eq!(keyframes.first(), Some(&0), "{encoder}");
-                assert!(
-                    keyframes.windows(2).all(|pair| pair[1] - pair[0] <= 120),
-                    "{encoder}: {keyframes:?}"
-                );
-                assert!(
-                    frames.len() - keyframes.last().unwrap() <= 120,
-                    "{encoder}: {keyframes:?}"
-                );
-                assert!(
-                    keyframes.windows(2).any(|pair| pair[1] - pair[0] == 120),
-                    "{encoder}: {keyframes:?}"
-                );
-                eprintln!("GOP 120 verified: {encoder} {priority:?}, keyframes={keyframes:?}");
+                    .unwrap_or_else(|error| panic!("{encoder} {priority:?} native: {error}"));
+                assert_eq!(result.video_frames, 301, "{encoder} {priority:?} native");
+                assert_encoded_keyframe_gaps(
+                    &native_path,
+                    &format!("{encoder} {priority:?} native"),
+                )
+                .await;
             }
         }
     }

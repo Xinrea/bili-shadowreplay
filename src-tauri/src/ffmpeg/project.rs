@@ -3412,6 +3412,58 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires FFmpeg with libx264 and native system fonts"]
     async fn native_generated_subtitles_render_across_segments() {
+        // Shrinking YUV directly to one RGB pixel is not an arithmetic mean:
+        // on Windows even a pure black frame becomes [2, 0, 2]. Keep this
+        // measurement local; other area_color users retain their existing path.
+        async fn cropped_rgb(mut command: tokio::process::Command) -> Vec<u8> {
+            let result = command
+                .args(["-frames:v", "1", "-vf", "crop=1120:280:400:400"])
+                .args(["-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert_eq!(result.stdout.len(), 1120 * 280 * 3);
+            result.stdout
+        }
+
+        async fn mean_color(file: &Path, seconds: f64) -> [u8; 3] {
+            let mut command = ffmpeg_command();
+            command
+                .args(["-v", "error", "-nostdin", "-ss", &seconds.to_string(), "-i"])
+                .arg(file);
+            let pixels = cropped_rgb(command).await;
+            let mut sums = [0u64; 3];
+            for pixel in pixels.chunks_exact(3) {
+                for (sum, value) in sums.iter_mut().zip(pixel) {
+                    *sum += u64::from(*value);
+                }
+            }
+            let count = (pixels.len() / 3) as u64;
+            sums.map(|sum| (sum / count) as u8)
+        }
+
+        // Assert the measurement itself has no black-field colour offset,
+        // independently of subtitles, native composition and video encoding.
+        let mut black = ffmpeg_command();
+        black.args([
+            "-v",
+            "error",
+            "-nostdin",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=black:s=1920x1080:r=30:d=1",
+        ]);
+        assert!(
+            cropped_rgb(black).await.iter().all(|value| *value == 0),
+            "pure black control must decode to zero in every RGB channel"
+        );
+
         let directory = tempfile::tempdir().unwrap();
         let output = directory.path().join("native.mp4");
         let cache = directory.path().join("segments");
@@ -3446,11 +3498,11 @@ mod tests {
         assert_eq!(stats.reused, 0);
         // The cue crosses the cut: project timestamps must not restart there.
         for time in [0.3, 0.6] {
-            let color = area_color(&output, time, [400, 400, 1120, 280]).await;
+            let color = mean_color(&output, time).await;
             assert!(color[0] > 3, "missing native text at {time}: {color:?}");
         }
         for time in [0.0, 0.9] {
-            let color = area_color(&output, time, [400, 400, 1120, 280]).await;
+            let color = mean_color(&output, time).await;
             assert!(color[0] < 2, "text outside cue at {time}: {color:?}");
         }
         let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();

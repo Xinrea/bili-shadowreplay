@@ -17,10 +17,10 @@ test("macOS native FFmpeg dependencies relocate, survive repeated bundling and p
     const source = path.join(directory, "probe.c");
     const binary = path.join(directory, "bili-shadowreplay");
     const runtime = path.join(directory, "runtime");
-    fs.writeFileSync(source, "#include <stdio.h>\n#include <libavformat/avformat.h>\n#include <libswresample/swresample.h>\n#include <libavfilter/avfilter.h>\nint main(void) { printf(\"%u %u %u\\n\", avformat_version(), swresample_version(), avfilter_version()); return 0; }\n");
+    fs.writeFileSync(source, "#include <stdio.h>\n#include <libavcodec/avcodec.h>\n#include <libavformat/avformat.h>\n#include <libswresample/swresample.h>\n#include <libavfilter/avfilter.h>\nint main(void) { if (!avcodec_find_encoder_by_name(\"libopus\") || !av_guess_format(\"opus\", NULL, NULL)) { fputs(\"FFmpeg SDK requires libopus and the Opus muxer\\n\", stderr); return 1; } printf(\"%u %u %u\\n\", avformat_version(), swresample_version(), avfilter_version()); return 0; }\n");
     const include = run("pkg-config", ["--variable=includedir", "libavformat"]).trim();
     const lib = run("pkg-config", ["--variable=libdir", "libavformat"]).trim();
-    run("cc", [source, `-I${include}`, `-L${lib}`, "-lavformat", "-lswresample", "-lavfilter", "-mmacosx-version-min=15.0", "-Wl,-headerpad_max_install_names", "-o", binary]);
+    run("cc", [source, `-I${include}`, `-L${lib}`, "-lavformat", "-lavcodec", "-lswresample", "-lavfilter", "-mmacosx-version-min=15.0", "-Wl,-headerpad_max_install_names", "-o", binary]);
     const expected = run(binary, []);
     const minimum = run("sw_vers", ["-productVersion"]).trim();
     const original = fs.readFileSync(binary);

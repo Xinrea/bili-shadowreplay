@@ -1,6 +1,5 @@
-//! Native media probing, PCM decoding and FFmpeg CLI plumbing shared by the
-//! application and recorder. ffmpeg-next owns demuxing/decoding/resampling;
-//! encoding uses the command factory and its process cancellation defaults.
+//! Native media probing, audio decoding/encoding and FFmpeg CLI plumbing
+//! shared by the application and recorder.
 //!
 //! The recorder probes every downloaded HLS segment to notice a resolution
 //! change; the application uses the same description for finished recordings.
@@ -13,7 +12,8 @@ mod command;
 mod metadata;
 
 pub use audio::{
-    decode_audio, decode_audio_range, AudioDecodeOptions, AudioDecodeResult, AudioRange, AudioSink,
+    decode_audio, decode_audio_range, encode_opus_sample, AudioDecodeOptions, AudioDecodeResult,
+    AudioRange, AudioSink,
 };
 pub use command::{ffmpeg_command, ffmpeg_path, ffprobe_command, ffprobe_path, path_str};
 pub use metadata::{

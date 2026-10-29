@@ -17,6 +17,8 @@ use crate::metadata::{open_input, run_media};
 
 mod range;
 pub use range::{decode_audio_range, AudioRange};
+mod opus;
+pub use opus::encode_opus_sample;
 
 pub trait AudioSink: Send + 'static {
     fn write(&mut self, samples: &[i16]) -> Result<(), String>;
@@ -467,3 +469,6 @@ mod tests;
 
 #[cfg(test)]
 mod range_tests;
+
+#[cfg(test)]
+mod opus_tests;

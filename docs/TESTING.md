@@ -96,6 +96,13 @@ For PCM parity tests, put the CLI from the linked SDK on `PATH`. Different FFmpe
 releases can schedule the last audio frame differently; each native result is
 compared strictly with its matching CLI, without sample-count or PCM tolerances.
 
+Native material Opus tests verify the fixed 16 kHz mono / 64 kbps VBR profile,
+including floating-point input negotiation, short final frames, Ogg pre-skip and
+end granules, source timestamps, metadata and atomic output cleanup. Optional
+comparisons check encoded audio packets and timestamps against the matching CLI;
+Ogg stream serial numbers are random and are excluded from file comparisons.
+The linked SDK must provide the `libopus` encoder and Ogg/Opus muxer.
+
 To smoke-test Douyu against a **currently live** numeric room using the
 production `DouyuRecorder` loop for five minutes (requires `ffmpeg` on `PATH`):
 

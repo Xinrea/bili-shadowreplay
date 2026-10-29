@@ -73,6 +73,19 @@ pub fn vaapi_filter_suffix() -> &'static str {
     VAAPI_FILTER_SUFFIX
 }
 
+/// Convert the finished composition once for the selected encoder. Hardware
+/// encoders consume NV12; VAAPI also needs an upload. libx265 requires planar
+/// YUV, so retain yuv420p for software encoding rather than imposing NV12.
+pub fn output_format_filter(encoder: &str) -> &'static str {
+    if is_vaapi_encoder(encoder) {
+        vaapi_filter_suffix()
+    } else if TARGET_ENCODERS.contains(&encoder) {
+        "format=nv12"
+    } else {
+        "format=yuv420p"
+    }
+}
+
 /// 为 FFmpeg 命令追加 VAAPI 设备参数。
 fn apply_vaapi_device(command: &mut tokio::process::Command) {
     if let Some(device_path) = vaapi_device_path() {
@@ -552,6 +565,21 @@ mod tests {
         "h264_vaapi",
         "h264_v4l2m2m",
     ];
+
+    #[test]
+    fn composited_output_uses_nv12_only_for_hardware_encoders() {
+        for encoder in super::TARGET_ENCODERS {
+            let expected = if super::is_vaapi_encoder(encoder) {
+                "format=nv12,hwupload"
+            } else {
+                "format=nv12"
+            };
+            assert_eq!(super::output_format_filter(encoder), expected, "{encoder}");
+        }
+        for encoder in ["libx264", "libx265"] {
+            assert_eq!(super::output_format_filter(encoder), "format=yuv420p");
+        }
+    }
 
     #[test]
     fn quality_args_are_flag_value_pairs() {

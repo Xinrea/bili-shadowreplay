@@ -299,19 +299,17 @@ async fn prepare_images(danmus: &[DanmuEntry], directory: &Path) -> HashMap<Url,
         .await
 }
 
-fn overlay_graph(fps: f64, vaapi: bool) -> String {
+fn overlay_graph(fps: f64, encoder: &str) -> String {
     // Change FPS before compositing, not only at the encoder, so motion is
     // actually evaluated at 60+ FPS rather than duplicating already-drawn frames.
     let mut filter = format!(
-        "[0:v]{},fps={fps}[base];\n\
-         [base][1:v]overlay=shortest=1:format=auto:alpha=straight[composited];\n",
+        "[0:v]{},fps={fps},format=bgra[base];\n\
+         [base][1:v]overlay=shortest=1:format=rgb:alpha=premultiplied[composited];\n",
         hwaccel::H264_SCALE_PAD_FILTER,
     );
-    let format = if vaapi {
-        hwaccel::vaapi_filter_suffix()
-    } else {
-        "format=yuv420p"
-    };
+    // Keep the premultiplied colours in RGB until they have been composited;
+    // converting the transparent layer to subsampled YUV first damages edges.
+    let format = hwaccel::output_format_filter(encoder);
     filter.push_str(&format!("[composited]{format}[outv]\n"));
     filter
 }
@@ -488,7 +486,7 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
         .map_err(|error| format!("Failed to inspect source video: {error}"))?;
     let fps = danmu_output_fps(metadata.fps);
     let encoder = hwaccel::material_encoder(settings).await;
-    let graph = overlay_graph(fps, hwaccel::is_vaapi_encoder(encoder));
+    let graph = overlay_graph(fps, encoder);
     let spec = OverlaySpec {
         input: native_overlay::RenderInput {
             documents: vec![native_overlay::AssSource {
@@ -508,7 +506,7 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
         .current_dir(directory)
         .args(["-nostdin", "-i"])
         .arg(&input);
-    add_overlay_input(&mut command, &spec)?;
+    add_overlay_input(&mut command, &spec).await?;
     command
         .arg("-filter_complex")
         .arg(graph)
@@ -685,18 +683,21 @@ mod tests {
 
     #[test]
     fn text_only_and_vaapi_graphs_have_explicit_output_formats() {
-        let text = overlay_graph(60.0, false);
-        assert!(text.contains("fps=60[base]"));
-        assert!(text.contains("[base][1:v]overlay=shortest=1:format=auto:alpha=straight"));
+        let text = overlay_graph(60.0, "libx264");
+        assert!(text.contains("fps=60,format=bgra[base]"));
+        assert!(text.contains("[base][1:v]overlay=shortest=1:format=rgb:alpha=premultiplied"));
         assert!(!text.contains("ass="));
         assert!(
             !text.contains("setpts"),
             "do not rebase video without audio"
         );
         assert!(text.contains("format=yuv420p[outv]"));
-        let hardware = overlay_graph(120.0, true);
-        assert!(hardware.contains("fps=120[base]"));
+        let hardware = overlay_graph(120.0, "hevc_vaapi");
+        assert!(hardware.contains("fps=120,format=bgra[base]"));
         assert!(hardware.ends_with("format=nv12,hwupload[outv]\n"));
+        for encoder in ["h264_videotoolbox", "hevc_nvenc"] {
+            assert!(overlay_graph(60.0, encoder).ends_with("format=nv12[outv]\n"));
+        }
     }
 
     #[tokio::test]

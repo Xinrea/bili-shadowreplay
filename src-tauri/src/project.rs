@@ -795,7 +795,9 @@ impl Timeline {
     /// Identifies an export: a different hash means the output is stale.
     pub fn render_hash(&self, extra: &str) -> String {
         let mut hasher = Sha256::new();
-        hasher.update(b"project-render-v2\0");
+        // Invalidate complete upload renders as well as individual segments
+        // when switching to premultiplied native overlay composition.
+        hasher.update(b"project-render-v3\0");
         hasher.update(self.to_json().as_bytes());
         hasher.update([0]);
         hasher.update(extra.as_bytes());

@@ -12,6 +12,9 @@ Linux builds require Ubuntu 24.04+ (or equivalent system libraries) and source-b
 use native_overlay::{Renderer, RenderInput, RENDERER_VERSION};
 let mut renderer = Renderer::new(width, height, input, font_paths)?;
 // Allocate once for streaming/export; every successful call overwrites all bytes.
+let mut premultiplied_bgra = vec![0; width as usize * height as usize * 4];
+renderer.frame_premultiplied_bgra_into(time_seconds, &mut premultiplied_bgra)?;
+// Straight RGBA remains available for consumers that require it.
 let mut straight_rgba = vec![0; width as usize * height as usize * 4];
 renderer.frame_into(time_seconds, &mut straight_rgba)?;
 // Convenience API for callers that want a new Vec for each frame.
@@ -19,7 +22,7 @@ let allocated_rgba = renderer.frame(time_seconds)?;
 let preview_png = renderer.png(time_seconds)?;
 // Optional cumulative stage timings; disabled by default.
 renderer.set_profiling(true);
-renderer.frame_into(next_time_seconds, &mut straight_rgba)?;
+renderer.frame_premultiplied_bgra_into(next_time_seconds, &mut premultiplied_bgra)?;
 let stats = renderer.stats();
 ```
 
@@ -30,38 +33,42 @@ Renderer::new(width: u32, height: u32, input: RenderInput,
               font_paths: Vec<PathBuf>) -> Result<Renderer, String>
 Renderer::frame(&mut self, time: f64) -> Result<Vec<u8>, String>
 Renderer::frame_into(&mut self, time: f64, bytes: &mut [u8]) -> Result<(), String>
+Renderer::frame_premultiplied_bgra_into(&mut self, time: f64,
+                                       bytes: &mut [u8]) -> Result<(), String>
 Renderer::png(&mut self, time: f64) -> Result<Vec<u8>, String>
 Renderer::set_profiling(&mut self, enabled: bool)
 Renderer::stats(&self) -> RenderStats
 Renderer::missing_glyph_count(&self) -> usize
 ```
 
-Times are seconds and must be finite. `frame_into` requires exactly `width × height × 4` bytes; a different length is rejected before changing the destination, output surface, timeline, caches or statistics. `frame` allocates this buffer and delegates to `frame_into`. A reused buffer is cleared through composition even on empty frames, so no old pixels remain after events end or a seek. `png` uses the same compositor but returns encoded PNG bytes.
+Times are seconds and must be finite. Both `frame_into` and `frame_premultiplied_bgra_into` require exactly `width × height × 4` bytes; a different length is rejected before changing the destination, output surface, timeline, caches or statistics. `frame` allocates this buffer and delegates to `frame_into`. A reused buffer is cleared through composition even on empty frames, so no old pixels remain after events end or a seek. `png` uses the same compositor but returns encoded PNG bytes.
 
-`RENDERER_VERSION` is intended for persistent segment-cache keys; bump it when rendering semantics/assets change. The additional `missing_glyph_count()` diagnostic reports unresolved glyphs encountered on cache misses (re-rasterization may count them again).
+`frame`/`frame_into` return straight (unpremultiplied) **R, G, B, A** bytes. `frame_premultiplied_bgra_into` returns premultiplied **B, G, R, A** bytes directly from Skia, with no straight-alpha intermediate or CPU repremultiplication pass. Both formats are tightly packed row-major with no row padding, and their byte order is explicit on every platform (not native-endian packed integers). The output surface and cached sprites remain Skia native N32/Premul: native storage can be RGBA or BGRA, so BGRA readback is a copy or channel swizzle, without unpremultiplication. The BGRA API shares composition, caches, validation and profiling with the RGBA API. Consumers must configure the matching pixel format **and premultiplied alpha semantics**; BGRA alone does not specify alpha interpretation.
+
+`RENDERER_VERSION` is intended for persistent segment-cache keys; bump it when rendering semantics/assets change. Adding the opt-in BGRA/Premul readback does not change existing straight RGBA or PNG output, so this addition leaves `RENDERER_VERSION` unchanged. Consumers switching export format/alpha interpretation must invalidate their export cache (include the output contract or bump their export-pipeline version); existing PNG preview caches remain valid. The additional `missing_glyph_count()` diagnostic reports unresolved glyphs encountered on cache misses (re-rasterization may count them again).
 
 ### Metrics
 
-`stats()` returns a cumulative snapshot, not a live handle. `set_profiling` changes timing collection for subsequent RGBA calls without resetting any totals; timings are disabled by default and there is no per-frame logging.
+`stats()` returns a cumulative snapshot, not a live handle. `set_profiling` changes timing collection for subsequent raw RGBA/BGRA calls without resetting any totals; timings are disabled by default and there is no per-frame logging.
 
 | Field | Meaning |
 | --- | --- |
-| `frames` | Successfully completed RGBA frames from either `frame` or `frame_into`, including empty frames, whether profiling is enabled or not. PNG calls and failed RGBA calls do not increment it. |
+| `frames` | Successfully completed raw frames from `frame`, `frame_into` or `frame_premultiplied_bgra_into`, including empty frames, whether profiling is enabled or not. PNG calls and failed raw calls do not increment it. |
 | `text_layout` | `Duration` spent constructing and laying out foreground/mask paragraphs on text cache misses while profiling is enabled. |
 | `text_raster` | `Duration` spent rasterizing text and its outline/shadow/background effects on text cache misses while profiling is enabled. |
 | `image_prepare` | `Duration` spent reading, decoding and rasterizing image assets on image cache misses while profiling is enabled. |
 | `composition` | `Duration` of composition excluding the nested text-layout, text-raster and image-preparation timings, while profiling is enabled. Includes active-event scheduling and drawing cached sprites. |
-| `readback` | `Duration` spent copying the surface into straight RGBA bytes while profiling is enabled. |
+| `readback` | `Duration` spent reading the surface into the requested straight RGBA or premultiplied BGRA bytes while profiling is enabled. Includes any Skia pixel-format/alpha conversion needed by that format. |
 | `text_cache_hits`, `text_cache_misses` | Number of text sprite lookups satisfied by the LRU or requiring preparation, respectively. |
 | `image_cache_hits`, `image_cache_misses` | Number of image sprite lookups satisfied by the LRU or requiring preparation, respectively. Shared assets avoid repeated decode/rasterization while resident. |
 
-Cache counters are always collected, including during PNG calls; a miss counts an attempted preparation even if it fails. PNG calls never contribute stage timings or `frames`, even when profiling is enabled and their cache is cold. Timings are cumulative work, not end-to-end export latency: they exclude renderer construction, frame-buffer allocation, PNG encoding, downstream FFmpeg work and profiling-disabled calls. A failed profiled RGBA call may still contribute timings/cache accesses for work already attempted.
+Cache counters are always collected, including during PNG calls; a miss counts an attempted preparation even if it fails. PNG calls never contribute stage timings or `frames`, even when profiling is enabled and their cache is cold. Timings are cumulative work, not end-to-end export latency: they exclude renderer construction, frame-buffer allocation, PNG encoding, downstream FFmpeg work and profiling-disabled calls. A failed profiled raw call may still contribute timings/cache accesses for work already attempted.
 
 This crate is a member of the application workspace and uses `src-tauri/Cargo.lock`. Its font and Unicode data are embedded in the binary; desktop bundles and the container image also ship the corresponding license notices. Application-generated preview, project export and SRT burn-in use this renderer. Arbitrary ASS input and portable ASS file export retain their existing compatibility paths.
 
 ## Rendering contract
 
-- Events are active on `[start, end)`. Frames have exactly `width × height × 4` bytes, straight/unpremultiplied RGBA8888, no row padding. PNG and RGBA share the same compositor.
+- Events are active on `[start, end)`. Raw frames have exactly `width × height × 4` bytes, no row padding: straight/unpremultiplied RGBA8888 from `frame`/`frame_into`, premultiplied BGRA8888 from `frame_premultiplied_bgra_into`. PNG and both raw formats share the same compositor.
 - Image events use normalized 1920 × 1080 top-left positions/sizes. Decoded artwork preserves its aspect ratio, centered inside the reserved transparent footprint (contain, not stretch). ASS positions, margins and movement use each document's `PlayResX/Y` and scale to the output.
 - Text draws by ASS layer then document/read order. Images draw after text in stable start order. Subtitle collisions stack within the same layer/alignment (including rotated bounds, outlines and shadows); moving danmaku is not rescheduled. Excess overlapping cues can stack outside the frame rather than overlap.
 - All generated style fields are parsed. SecondaryColour is validated but unused because there is no karaoke; Encoding is a legacy codepage hint and input is already UTF-8. Supported overrides: `b/i/u/s` toggles, `c` color/reset, `fn/fs` font/size/reset (for the controlled SRT adapter), four-coordinate `move`. Generated literal backslash, escaped braces, word-joiner escaping and `\\N` newlines are supported. Unsupported sections, tags, effects and malformed values return contextual errors.
@@ -89,7 +96,7 @@ cargo clippy --locked --manifest-path src-tauri/crates/native-overlay/Cargo.toml
 cargo fmt --manifest-path src-tauri/crates/native-overlay/Cargo.toml --check
 ```
 
-Tests cover parsing, cache eviction/redecode pixel stability, active indexing/backwards seeks, layout/collision semantics, actual color emoji pixels, all Unicode 16 fully-qualified emoji shaping, PNG/raw parity, allocating/reused-buffer parity and invalid buffer rejection, alpha, nonfatal missing glyphs, image containment/movement, path-and-rounded-size sprite sharing with exact cache counters, and opt-in profiling with PNG excluded from timings/frame counts. Assets with pinned upstream URLs, SHA-256 hashes and licenses are listed in `assets/README.md`.
+Tests cover parsing, cache eviction/redecode pixel stability, active indexing/backwards seeks, layout/collision semantics, actual color emoji pixels, all Unicode 16 fully-qualified emoji shaping, PNG/raw parity, allocating/reused-buffer parity and invalid buffer rejection for both formats, explicit non-gray BGRA channel order with both RGBA/BGRA surface storage, zero/partial/full alpha and straight/premultiplied rounding, translucent text/outline/shadow/image pixels, nonfatal missing glyphs, image containment/movement, path-and-rounded-size sprite sharing with exact cache counters, and opt-in profiling with PNG excluded from timings/frame counts. Assets with pinned upstream URLs, SHA-256 hashes and licenses are listed in `assets/README.md`.
 
 ## Verified integration
 
@@ -105,4 +112,4 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features -
 cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --features headless ffmpeg:: -- --ignored --test-threads=2
 ```
 
-The last command deliberately runs FFmpeg-dependent tests normally marked ignored; it requires a working FFmpeg with the encoders/filters used by those tests. Failed/cancelled streaming jobs drop the child/stdin, signal the blocking raster thread and release the bounded channel; they do not write a movie-sized intermediate RGBA file.
+The last command deliberately runs FFmpeg-dependent tests normally marked ignored; it requires a working FFmpeg with the encoders/filters used by those tests. Production exports stream premultiplied BGRA, explicitly composite in RGB, then convert the result to NV12 for hardware encoding (yuv420p for software). Input `alpha_mode=premultiplied` metadata is declared when the installed FFmpeg supports it; older versions use the explicit overlay alpha setting. Failed/cancelled streaming jobs drop the child/stdin, signal the blocking raster thread and release the bounded channel; they do not write a movie-sized intermediate raw-video file.

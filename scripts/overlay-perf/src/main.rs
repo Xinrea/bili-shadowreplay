@@ -147,7 +147,6 @@ async fn stream(
     use overlay_stream::{add_overlay_input, run_overlay_command_profiled, OverlaySpec};
     let spec = OverlaySpec {
         input: scene(assets, name)?,
-        font_paths: vec![],
         width: WIDTH,
         height: HEIGHT,
         fps: FPS,
@@ -169,10 +168,10 @@ async fn stream(
     if encoder_profile {
         command.arg("-benchmark_all");
     }
-    add_overlay_input(&mut command, &spec)?;
+    add_overlay_input(&mut command, &spec).await?;
     command.args([
         "-filter_complex",
-        "[0:v][1:v]overlay=shortest=1:format=auto:alpha=straight,format=yuv420p[v]",
+        "[0:v]format=bgra[base];[base][1:v]overlay=shortest=1:format=rgb:alpha=premultiplied,format=yuv420p[v]",
         "-map",
         "[v]",
         "-an",

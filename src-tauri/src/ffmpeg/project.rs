@@ -70,8 +70,8 @@ const EPSILON: f64 = 1e-6;
 const RENDER_STAGE: &str = "导出切片";
 /// Part of every segment's key: change it with what a segment's graph draws,
 /// so that segments rendered before are not used again.
-/// 4: explicit codec, priority and bitrate replace the old quality modes.
-const RENDER_VERSION: u32 = 4;
+/// 5: native overlays use premultiplied BGRA/RGB composition and hardware NV12.
+const RENDER_VERSION: u32 = 5;
 
 pub struct RenderClip {
     /// The same however the timeline is edited around the clip.
@@ -816,8 +816,9 @@ impl NativeFonts {
 /// Put the streamed overlay on the same project clock as the joined clips.
 fn native_overlay_filter(video: &str, input: usize, start: f64) -> String {
     format!(
-        "[{input}:v]setpts=PTS+{start:.6}/TB[native];\n\
-         [{video}][native]overlay=x=0:y=0:eof_action=pass:repeatlast=0[native_overlaid];\n"
+        "[{video}]format=bgra[native_base];\n\
+         [{input}:v]setpts=PTS+{start:.6}/TB[native];\n\
+         [native_base][native]overlay=x=0:y=0:eof_action=pass:repeatlast=0:format=rgb:alpha=premultiplied[native_overlaid];\n"
     )
 }
 
@@ -1053,11 +1054,7 @@ impl Render<'_> {
             ));
             current = "native_overlaid".to_string();
         }
-        let format = if hwaccel::is_vaapi_encoder(self.encoder) {
-            hwaccel::vaapi_filter_suffix()
-        } else {
-            "format=yuv420p"
-        };
+        let format = hwaccel::output_format_filter(self.encoder);
         // Exactly as many frames as planned: `overlay` goes on as long as any
         // of its inputs does, and a file ending well before its clip has no
         // frames for the parts after its end. Then back to the segment's own
@@ -1115,7 +1112,7 @@ impl Render<'_> {
             }
         }
         if let Some(spec) = &native {
-            add_overlay_input(&mut command, spec)?;
+            add_overlay_input(&mut command, spec).await?;
         }
         command
             .arg(danmu::filter_complex_file_option().await)
@@ -2282,8 +2279,9 @@ mod tests {
         }
         assert_eq!(
             native_overlay_filter("subtitled", 5, spec.start),
-            "[5:v]setpts=PTS+2.000000/TB[native];\n\
-             [subtitled][native]overlay=x=0:y=0:eof_action=pass:repeatlast=0[native_overlaid];\n"
+            "[subtitled]format=bgra[native_base];\n\
+             [5:v]setpts=PTS+2.000000/TB[native];\n\
+             [native_base][native]overlay=x=0:y=0:eof_action=pass:repeatlast=0:format=rgb:alpha=premultiplied[native_overlaid];\n"
         );
     }
 

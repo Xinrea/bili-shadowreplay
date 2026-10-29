@@ -30,6 +30,23 @@ const MAX_FRAME_BYTES: usize = 128 * 1024 * 1024;
 const MAX_TEXT_RASTER_BYTES: usize = CACHE_BYTES / 8;
 const EMOJI_FAMILY: &str = "NativeOverlayColorEmoji";
 
+#[derive(Clone, Copy)]
+enum FrameFormat {
+    StraightRgba,
+    PremultipliedBgra,
+}
+
+impl FrameFormat {
+    fn readback(self) -> (ColorType, AlphaType, &'static str) {
+        match self {
+            Self::StraightRgba => (ColorType::RGBA8888, AlphaType::Unpremul, "straight RGBA"),
+            Self::PremultipliedBgra => {
+                (ColorType::BGRA8888, AlphaType::Premul, "premultiplied BGRA")
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Sprite {
     image: Image,
@@ -336,13 +353,13 @@ impl Renderer {
         self.missing_glyphs
     }
 
-    /// Enable stage timings for subsequent RGBA frames, without resetting stats.
+    /// Enable stage timings for subsequent raw frames, without resetting stats.
     /// Disabled by default; PNG rendering never contributes timings or frames.
     pub fn set_profiling(&mut self, enabled: bool) {
         self.profiling = enabled;
     }
 
-    /// Snapshot cumulative work; completed RGBA frames and cache accesses count
+    /// Snapshot cumulative work; completed RGBA/BGRA frames and cache accesses count
     /// even when timings are disabled. No per-frame logging is performed.
     pub fn stats(&self) -> RenderStats {
         self.stats.clone()
@@ -358,16 +375,39 @@ impl Renderer {
     /// Render into exactly width × height × 4 bytes of straight RGBA8888.
     /// Invalid lengths are rejected before composition or timeline/cache changes.
     pub fn frame_into(&mut self, time: f64, bytes: &mut [u8]) -> Result<(), String> {
+        self.frame_into_format(time, bytes, FrameFormat::StraightRgba)
+    }
+
+    /// Render into exactly width × height × 4 premultiplied BGRA8888 bytes.
+    /// Pixels are B, G, R, A bytes on every platform, tightly packed row-major.
+    /// Reads Skia's premultiplied surface directly, without unpremultiplication.
+    /// Invalid lengths are rejected before composition or timeline/cache changes.
+    pub fn frame_premultiplied_bgra_into(
+        &mut self,
+        time: f64,
+        bytes: &mut [u8],
+    ) -> Result<(), String> {
+        self.frame_into_format(time, bytes, FrameFormat::PremultipliedBgra)
+    }
+
+    fn frame_into_format(
+        &mut self,
+        time: f64,
+        bytes: &mut [u8],
+        format: FrameFormat,
+    ) -> Result<(), String> {
+        let (color_type, alpha_type, name) = format.readback();
         let expected = self.width as usize * self.height as usize * 4;
         if bytes.len() != expected {
             return Err(format!(
-                "RGBA buffer length {} does not match expected {expected}",
+                "{name} buffer length {} does not match expected {expected}",
                 bytes.len()
             ));
         }
         let profile = self.profiling;
         let started = profile.then(Instant::now);
-        let preparation = self.stats.text_layout + self.stats.text_raster + self.stats.image_prepare;
+        let preparation =
+            self.stats.text_layout + self.stats.text_raster + self.stats.image_prepare;
         let result = self.compose(time, profile);
         if let Some(started) = started {
             let nested = self.stats.text_layout + self.stats.text_raster + self.stats.image_prepare
@@ -378,8 +418,8 @@ impl Renderer {
         let started = profile.then(Instant::now);
         let info = ImageInfo::new(
             (self.width as i32, self.height as i32),
-            ColorType::RGBA8888,
-            AlphaType::Unpremul,
+            color_type,
+            alpha_type,
             None,
         );
         let read = self
@@ -389,7 +429,7 @@ impl Renderer {
             self.stats.readback += started.elapsed();
         }
         if !read {
-            return Err("Skia straight RGBA readback failed".into());
+            return Err(format!("Skia {name} readback failed"));
         }
         self.stats.frames += 1;
         Ok(())
@@ -783,6 +823,9 @@ fn raster_bytes(width: f32, height: f32, limit: usize) -> Result<(i32, i32, usiz
 
 fn surface(w: i32, h: i32, limit: usize) -> Result<Surface, String> {
     raster_bytes(w as f32, h as f32, limit)?;
+    // N32 is native RGBA or BGRA, always premultiplied here. Preserve this
+    // storage for existing drawing/PNG behavior; readback explicitly selects
+    // byte order. BGRA/Premul needs only a copy or swizzle, not unpremultiplication.
     let mut surface =
         surfaces::raster_n32_premul((w, h)).ok_or("Cannot allocate CPU Skia raster")?;
     surface.canvas().clear(Color::TRANSPARENT);

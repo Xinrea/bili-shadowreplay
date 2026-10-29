@@ -1,13 +1,16 @@
 # Native overlay CPU benchmark
 
 This harness measures the **real native renderer** before/after the image-cache and
-frame-reuse changes, and profiles the **current production RGBA-to-FFmpeg stream**.
+frame-reuse changes, and profiles the **current production premultiplied BGRA-to-FFmpeg stream**.
 It does not use a browser, GPU, hardware encoder, or a replacement renderer.
 
 ## Run
 
 Prerequisites: Python 3.10+, Rust/Cargo, Git history containing `c9b516a6` (the merged color-emoji implementation), and
-already-installed `ffmpeg`/`ffprobe` with `libx264`. Use the native-overlay crate's
+already-installed `ffmpeg`/`ffprobe` with `libx264` and RGB premultiplied `overlay`
+support. Input `alpha_mode` metadata is used when the executable supports it;
+older FFmpeg uses the explicit overlay alpha setting without that option.
+Use the native-overlay crate's
 [platform build prerequisites](../../src-tauri/crates/native-overlay/README.md).
 In particular Linux requires its documented Skia source-build environment and
 system libraries; this script does not install them.
@@ -119,7 +122,7 @@ when debug logging is enabled (one summary per job, no per-frame logs):
 | `render.text_raster_ms` | Text sprite raster work; exercised by the mixed scene |
 | `render.image_prepare_ms` | Image file read, decode and scale on cache miss |
 | `render.composition_ms` | Exclusive composition, not nested preparation/layout/raster |
-| `render.readback_ms` | Skia surface to straight RGBA buffer readback |
+| `render.readback_ms` | Skia surface to premultiplied BGRA export-buffer readback |
 | `buffer_wait_ms` | Producer wait for a recycled free buffer |
 | `queue_send_wait_ms` | Producer send/backpressure wait |
 | `queue_receive_wait_ms` | Consumer wait for a rendered frame |
@@ -141,12 +144,22 @@ its threads and decoder/filter activity can overlap. Instrumented wall time is
 not included in the ordinary throughput medians.
 
 The optimized production stream reuses three frame buffers (about 23.7 MiB of
-pixel storage at 1080p). It is not zero-copy: the Skia readback and conversion from
-premultiplied surface alpha to straight RGBA are still necessary, as is writing
-those bytes into FFmpeg's pipe. Image cache reuse changes preparation/retention,
-not the output alpha contract.
+pixel storage at 1080p). Export reads premultiplied BGRA directly from Skia and
+declares `-pixel_format bgra -alpha_mode premultiplied` on the rawvideo input.
+Composition uses RGB `overlay=alpha=premultiplied` before conversion to the
+encoder's final format: NV12 for hardware (plus upload for VAAPI), or planar
+yuv420p for software. Input `alpha_mode` support is detected on the actual
+FFmpeg executable; older releases omit that flag but keep RGB premultiplied composition.
+It is not zero-copy: surface readback and pipe writes remain, but the export
+path no longer converts premultiplied pixels to straight RGBA.
+
+The serial core benchmark still measures the unchanged straight-RGBA API for
+historical byte-for-byte A/B comparison. The stream benchmark uses the new
+premultiplied export API; do not treat core timings as its readback timings.
 
 ## Recorded local result
+
+These historical measurements precede the premultiplied-BGRA export change.
 
 One macOS / Apple M2 Max run (FFmpeg 9.0.2, release builds, three repetitions,
 median) against baseline `553e1b30` produced (its renderer tree is identical to

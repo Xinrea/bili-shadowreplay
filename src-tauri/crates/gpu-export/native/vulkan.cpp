@@ -109,7 +109,8 @@ class VulkanCompositor {
         usage.usage = VK_IMAGE_USAGE_STORAGE_BIT; info.pNext = &usage;
         info.image = f->img[0]; info.viewType = VK_IMAGE_VIEW_TYPE_2D;
         info.format = rgba ? VK_FORMAT_R8G8B8A8_UNORM : (plane ? VK_FORMAT_R8G8_UNORM : VK_FORMAT_R8_UNORM);
-        info.subresourceRange = {rgba ? VK_IMAGE_ASPECT_COLOR_BIT : (plane ? VK_IMAGE_ASPECT_PLANE_1_BIT : VK_IMAGE_ASPECT_PLANE_0_BIT), 0, 1, 0, 1};
+        VkImageAspectFlags aspect = rgba ? VK_IMAGE_ASPECT_COLOR_BIT : (plane ? VK_IMAGE_ASPECT_PLANE_1_BIT : VK_IMAGE_ASPECT_PLANE_0_BIT);
+        info.subresourceRange = {aspect, 0, 1, 0, 1};
         VkImageView result; vkcheck(vk.CreateImageView(context->act_dev, &info, nullptr, &result), "create image plane view"); return result;
     }
 public:

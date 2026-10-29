@@ -1149,7 +1149,7 @@ fn init_sentry_from_env() -> Option<sentry::ClientInitGuard> {
 #[cfg(feature = "gui")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(any(
-        target_os = "macos",
+        all(target_os = "macos", target_arch = "aarch64"),
         all(
             feature = "vulkan-export",
             any(target_os = "linux", target_os = "windows")
@@ -1302,7 +1302,7 @@ async fn shutdown_signal() {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(any(
-        target_os = "macos",
+        all(target_os = "macos", target_arch = "aarch64"),
         all(
             feature = "vulkan-export",
             any(target_os = "linux", target_os = "windows")

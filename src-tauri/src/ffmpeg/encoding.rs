@@ -274,7 +274,7 @@ pub async fn available_encoders() -> Result<&'static Vec<AvailableVideoEncoder>,
         .get_or_try_init(|| async {
             let mut result = Vec::new();
             #[cfg(any(
-                target_os = "macos",
+                all(target_os = "macos", target_arch = "aarch64"),
                 all(
                     feature = "vulkan-export",
                     any(target_os = "linux", target_os = "windows")

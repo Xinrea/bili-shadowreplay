@@ -210,10 +210,12 @@ template<class Compositor> static void run(const ExportConfig& config) {
     AVDictionary* options = nullptr; av_dict_set(&options, "movflags", "+faststart", 0);
     int header = avformat_write_header(output.get(), &options); av_dict_free(&options); check(header, "write MP4 header");
     WorkQueue decodedQueue, encodedQueue;
-    std::mutex failureMutex; std::exception_ptr failure;
-    auto fail = [&](std::exception_ptr error) {
-        { std::lock_guard lock(failureMutex); if (!failure) failure = error; }
-        failed.store(true); decodedQueue.close(true); encodedQueue.close(true);
+    std::mutex failureMutex; std::string failure;
+    // The Rust boundary reports text; do not carry C++ runtime exception
+    // objects between threads (V8 embeds a separate C++ runtime on Windows).
+    auto fail = [&](const std::exception& error) {
+        { std::lock_guard lock(failureMutex); if (!failed.load()) { failure = error.what(); failed.store(true); } }
+        decodedQueue.close(true); encodedQueue.close(true);
     };
     int64_t decodedFrames = 0, decodedAudio = 0, encodedFrames = 0, encodedAudio = 0, packets = 0, count = 0;
     std::thread decodeThread, encodeThread;
@@ -262,7 +264,7 @@ template<class Compositor> static void run(const ExportConfig& config) {
                 if (!config.prepared) { normalization.push(nullptr); drainNormalized(); }
             }
             decodedQueue.close();
-        } catch (...) { fail(std::current_exception()); } } });
+        } catch (const std::exception& error) { fail(error); } } });
         encodeThread = std::thread([&] { BSR_POOL { try {
             auto encoded = packet();
             auto drain = [&] {
@@ -289,7 +291,7 @@ template<class Compositor> static void run(const ExportConfig& config) {
             require(!failed.load(), "encoder stopped"); checkInterrupted();
             check(avcodec_send_frame(enc.get(), nullptr), "flush encoder"); drain();
             check(av_write_trailer(output.get()), "write MP4 trailer"); check(avio_closep(&output->pb), "close MP4");
-        } catch (...) { fail(std::current_exception()); } } });
+        } catch (const std::exception& error) { fail(error); } } });
         std::deque<size_t> pending;
         auto finish = [&] { auto f = gpu.take(pending.front()); require(encodedQueue.push(Work{std::move(f), {}}), "encode queue stopped"); pending.pop_front(); };
         Work work;
@@ -305,9 +307,9 @@ template<class Compositor> static void run(const ExportConfig& config) {
         require(!failed.load(), "pipeline stopped"); checkInterrupted();
         while (!pending.empty()) finish();
         require(count > 0, "source contains no video"); encodedQueue.close();
-    } catch (...) { fail(std::current_exception()); }
+    } catch (const std::exception& error) { fail(error); }
     if (decodeThread.joinable()) decodeThread.join(); if (encodeThread.joinable()) encodeThread.join();
-    if (failure) std::rethrow_exception(failure);
+    require(!failed.load(), failure);
     require(decodedFrames == count && encodedFrames == count && packets == count, "pipeline frame counts disagree");
     require(decodedAudio == encodedAudio, "audio packet count mismatch");
     bsr_gpu_progress(count, count / config.fps, std::chrono::duration<double>(Clock::now() - started).count(), 1);

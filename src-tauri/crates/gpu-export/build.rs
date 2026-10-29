@@ -9,7 +9,7 @@ const LIBRARIES: [(&str, &str); 4] = [
 
 fn main() {
     let target = env::var("CARGO_CFG_TARGET_OS").unwrap();
-    let metal = target == "macos";
+    let metal = target == "macos" && env::var("CARGO_CFG_TARGET_ARCH").unwrap() == "aarch64";
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_VULKAN");
     if !metal
         && !(matches!(target.as_str(), "linux" | "windows")

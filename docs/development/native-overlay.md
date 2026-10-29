@@ -2,7 +2,10 @@
 
 原生弹幕渲染使用 `native-overlay` crate 和 Skia 0.82 的 `textlayout` 功能。Linux 使用源码构建 Skia，并链接发行版提供的系统库；macOS 保持上游预编译 Skia 的默认路径；Windows 使用经过处理的上游预编译 Skia（见下文）。Windows 和 macOS 都不需要设置下文的 Linux 专用变量。
 
-## macOS：Metal 弹幕压制
+## macOS arm64：Metal 弹幕压制
+
+Metal 导出仅在 Apple Silicon 构建中启用。Intel macOS 沿用 CPU 渲染和 FFmpeg 命令行导出，
+不编译原生 Metal worker，也不需要 FFmpeg 开发 SDK。
 
 `native-overlay` 的 `metal` feature 为现有渲染器添加 GPU 后端，预览、字幕和项目布局仍共享
 上游的同一套解析、字体与缓存。`gpu-export` 共用解码、归一化和封装流程，macOS 使用 Metal 绘制/叠加 → VideoToolbox
@@ -19,16 +22,16 @@ brew install ffmpeg pkg-config
 `BSR_FFMPEG_PREFIXES`（以 `:` 分隔的绝对安装前缀）才会构建多个 ABI。例如安装了 8 和 9 后：
 
 ```sh
-BSR_FFMPEG_PREFIXES="$(brew --prefix ffmpeg@8):$(brew --prefix ffmpeg@9)" \
+BSR_FFMPEG_PREFIXES="$(brew --prefix ffmpeg@8):$(brew --prefix ffmpeg)" \
   cargo build --manifest-path src-tauri/Cargo.toml
 ```
 
 运行时从标准 Homebrew 路径和构建时指定的前缀中加载一套完整、匹配已构建适配器的动态库，
 也可通过 `BSR_FFMPEG_LIBRARY_DIR` 指定库目录。没有匹配版本时导出会报错，不影响应用启动。
 同一个安装包支持 8/9 的前提是构建时包含了两个 ABI；默认单版本包需要其对应 ABI。
-macOS 发布 workflow 会安装 `ffmpeg@8`、`ffmpeg@9` 并设置上述变量，每个架构的发布包均包含两个 ABI。
+macOS arm64 发布 workflow 会安装 `ffmpeg@8`、`ffmpeg`（当前为 9）并设置上述变量，包含两个 ABI。
 本地未设置变量时仍只构建当前 `ffmpeg` 的一个 ABI。
-Intel 和 Apple Silicon 使用各自架构的构建机和运行库，原生组件部署目标为 macOS 13.3。
+Intel 发布任务跳过这一步；Metal 原生组件部署目标为 macOS 13.3。
 详细的流水线、时间轴、旋转处理和库加载说明见
 [`gpu-export/README.md`](../../src-tauri/crates/gpu-export/README.md)。
 
@@ -64,9 +67,11 @@ Linux 打包 Vulkan 版本时额外使用 `--config src-tauri/tauri.linux.vulkan
 详细要求、限制和构建命令见
 [`gpu-export/README.md`](../../src-tauri/crates/gpu-export/README.md)。
 
-## Windows：处理 Skia 内置 ICU 的符号冲突
+## Windows：隔离 Skia 与 V8 的私有符号
 
 上游 Windows 预编译包的 `skunicode_icu.lib` 与 V8（`deno_core` 依赖）都内置了 ICU 74。Skia 的 ICU 关闭了版本化重命名，而 `ulocimp_getParent` 等少数 ICU 内部符号在 V8 的 ICU 中同样没有版本后缀，两边定义同名符号。MSVC 链接时会报 `LNK2005 ulocimp_getParent already defined`，未报错的同名符号也可能让 Skia 的 ICU 调用到 V8 的实现。
+
+`skia.lib` 还包含 `_HAS_EXCEPTIONS=0` 时 STL 生成的 `std::terminate()`，其实现直接调用 `abort()`；V8 的 libc++ 定义同名函数并调用终止处理器。两者也需要独立命名，保留各自的行为，避免 `LNK2005 std::terminate already defined`。
 
 `scripts/prepare-windows-skia.mjs` 下载同版本、同目标、同 feature 的官方压缩包并校验 SHA-256，用 `llvm-objcopy --redefine-sym` 把这些共有符号在 Skia 库中的定义和引用统一加上 `bsr_skia_` 前缀，再重新打包，最后输出 `SKIA_BINARIES_URL`。构建前在 **Windows 构建终端**中运行：
 
@@ -83,6 +88,7 @@ yarn tauri dev
 - 若压缩包的 key 与当前构建不一致（例如修改了 Skia feature），skia-bindings 会改为源码构建未处理的 Skia，最终仍会链接失败。
 - 升级 `skia-safe`/`skia-bindings` 或 `deno_core`（V8）后，需重新比对两边 ICU 的共有符号，更新脚本中的 key、SHA-256 和符号列表；脚本会在锁定版本不符或符号不存在时报错。
 - Release workflow 会在 Windows 任务中自动执行这一步。
+- 更新准备脚本后，需重新运行并执行 `cargo clean --manifest-path src-tauri/Cargo.toml -p skia-bindings`，避免复用尚未隔离符号的 Skia 产物。
 
 ## Linux：Ubuntu 24.04 起
 

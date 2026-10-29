@@ -1,5 +1,5 @@
 #![cfg(any(
-    target_os = "macos",
+    all(target_os = "macos", target_arch = "aarch64"),
     all(feature = "vulkan", any(target_os = "linux", target_os = "windows"))
 ))]
 

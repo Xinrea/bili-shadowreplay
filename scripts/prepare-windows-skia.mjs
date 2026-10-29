@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Prepare a Windows Skia archive whose bundled ICU cannot clash with V8's.
+// Prepare a Windows Skia archive whose private symbols cannot clash with V8's.
 //
 // skia-bindings' prebuilt Windows `skunicode_icu.lib` and rusty_v8 both embed
 // ICU 74. Skia's copy is built without ICU's version renaming, and a few
@@ -96,19 +96,26 @@ async function main() {
   // Relative paths only: Git for Windows' GNU tar reads `D:\...` as a remote host.
   execFileSync("tar", ["-xzf", ARCHIVE], { cwd: work, stdio: "inherit" });
 
-  const lib = join(work, "skia-binaries", "skunicode_icu.lib");
-  const patched = `${lib}.patched`;
-  const missing = SHARED_ICU_SYMBOLS.filter((name) => !contains(readFileSync(lib), name));
-  if (missing.length) throw new Error(`skunicode_icu.lib no longer defines: ${missing.join(", ")}`);
-  execFileSync(objcopy, [
-    ...SHARED_ICU_SYMBOLS.map((name) => `--redefine-sym=${name}=${PREFIX}${name}`),
-    lib,
-    patched,
-  ], { stdio: "inherit" });
-  const result = readFileSync(patched);
-  const unrenamed = SHARED_ICU_SYMBOLS.filter((name) => contains(result, name) || !contains(result, PREFIX + name));
-  if (unrenamed.length) throw new Error(`llvm-objcopy did not rename: ${unrenamed.join(", ")}`);
-  renameSync(patched, lib);
+  for (const [library, symbols] of [
+    ["skunicode_icu.lib", SHARED_ICU_SYMBOLS],
+    // Skia's _HAS_EXCEPTIONS=0 STL defines terminate() as abort(), while
+    // V8's libc++ defines the same symbol with its own handler semantics.
+    ["skia.lib", ["?terminate@std@@YAXXZ"]],
+  ]) {
+    const lib = join(work, "skia-binaries", library);
+    const patched = `${lib}.patched`;
+    const missing = symbols.filter((name) => !contains(readFileSync(lib), name));
+    if (missing.length) throw new Error(`${library} no longer defines: ${missing.join(", ")}`);
+    execFileSync(objcopy, [
+      ...symbols.map((name) => `--redefine-sym=${name}=${PREFIX}${name}`),
+      lib,
+      patched,
+    ], { stdio: "inherit" });
+    const result = readFileSync(patched);
+    const unrenamed = symbols.filter((name) => contains(result, name) || !contains(result, PREFIX + name));
+    if (unrenamed.length) throw new Error(`llvm-objcopy did not rename: ${unrenamed.join(", ")}`);
+    renameSync(patched, lib);
+  }
 
   rmSync(join(work, ARCHIVE));
   execFileSync("tar", ["-czf", ARCHIVE, "skia-binaries"], { cwd: work, stdio: "inherit" });
@@ -120,7 +127,7 @@ async function main() {
   // finds no archive and falls back to building Skia, unpatched, from source.
   const url = `file://${outputDir.replaceAll("\\", "/")}/skia-binaries-{key}.tar.gz`;
   if (process.env.GITHUB_ENV) appendFileSync(process.env.GITHUB_ENV, `SKIA_BINARIES_URL=${url}\n`);
-  console.log(`Patched ${SHARED_ICU_SYMBOLS.length} ICU symbols in ${join(outputDir, ARCHIVE)}`);
+  console.log(`Isolated ICU and STL symbols in ${join(outputDir, ARCHIVE)}`);
   console.log(`SKIA_BINARIES_URL=${url}`);
 }
 

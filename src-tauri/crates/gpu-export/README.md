@@ -34,13 +34,16 @@ benchmark executable. Generated ASS/PNG assets live until the worker exits.
 
 ## Backends
 
-**macOS:** Skia Metal → Metal NV12 compositor → IOSurface-backed CVPixelBuffer →
+**Apple Silicon macOS:** Skia Metal → Metal NV12 compositor → IOSurface-backed CVPixelBuffer →
 VideoToolbox. Software-decoded video is uploaded once; composed frames are never
 read back to the CPU. Defaults remain HEVC, target 10 Mbps and speed priority;
 GOP is fixed at 240. HEVC uses two B frames; H.264 keeps them disabled because the
 supported FFmpeg 8 VideoToolbox implementation can emit invalid DTS with
 reordering. Hosts with at least 12 logical CPUs retain the existing single CPU
 activity thread during export. Native deployment target is macOS 13.3.
+
+Intel macOS retains the application's CPU renderer and FFmpeg command-line
+exports. It does not compile this native worker or need an FFmpeg development SDK.
 
 **Linux/Windows:** opt in with the application's `vulkan-export` Cargo feature.
 Skia Vulkan and the NV12 compute compositor share FFmpeg's Vulkan device and

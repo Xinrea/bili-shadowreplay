@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[[bin]]
+name = "overlay-perf"
+path = "src/main.rs"
+test = false
+bench = false
+
 # Keep the benchmark independent of Tauri, speech runtimes and app builds.
 [workspace]
 

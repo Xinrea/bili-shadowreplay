@@ -171,6 +171,14 @@ An empty-audio atrim/apad graph also checks missing-PTS continuation and termina
 filter-chain separators. The raw-frame reader has separate bounded-queue,
 buffer-ownership, cancellation, EOF/count and downstream-error tests.
 
+The project-render suite now executes the native segment and final-mix paths.
+Its 39 tests (including the opt-in cases) cover exact frame/sample boundaries,
+cross-segment audio, overlays, ASS/SRT, cache reuse, cancellation, scratch cleanup
+and retaining an earlier export after failure. Raw-overlay, SRT and danmaku
+application tests also run with libraries alone. FFmpeg 6/9 alpha oracles compare
+every BGRA byte over three base colors; the benchmark smoke verifies 360 frames
+at 1080p60 using exactly three reusable producer buffers.
+
 Native FLV-to-HLS tests use a six-second checked-in audiovisual fixture. They
 compare the playlist, segment durations and every copied packet with the CLI,
 including timestamps, and verify append behavior without replacing old segments.

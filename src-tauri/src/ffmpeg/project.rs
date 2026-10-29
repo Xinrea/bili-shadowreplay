@@ -1,12 +1,12 @@
 //! Render a project (切片) timeline into one video.
 //!
 //! The timeline is rendered in segments of up to a minute (see
-//! `project_plan`), each by its own FFmpeg run, a few at a time, into a video
+//! `project_plan`), each by its own native media job, a few at a time, into a video
 //! file and a WAV file of its sound. The videos are then joined without
 //! encoding them again, and the sound is encoded once for the whole project.
 //!
 //! In a segment, every part of a clip is a separate input seeked with
-//! `-ss/-t`, so FFmpeg only decodes what is used even when the material is
+//! a bounded input time range, so FFmpeg only decodes what is used when material is
 //! hours long. Parts are normalized to one canvas, frame rate and audio
 //! format, joined with `concat`, and then overlays, subtitles and danmaku are
 //! drawn on them, in that order. Video overlays are inputs of their own like
@@ -31,6 +31,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::UNIX_EPOCH;
 
 use async_trait::async_trait;
+#[cfg(test)]
 use ffmpeg_utils::ffmpeg_command;
 use futures::{stream, TryStreamExt};
 use recorder::danmu::DanmuEntry;
@@ -42,9 +43,11 @@ use crate::project::MAX_VOLUME;
 
 use super::{
     danmu, hwaccel,
-    native_overlay::{add_overlay_input, image_events, run_overlay_command, OverlaySpec},
+    native_overlay::{image_events, run_overlay_plan, OverlaySpec},
     project_plan::{plan_segments, PlanClip, Segment, SegmentLimits, SAMPLE_RATE},
-    runner::{run_command, ProgressMode, ProgressTotal, TempArtifact},
+    runner::{
+        first_stream_graph_inputs, run_native_media, ProgressMode, ProgressTotal, TempArtifact,
+    },
 };
 
 /// Output frame rate when no clip reports one.
@@ -479,6 +482,33 @@ fn segment_sound_name(key: &str) -> String {
     format!("{key}.wav")
 }
 
+// The command-based path formatted input times to six decimal places before
+// FFmpeg parsed them. Retain the same microsecond boundaries in typed plans.
+fn input_time(seconds: f64) -> Result<f64, String> {
+    format!("{seconds:.6}")
+        .parse()
+        .map_err(|error| format!("Invalid project time: {error}"))
+}
+
+fn seeked_input(
+    path: &Path,
+    seek: Option<f64>,
+    duration: f64,
+) -> Result<ffmpeg_utils::MediaInput, String> {
+    let path = std::path::absolute(path).map_err(|error| error.to_string())?;
+    let mut input = ffmpeg_utils::MediaInput::file(path);
+    input.seek = seek
+        .map(|seconds| {
+            input_time(seconds).map(|seconds| ffmpeg_utils::InputSeek {
+                seconds,
+                accurate: true,
+            })
+        })
+        .transpose()?;
+    input.duration = Some(input_time(duration)?);
+    Ok(input)
+}
+
 /// How far a segment has rendered, and how fast while it renders.
 #[derive(Clone, Copy, Default)]
 struct Rendered {
@@ -733,13 +763,16 @@ fn is_image_file(name: &std::ffi::OsStr) -> bool {
         .is_some_and(is_digest)
 }
 
-/// Removes what a render writes in its directory besides segments and danmaku
-/// images when it ends, done or not: graphs, subtitles, pictures and lists.
-struct Scratch<'a>(&'a Path);
+/// Shared by native workers and renderers until their input resources close.
+/// Cleanup must not run merely because an awaiting render was cancelled.
+struct RenderWorkspace {
+    directory: PathBuf,
+    _temporary: Option<tempfile::TempDir>,
+}
 
-impl Drop for Scratch<'_> {
+impl Drop for RenderWorkspace {
     fn drop(&mut self) {
-        let Ok(entries) = std::fs::read_dir(self.0) else {
+        let Ok(entries) = std::fs::read_dir(&self.directory) else {
             return;
         };
         for entry in entries.flatten() {
@@ -825,8 +858,9 @@ fn native_overlay_filter(video: &str, input: usize, start: f64) -> String {
 /// What the segments of one render share.
 struct Render<'a> {
     job: &'a ProjectRender<'a>,
-    /// FFmpeg's working directory, with the files the graphs read.
+    /// Absolute directory containing cached segments and graph resources.
     directory: &'a Path,
+    resource: Option<ffmpeg_utils::MediaResourceLease>,
     fps: f64,
     encoder: &'static str,
     /// What each input file is now, by path.
@@ -1070,59 +1104,58 @@ impl Render<'_> {
             .await
             .map_err(|error| error.to_string())?;
 
-        let mut command = ffmpeg_command();
-        command.current_dir(self.directory).args(["-nostdin", "-y"]);
+        let mut inputs = Vec::new();
+        let (frame_rate_num, frame_rate_den) =
+            ffmpeg_utils::parse_frame_rate(fps).map_err(|error| error.to_string())?;
         for part in &segment.parts {
             let clip = &job.clips[part.clip];
             let (seek, preroll) = part_input(clip, part.skip);
             let length = (part.frames as f64 / fps).max(part.samples as f64 / SAMPLE_RATE);
             if clip.is_blank() {
-                command.args([
-                    "-f",
-                    "lavfi",
-                    "-i",
-                    &format!("color=c=black:s=1920x1080:r={fps}:d={length:.6}"),
-                ]);
+                let mut input =
+                    ffmpeg_utils::MediaInput::generated_video(ffmpeg_utils::ColorSource {
+                        color: "black".into(),
+                        width: 1920,
+                        height: 1080,
+                        frame_rate_num,
+                        frame_rate_den,
+                    });
+                input.duration = Some(input_time(length)?);
+                inputs.push(input);
                 continue;
             }
-            let input = std::path::absolute(&clip.path).map_err(|error| error.to_string())?;
-            command
-                .args(["-ss", &format!("{seek:.6}")])
-                .args(["-t", &format!("{:.6}", preroll + length)])
-                .arg("-i")
-                .arg(input);
+            inputs.push(seeked_input(&clip.path, Some(seek), preroll + length)?);
         }
         for shown in &overlays {
             match &shown.overlay.layer {
                 OverlayLayer::Image { .. } => {
-                    command
-                        .args(["-threads", "1", "-i"])
-                        .arg(overlay_image_name(shown.index));
+                    let mut input = ffmpeg_utils::MediaInput::file(
+                        self.directory.join(overlay_image_name(shown.index)),
+                    );
+                    input.decoder_threads = Some(1);
+                    inputs.push(input);
                 }
                 OverlayLayer::Video(layer) => {
                     let (seek, skip) = shown.seek(layer);
-                    let input =
-                        std::path::absolute(&layer.path).map_err(|error| error.to_string())?;
-                    command
-                        .args(["-ss", &format!("{seek:.6}")])
-                        .args(["-t", &format!("{:.6}", skip + shown.end - shown.start)])
-                        .arg("-i")
-                        .arg(input);
+                    inputs.push(seeked_input(
+                        &layer.path,
+                        Some(seek),
+                        skip + shown.end - shown.start,
+                    )?);
                 }
             }
         }
-        if let Some(spec) = &native {
-            add_overlay_input(&mut command, spec).await?;
-        }
-        command
-            .arg(danmu::filter_complex_file_option().await)
-            .arg(&filter_name)
-            .args(["-map", "[outv]"]);
-        hwaccel::apply_x264_encoder_only(&mut command, self.encoder);
-        command.args(hwaccel::project_quality_args(
-            self.encoder,
-            &self.job.render_settings,
-        ));
+        let native_input = inputs.len();
+        let graph_inputs =
+            first_stream_graph_inputs(&filter, inputs.len() + usize::from(native.is_some()));
+        let mut video_options =
+            hwaccel::native_video_options(self.encoder, None, None, Some(&job.render_settings))?;
+        // The composition already ends with the selected format/hardware upload.
+        video_options.filter = None;
+        video_options.frame_rate = ffmpeg_utils::FrameRatePolicy::Constant {
+            num: frame_rate_num,
+            den: frame_rate_den,
+        };
         // Written under other names and renamed once complete, so that a
         // segment's files are there only when they are whole. One left
         // without the other, by a render stopped between the two renames,
@@ -1136,28 +1169,65 @@ impl Render<'_> {
             TempArtifact::new(self.directory.join(&partial_video)),
             TempArtifact::new(self.directory.join(&partial_sound)),
         ];
-        command
-            .args(["-r", &fps.to_string()])
-            .arg(&partial_video)
-            .args(["-map", "[outa]", "-c:a", "pcm_s16le"])
-            .arg(&partial_sound);
-        log::info!("Render project segment {index}: {command:?}");
+        let plan = ffmpeg_utils::MediaPlan {
+            inputs,
+            outputs: vec![
+                ffmpeg_utils::MediaOutput::file(self.directory.join(&partial_video)),
+                ffmpeg_utils::MediaOutput::file(self.directory.join(&partial_sound)),
+            ],
+            filter_graph: Some(ffmpeg_utils::FilterGraphPlan {
+                spec: filter.clone(),
+                inputs: graph_inputs,
+                outputs: vec![
+                    ffmpeg_utils::GraphOutput {
+                        label: "outv".into(),
+                        kind: ffmpeg_utils::MediaKind::Video,
+                    },
+                    ffmpeg_utils::GraphOutput {
+                        label: "outa".into(),
+                        kind: ffmpeg_utils::MediaKind::Audio,
+                    },
+                ],
+            }),
+            routes: vec![
+                ffmpeg_utils::StreamRoute {
+                    source: ffmpeg_utils::StreamSource::Filter {
+                        label: "outv".into(),
+                    },
+                    output: 0,
+                    required: true,
+                    mode: ffmpeg_utils::StreamMode::Video(video_options),
+                },
+                ffmpeg_utils::StreamRoute {
+                    source: ffmpeg_utils::StreamSource::Filter {
+                        label: "outa".into(),
+                    },
+                    output: 1,
+                    required: true,
+                    mode: ffmpeg_utils::StreamMode::Audio(ffmpeg_utils::AudioEncodeOptions {
+                        encoder: "pcm_s16le".into(),
+                        ..Default::default()
+                    }),
+                },
+            ],
+            resources: self.resource.iter().cloned().collect(),
+            ..Default::default()
+        };
+        log::info!("Render project segment {index}: {plan:?}");
         log::debug!("Project segment {index} filter graph:\n{filter}");
         let progress = ProgressMode::stage(RENDER_STAGE, ProgressTotal::Known(end - start));
         if let Some(spec) = native {
-            run_overlay_command(
-                command,
+            run_overlay_plan(
+                plan,
                 spec,
+                native_input,
                 progress,
                 "Render project segment",
                 Some(reporter),
             )
-            .await
-            .map_err(|error| error.to_string())?;
+            .await?;
         } else {
-            run_command(command, progress, "Render project segment", Some(reporter))
-                .await
-                .map_err(|error| error.to_string())?;
+            run_native_media(plan, progress, "Render project segment", Some(reporter)).await?;
         }
         for (from, to) in [(partial_sound, sound), (partial_video, video)] {
             tokio::fs::rename(self.directory.join(from), self.directory.join(to))
@@ -1319,6 +1389,7 @@ async fn join_segments<R: ProgressReporterTrait>(
     mixed: &[RenderSound],
     fps: f64,
     output: &Path,
+    resource: ffmpeg_utils::MediaResourceLease,
 ) -> Result<(), String> {
     // Durations in the microseconds the demuxer reads, from the frames'
     // times, so that they add up to them.
@@ -1341,38 +1412,29 @@ async fn join_segments<R: ProgressReporterTrait>(
             .map_err(|error| error.to_string())?;
     }
     let total = segments.iter().map(|segment| segment.frames).sum::<u64>() as f64 / fps;
-    let mut command = ffmpeg_command();
-    command
-        .current_dir(directory)
-        .args(["-nostdin", "-y"])
-        .args([
-            "-f",
-            "concat",
-            "-i",
-            "videos.txt",
-            "-f",
-            "concat",
-            "-i",
-            "sounds.txt",
-        ]);
+    let mut inputs = Vec::new();
+    for name in ["videos.txt", "sounds.txt"] {
+        let mut input = ffmpeg_utils::MediaInput::file(directory.join(name));
+        input.format = Some("concat".into());
+        inputs.push(input);
+    }
     let mixed = place_sounds(mixed, segments);
-    if mixed.is_empty() {
-        command.args(["-map", "0:v", "-map", "1:a"]);
+    let (filter_graph, audio_source) = if mixed.is_empty() {
+        (
+            None,
+            ffmpeg_utils::StreamSource::Input {
+                input: 1,
+                selector: ffmpeg_utils::StreamSelector::FirstAudio,
+            },
+        )
     } else {
         for placed in &mixed {
             let (seek, skip) = placed.seek();
-            if seek > 0.0 {
-                command.args(["-ss", &format!("{seek:.6}")]);
-            }
-            let input =
-                std::path::absolute(&placed.sound.path).map_err(|error| error.to_string())?;
-            command
-                .args([
-                    "-t",
-                    &format!("{:.6}", skip + placed.samples as f64 / SAMPLE_RATE),
-                ])
-                .arg("-i")
-                .arg(input);
+            inputs.push(seeked_input(
+                &placed.sound.path,
+                (seek > 0.0).then_some(seek),
+                skip + placed.samples as f64 / SAMPLE_RATE,
+            )?);
         }
         let samples = segments.iter().map(|segment| segment.samples).sum();
         let filter = sound_filter(&mixed, samples);
@@ -1380,24 +1442,59 @@ async fn join_segments<R: ProgressReporterTrait>(
             .await
             .map_err(|error| error.to_string())?;
         log::debug!("Project sound filter graph:\n{filter}");
-        command
-            .arg(danmu::filter_complex_file_option().await)
-            .arg("mix.txt")
-            .args(["-map", "0:v", "-map", "[outa]"]);
-    }
-    command
-        .args(["-c:v", "copy"])
-        .args(["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"])
-        .arg(output);
-    log::info!("Join project segments: {command:?}");
-    run_command(
-        command,
+        let graph_inputs = first_stream_graph_inputs(&filter, inputs.len());
+        (
+            Some(ffmpeg_utils::FilterGraphPlan {
+                spec: filter,
+                inputs: graph_inputs,
+                outputs: vec![ffmpeg_utils::GraphOutput {
+                    label: "outa".into(),
+                    kind: ffmpeg_utils::MediaKind::Audio,
+                }],
+            }),
+            ffmpeg_utils::StreamSource::Filter {
+                label: "outa".into(),
+            },
+        )
+    };
+    let mut target = ffmpeg_utils::MediaOutput::file(output);
+    target.faststart = true;
+    let plan = ffmpeg_utils::MediaPlan {
+        inputs,
+        outputs: vec![target],
+        filter_graph,
+        routes: vec![
+            ffmpeg_utils::StreamRoute {
+                source: ffmpeg_utils::StreamSource::Input {
+                    input: 0,
+                    selector: ffmpeg_utils::StreamSelector::FirstVideo,
+                },
+                output: 0,
+                required: true,
+                mode: ffmpeg_utils::StreamMode::Copy,
+            },
+            ffmpeg_utils::StreamRoute {
+                source: audio_source,
+                output: 0,
+                required: true,
+                mode: ffmpeg_utils::StreamMode::Audio(ffmpeg_utils::AudioEncodeOptions {
+                    encoder: "aac".into(),
+                    bit_rate: Some(192_000),
+                    ..Default::default()
+                }),
+            },
+        ],
+        resources: vec![resource],
+        ..Default::default()
+    };
+    log::info!("Join project segments: {plan:?}");
+    run_native_media(
+        plan,
         ProgressMode::stage("合并片段", ProgressTotal::Known(total)),
         "Join project segments",
         Some(reporter),
     )
-    .await
-    .map_err(|error| error.to_string())?;
+    .await?;
     Ok(())
 }
 
@@ -1436,11 +1533,9 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
         return Err("时间轴上没有片段".to_string());
     }
     let output = std::path::absolute(job.output).map_err(|error| error.to_string())?;
-    // Generated files use fixed names in a directory that is FFmpeg's working
-    // directory, so no user path is interpolated into the graphs: the
-    // project's segment cache, which keeps segments for the next render, or
-    // else a temporary folder beside the output, on a disk with room for it.
-    let (directory, _temporary) = match job.segment_cache {
+    // Assets live in the persistent cache or beside the export on a disk with
+    // room for it. Native workers and renderers share their cleanup lifetime.
+    let (directory, temporary) = match job.segment_cache {
         Some(cache) => {
             let cache = std::path::absolute(cache).map_err(|error| error.to_string())?;
             tokio::fs::create_dir_all(&cache)
@@ -1456,7 +1551,10 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
             (temporary.path().to_path_buf(), Some(temporary))
         }
     };
-    let _scratch = Scratch(&directory);
+    let workspace = ffmpeg_utils::MediaResourceLease::new(RenderWorkspace {
+        directory: directory.clone(),
+        _temporary: temporary,
+    });
     let burn_danmu = !job.danmus.is_empty();
     let fps = output_fps(&job.clips, burn_danmu);
     let clips: Vec<PlanClip> = job
@@ -1499,11 +1597,15 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
                 tokio::fs::write(directory.join("subtitle.ass"), ass)
                     .await
                     .map_err(|error| error.to_string())?;
-                options.push_str("filename=subtitle.ass");
+                options.push_str("filename=");
+                options.push_str(&super::subtitle::subtitle_filter_path(
+                    &directory.join("subtitle.ass"),
+                )?);
                 if let Some(fonts) = job.fonts_directory {
+                    let fonts = std::path::absolute(fonts).map_err(|error| error.to_string())?;
                     options.push_str(&format!(
                         ":fontsdir={}",
-                        super::subtitle::subtitle_filter_path(fonts)?
+                        super::subtitle::subtitle_filter_path(&fonts)?
                     ));
                 }
             }
@@ -1550,6 +1652,7 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
     let render = Render {
         job,
         directory: &directory,
+        resource: Some(workspace.clone()),
         fps,
         encoder,
         files,
@@ -1615,7 +1718,6 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
         })
         .await?;
 
-    let output_guard = TempArtifact::new(&output);
     join_segments(
         reporter,
         &directory,
@@ -1623,9 +1725,9 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
         &job.sounds,
         fps,
         &output,
+        workspace,
     )
     .await?;
-    output_guard.keep();
     if job.segment_cache.is_some() {
         // The cache keeps what this render is made of: its segments, and the
         // danmaku images it would need to render them again.
@@ -2243,6 +2345,7 @@ mod tests {
         Render {
             job,
             directory: Path::new("."),
+            resource: None,
             fps: 30.0,
             encoder: "libx264",
             files: HashMap::new(),
@@ -2445,6 +2548,160 @@ mod tests {
         assert!((metadata.duration - 1.0).abs() < 0.1);
     }
 
+    #[tokio::test]
+    async fn native_generated_segments_keep_exact_pcm_cache_and_previous_export_without_cli() {
+        let directory = tempfile::tempdir().unwrap();
+        let cache = directory.path().join("cache [项目]'s");
+        let output = directory.path().join("export.mp4");
+        let mut project = ProjectRender {
+            clips: vec![RenderClip::blank(0.2)],
+            overlays: Vec::new(),
+            sounds: Vec::new(),
+            subtitle_ass: None,
+            generated_subtitle: false,
+            fonts_directory: None,
+            danmus: Vec::new(),
+            danmu_options: Danmu2AssOptions::default(),
+            render_settings: crate::project::RenderSettings {
+                codec: crate::project::VideoCodec::H264,
+                ..Default::default()
+            },
+            output: &output,
+            segment_cache: Some(&cache),
+        };
+        let limits = SegmentLimits {
+            seconds: 0.1,
+            parts: 16,
+        };
+        let first = render_with_encoder(&NoopReporter, &project, limits, "libx264")
+            .await
+            .unwrap();
+        assert_eq!(
+            first,
+            RenderStats {
+                segments: 2,
+                reused: 0
+            }
+        );
+        let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+        assert_eq!((metadata.width, metadata.height), (1920, 1080));
+        assert_eq!(metadata.video_codec, "h264");
+        assert_eq!(metadata.audio_codec, "aac");
+        assert!((metadata.duration - 0.2).abs() < 1e-6);
+        let mut wavs = 0;
+        for entry in std::fs::read_dir(&cache).unwrap() {
+            let path = entry.unwrap().path();
+            assert!(is_segment_file(path.file_name().unwrap()));
+            if path.extension().is_some_and(|extension| extension == "wav") {
+                wavs += 1;
+                let mut reader = hound::WavReader::open(path).unwrap();
+                assert_eq!(reader.spec().sample_rate, 48_000);
+                assert_eq!(reader.spec().channels, 2);
+                assert_eq!(reader.spec().bits_per_sample, 16);
+                assert_eq!(reader.spec().sample_format, hound::SampleFormat::Int);
+                assert_eq!(reader.duration(), 4_800);
+                assert!(reader.samples::<i16>().all(|sample| sample.unwrap() == 0));
+            }
+        }
+        assert_eq!(wavs, 2);
+        let again = render_with_encoder(&NoopReporter, &project, limits, "libx264")
+            .await
+            .unwrap();
+        assert_eq!(
+            again,
+            RenderStats {
+                segments: 2,
+                reused: 2
+            }
+        );
+        let previous = std::fs::read(&output).unwrap();
+        let mut missing = sound(0.0, 0.2, 0.0, false);
+        missing.path = directory.path().join("missing.wav");
+        project.sounds.push(missing);
+        assert!(
+            render_with_encoder(&NoopReporter, &project, limits, "libx264")
+                .await
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&output).unwrap(), previous);
+        assert!(std::fs::read_dir(&cache)
+            .unwrap()
+            .all(|entry| is_segment_file(&entry.unwrap().file_name())));
+    }
+
+    #[tokio::test]
+    async fn cancelled_native_project_cleans_worker_assets_and_keeps_previous_export_without_cli() {
+        #[derive(Clone)]
+        struct PauseOnProgress(Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>);
+        #[async_trait]
+        impl ProgressReporterTrait for PauseOnProgress {
+            async fn update(&self, _: &str) {}
+            async fn finish(&self, _: bool, _: &str) {}
+            async fn progress(&self, _: StageProgress) {
+                if let Some(ready) = self.0.lock().unwrap().take() {
+                    let _ = ready.send(());
+                }
+                std::future::pending::<()>().await;
+            }
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let cache = directory.path().join("cache");
+        let output = directory.path().join("export.mp4");
+        std::fs::write(&output, b"previous export").unwrap();
+        let (ready, started) = tokio::sync::oneshot::channel();
+        let (render_output, render_cache) = (output.clone(), cache.clone());
+        let task = tokio::spawn(async move {
+            let project = ProjectRender {
+                clips: vec![RenderClip::blank(60.0)],
+                overlays: Vec::new(),
+                sounds: Vec::new(),
+                subtitle_ass: None,
+                generated_subtitle: false,
+                fonts_directory: None,
+                danmus: Vec::new(),
+                danmu_options: Danmu2AssOptions::default(),
+                render_settings: crate::project::RenderSettings {
+                    codec: crate::project::VideoCodec::H264,
+                    ..Default::default()
+                },
+                output: &render_output,
+                segment_cache: Some(&render_cache),
+            };
+            render_with_encoder(
+                &PauseOnProgress(Arc::new(Mutex::new(Some(ready)))),
+                &project,
+                SEGMENT_LIMITS,
+                "libx264",
+            )
+            .await
+        });
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(20), started).await;
+        task.abort();
+        let stopped = task.await;
+        assert!(
+            matches!(&stopped, Err(error) if error.is_cancelled()),
+            "unexpected render exit: {stopped:?}"
+        );
+        observed
+            .expect("native project did not report progress")
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if std::fs::read_dir(&cache)
+                    .unwrap()
+                    .all(|entry| is_segment_file(&entry.unwrap().file_name()))
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("cancelled worker left partial files or graph assets");
+        assert_eq!(std::fs::read(&output).unwrap(), b"previous export");
+    }
+
     /// A job of `clips`, with a picture from `picture` to a second later at
     /// `x`, without rendering it.
     fn job(clips: Vec<RenderClip>, picture: f64, x: f64) -> ProjectRender<'static> {
@@ -2490,6 +2747,7 @@ mod tests {
         let render = Render {
             job,
             directory: Path::new("."),
+            resource: None,
             fps,
             encoder: "libx264",
             files: HashMap::new(),
@@ -3848,7 +4106,10 @@ mod tests {
         )
         .await;
         // With the encoder exports use here, and with the one they fall back to.
-        for encoder in [hwaccel::get_x264_encoder().await, "libx264"] {
+        let selected = hwaccel::get_x264_encoder().await;
+        let encoders =
+            std::iter::once(selected).chain((selected != "libx264").then_some("libx264"));
+        for encoder in encoders {
             assert_seamless(&directory.path().join(encoder), &source, encoder).await;
         }
     }

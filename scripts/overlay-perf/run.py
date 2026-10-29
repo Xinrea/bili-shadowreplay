@@ -78,7 +78,8 @@ def prepare_baseline():
                                 json.dumps(str(dest / "src-tauri/crates/native-overlay")))
     manifest = manifest.replace('"../../src-tauri/crates/ffmpeg_utils"',
                                 json.dumps(str(ROOT / "src-tauri/crates/ffmpeg_utils")))
-    manifest += '\n[[bin]]\nname = "overlay-perf"\npath = ' + json.dumps(str(HERE / "src/main.rs")) + '\n'
+    manifest = manifest.replace('path = "src/main.rs"',
+                                "path = " + json.dumps(str(HERE / "src/main.rs")))
     (dest / "Cargo.toml").write_text(manifest)
     return revision, dest / "Cargo.toml"
 
@@ -142,7 +143,6 @@ def main():
     parser.add_argument("--prepare-only", action="store_true", help="generate fixtures and baseline source only")
     parser.add_argument("--baseline-only", action="store_true", help="build/run baseline while current APIs are unavailable")
     parser.add_argument("--online", action="store_true", help="allow Cargo dependency resolution/downloads (default offline)")
-    parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--ffprobe", default="ffprobe")
     args = parser.parse_args()
     if args.runs < 1:
@@ -170,26 +170,26 @@ def main():
         print(json.dumps(results, indent=2))
         return
     current = build(HERE / "Cargo.toml", "current", args.online)
-    ffmpeg = shutil.which(args.ffmpeg)
     ffprobe = shutil.which(args.ffprobe)
-    if not ffmpeg or not ffprobe:
-        raise RuntimeError("ffmpeg and ffprobe must already be installed; no downloads are performed")
+    if not ffprobe:
+        raise RuntimeError("ffprobe must already be installed for independent output validation; no downloads are performed")
     metadata = {
         "baseline_revision": revision, "current_revision": text(["git", "rev-parse", "HEAD"]),
         "git_status": text(["git", "status", "--short"]), "platform": platform.platform(),
         "machine": platform.machine(), "processor": platform.processor(), "logical_cpus": os.cpu_count(),
-        "rustc": text(["rustc", "-Vv"]), "ffmpeg": text([ffmpeg, "-version"]),
+        "rustc": text(["rustc", "-Vv"]),
         "ffprobe": text([ffprobe, "-version"]), "runs": args.runs,
         "cargo_lock_sha256": hashlib.sha256(current_lock.read_bytes()).hexdigest(),
         "fixture_set_sha256": hashlib.sha256(b"".join(p.read_bytes() for p in sorted(assets.glob("*.png")))).hexdigest(),
         "source_sha256": {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in (
             list((ROOT / "src-tauri/crates/native-overlay/src").rglob("*.rs"))
+            + list((ROOT / "src-tauri/crates/ffmpeg_utils/src").rglob("*.rs"))
+            + [ROOT / "src-tauri/crates/ffmpeg_utils/build.rs", ROOT / "src-tauri/crates/ffmpeg_utils/Cargo.toml"]
             + [ROOT / "src-tauri/src/ffmpeg/runner.rs", ROOT / "src-tauri/src/ffmpeg/native_overlay.rs",
                HERE / "src/main.rs", HERE / "src/stubs.rs", HERE / "run.py"])},
         "scene": "1920x1080, 60 fps, 6 seconds; 100 events in two 50-event waves; 4 repeated / 100 unique PNG paths; mixed adds 24 text/emoji events",
         "notes": ["CPU Skia only; no GPU", "Core A/B is unprofiled; current stream is profiled",
-                  "FFmpeg benchmark_all encoder/flush intervals are a separate run, not pure encoder CPU time or part of throughput medians",
-                  "Stages overlap: do not sum them; pipe writes/drain/wall are not pure encoder CPU time",
+                  "Stages overlap: do not sum them; frame copy/drain/wall are not pure encoder CPU time",
                   "Source/build/fixtures/process-launch (core only)/pixel-hash validation excluded from render_loop_ms"],
     }
     report = {"metadata": metadata, "cases": {}}
@@ -207,20 +207,14 @@ def main():
             for label, binary in order if repetition % 2 == 0 else reversed(order):
                 rows[label].append(bench(binary, "core", assets, scene))
             output = OUT / f"{scene}.mp4"
-            streamed = bench(current, "stream", assets, scene, ffmpeg, output)
+            streamed = bench(current, "stream", assets, scene, output)
             streamed["ffprobe"] = probe(ffprobe, output)
             rows["current_stream"].append(streamed)
-        # Separate instrumented pass: encoder-call timing perturbs scheduling,
-        # so never mix its wall time into the ordinary throughput medians.
-        encoded_profile = bench(current, "encoder-profile", assets, scene, ffmpeg, OUT / f"{scene}-encoder-profile.mp4")
-        if encoded_profile["ffmpeg_encoder_calls"]["calls"] == 0:
-            raise RuntimeError("FFmpeg did not report any encoder benchmark intervals")
         medians = {key: numeric_medians(values) for key, values in rows.items()}
         ratio = medians["baseline_core"]["render_loop_ms"] / medians["current_core"]["render_loop_ms"]
         report["cases"][scene] = {"pixel_equality": {"sample_count": len(before["samples"]),
                                                     "samples": before["samples"]},
-                                   "runs": rows, "medians": medians, "core_speedup": ratio,
-                                   "encoder_profile_separate_run": encoded_profile}
+                                   "runs": rows, "medians": medians, "core_speedup": ratio}
         print(f"{scene}: core {medians['baseline_core']['render_loop_ms']:.1f} -> "
               f"{medians['current_core']['render_loop_ms']:.1f} ms ({ratio:.2f}x); "
               f"production stream {medians['current_stream']['wall_ms']:.1f} ms")
@@ -228,7 +222,7 @@ def main():
         (OUT / "results.json").write_text(json.dumps(report, indent=2) + "\n")
     report["metadata"]["validation_and_measurement_wall_s"] = time.monotonic() - started
     (OUT / "results.json").write_text(json.dumps(report, indent=2) + "\n")
-    print(f"Results, exact FFmpeg args, source hashes and sampled RGBA checks: {OUT / 'results.json'}")
+    print(f"Results, native plans, source hashes and sampled RGBA checks: {OUT / 'results.json'}")
 
 
 if __name__ == "__main__":

@@ -1,28 +1,28 @@
-//! Stream native-rendered premultiplied BGRA into FFmpeg without video-sized temp files.
+//! Feed native-rendered premultiplied BGRA directly into the shared media graph.
 
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
+        mpsc::{self, RecvTimeoutError},
         Arc, Mutex,
     },
     time::{Duration, Instant},
 };
 
-use tokio::{process::Command, sync::mpsc};
-
+use super::runner::{run_native_media_with_sources, ProgressMode};
 use crate::{
     danmu2ass::{ImageDanmu, PLAY_RES_Y},
     progress::progress_reporter::ProgressReporterTrait,
 };
-
-use super::runner::{
-    run_command_with_frames, FrameFeedStats, JobOutput, ProgressMode, RawFrame, RawFrameReceiver,
+use ffmpeg_utils::{
+    MediaBindings, MediaInput, MediaJobResult, MediaPlan, RawVideoAlpha, RawVideoCancelHandle,
+    RawVideoFrame, RawVideoSpec, RawVideoStats,
 };
 
 const FRAME_BUFFERS: usize = 3;
+const BUFFER_POLL: Duration = Duration::from_millis(25);
 
-/// The one way previews and burns create a renderer: with the system font
-/// manager and no supplied font files, so a burn draws what was previewed.
+/// The same system font manager and scene renderer are used by preview and burn.
 pub fn system_renderer(
     width: u32,
     height: u32,
@@ -31,9 +31,8 @@ pub fn system_renderer(
     native_overlay::Renderer::new(width, height, input, Vec::new())
 }
 
-/// Stage measurements overlap across producer and FFmpeg; never sum them to
-/// estimate wall time. `ffmpeg_drain` is post-stdin completion/muxing, not pure
-/// encoder CPU time. Disabled for normal jobs unless debug logging is enabled.
+/// Producer, frame-copy and media stages overlap. Drain includes graph flushing,
+/// encoding and muxing after the raw source finishes, not isolated encoder CPU.
 #[derive(Debug, Default)]
 pub struct OverlayRunStats {
     pub initialization: Duration,
@@ -41,9 +40,9 @@ pub struct OverlayRunStats {
     pub buffer_wait: Duration,
     pub queue_send_wait: Duration,
     pub render: native_overlay::RenderStats,
-    pub feed: FrameFeedStats,
+    pub feed: RawVideoStats,
     pub wall: Duration,
-    pub ffmpeg_drain: Option<Duration>,
+    pub native_drain: Option<Duration>,
     pub buffer_allocations: usize,
 }
 
@@ -52,13 +51,11 @@ pub struct OverlaySpec {
     pub width: u32,
     pub height: u32,
     pub fps: f64,
-    /// Renderer timeline offset; pipe timestamps always begin at zero.
+    /// Renderer timeline offset; raw graph timestamps begin at zero.
     pub start: f64,
     pub duration: f64,
 }
-
 impl OverlaySpec {
-    /// Bound allocations and iteration counts before creating a renderer.
     fn layout(&self) -> Result<(usize, u64), String> {
         let pixels = u64::from(self.width) * u64::from(self.height);
         if self.width == 0
@@ -84,177 +81,119 @@ impl OverlaySpec {
     }
 }
 
-fn supports_input_alpha_mode(help: &str) -> bool {
-    help.lines().any(|line| {
-        let mut parts = line.split_whitespace();
-        parts.next() == Some("-alpha_mode")
-            && parts.next() == Some("<int>")
-            && parts.next().is_some_and(|flags| flags.contains('D'))
-    })
+fn append_input(
+    plan: &mut MediaPlan,
+    spec: &OverlaySpec,
+    index: usize,
+) -> Result<RawVideoSpec, String> {
+    let (_, frames) = spec.layout()?;
+    let raw = RawVideoSpec::bgra(
+        spec.width,
+        spec.height,
+        spec.fps,
+        frames,
+        RawVideoAlpha::Premultiplied,
+    )?;
+    if index != plan.inputs.len() {
+        return Err("Native overlay must append the next media input".into());
+    }
+    plan.inputs.push(MediaInput::raw_video(raw));
+    Ok(raw)
 }
 
-#[derive(PartialEq, Eq)]
-struct AlphaProbeKey {
-    program: std::ffi::OsString,
-    directory: Option<std::path::PathBuf>,
-    environment: Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>,
+struct StopRendering {
+    cancelled: Arc<AtomicBool>,
+    source: RawVideoCancelHandle,
 }
-
-async fn input_alpha_mode_supported(command: &Command) -> Result<bool, String> {
-    // One bounded cache entry; use the actual command's executable, including
-    // the benchmark's explicit FFmpeg path, rather than probing a different PATH binary.
-    static SUPPORT: tokio::sync::Mutex<Option<(AlphaProbeKey, bool)>> =
-        tokio::sync::Mutex::const_new(None);
-    let source = command.as_std();
-    let key = AlphaProbeKey {
-        program: source.get_program().to_owned(),
-        directory: source.get_current_dir().map(ToOwned::to_owned),
-        environment: source
-            .get_envs()
-            .map(|(key, value)| (key.to_owned(), value.map(ToOwned::to_owned)))
-            .collect(),
-    };
-    let mut cached = SUPPORT.lock().await;
-    if let Some((previous, supported)) = cached.as_ref() {
-        if previous == &key {
-            return Ok(*supported);
-        }
-    }
-    let mut probe = Command::new(&key.program);
-    if let Some(directory) = &key.directory {
-        probe.current_dir(directory);
-    }
-    for (name, value) in &key.environment {
-        if let Some(value) = value {
-            probe.env(name, value);
-        } else {
-            probe.env_remove(name);
-        }
-    }
-    probe.kill_on_drop(true);
-    #[cfg(windows)]
-    probe.creation_flags(0x08000000); // CREATE_NO_WINDOW, as in the FFmpeg factory.
-    let output = tokio::time::timeout(
-        Duration::from_secs(10),
-        probe.args(["-hide_banner", "-h", "full"]).output(),
-    )
-    .await
-    .map_err(|_| "Timed out querying FFmpeg alpha mode support".to_string())?
-    .map_err(|error| format!("Cannot query FFmpeg alpha mode support: {error}"))?;
-    if !output.status.success() {
-        return Err("Cannot query FFmpeg alpha mode support".to_string());
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if !stdout.contains("AVCodecContext AVOptions:")
-        && !stderr.contains("AVCodecContext AVOptions:")
-    {
-        return Err(
-            "FFmpeg help did not report decoder options; cannot determine alpha mode support"
-                .to_string(),
-        );
-    }
-    let supported = supports_input_alpha_mode(&stdout) || supports_input_alpha_mode(&stderr);
-    if !supported {
-        log::info!("FFmpeg has no input alpha_mode option; using explicit RGB premultiplied overlay semantics");
-    }
-    *cached = Some((key, supported));
-    Ok(supported)
-}
-
-/// Append one raw premultiplied BGRA input. New FFmpeg releases use input alpha
-/// metadata when negotiating conversions; declare it before `-i`. Older releases
-/// lack this option, but still support explicit RGB overlay alpha=premultiplied.
-pub async fn add_overlay_input(command: &mut Command, spec: &OverlaySpec) -> Result<(), String> {
-    spec.layout()?;
-    let supported = input_alpha_mode_supported(command).await?;
-    append_overlay_input(command, spec, supported);
-    Ok(())
-}
-
-fn append_overlay_input(command: &mut Command, spec: &OverlaySpec, alpha_metadata: bool) {
-    command.args(["-f", "rawvideo", "-pixel_format", "bgra"]);
-    if alpha_metadata {
-        command.args(["-alpha_mode", "premultiplied"]);
-    }
-    command.args([
-        "-video_size",
-        &format!("{}x{}", spec.width, spec.height),
-        "-framerate",
-        &spec.fps.to_string(),
-        "-i",
-        "pipe:0",
-    ]);
-}
-
-/// The blocking renderer checks this between frames. Dropping the receiver also
-/// wakes blocking_send, including when cancellation occurs under backpressure.
-struct StopRendering(Arc<AtomicBool>);
-
 impl Drop for StopRendering {
     fn drop(&mut self) {
-        self.0.store(true, Ordering::Release);
+        self.cancelled.store(true, Ordering::Release);
+        self.source.close();
     }
 }
 
-pub async fn run_overlay_command<R: ProgressReporterTrait>(
-    command: Command,
+/// Append the raw input at `input_index`, bind its renderer, and execute the
+/// caller's global graph. The plan's resource leases are also held by the
+/// renderer so dropping an async caller cannot delete its image/font files.
+pub async fn run_overlay_plan<R: ProgressReporterTrait>(
+    plan: MediaPlan,
     spec: OverlaySpec,
+    input_index: usize,
     progress: ProgressMode,
     context: impl Into<String>,
     reporter: Option<&R>,
-) -> Result<JobOutput, String> {
+) -> Result<MediaJobResult, String> {
     let profile = log::log_enabled!(log::Level::Debug);
+    let (output, stats) = run_overlay_inner(
+        plan,
+        spec,
+        input_index,
+        progress,
+        context.into(),
+        reporter,
+        profile,
+    )
+    .await?;
     if profile {
-        let (output, stats) =
-            run_overlay_command_profiled(command, spec, progress, context, reporter).await?;
         log::debug!("Native overlay stages (overlapping wall times): {stats:?}");
-        Ok(output)
-    } else {
-        run_overlay_inner(command, spec, progress, context.into(), reporter, false)
-            .await
-            .map(|(output, _)| output)
     }
+    Ok(output)
 }
 
-/// Explicit profiling entry point for repeatable performance measurements.
-pub async fn run_overlay_command_profiled<R: ProgressReporterTrait>(
-    command: Command,
+pub async fn run_overlay_plan_profiled<R: ProgressReporterTrait>(
+    plan: MediaPlan,
     spec: OverlaySpec,
+    input_index: usize,
     progress: ProgressMode,
     context: impl Into<String>,
     reporter: Option<&R>,
-) -> Result<(JobOutput, OverlayRunStats), String> {
-    run_overlay_inner(command, spec, progress, context.into(), reporter, true).await
+) -> Result<(MediaJobResult, OverlayRunStats), String> {
+    run_overlay_inner(
+        plan,
+        spec,
+        input_index,
+        progress,
+        context.into(),
+        reporter,
+        true,
+    )
+    .await
 }
 
 async fn run_overlay_inner<R: ProgressReporterTrait>(
-    command: Command,
+    mut plan: MediaPlan,
     spec: OverlaySpec,
+    input_index: usize,
     progress: ProgressMode,
     context: String,
     reporter: Option<&R>,
     profile: bool,
-) -> Result<(JobOutput, OverlayRunStats), String> {
+) -> Result<(MediaJobResult, OverlayRunStats), String> {
     let (frame_bytes, frame_count) = spec.layout()?;
+    let raw = append_input(&mut plan, &spec, input_index)?;
     let started = Instant::now();
-    // Same bound as before: one queued, one being written, one being rendered.
-    // Ownership circulates through a fixed pool instead of allocating/zeroing
-    // width*height*4 bytes for every frame. No extra pixel copy is introduced.
-    let (sender, receiver) = mpsc::channel(1);
+    let (sender, input) = ffmpeg_utils::raw_video_channel(raw, 1)?;
     let pool_size = FRAME_BUFFERS.min(frame_count as usize);
-    let (recycle, mut buffers) = mpsc::channel(pool_size);
+    let (recycle, buffers) = mpsc::sync_channel(pool_size);
     let seed = recycle.clone();
-    let feed_stats = profile.then(|| Arc::new(Mutex::new(FrameFeedStats::default())));
-    let stop = StopRendering(Arc::new(AtomicBool::new(false)));
-    let cancelled = stop.0.clone();
+    let feed_stats = profile.then(|| Arc::new(Mutex::new(RawVideoStats::default())));
+    let mut input = input.with_recycle(recycle);
+    if let Some(stats) = &feed_stats {
+        input = input.with_stats(stats.clone());
+    }
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let stop = StopRendering {
+        cancelled: cancelled.clone(),
+        source: input.cancel_handle(),
+    };
+    let resources = plan.resources.clone();
     let renderer = tokio::task::spawn_blocking(move || {
+        let _resources = resources;
         let mut stats = OverlayRunStats::default();
         let result = (|| -> Result<(), String> {
             if cancelled.load(Ordering::Acquire) || sender.is_closed() {
                 return Ok(());
             }
-            // Renderer need not be Send: construct and use on one blocking thread.
             let initialization = profile.then(Instant::now);
             let mut renderer = system_renderer(spec.width, spec.height, spec.input)?;
             renderer.set_profiling(profile);
@@ -267,22 +206,28 @@ async fn run_overlay_inner<R: ProgressReporterTrait>(
                     .map_err(|_| "Cannot initialize BGRA buffer pool")?;
                 stats.buffer_allocations += 1;
             }
-            // Only the runner may keep the return channel open while rendering.
-            // On cancellation its drop must unblock buffers.blocking_recv().
             drop(seed);
             if let Some(allocation) = allocation {
                 stats.buffer_allocation = allocation.elapsed();
             }
             for frame in 0..frame_count {
-                if cancelled.load(Ordering::Acquire) || sender.is_closed() {
-                    break;
-                }
                 let wait = profile.then(Instant::now);
-                let received = buffers.blocking_recv();
+                let received = loop {
+                    if cancelled.load(Ordering::Acquire) || sender.is_closed() {
+                        break None;
+                    }
+                    match buffers.recv_timeout(BUFFER_POLL) {
+                        Ok(bytes) => break Some(bytes),
+                        Err(RecvTimeoutError::Timeout) => continue,
+                        Err(RecvTimeoutError::Disconnected) => break None,
+                    }
+                };
                 if let Some(wait) = wait {
                     stats.buffer_wait += wait.elapsed();
                 }
-                let Some(mut bytes) = received else { break };
+                let Some(mut bytes) = received else {
+                    break;
+                };
                 if cancelled.load(Ordering::Acquire) || sender.is_closed() {
                     break;
                 }
@@ -290,11 +235,11 @@ async fn run_overlay_inner<R: ProgressReporterTrait>(
                     spec.start + frame as f64 / spec.fps,
                     &mut bytes,
                 )?;
-                if cancelled.load(Ordering::Acquire) {
+                if cancelled.load(Ordering::Acquire) || sender.is_closed() {
                     break;
                 }
                 let send = profile.then(Instant::now);
-                let sent = sender.blocking_send(Ok(RawFrame::Frame(bytes)));
+                let sent = sender.blocking_send(Ok(RawVideoFrame::Frame(bytes)));
                 if let Some(send) = send {
                     stats.queue_send_wait += send.elapsed();
                 }
@@ -304,7 +249,7 @@ async fn run_overlay_inner<R: ProgressReporterTrait>(
             }
             stats.render = renderer.stats();
             if !cancelled.load(Ordering::Acquire) && !sender.is_closed() {
-                let _ = sender.blocking_send(Ok(RawFrame::Finished));
+                let _ = sender.blocking_send(Ok(RawVideoFrame::Finished));
             }
             Ok(())
         })();
@@ -313,36 +258,33 @@ async fn run_overlay_inner<R: ProgressReporterTrait>(
         }
         result.map(|()| stats)
     });
-    let result = run_command_with_frames(
-        command,
-        RawFrameReceiver {
-            receiver,
-            frame_bytes,
-            frame_count,
-            recycle: Some(recycle),
-            stats: feed_stats.clone(),
+    let result = run_native_media_with_sources(
+        plan,
+        MediaBindings {
+            raw_video: vec![(input_index, input)],
         },
         progress,
         context.clone(),
         reporter,
     )
     .await;
-    let ffmpeg_finished = Instant::now();
+    let finished = Instant::now();
     drop(stop);
-    // Receiver + return sender are dropped before waiting. This releases both
-    // possible producer waits (free buffer and queued frame), also on early EOF.
     let rendered = renderer
         .await
         .map_err(|error| format!("{context}: native renderer task failed: {error}"))?;
-    let output = result.map_err(|error| error.to_string())?;
+    let output = result?;
     let mut stats =
         rendered.map_err(|error| format!("{context}: native rendering failed: {error}"))?;
     if let Some(feed_stats) = feed_stats {
-        stats.feed = feed_stats.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        stats.ffmpeg_drain = stats
+        stats.feed = feed_stats
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        stats.native_drain = stats
             .feed
-            .feed_finished_at
-            .map(|end| ffmpeg_finished.saturating_duration_since(end));
+            .finished_at
+            .map(|end| finished.saturating_duration_since(end));
     }
     stats.wall = started.elapsed();
     Ok((output, stats))
@@ -368,360 +310,4 @@ pub fn image_events(images: &[ImageDanmu], opacity: f64) -> Vec<native_overlay::
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[derive(Clone)]
-    struct Reporter;
-    #[async_trait::async_trait]
-    impl ProgressReporterTrait for Reporter {
-        async fn update(&self, _: &str) {}
-        async fn finish(&self, _: bool, _: &str) {}
-    }
-
-    fn spec() -> OverlaySpec {
-        OverlaySpec {
-            input: native_overlay::RenderInput::default(),
-            width: 1920,
-            height: 1080,
-            fps: 60.0,
-            start: 0.0,
-            duration: 1.01,
-        }
-    }
-
-    #[tokio::test]
-    async fn drop_signals_and_releases_a_backpressured_blocking_producer() {
-        let stop = StopRendering(Arc::new(AtomicBool::new(false)));
-        let cancelled = stop.0.clone();
-        let (sender, receiver) = mpsc::channel(1);
-        let (started, ready) = tokio::sync::oneshot::channel();
-        let worker = tokio::task::spawn_blocking(move || {
-            sender.blocking_send(vec![0u8; 4]).unwrap();
-            started.send(()).unwrap();
-            // No consumer: the next frame cannot fit until the receiver is
-            // dropped, exactly as when the runner's write is backpressured.
-            assert!(sender.blocking_send(vec![0u8; 4]).is_err());
-            assert!(cancelled.load(Ordering::Acquire));
-        });
-        ready.await.unwrap();
-        drop(stop);
-        drop(receiver);
-        tokio::time::timeout(std::time::Duration::from_secs(1), worker)
-            .await
-            .unwrap()
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn dropping_return_channel_wakes_a_producer_waiting_for_a_buffer() {
-        let stop = StopRendering(Arc::new(AtomicBool::new(false)));
-        let cancelled = stop.0.clone();
-        let (returns, mut buffers) = mpsc::channel::<Vec<u8>>(FRAME_BUFFERS);
-        let (started, ready) = tokio::sync::oneshot::channel();
-        let worker = tokio::task::spawn_blocking(move || {
-            started.send(()).unwrap();
-            assert!(buffers.blocking_recv().is_none());
-            assert!(cancelled.load(Ordering::Acquire));
-        });
-        ready.await.unwrap();
-        drop(stop);
-        drop(returns);
-        tokio::time::timeout(Duration::from_secs(1), worker)
-            .await
-            .unwrap()
-            .unwrap();
-    }
-
-    #[tokio::test]
-    #[ignore = "requires FFmpeg"]
-    async fn pooled_stream_profiles_real_ffmpeg_and_handles_early_eof() {
-        for early in [false, true] {
-            let mut spec = spec();
-            spec.width = 64;
-            spec.height = 64;
-            spec.fps = 30.0;
-            spec.duration = if early { 60.0 } else { 1.0 };
-            let mut command = ffmpeg_utils::ffmpeg_command();
-            command.args([
-                "-v",
-                "error",
-                "-nostdin",
-                "-f",
-                "lavfi",
-                "-i",
-                "color=black:s=64x64:r=30:d=1",
-            ]);
-            add_overlay_input(&mut command, &spec).await.unwrap();
-            command.args([
-                "-filter_complex",
-                "[0:v]format=bgra[base];[base][1:v]overlay=shortest=1:format=rgb:alpha=premultiplied[v]",
-                "-map",
-                "[v]",
-                "-f",
-                "null",
-                "-",
-            ]);
-            let (_, stats) = tokio::time::timeout(
-                Duration::from_secs(15),
-                run_overlay_command_profiled::<Reporter>(
-                    command,
-                    spec,
-                    ProgressMode::None,
-                    "pooled stream test",
-                    None,
-                ),
-            )
-            .await
-            .unwrap()
-            .unwrap();
-            assert_eq!(stats.buffer_allocations, FRAME_BUFFERS);
-            assert_eq!(stats.feed.bytes, stats.feed.frames * 64 * 64 * 4);
-            if early {
-                assert!(stats.feed.frames < 1800);
-            } else {
-                assert_eq!(stats.feed.frames, 30);
-                assert_eq!(stats.render.frames, 30);
-                assert!(stats.ffmpeg_drain.is_some());
-            }
-        }
-    }
-
-    #[test]
-    fn raw_input_is_premultiplied_bgra_and_rounds_up_the_last_partial_frame() {
-        let spec = spec();
-        assert_eq!(spec.layout().unwrap(), (1920 * 1080 * 4, 61));
-        let mut command = Command::new("ffmpeg");
-        append_overlay_input(&mut command, &spec, true);
-        let args: Vec<_> = command
-            .as_std()
-            .get_args()
-            .map(|arg| arg.to_str().unwrap())
-            .collect();
-        assert_eq!(
-            args,
-            [
-                "-f",
-                "rawvideo",
-                "-pixel_format",
-                "bgra",
-                "-alpha_mode",
-                "premultiplied",
-                "-video_size",
-                "1920x1080",
-                "-framerate",
-                "60",
-                "-i",
-                "pipe:0"
-            ]
-        );
-        let mut legacy = Command::new("ffmpeg");
-        append_overlay_input(&mut legacy, &spec, false);
-        let args: Vec<_> = legacy
-            .as_std()
-            .get_args()
-            .map(|arg| arg.to_str().unwrap())
-            .collect();
-        assert!(args
-            .windows(2)
-            .any(|pair| pair == ["-pixel_format", "bgra"]));
-        assert!(!args.contains(&"-alpha_mode"));
-    }
-
-    #[test]
-    fn alpha_mode_detection_requires_a_decoder_option_not_just_a_filter_option() {
-        assert!(supports_input_alpha_mode(
-            "  -alpha_mode <int> ED.V....... alpha mode"
-        ));
-        assert!(supports_input_alpha_mode(
-            "  -alpha_mode <int> .D.V....... alpha mode"
-        ));
-        assert!(!supports_input_alpha_mode(
-            "  -alpha_mode <int> ..FV....... alpha mode"
-        ));
-        assert!(!supports_input_alpha_mode(
-            "  -alpha_mode <int> E..V....... alpha mode"
-        ));
-        assert!(!supports_input_alpha_mode(
-            "  -alpha_modes <string> ..FV....... alpha modes"
-        ));
-        assert!(!supports_input_alpha_mode(""));
-    }
-
-    #[tokio::test]
-    async fn failed_alpha_probe_is_not_treated_as_an_old_ffmpeg() {
-        let directory = tempfile::tempdir().unwrap();
-        let mut command = Command::new(directory.path().join("missing-ffmpeg"));
-        let error = add_overlay_input(&mut command, &spec()).await.unwrap_err();
-        assert!(
-            error.contains("Cannot query FFmpeg alpha mode support"),
-            "{error}"
-        );
-        assert_eq!(command.as_std().get_args().count(), 0);
-    }
-
-    #[tokio::test]
-    #[ignore = "requires FFmpeg"]
-    async fn premultiplied_stream_matches_straight_preview_on_coloured_backgrounds() {
-        use native_overlay::{AssSource, ImageEvent, RenderInput, SourceKind};
-        let directory = tempfile::tempdir().unwrap();
-        let image = directory.path().join("translucent.png");
-        let made = ffmpeg_utils::ffmpeg_command()
-            .args([
-                "-v",
-                "error",
-                "-f",
-                "lavfi",
-                "-i",
-                "color=c=0xE03060@0.5:s=16x16:d=0.1,format=rgba",
-                "-frames:v",
-                "1",
-                "-y",
-            ])
-            .arg(&image)
-            .output()
-            .await
-            .unwrap();
-        assert!(
-            made.status.success(),
-            "{}",
-            String::from_utf8_lossy(&made.stderr)
-        );
-        let input = RenderInput {
-            documents: vec![AssSource {
-                kind: SourceKind::Subtitle,
-                text: "[Script Info]\nScriptType: v4.00+\nPlayResX: 128\nPlayResY: 96\n\
-                    [V4+ Styles]\n\
-                    Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
-                    Style: Default,Arial,28,&H600040E0,&H00FFFFFF,&H8000C040,&H90000000,0,0,0,0,100,100,0,0,1,2,3,5,0,0,0,1\n\
-                    [Events]\n\
-                    Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
-                    Dialogue: 0,0:00:00.00,0:00:00.80,Default,,0,0,0,,Bg\n".into(),
-            }],
-            images: vec![ImageEvent {
-                path: image,
-                start: 0.2,
-                end: 0.8,
-                from: (0.0, 0.0),
-                to: (0.0, 0.0),
-                width: 480.0,
-                height: 360.0,
-                opacity: 0.5,
-            }],
-        };
-        let (width, height, fps, frames) = (128, 96, 10.0, 10usize);
-        let frame_bytes = width as usize * height as usize * 4;
-        let mut preview = system_renderer(width, height, input.clone()).unwrap();
-        let previews: Vec<_> = (0..frames)
-            .map(|frame| preview.frame(frame as f64 / fps).unwrap())
-            .collect();
-        assert!(previews[5].chunks_exact(4).any(|p| p[3] > 0 && p[3] < 255));
-        assert!(previews[9].chunks_exact(4).all(|p| p == [0, 0, 0, 0]));
-
-        for background in [[0u8, 0, 0], [255, 255, 255], [16, 192, 224]] {
-            let output = directory.path().join("composited.bgra");
-            let spec = OverlaySpec {
-                input: input.clone(),
-                width,
-                height,
-                fps,
-                start: 0.0,
-                duration: 1.0,
-            };
-            let mut command = ffmpeg_utils::ffmpeg_command();
-            command.args(["-v", "error", "-nostdin", "-f", "lavfi", "-i"]);
-            command.arg(format!(
-                "color=c=0x{:02X}{:02X}{:02X}:s={width}x{height}:r={fps}:d=1,format=bgra",
-                background[0], background[1], background[2],
-            ));
-            // Use the actual executable's capability. Omitting metadata on new
-            // FFmpeg is not an old-version simulation: it may auto-premultiply
-            // pixels again during filter negotiation.
-            add_overlay_input(&mut command, &spec).await.unwrap();
-            command.args([
-                "-filter_complex",
-                "[0:v]format=bgra[base];[base][1:v]overlay=shortest=1:format=rgb:alpha=premultiplied[v]",
-                "-map", "[v]", "-c:v", "rawvideo", "-pix_fmt", "bgra", "-f", "rawvideo", "-y",
-            ]).arg(&output);
-            run_overlay_command(
-                command,
-                spec,
-                ProgressMode::None,
-                "premultiplied alpha test",
-                None::<&Reporter>,
-            )
-            .await
-            .unwrap();
-            let actual = tokio::fs::read(output).await.unwrap();
-            assert_eq!(actual.len(), frame_bytes * frames);
-            for (frame, (drawn, composited)) in previews
-                .iter()
-                .zip(actual.chunks_exact(frame_bytes))
-                .enumerate()
-            {
-                for (pixel, (rgba, bgra)) in drawn
-                    .chunks_exact(4)
-                    .zip(composited.chunks_exact(4))
-                    .enumerate()
-                {
-                    assert_eq!(bgra[3], 255);
-                    for channel in 0..3 {
-                        let alpha = u32::from(rgba[3]);
-                        let expected = (u32::from(rgba[channel]) * alpha
-                            + u32::from(background[channel]) * (255 - alpha)
-                            + 127)
-                            / 255;
-                        let delta = (i32::from(bgra[2 - channel]) - expected as i32).abs();
-                        assert!(delta <= 2,
-                            "background={background:?} frame={frame} pixel={pixel} channel={channel}: {rgba:?} -> {bgra:?}, expected {expected}");
-                    }
-                }
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn rejects_unbounded_work_before_appending_input() {
-        for invalid in [f64::NAN, f64::INFINITY, -1.0, 0.0, 241.0] {
-            let mut spec = spec();
-            spec.fps = invalid;
-            let mut command = Command::new("ffmpeg");
-            assert!(add_overlay_input(&mut command, &spec).await.is_err());
-            assert_eq!(command.as_std().get_args().count(), 0);
-        }
-        let mut spec = spec();
-        spec.width = u32::MAX;
-        assert!(spec.layout().is_err());
-        spec.width = 1920;
-        spec.duration = f64::MAX;
-        assert!(spec.layout().is_err());
-        spec.duration = 1.0;
-        spec.start = f64::NAN;
-        assert!(spec.layout().is_err());
-    }
-
-    #[test]
-    fn image_coordinates_and_sizes_share_the_scheduler_scale() {
-        let events = image_events(
-            &[ImageDanmu {
-                image: crate::danmu2ass::DanmuImage {
-                    path: "emoji.png".into(),
-                    width: 54.0,
-                    height: 36.0,
-                },
-                start: 1.0,
-                end: 9.0,
-                from: 1280.0,
-                to: -54.0,
-                top: 36.0,
-            }],
-            0.8,
-        );
-        let event = &events[0];
-        assert_eq!(event.from, (1920.0, 54.0));
-        assert_eq!(event.to, (-81.0, 54.0));
-        assert_eq!((event.width, event.height), (81.0, 54.0));
-        assert_eq!((event.start, event.end), (1.0, 9.0));
-        assert_eq!(event.opacity, 0.8);
-    }
-}
+mod tests;

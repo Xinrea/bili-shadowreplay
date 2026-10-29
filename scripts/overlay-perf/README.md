@@ -1,15 +1,16 @@
 # Native overlay CPU benchmark
 
 This harness measures the **real native renderer** before/after the image-cache and
-frame-reuse changes, and profiles the **current production premultiplied BGRA-to-FFmpeg stream**.
+frame-reuse changes, and profiles the **current production premultiplied BGRA native media graph**.
 It does not use a browser, GPU, hardware encoder, or a replacement renderer.
 
 ## Run
 
 Prerequisites: Python 3.10+, Rust/Cargo, Git history containing `c9b516a6` (the merged color-emoji implementation), and
-already-installed `ffmpeg`/`ffprobe` with `libx264` and RGB premultiplied `overlay`
-support. Input `alpha_mode` metadata is used when the executable supports it;
-older FFmpeg uses the explicit overlay alpha setting without that option.
+a linked FFmpeg SDK with `libx264` and RGB premultiplied `overlay` support, plus
+`ffprobe` for independent output validation. The production stream uses linked
+libraries and needs no FFmpeg executable. FFmpeg 9 receives premultiplied frame
+metadata; FFmpeg 6 uses the explicit overlay alpha setting.
 Use the native-overlay crate's
 [platform build prerequisites](../../src-tauri/crates/native-overlay/README.md).
 In particular Linux requires its documented Skia source-build environment and
@@ -40,7 +41,7 @@ python3 scripts/overlay-perf/run.py --baseline-only --runs 1
 # Explicitly allow Cargo downloads if the dependency cache is incomplete.
 python3 scripts/overlay-perf/run.py --online
 # Use a particular preinstalled toolchain.
-python3 scripts/overlay-perf/run.py --ffmpeg /path/to/ffmpeg --ffprobe /path/to/ffprobe
+PKG_CONFIG_PATH=/path/to/sdk/lib/pkgconfig python3 scripts/overlay-perf/run.py --ffprobe /path/to/ffprobe
 ```
 
 All generated fixtures, extracted source, executables, Cargo artifacts, MP4s and
@@ -86,7 +87,9 @@ preparation time are captured from the production stream; baseline has no such
 instrumentation and no baseline stage numbers are invented.
 
 Every current stream run uses the actual app `runner.rs` and `native_overlay.rs`
-through Rust `#[path]` imports, with actual `ffmpeg_utils` and sidecar 0.0.3. Only
+through Rust `#[path]` imports, with actual `ffmpeg_utils`. The runner still
+compiles its legacy sidecar helpers, but this benchmark invokes only its native
+entry point. Only
 app-owned progress types/trait and danmu image structs/constants are stubbed.
 The benchmark supplies already-scheduled native image events, passes no progress
 reporter, and **does not validate the real danmu scheduler, task queue, database,
@@ -94,7 +97,8 @@ UI progress reporting or cancellation**. Those need application tests.
 
 FFmpeg composites over a fixed dark background, software-encodes using
 `libx264 -preset veryfast -crf 18 -threads 2`, uses one filter-complex thread,
-and writes YUV420p H.264. Exact arguments are saved per run. It must feed exactly
+and writes YUV420p H.264. The structured plan and linked SDK version are saved
+per run. It must feed exactly
 360 frames / 2,985,984,000 raw bytes with exactly three production buffer
 allocations. `ffprobe -count_frames` must confirm H.264, YUV420p, 1920×1080,
 60 fps, 360 decoded frames, and six seconds. Each output replaces the prior run's
@@ -103,7 +107,7 @@ MP4 for that scene to avoid accumulating media.
 ## Results and correct interpretation
 
 `output/results.json` contains raw repetitions, per-field medians, baseline/current
-core speedup, RGBA sample hashes, `ffprobe` metadata, exact FFmpeg arguments, source
+core speedup, RGBA sample hashes, `ffprobe` metadata, the native plan, source
 hashes, Git revisions/status, Rust/FFmpeg versions, platform and lock/fixture hashes.
 Console output shows the core comparison and current stream median wall time.
 No fixed speedup threshold is asserted: noise or a genuine regression must remain
@@ -111,7 +115,7 @@ visible. Do not compare runs with different build modes, hardware, source hashes
 encoders or fixture hashes without noting the differences.
 
 Current stream measurements are explicitly opt-in via
-`run_overlay_command_profiled`; ordinary production exports collect timings only
+`run_overlay_plan_profiled`; ordinary production exports collect timings only
 when debug logging is enabled (one summary per job, no per-frame logs):
 
 | Field | What it measures |
@@ -126,32 +130,28 @@ when debug logging is enabled (one summary per job, no per-frame logs):
 | `buffer_wait_ms` | Producer wait for a recycled free buffer |
 | `queue_send_wait_ms` | Producer send/backpressure wait |
 | `queue_receive_wait_ms` | Consumer wait for a rendered frame |
-| `pipe_write_ms` | Async raw-video write elapsed time, including downstream backpressure |
-| `ffmpeg_drain_ms` | Post-feed process drain elapsed time when available |
+| `frame_copy_ms` | Copy packed BGRA rows into independently owned AVFrame storage |
+| `native_drain_ms` | Graph, encoder and muxer drain after the raw source finishes |
 | `wall_ms` | Overall current stream operation elapsed time |
 
 These are **CPU-path elapsed durations**, not CPU utilization samples or GPU
-measurements. Producer, pipe consumer and FFmpeg run concurrently; waiting stages
-overlap and **must not be summed** to claim end-to-end time. In particular pipe
-write time, process drain and stream wall time are **not pure encoder CPU time**.
+measurements. Producer and native media worker run concurrently; waiting stages
+overlap and **must not be summed** to claim end-to-end time. Frame-copy, drain
+and stream wall times are **not pure encoder CPU time**.
 This harness does not claim to isolate pure encoding cost.
 
-An additional **separate run** per scene enables FFmpeg `-benchmark_all`. It sums
-FFmpeg's reported `encode_video` and `flush_video` call intervals into
-`encoder_profile_separate_run.ffmpeg_encoder_calls` (user/sys/real milliseconds).
-These are FFmpeg-reported intervals, not an exclusive whole-job encoder budget:
-its threads and decoder/filter activity can overlap. Instrumented wall time is
-not included in the ordinary throughput medians.
+The former `encoder-profile` mode and `-benchmark_all` subprocess intervals have
+been removed. The native API provides no equivalent exclusive encoder timer;
+no synthetic encoder timings are reported.
 
-The optimized production stream reuses three frame buffers (about 23.7 MiB of
-pixel storage at 1080p). Export reads premultiplied BGRA directly from Skia and
-declares `-pixel_format bgra -alpha_mode premultiplied` on the rawvideo input.
-Composition uses RGB `overlay=alpha=premultiplied` before conversion to the
-encoder's final format: NV12 for hardware (plus upload for VAAPI), or planar
-yuv420p for software. Input `alpha_mode` support is detected on the actual
-FFmpeg executable; older releases omit that flag but keep RGB premultiplied composition.
-It is not zero-copy: surface readback and pipe writes remain, but the export
-path no longer converts premultiplied pixels to straight RGBA.
+The production renderer reuses three BGRA buffers (about 23.7 MiB at 1080p).
+The consumer copies each buffer into an independently owned AVFrame before
+returning it to the pool, so filters cannot observe a later render overwriting
+retained pixels. The bounded source queue and timed pool waits both respond to
+cancellation, including when the media worker has not yet started. Export reads
+premultiplied BGRA directly from Skia. Composition uses RGB
+`overlay=alpha=premultiplied` before the encoder format conversion. This retains
+surface readback and one frame copy; it does not claim zero-copy operation.
 
 The serial core benchmark still measures the unchanged straight-RGBA API for
 historical byte-for-byte A/B comparison. The stream benchmark uses the new
@@ -159,7 +159,9 @@ premultiplied export API; do not treat core timings as its readback timings.
 
 ## Recorded local result
 
-These historical measurements precede the premultiplied-BGRA export change.
+These historical subprocess measurements precede both the premultiplied-BGRA
+export and the linked-library migration. Their pipe/encoder timing fields do not
+exist in current reports and are retained here only as historical evidence.
 
 One macOS / Apple M2 Max run (FFmpeg 9.0.2, release builds, three repetitions,
 median) against baseline `553e1b30` produced (its renderer tree is identical to

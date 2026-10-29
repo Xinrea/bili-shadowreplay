@@ -137,14 +137,13 @@ fn core(assets: &Path, name: &str, check: bool, profile: bool) -> Result<Value, 
 }
 
 #[cfg(feature = "current")]
-async fn stream(
-    assets: &Path,
-    name: &str,
-    ffmpeg: &str,
-    output: &str,
-    encoder_profile: bool,
-) -> Result<Value, String> {
-    use overlay_stream::{add_overlay_input, run_overlay_command_profiled, OverlaySpec};
+async fn stream(assets: &Path, name: &str, output: &str) -> Result<Value, String> {
+    use ffmpeg_utils::{
+        ColorSource, FilterGraphPlan, FrameRatePolicy, GraphInput, GraphOutput, MediaInput,
+        MediaKind, MediaOutput, MediaPlan, StreamMode, StreamRoute, StreamSelector, StreamSource,
+        VideoEncodeOptions,
+    };
+    use overlay_stream::{run_overlay_plan_profiled, OverlaySpec};
     let spec = OverlaySpec {
         input: scene(assets, name)?,
         width: WIDTH,
@@ -153,48 +152,56 @@ async fn stream(
         start: 0.0,
         duration: FRAMES as f64 / FPS,
     };
-    let mut command = tokio::process::Command::new(ffmpeg);
-    command.args([
-        "-hide_banner",
-        "-nostdin",
-        "-y",
-        "-filter_complex_threads",
-        "1",
-        "-f",
-        "lavfi",
-        "-i",
-        "color=c=0x203040:s=1920x1080:r=60:d=6",
-    ]);
-    if encoder_profile {
-        command.arg("-benchmark_all");
-    }
-    add_overlay_input(&mut command, &spec).await?;
-    command.args([
-        "-filter_complex",
-        "[0:v]format=bgra[base];[base][1:v]overlay=shortest=1:format=rgb:alpha=premultiplied,format=yuv420p[v]",
-        "-map",
-        "[v]",
-        "-an",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "18",
-        "-threads",
-        "2",
-        "-frames:v",
-        "360",
-        output,
-    ]);
-    let args: Vec<String> = command
-        .as_std()
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
-    let (job, s) = run_overlay_command_profiled::<stubs::NoReporter>(
-        command,
+    let filter = "[0:v]format=bgra[base];[base][1:v]overlay=shortest=1:format=rgb:alpha=premultiplied,format=yuv420p[v]";
+    let mut base = MediaInput::generated_video(ColorSource {
+        color: "0x203040".into(),
+        width: WIDTH,
+        height: HEIGHT,
+        frame_rate_num: 60,
+        frame_rate_den: 1,
+    });
+    base.duration = Some(FRAMES as f64 / FPS);
+    let plan = MediaPlan {
+        inputs: vec![base],
+        outputs: vec![MediaOutput::file(output)],
+        routes: vec![StreamRoute {
+            source: StreamSource::Filter { label: "v".into() },
+            output: 0,
+            required: true,
+            mode: StreamMode::Video(VideoEncodeOptions {
+                encoder: "libx264".into(),
+                threads: Some(2),
+                frame_rate: FrameRatePolicy::Constant { num: 60, den: 1 },
+                options: [
+                    ("preset".into(), "veryfast".into()),
+                    ("crf".into(), "18".into()),
+                ]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            }),
+        }],
+        filter_graph: Some(FilterGraphPlan {
+            spec: filter.into(),
+            inputs: (0..2)
+                .map(|input| GraphInput {
+                    input,
+                    selector: StreamSelector::FirstVideo,
+                    label: format!("{input}:v"),
+                    required: true,
+                })
+                .collect(),
+            outputs: vec![GraphOutput {
+                label: "v".into(),
+                kind: MediaKind::Video,
+            }],
+        }),
+        ..Default::default()
+    };
+    let (_, s) = run_overlay_plan_profiled::<stubs::NoReporter>(
+        plan,
         spec,
+        1,
         runner::ProgressMode::None,
         "overlay-perf",
         None,
@@ -214,52 +221,25 @@ async fn stream(
     }
     Ok(json!({
         "mode": "production_stream", "scene": name, "frames": s.feed.frames,
-        "ffmpeg_args": args, "buffer_allocations": s.buffer_allocations,
+        "native_plan": {"filter": filter, "encoder": "libx264", "preset": "veryfast", "crf": 18, "threads": 2, "fps": 60},
+        "linked_ffmpeg_version": ffmpeg_utils::linked_ffmpeg_version(),
+        "buffer_allocations": s.buffer_allocations,
         "initialization_ms": s.initialization.as_secs_f64() * 1000.0,
         "buffer_allocation_ms": s.buffer_allocation.as_secs_f64() * 1000.0,
         "buffer_wait_ms": s.buffer_wait.as_secs_f64() * 1000.0,
         "queue_send_wait_ms": s.queue_send_wait.as_secs_f64() * 1000.0,
         "queue_receive_wait_ms": s.feed.queue_wait.as_secs_f64() * 1000.0,
-        "pipe_write_ms": s.feed.pipe_write.as_secs_f64() * 1000.0,
+        "frame_copy_ms": s.feed.copy.as_secs_f64() * 1000.0,
         "bytes": s.feed.bytes, "wall_ms": s.wall.as_secs_f64() * 1000.0,
-        "ffmpeg_drain_ms": s.ffmpeg_drain.map(|d| d.as_secs_f64() * 1000.0),
+        "native_drain_ms": s.native_drain.map(|d| d.as_secs_f64() * 1000.0),
         "render": render_stats(&s.render),
-        "ffmpeg_encoder_calls": if encoder_profile { Some(encoder_benchmark(&job.logs)) } else { None },
     }))
-}
-
-/// FFmpeg -benchmark_all intervals, not pure encoder CPU or total wall time.
-#[cfg(feature = "current")]
-fn encoder_benchmark(logs: &[String]) -> Value {
-    let mut count = 0u64;
-    let (mut user, mut sys, mut real) = (0u64, 0u64, 0u64);
-    for line in logs {
-        let fields: Vec<_> = line.split_whitespace().collect();
-        let Some(start) = fields.iter().position(|s| *s == "bench:") else {
-            continue;
-        };
-        let f = &fields[start..];
-        if f.len() < 8 || !matches!(f[7], "encode_video" | "flush_video") {
-            continue;
-        }
-        if let (Ok(u), Ok(s), Ok(r)) = (
-            f[1].parse::<u64>(),
-            f[3].parse::<u64>(),
-            f[5].parse::<u64>(),
-        ) {
-            count += 1;
-            user += u;
-            sys += s;
-            real += r;
-        }
-    }
-    json!({"calls":count,"reported_user_ms":user as f64/1000.0,"reported_sys_ms":sys as f64/1000.0,"reported_real_ms":real as f64/1000.0})
 }
 
 fn run() -> Result<Value, String> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 4 {
-        return Err("Usage: overlay-perf MODE ASSETS SCENE [FFMPEG OUTPUT]".into());
+        return Err("Usage: overlay-perf MODE ASSETS SCENE [OUTPUT]".into());
     }
     let assets = Path::new(&args[2]);
     match args[1].as_str() {
@@ -267,20 +247,12 @@ fn run() -> Result<Value, String> {
         "profile" => core(assets, &args[3], false, true),
         "check" => core(assets, &args[3], true, false),
         #[cfg(feature = "current")]
-        "stream" | "encoder-profile" if args.len() == 6 => {
-            tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-                .map_err(|e| e.to_string())?
-                .block_on(stream(
-                    assets,
-                    &args[3],
-                    &args[4],
-                    &args[5],
-                    args[1] == "encoder-profile",
-                ))
-        }
+        "stream" if args.len() == 5 => tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?
+            .block_on(stream(assets, &args[3], &args[4])),
         _ => Err("Invalid mode or arguments".into()),
     }
 }

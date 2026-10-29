@@ -3,6 +3,7 @@ use std::path::Path;
 use crate::constants;
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
 use crate::subtitle_generator::{GenerateResult, SubtitleGenerator, SubtitleGeneratorType};
+#[cfg(test)]
 use ffmpeg_utils::ffmpeg_command;
 
 use super::{
@@ -162,7 +163,7 @@ async fn encode_native_srt<R: ProgressReporterTrait>(
     style: &str,
     output: &Path,
 ) -> Result<(), String> {
-    use super::native_overlay::{add_overlay_input, run_overlay_command, OverlaySpec};
+    use super::native_overlay::{run_overlay_plan, OverlaySpec};
     use native_overlay::{AssSource, RenderInput, SourceKind};
     use tokio::io::AsyncReadExt;
 
@@ -203,23 +204,19 @@ async fn encode_native_srt<R: ProgressReporterTrait>(
         duration,
     };
     let encoder = hwaccel::get_x264_encoder().await;
-    let mut command = ffmpeg_command();
-    command.arg("-i").arg(file);
-    add_overlay_input(&mut command, &spec).await?;
-    command.args([
-        "-filter_complex",
-        &native_subtitle_graph(encoder),
-        "-map",
-        "[video]",
-        "-map",
-        "0:a?",
-    ]);
-    hwaccel::apply_x264_encoder_only(&mut command, encoder);
-    hwaccel::apply_x264_quality_args(&mut command, encoder);
-    command.args(["-c:a", "copy", "-y"]).arg(output);
-    run_overlay_command(
-        command,
+    let mut video = hwaccel::native_video_options(encoder, None, None, None)?;
+    video.filter = None;
+    let plan = super::danmu::overlay_media_plan(
+        file.to_path_buf(),
+        output.to_path_buf(),
+        native_subtitle_graph(encoder),
+        "video",
+        video,
+    );
+    run_overlay_plan(
+        plan,
         spec,
+        1,
         ProgressMode::stage("压制字幕", ProgressTotal::FirstInput),
         "Encode native SRT subtitle",
         Some(reporter),
@@ -901,5 +898,122 @@ mod libass_native_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod native_srt_tests {
+    use super::*;
+
+    #[derive(Clone)]
+    struct Reporter;
+    #[async_trait::async_trait]
+    impl ProgressReporterTrait for Reporter {
+        async fn update(&self, _: &str) {}
+        async fn finish(&self, _: bool, _: &str) {}
+    }
+
+    fn fixture() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/video/subtitle-black.mp4")
+    }
+
+    async fn red_pixels(video: &Path, time: f64, directory: &Path) -> usize {
+        let image = directory.join("srt-frame.jpg");
+        std::fs::write(
+            &image,
+            ffmpeg_utils::extract_jpeg(video, time, Some(2))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let mut renderer = super::super::native_overlay::system_renderer(
+            512,
+            288,
+            native_overlay::RenderInput {
+                documents: Vec::new(),
+                images: vec![native_overlay::ImageEvent {
+                    path: image,
+                    start: 0.0,
+                    end: 1.0,
+                    from: (0.0, 0.0),
+                    to: (0.0, 0.0),
+                    width: 1920.0,
+                    height: 1080.0,
+                    opacity: 1.0,
+                }],
+            },
+        )
+        .unwrap();
+        renderer
+            .frame(0.0)
+            .unwrap()
+            .chunks_exact(4)
+            .filter(|pixel| {
+                pixel[0] > 80
+                    && pixel[0].saturating_sub(pixel[1]) > 50
+                    && pixel[0].saturating_sub(pixel[2]) > 50
+            })
+            .count()
+    }
+
+    #[derive(Default)]
+    struct Pcm(Vec<i16>);
+    impl ffmpeg_utils::AudioSink for Pcm {
+        fn write(&mut self, samples: &[i16]) -> Result<(), String> {
+            self.0.extend_from_slice(samples);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn native_srt_renders_cue_boundaries_and_copies_audio_without_cli() {
+        let directory = tempfile::tempdir().unwrap();
+        let subtitle = directory.path().join("字幕 [native]'s.srt");
+        std::fs::write(&subtitle, "1\n00:00:00,000 --> 00:00:00,500\nNATIVE SRT\n").unwrap();
+        let output = directory.path().join("burned.mp4");
+        encode_native_srt(
+            &Reporter,
+            &fixture(),
+            &subtitle,
+            "FontName=Arial,FontSize=32,PrimaryColour=&H000000FF,Outline=0",
+            &output,
+        )
+        .await
+        .unwrap();
+        let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+        assert_eq!((metadata.width, metadata.height), (1920, 1080));
+        assert!((metadata.duration - 1.1).abs() < 1e-6);
+        assert!(red_pixels(&output, 0.2, directory.path()).await > 100);
+        assert_eq!(red_pixels(&output, 0.9, directory.path()).await, 0);
+        let options = ffmpeg_utils::AudioDecodeOptions {
+            sample_rate: 16_000,
+        };
+        let expected = ffmpeg_utils::decode_audio(&fixture(), options, Pcm::default())
+            .await
+            .unwrap()
+            .sink
+            .0;
+        let actual = ffmpeg_utils::decode_audio(&output, options, Pcm::default())
+            .await
+            .unwrap()
+            .sink
+            .0;
+        assert_eq!(actual, expected, "native SRT must preserve source audio");
+    }
+
+    #[tokio::test]
+    async fn native_srt_rejects_invalid_input_and_keeps_previous_output_without_cli() {
+        let directory = tempfile::tempdir().unwrap();
+        let subtitle = directory.path().join("invalid.srt");
+        let output = directory.path().join("kept.mp4");
+        std::fs::write(&subtitle, "invalid subtitle").unwrap();
+        std::fs::write(&output, b"previous export").unwrap();
+        assert!(
+            encode_native_srt(&Reporter, &fixture(), &subtitle, "", &output)
+                .await
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&output).unwrap(), b"previous export");
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 2);
     }
 }

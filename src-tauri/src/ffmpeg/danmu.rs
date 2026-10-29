@@ -7,12 +7,16 @@ use std::{
     collections::{HashMap, HashSet},
     num::NonZeroU32,
     path::{Path, PathBuf},
-    sync::OnceLock,
     time::Duration,
 };
 
 use danmu_stream::EmojiContent;
+#[cfg(test)]
 use ffmpeg_utils::ffmpeg_command;
+use ffmpeg_utils::{
+    FilterGraphPlan, FrameRatePolicy, GraphInput, GraphOutput, MediaInput, MediaKind, MediaOutput,
+    MediaPlan, MediaResourceLease, StreamMode, StreamRoute, StreamSelector, StreamSource,
+};
 use futures::{stream, StreamExt};
 use recorder::danmu::DanmuEntry;
 use sha2::{Digest, Sha256};
@@ -29,48 +33,12 @@ use crate::{
 
 use super::{
     hwaccel,
-    native_overlay::{add_overlay_input, image_events, run_overlay_command, OverlaySpec},
-    runner::{ProgressMode, ProgressTotal, TempArtifact},
+    native_overlay::{image_events, run_overlay_plan, OverlaySpec},
+    runner::{ProgressMode, ProgressTotal},
 };
 
 const MIN_DANMU_FPS: f64 = 60.0;
 
-/// FFmpeg 7 still accepts `-filter_complex_script`. FFmpeg 9 removed it; the
-/// replacement `-/filter_complex <file>` reads the same graph from a file, which
-/// keeps long danmaku tracks off the OS command-line limit.
-fn select_filter_complex_file_option(help: &str) -> &'static str {
-    if help.contains("-filter_complex_script") {
-        "-filter_complex_script"
-    } else {
-        "-/filter_complex"
-    }
-}
-
-pub(super) async fn filter_complex_file_option() -> &'static str {
-    static OPTION: OnceLock<&'static str> = OnceLock::new();
-    if let Some(option) = OPTION.get() {
-        return option;
-    }
-
-    let help = match ffmpeg_command()
-        .args(["-hide_banner", "-h", "full"])
-        .output()
-        .await
-    {
-        Ok(output) => {
-            let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-            text.push_str(&String::from_utf8_lossy(&output.stderr));
-            text
-        }
-        Err(error) => {
-            log::warn!("Failed to query ffmpeg options; using -/filter_complex: {error}");
-            String::new()
-        }
-    };
-    let option = select_filter_complex_file_option(&help);
-    let _ = OPTION.set(option);
-    OPTION.get().copied().unwrap_or(option)
-}
 const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 const IMAGE_TIMEOUT: Duration = Duration::from_secs(10);
 // Keep in sync with src/lib/danmu-content.ts. Never let recorded URLs request
@@ -321,8 +289,8 @@ async fn danmu_plan(
 }
 
 /// Lay out the danmaku track into `danmu.ass` in `directory` and return the
-/// image danmaku to overlay. Filters must run with `directory` as the working
-/// directory.
+/// image danmaku to overlay. The native renderer reads absolute asset paths;
+/// the caller holds the directory through a media resource lease.
 pub(super) async fn prepare_danmu_layers<R: ProgressReporterTrait>(
     reporter: Option<&R>,
     danmus: &[DanmuEntry],
@@ -362,8 +330,8 @@ pub async fn encode_video_danmu_with_settings<R: ProgressReporterTrait>(
     if let Some(settings) = settings {
         settings.validate()?;
     }
-    // Use fixed relative names inside a private job directory. No user/CDN path
-    // is interpolated into filter syntax (including Windows drive letters).
+    // Asset ownership is transferred to the media plan and renderer worker.
+    // Cancelling the awaiting future must not remove images still being read.
     let directory = tempfile::Builder::new()
         .prefix("bili-danmu-")
         .tempdir()
@@ -378,7 +346,7 @@ pub async fn encode_video_danmu_with_settings<R: ProgressReporterTrait>(
         plan,
         options,
         bitrate,
-        directory.path(),
+        Some(MediaResourceLease::new(directory)),
         settings,
     )
     .await
@@ -420,7 +388,7 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
     plan: DanmuRenderPlan,
     options: &Danmu2AssOptions,
     bitrate: Option<NonZeroU32>,
-    directory: &Path,
+    resource: Option<MediaResourceLease>,
     settings: Option<&crate::project::RenderSettings>,
 ) -> Result<PathBuf, String> {
     let filename = file
@@ -453,35 +421,80 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
         start: 0.0,
         duration: probe_overlay_duration(file, metadata.duration).await?,
     };
-    let mut command = ffmpeg_command();
-    command
-        .current_dir(directory)
-        .args(["-nostdin", "-i"])
-        .arg(&input);
-    add_overlay_input(&mut command, &spec).await?;
-    command
-        .arg("-filter_complex")
-        .arg(graph)
-        .args(["-map", "[outv]", "-map", "0:a?"]);
-    hwaccel::apply_x264_encoder_only(&mut command, encoder);
-    hwaccel::apply_material_quality(&mut command, encoder, bitrate, settings);
-    command
-        .args(["-c:a", "copy", "-r", &fps.to_string(), "-y"])
-        .arg(&absolute_output);
-    let output_guard = TempArtifact::new(&absolute_output);
-    run_overlay_command(
-        command,
+    let mut video = hwaccel::native_video_options(encoder, None, bitrate, settings)?;
+    // The global graph already contains the encoder's format/upload suffix.
+    video.filter = None;
+    let (num, den) = ffmpeg_utils::parse_frame_rate(fps).map_err(|error| error.to_string())?;
+    video.frame_rate = FrameRatePolicy::Constant { num, den };
+    let mut media = overlay_media_plan(input, absolute_output.clone(), graph, "outv", video);
+    media.resources.extend(resource);
+    run_overlay_plan(
+        media,
         spec,
+        1,
         ProgressMode::stage("压制弹幕", ProgressTotal::FirstInput),
         "Encode video danmu",
         reporter,
     )
     .await?;
-    output_guard.keep();
-    // The caller's TempDir keeps assets alive through encoding and removes them
-    // on error/cancellation. The FFmpeg factory uses kill_on_drop for the process.
     log::info!("Encode video danmu task end: {}", output_path.display());
     Ok(output_path)
+}
+
+/// Match explicit `[video]` and `0:a?` maps: retain every audio stream and omit
+/// embedded subtitle streams. The raw source is appended by run_overlay_plan.
+pub(super) fn overlay_media_plan(
+    input: PathBuf,
+    output: PathBuf,
+    graph: String,
+    label: &str,
+    video: ffmpeg_utils::VideoEncodeOptions,
+) -> MediaPlan {
+    MediaPlan {
+        inputs: vec![MediaInput::file(input)],
+        outputs: vec![MediaOutput::file(output)],
+        routes: vec![
+            StreamRoute {
+                source: StreamSource::Filter {
+                    label: label.into(),
+                },
+                output: 0,
+                required: true,
+                mode: StreamMode::Video(video),
+            },
+            StreamRoute {
+                source: StreamSource::Input {
+                    input: 0,
+                    selector: StreamSelector::AllAudio,
+                },
+                output: 0,
+                required: false,
+                mode: StreamMode::Copy,
+            },
+        ],
+        filter_graph: Some(FilterGraphPlan {
+            spec: graph,
+            inputs: vec![
+                GraphInput {
+                    input: 0,
+                    selector: StreamSelector::FirstVideo,
+                    label: "0:v".into(),
+                    required: true,
+                },
+                GraphInput {
+                    input: 1,
+                    selector: StreamSelector::FirstVideo,
+                    label: "1:v".into(),
+                    required: true,
+                },
+            ],
+            outputs: vec![GraphOutput {
+                label: label.into(),
+                kind: MediaKind::Video,
+            }],
+        }),
+        ..Default::default()
+    }
 }
 
 #[cfg(test)]
@@ -501,6 +514,114 @@ mod tests {
         std::fs::write(&invalid, b"\x89PNG\r\n\x1a\nnot an image").unwrap();
         assert!(decode_image(&invalid, &output).await.is_err());
         assert_eq!(std::fs::read(&output).unwrap(), retained);
+    }
+
+    #[tokio::test]
+    async fn native_danmu_export_preserves_sixty_fps_and_copied_audio_without_cli() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.mp4");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/video/subtitle-black.mp4");
+        std::fs::copy(fixture, &source).unwrap();
+        let options = Danmu2AssOptions::default();
+        let plan = DanmuRenderPlan {
+            ass: super::super::subtitle_native::srt_to_ass(
+                "1\n00:00:00,000 --> 00:00:00,800\nNative\n",
+                "FontName=Arial,FontSize=36,PrimaryColour=&H000000FF",
+            )
+            .unwrap(),
+            images: vec![],
+        };
+        let output = encode_danmu_plan(
+            None::<&NoopReporter>,
+            &source,
+            plan,
+            &options,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+        assert_eq!((metadata.width, metadata.height), (1920, 1080));
+        assert_eq!(metadata.fps, 60.0);
+        assert!(
+            (metadata.duration - 1.1).abs() < 0.02,
+            "{}",
+            metadata.duration
+        );
+        #[derive(Default)]
+        struct Pcm(Vec<i16>);
+        impl ffmpeg_utils::AudioSink for Pcm {
+            fn write(&mut self, data: &[i16]) -> Result<(), String> {
+                self.0.extend_from_slice(data);
+                Ok(())
+            }
+        }
+        let decode_options = ffmpeg_utils::AudioDecodeOptions { sample_rate: 16000 };
+        let before = ffmpeg_utils::decode_audio(&source, decode_options, Pcm::default())
+            .await
+            .unwrap()
+            .sink
+            .0;
+        let after = ffmpeg_utils::decode_audio(&output, decode_options, Pcm::default())
+            .await
+            .unwrap()
+            .sink
+            .0;
+        assert_eq!(before, after);
+        let retained = std::fs::read(&output).unwrap();
+        assert!(encode_danmu_plan(
+            None::<&NoopReporter>,
+            &source,
+            DanmuRenderPlan {
+                ass: "invalid ASS".into(),
+                images: vec![],
+            },
+            &options,
+            None,
+            None,
+            None
+        )
+        .await
+        .is_err());
+        assert_eq!(std::fs::read(&output).unwrap(), retained);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 2);
+        // Read rendered pixels through the linked JPEG decoder and the same
+        // Skia image implementation used for previews, without a CLI helper.
+        let image = directory.path().join("frame.jpg");
+        ffmpeg_utils::write_jpeg(&output, 0.3, Some(2), &image)
+            .await
+            .unwrap();
+        let mut preview = native_overlay::Renderer::new(
+            1920,
+            1080,
+            native_overlay::RenderInput {
+                documents: vec![],
+                images: vec![native_overlay::ImageEvent {
+                    path: image,
+                    start: 0.0,
+                    end: 1.0,
+                    from: (0.0, 0.0),
+                    to: (0.0, 0.0),
+                    width: 1920.0,
+                    height: 1080.0,
+                    opacity: 1.0,
+                }],
+            },
+            vec![],
+        )
+        .unwrap();
+        let pixels = preview.frame(0.0).unwrap();
+        assert!(
+            pixels
+                .chunks_exact(4)
+                .filter(|p| p[0] > 100
+                    && p[0] > p[1].saturating_add(30)
+                    && p[0] > p[2].saturating_add(30))
+                .count()
+                > 50
+        );
     }
 
     fn emoji(url: &str) -> EmojiContent {
@@ -531,18 +652,6 @@ mod tests {
     impl ProgressReporterTrait for NoopReporter {
         async fn update(&self, _content: &str) {}
         async fn finish(&self, _success: bool, _message: &str) {}
-    }
-
-    #[test]
-    fn filter_complex_file_option_follows_the_installed_ffmpeg() {
-        assert_eq!(
-            select_filter_complex_file_option("-filter_complex_script <filename>"),
-            "-filter_complex_script"
-        );
-        assert_eq!(
-            select_filter_complex_file_option("-filter_complex <graph>\n-filter_complex_threads"),
-            "-/filter_complex"
-        );
     }
 
     #[test]
@@ -940,7 +1049,7 @@ mod tests {
             plan,
             &options,
             None,
-            &job,
+            None,
             None,
         )
         .await
@@ -1061,7 +1170,7 @@ mod tests {
             plan,
             &options,
             None,
-            directory.path(),
+            None,
             None,
         )
         .await

@@ -262,8 +262,9 @@
   }
 </script>
 
+<!-- Wait for blur/change to commit the offset before unmounting its input. -->
 <svelte:window
-  onpointerdown={(event) => {
+  onclick={(event) => {
     if (show_settings && !settings_control.contains(event.target as Node)) {
       show_settings = false;
     }

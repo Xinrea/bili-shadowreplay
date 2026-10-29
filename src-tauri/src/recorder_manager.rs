@@ -14,6 +14,7 @@ use crate::webhook::poster::WebhookPoster;
 use chrono::DateTime;
 use m3u8_rs::{MediaPlaylist, MediaPlaylistType};
 use recorder::account::Account;
+use recorder::core::playlist::normalize_archive_playlist;
 use recorder::danmu::{DanmuEntry, DanmuStorage};
 use recorder::errors::RecorderError;
 use recorder::events::RecorderEvent;
@@ -920,8 +921,10 @@ impl RecorderManager {
         if let Result::Ok((_, mut pl)) = m3u8_rs::parse_media_playlist(&bytes) {
             if self.is_outdated_playlist(platform, room_id, live_id).await {
                 pl.end_list = true;
-                pl.playlist_type = Some(MediaPlaylistType::Vod);
             }
+            // Old on-disk archives may lack EVENT and a usable TARGETDURATION.
+            // Repair the response too, without rewriting an actively recorded file.
+            normalize_archive_playlist(&mut pl);
             return Ok(pl);
         }
         Err(RecorderManagerError::M3u8ParseFailed {

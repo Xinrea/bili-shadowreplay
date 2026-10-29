@@ -104,6 +104,8 @@ impl FlvRecorder {
             "4",
             "-hls_list_size",
             "0",
+            "-hls_playlist_type",
+            "event",
             "-hls_flags",
             "append_list+omit_endlist",
             "-hls_segment_filename",

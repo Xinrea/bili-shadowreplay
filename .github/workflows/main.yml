@@ -14,7 +14,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: "macos-latest" # for Intel based macs.
+          - platform: "macos-15-intel" # native Intel Homebrew headers and libraries.
             args: "--target x86_64-apple-darwin"
             target: "x86_64-apple-darwin"
             updater-target: "darwin-x86_64"
@@ -23,19 +23,19 @@ jobs:
             target: "aarch64-apple-darwin"
             updater-target: "darwin-aarch64"
           - platform: "ubuntu-24.04"
-            args: ""
+            args: "--features vulkan-export --config src-tauri/tauri.linux.vulkan.conf.json"
             target: ""
             updater-target: "linux-x86_64"
           # CUDA 13.1 nvcc only supports MSVC from VS 2019-2022. The
           # windows-latest image migrated to VS 2026 in June 2026, which
           # nvcc rejects, so pin the CUDA build to windows-2022.
           - platform: "windows-2022"
-            args: "--features cuda"
+            args: "--features cuda,vulkan-export"
             features: "cuda"
             target: ""
             updater-target: "windows-x86_64-cuda"
           - platform: "windows-latest"
-            args: ""
+            args: "--features vulkan-export"
             features: "cpu"
             target: ""
             updater-target: "windows-x86_64-cpu"
@@ -46,6 +46,12 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Install FFmpeg 8 and 9 SDKs (macOS only)
+        if: runner.os == 'macOS'
+        run: |
+          brew install ffmpeg@8 ffmpeg@9 pkg-config
+          echo "BSR_FFMPEG_PREFIXES=$(brew --prefix ffmpeg@8):$(brew --prefix ffmpeg@9)" >> "$GITHUB_ENV"
+
       - name: install dependencies (ubuntu only)
         if: runner.os == 'Linux'
         run: |
@@ -55,6 +61,41 @@ jobs:
             clang libclang-dev ninja-build python3 pkg-config \
             libicu-dev libharfbuzz-dev libfreetype-dev libfontconfig1-dev \
             libpng-dev zlib1g-dev libexpat1-dev libjpeg-dev
+
+      - name: Install Vulkan SDK (Linux and Windows)
+        if: runner.os == 'Linux' || runner.os == 'Windows'
+        uses: humbletim/install-vulkan-sdk@30ba978f977e81b72d091fc8888feb1fb26f9aff # v1.2
+        with:
+          version: 1.4.363.0
+          cache: true
+
+      - name: Install FFmpeg 8 and 9 SDKs and stage shared runtime (Linux only)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest
+          sdk_root="$RUNNER_TEMP/ffmpeg"
+          mkdir -p "$sdk_root" src-tauri/ffmpeg-runtime
+          curl -fL --retry 3 "$base/checksums.sha256" -o "$sdk_root/checksums.sha256"
+          prefixes=()
+          for version in 8.1 9.0; do
+            archive="ffmpeg-n${version}-latest-linux64-gpl-shared-${version}.tar.xz"
+            curl -fL --retry 3 "$base/$archive" -o "$sdk_root/$archive"
+            (cd "$sdk_root" && grep -F "  $archive" checksums.sha256 | sha256sum --check --strict)
+            prefix="$sdk_root/$version"
+            mkdir -p "$prefix"
+            tar -xf "$sdk_root/$archive" --strip-components=1 -C "$prefix"
+            prefixes+=("$prefix")
+          done
+          echo "BSR_FFMPEG_PREFIXES=$(IFS=:; echo "${prefixes[*]}")" >> "$GITHUB_ENV"
+          for library in "$sdk_root/9.0/lib/"*.so; do
+            soname=$(patchelf --print-soname "$library")
+            cp -L "$library" "src-tauri/ffmpeg-runtime/$soname"
+            # shellcheck disable=SC2016
+            patchelf --set-rpath '$ORIGIN' "src-tauri/ffmpeg-runtime/$soname"
+          done
+          cp "$sdk_root/9.0/LICENSE.txt" src-tauri/ffmpeg-runtime/
 
       - name: Configure source Skia with system libraries (Linux only)
         if: runner.os == 'Linux'
@@ -80,14 +121,14 @@ jobs:
         uses: dtolnay/rust-toolchain@stable # Set this to dtolnay/rust-toolchain@nightly
         with:
           # Those targets are only used on macos runners so it's in an `if` to slightly speed up windows and linux builds.
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ runner.os == 'macOS' && matrix.target || '' }}
           # llvm-objcopy patches the Windows Skia archive below.
           components: ${{ runner.os == 'Windows' && 'llvm-tools' || '' }}
 
       - name: Prepare Skia without V8 ICU symbol clashes (Windows only)
         if: runner.os == 'Windows'
         # Sets SKIA_BINARIES_URL; see docs/development/native-overlay.md.
-        run: node scripts/prepare-windows-skia.mjs "${{ runner.temp }}/skia-binaries"
+        run: node scripts/prepare-windows-skia.mjs "${{ runner.temp }}/skia-binaries" --vulkan
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
@@ -126,13 +167,13 @@ jobs:
           ninja --version
           & $nvcc --version
 
-      - name: Setup ffmpeg
+      - name: Install FFmpeg 8 and 9 SDKs and stage shared runtime (Windows only)
         if: runner.os == 'Windows'
-        working-directory: ./
         shell: pwsh
-        # running script ffmpeg_setup.ps1 to install ffmpeg on windows.
-        # This script is located in the root of the repository.
-        run: ./ffmpeg_setup.ps1
+        run: |
+          choco install pkgconfiglite -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "Failed to install pkg-config" }
+          ./ffmpeg_setup.ps1 -Versions "8.1","9.0" -SdkRoot "$env:RUNNER_TEMP/ffmpeg"
 
       - name: install frontend dependencies
         # If you don't have `beforeBuildCommand` configured you may want to build your frontend here too.

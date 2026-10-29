@@ -26,7 +26,8 @@ dist-ssr
 *.zip
 
 src-tauri/*.exe
-src-tauri/windows-runtime/*.dll
+src-tauri/windows-runtime/
+src-tauri/ffmpeg-runtime/
 
 # test files
 src-tauri/tests/audio/*.srt

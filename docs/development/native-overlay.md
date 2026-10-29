@@ -2,6 +2,68 @@
 
 原生弹幕渲染使用 `native-overlay` crate 和 Skia 0.82 的 `textlayout` 功能。Linux 使用源码构建 Skia，并链接发行版提供的系统库；macOS 保持上游预编译 Skia 的默认路径；Windows 使用经过处理的上游预编译 Skia（见下文）。Windows 和 macOS 都不需要设置下文的 Linux 专用变量。
 
+## macOS：Metal 弹幕压制
+
+`native-overlay` 的 `metal` feature 为现有渲染器添加 GPU 后端，预览、字幕和项目布局仍共享
+上游的同一套解析、字体与缓存。`gpu-export` 共用解码、归一化和封装流程，macOS 使用 Metal 绘制/叠加 → VideoToolbox
+编码的原生流水线；应用通过自己的 `--gpu-export` 子进程入口执行任务并处理进度与取消。
+
+构建时安装 Homebrew 开发依赖：
+
+```sh
+brew install ffmpeg pkg-config
+```
+
+默认使用 `brew --prefix ffmpeg` 的头文件，要求 **FFmpeg >= 8.0**，只构建一个 ABI 适配器。
+不下载、不源码编译 FFmpeg，也不要求第二套 FFmpeg。只有显式设置构建变量
+`BSR_FFMPEG_PREFIXES`（以 `:` 分隔的绝对安装前缀）才会构建多个 ABI。例如安装了 8 和 9 后：
+
+```sh
+BSR_FFMPEG_PREFIXES="$(brew --prefix ffmpeg@8):$(brew --prefix ffmpeg@9)" \
+  cargo build --manifest-path src-tauri/Cargo.toml
+```
+
+运行时从标准 Homebrew 路径和构建时指定的前缀中加载一套完整、匹配已构建适配器的动态库，
+也可通过 `BSR_FFMPEG_LIBRARY_DIR` 指定库目录。没有匹配版本时导出会报错，不影响应用启动。
+同一个安装包支持 8/9 的前提是构建时包含了两个 ABI；默认单版本包需要其对应 ABI。
+macOS 发布 workflow 会安装 `ffmpeg@8`、`ffmpeg@9` 并设置上述变量，每个架构的发布包均包含两个 ABI。
+本地未设置变量时仍只构建当前 `ffmpeg` 的一个 ABI。
+Intel 和 Apple Silicon 使用各自架构的构建机和运行库，原生组件部署目标为 macOS 13.3。
+详细的流水线、时间轴、旋转处理和库加载说明见
+[`gpu-export/README.md`](../../src-tauri/crates/gpu-export/README.md)。
+
+切片导出和项目投稿同样开放原生 GPU 后端，与弹幕开关无关。每段的 FFmpeg
+剪辑、画中画和静态图层结果以未压缩 NV12/NUT 流送入 worker；生成的字幕、弹幕和
+图片弹幕由 Skia GPU 绘制，计算着色器再与视频做最终 GPU 合成，随后直接交硬件编码器。音频沿用原有
+分段 WAV 和最终混音；多份 ASS 的类型与分段时间偏移会一起传递，渲染缓存区分 CPU/GPU。
+此流程由 Metal 和 Vulkan 共用，不生成额外的中间视频文件。
+
+## Linux / Windows：Vulkan 弹幕压制
+
+通过 `vulkan-export` Cargo feature 启用，本地默认构建不开启；桌面 Release workflow
+在 Linux，以及 Windows 的 CPU/CUDA 两个发行版本中启用。
+它复用同一套 Skia 字体、解析和缓存，在 Vulkan 上绘制弹幕与合成 NV12，再把 GPU 帧
+直接交给 FFmpeg 的 `h264_vulkan` / `hevc_vulkan`，合成帧不回读 CPU。这里使用
+Vulkan Video 编码接口；已在 Linux / RTX 4090 上运行 FFmpeg 8/9，其他 GPU 与 Windows
+仍需实机验证。能否运行取决于具体 GPU、驱动与编码扩展。
+
+构建额外需要 FFmpeg >= 8 的共享库开发 SDK、Vulkan SDK 与 `glslc`。
+Windows 需给下文 Skia 准备脚本加 `--vulkan`，然后使用
+`yarn tauri build --features vulkan-export`；Linux 沿用下文的系统库 Skia 构建环境，
+并使用同一 feature。两端共用按 SDK 编译的 ABI 适配器和运行时加载器；默认只构建一个 ABI，
+显式设置 `BSR_FFMPEG_PREFIXES` 才构建多个，运行时可选择匹配的 FFmpeg 8 或 9 共享库。
+Windows 的 SDK 前缀用分号分隔，运行库目录通常为 `bin/`。
+发布构建会显式设置 `BSR_FFMPEG_PREFIXES`，编译 FFmpeg 8/9 两个 ABI；本地不设置时仍只使用一套 SDK。
+Linux 使用 BtbN 的 GPL shared SDK，并把 FFmpeg 9 的 `.so` 放入包内的
+`ffmpeg-runtime/` 资源目录；库的 RPATH 为 `$ORIGIN`，从同目录解析依赖。
+Windows 的 `ffmpeg_setup.ps1` 改用 BtbN 的 GPL shared 包，校验 SHA-256 后同时准备
+开发 SDK、三个命令行程序和 DLL；DLL 经现有 `windows-runtime` 资源映射安装到应用目录。
+脚本单独运行默认只安装 FFmpeg 9，Release 显式请求 8/9 SDK，只打包较新的运行库。
+Linux 打包 Vulkan 版本时额外使用 `--config src-tauri/tauri.linux.vulkan.conf.json`，
+并将共享库准备在 `src-tauri/ffmpeg-runtime/`。Vulkan 驱动由用户系统提供。
+详细要求、限制和构建命令见
+[`gpu-export/README.md`](../../src-tauri/crates/gpu-export/README.md)。
+
 ## Windows：处理 Skia 内置 ICU 的符号冲突
 
 上游 Windows 预编译包的 `skunicode_icu.lib` 与 V8（`deno_core` 依赖）都内置了 ICU 74。Skia 的 ICU 关闭了版本化重命名，而 `ulocimp_getParent` 等少数 ICU 内部符号在 V8 的 ICU 中同样没有版本后缀，两边定义同名符号。MSVC 链接时会报 `LNK2005 ulocimp_getParent already defined`，未报错的同名符号也可能让 Skia 的 ICU 调用到 V8 的实现。
@@ -63,7 +125,7 @@ yarn tauri dev
 
 ## 打包与部署
 
-Ubuntu 24.04 的 `.deb` 在 Tauri 自动添加的桌面依赖之外，显式声明 Skia 所需的运行库：`libicu74`、`libharfbuzz0b`、`libharfbuzz-subset0`、`libfreetype6`、`libfontconfig1`、`libpng16-16t64`、`libjpeg-turbo8`、`libexpat1` 和 `zlib1g`。开发包（`*-dev`）、Clang、Ninja 和 Python 仅用于构建，不应作为最终用户的运行依赖。
+Ubuntu 24.04 的 `.deb` 在 Tauri 自动添加的桌面依赖之外，显式声明 Skia 所需的运行库：`libicu74`、`libharfbuzz0b`、`libharfbuzz-subset0`、`libfreetype6`、`libfontconfig1`、`libpng16-16t64`、`libjpeg-turbo8`、`libexpat1` 和 `zlib1g`，以及 Vulkan loader `libvulkan1`。开发包（`*-dev`）、Clang、Ninja 和 Python 仅用于构建，不应作为最终用户的运行依赖。
 
 AppImage 也受到构建系统 ABI 和系统运行库的限制，不代表兼容 Ubuntu 22.04。其他发行版需自行确认相应的共享库名称、ABI 和版本；Ubuntu 包名不能直接用于 Debian。
 

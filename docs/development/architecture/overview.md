@@ -174,7 +174,7 @@ src-tauri/
 
 - **recorder**: 核心录制功能，包含多平台实现
 - **danmu_stream**: 弹幕流处理，支持实时弹幕捕获和存储
-- **ffmpeg_utils**: 应用层与 recorder 共用的 `ffmpeg-next` 媒体探测与 `VideoMetadata` 类型；fMP4 通过可 seek 的 AVIO 拼接 init 和 media；音频解码、单声道 PCM 重采样由阻塞工作线程流式送入 sink，供波形和 WAV 提取复用；编码仍使用统一的 FFmpeg CLI 命令工厂
+- **ffmpeg_utils**: 应用层与 recorder 共用的 `ffmpeg-next` 媒体探测与 `VideoMetadata` 类型；fMP4 通过可 seek 的 AVIO 拼接 init 和 media；音频解码、单声道 PCM 重采样由阻塞工作线程流式送入 sink，供波形和 WAV 提取复用。范围 WAV 使用 `libavfilter` 保留 CLI 的 seek、时间戳恢复与逐帧截止行为；编码仍使用统一的 FFmpeg CLI 命令工厂
 
 ## 数据流
 

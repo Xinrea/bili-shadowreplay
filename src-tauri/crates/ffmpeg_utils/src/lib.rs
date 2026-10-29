@@ -6,13 +6,15 @@
 //! change; the application uses the same description for finished recordings.
 //!
 //! What does not belong here: anything that needs application state, such as
-//! progress reporting, subtitle generation or ffmpeg filter graphs.
+//! progress reporting, subtitle generation or application-specific filter graphs.
 
 mod audio;
 mod command;
 mod metadata;
 
-pub use audio::{decode_audio, AudioDecodeOptions, AudioDecodeResult, AudioSink};
+pub use audio::{
+    decode_audio, decode_audio_range, AudioDecodeOptions, AudioDecodeResult, AudioRange, AudioSink,
+};
 pub use command::{ffmpeg_command, ffmpeg_path, ffprobe_command, ffprobe_path, path_str};
 pub use metadata::{
     extract_video_metadata, extract_video_metadata_with_init, probe_media, AudioStreamMetadata,

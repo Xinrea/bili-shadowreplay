@@ -18,7 +18,7 @@ src-tauri/
 │   │   │   └── helpers_test.rs
 │   │   └── Cargo.toml
 │   ├── danmu_stream/      # Danmu provider tests
-│   ├── ffmpeg_utils/      # Native ffmpeg-next probes and FFmpeg CLI helpers;
+│   ├── ffmpeg_utils/      # Native ffmpeg-next probes/audio and FFmpeg CLI helpers;
 │   │                      # fixtures in `src-tauri/tests/video/`
 │   └── whisper-cpp-rs/    # (Excluded from CI - requires CMake)
 ```
@@ -31,7 +31,7 @@ src-tauri/
    ```bash
    sudo apt-get update
    sudo apt-get install -y libssl-dev pkg-config clang libclang-dev \
-     libavformat-dev libavcodec-dev libavutil-dev libswresample-dev ffmpeg
+     libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libavfilter-dev ffmpeg
    ```
 
 2. **Rust Toolchain**:
@@ -66,7 +66,7 @@ cargo test --package recorder -- --nocapture
 cargo test --package recorder test_platform_type_string_conversion
 ```
 
-The native probe layer requires matching FFmpeg development libraries; see
+The native media layer requires matching FFmpeg development libraries; see
 [FFmpeg build configuration](getting-started/config/ffmpeg.md).
 To verify metadata and recording behavior:
 
@@ -84,7 +84,17 @@ and verify init-map inheritance, EXTINF accounting, damaged TS appends and
 stream-shape changes. Native audio tests cover streaming decode/resampling,
 resampler tail draining, waveform windows, WAV output and contiguous 30-second
 chunks. Optional CLI comparisons also check compressed-audio PCM output and stream
-selection. Other encoding tests still require the FFmpeg CLI.
+selection. Range extraction comparisons require identical sample counts and PCM
+samples for AAC (M4A, MP4, FLV, ADTS), MP3 and PCM, covering seek-zero priming,
+fractional starts, delayed/shifted audio, codec tails, EOF and sample-rate changes.
+Fixture-based range and cancellation tests run without a CLI; optional oracle
+tests skip when `ffmpeg` is unavailable. WAV application tests also check atomic
+publication and cleanup after cancelling blocked HTTP input. Other encoding tests
+still require the FFmpeg CLI.
+
+For PCM parity tests, put the CLI from the linked SDK on `PATH`. Different FFmpeg
+releases can schedule the last audio frame differently; each native result is
+compared strictly with its matching CLI, without sample-count or PCM tolerances.
 
 To smoke-test Douyu against a **currently live** numeric room using the
 production `DouyuRecorder` loop for five minutes (requires `ffmpeg` on `PATH`):

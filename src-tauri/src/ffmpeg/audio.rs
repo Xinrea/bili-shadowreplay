@@ -7,7 +7,10 @@ use std::{
 use tempfile::{tempdir_in, Builder, NamedTempFile, TempDir};
 
 use super::runner::{FfmpegJob, ProgressMode};
-use ffmpeg_utils::{decode_audio, probe_media, AudioDecodeOptions, AudioSink, AudioStreamMetadata};
+use ffmpeg_utils::{
+    decode_audio, decode_audio_range, probe_media, AudioDecodeOptions, AudioRange, AudioSink,
+    AudioStreamMetadata,
+};
 
 const TRANSCRIPTION_SAMPLE_RATE: u32 = 16_000;
 const CHUNK_SAMPLES: usize = TRANSCRIPTION_SAMPLE_RATE as usize * 30;
@@ -158,7 +161,7 @@ pub(crate) async fn extract_audio_chunks_guarded(
 pub async fn extract_full_audio(file: &Path) -> Result<PathBuf, String> {
     log::info!("Extract full audio: {}", file.display());
     let output_path = file.with_extension("full.wav");
-    write_native_wav(file, &output_path).await?;
+    write_native_wav(file, &output_path, None).await?;
     Ok(output_path)
 }
 
@@ -169,36 +172,15 @@ pub(crate) async fn extract_audio_segment(
     duration_sec: f64,
     output_path: &Path,
 ) -> Result<(), String> {
-    let job = FfmpegJob::new()
-        .args([
-            "-ss".to_string(),
-            start_sec.to_string(),
-            "-i".to_string(),
-            file.to_string_lossy().into_owned(),
-            "-t".to_string(),
-            duration_sec.to_string(),
-            "-ar".to_string(),
-            "16000".to_string(),
-            "-ac".to_string(),
-            "1".to_string(),
-            "-c:a".to_string(),
-            "pcm_s16le".to_string(),
-            "-vn".to_string(),
-            "-y".to_string(),
-        ])
-        .output(output_path.to_path_buf())
-        .progress(ProgressMode::Time)
-        .context("Extract audio segment");
-
-    if let Err(error) = job.run_without_reporter().await {
-        let _ = tokio::fs::remove_file(output_path).await;
-        return Err(error.to_string());
-    }
-    if output_path.exists() {
-        Ok(())
-    } else {
-        Err("Audio segment extraction failed: output file not found".to_string())
-    }
+    write_native_wav(
+        file,
+        output_path,
+        Some(AudioRange {
+            start: start_sec,
+            duration: duration_sec,
+        }),
+    )
+    .await
 }
 
 /// The worker owns both handles until decoding and WAV finalization finish.
@@ -266,19 +248,23 @@ impl AudioSink for WavSink {
     }
 }
 
-async fn write_native_wav(file: &Path, output: &Path) -> Result<(), String> {
+async fn write_native_wav(
+    file: &Path,
+    output: &Path,
+    range: Option<AudioRange>,
+) -> Result<(), String> {
     let directory = output
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let decoded = decode_audio(
-        file,
-        AudioDecodeOptions {
-            sample_rate: TRANSCRIPTION_SAMPLE_RATE,
-        },
-        WavSink::new(directory)?,
-    )
-    .await?;
+    let options = AudioDecodeOptions {
+        sample_rate: TRANSCRIPTION_SAMPLE_RATE,
+    };
+    let sink = WavSink::new(directory)?;
+    let decoded = match range {
+        Some(range) => decode_audio_range(file, options, range, sink).await?,
+        None => decode_audio(file, options, sink).await?,
+    };
     if !decoded.has_audio {
         return Err("WAV extraction failed: input has no audio stream".into());
     }
@@ -639,12 +625,131 @@ mod native_wav_tests {
         let output = directory.path().join("kept.wav");
         std::fs::write(&output, b"previous output").unwrap();
         assert!(
-            write_native_wav(&directory.path().join("missing.wav"), &output)
+            write_native_wav(&directory.path().join("missing.wav"), &output, None)
                 .await
                 .is_err()
         );
         let no_audio = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/video/test.mp4");
-        assert!(write_native_wav(&no_audio, &output).await.is_err());
+        assert!(write_native_wav(&no_audio, &output, None).await.is_err());
+        assert_eq!(std::fs::read(&output).unwrap(), b"previous output");
+        assert_no_partial_wavs(directory.path());
+    }
+
+    #[tokio::test]
+    async fn native_segment_keeps_pcm_boundaries_and_does_not_publish_failed_ranges() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.wav");
+        let samples = (0..32_003)
+            .map(|index| (index * 977) as u16 as i16)
+            .collect::<Vec<_>>();
+        write_pcm(
+            &source,
+            TRANSCRIPTION_SAMPLE_RATE,
+            1,
+            samples.iter().copied(),
+        );
+        let output = directory.path().join("range.wav");
+        std::fs::write(&output, b"previous output").unwrap();
+        extract_audio_segment(&source, 0.125, 0.777, &output)
+            .await
+            .unwrap();
+        let decoded = read_wav(&output);
+        assert_eq!(decoded.len(), 12_432);
+        assert!(decoded.iter().eq(samples[2_000..14_432].iter()));
+        extract_audio_segment(&source, 5.0, 0.5, &output)
+            .await
+            .unwrap();
+        assert!(read_wav(&output).is_empty());
+        extract_audio_segment(&source, 0.0, 0.0, &output)
+            .await
+            .unwrap();
+        assert!(read_wav(&output).is_empty());
+        let kept = std::fs::read(&output).unwrap();
+        for (start, duration) in [(-1.0, 0.5), (0.0, -1.0), (f64::NAN, 1.0)] {
+            assert!(extract_audio_segment(&source, start, duration, &output)
+                .await
+                .is_err());
+            assert_eq!(std::fs::read(&output).unwrap(), kept);
+            assert_no_partial_wavs(directory.path());
+        }
+        let no_audio = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/video/test.mp4");
+        assert!(extract_audio_segment(&no_audio, 0.0, 1.0, &output)
+            .await
+            .is_err());
+        assert_eq!(std::fs::read(&output).unwrap(), kept);
+        assert_no_partial_wavs(directory.path());
+    }
+
+    #[tokio::test]
+    async fn cancelling_native_segment_cleans_its_temporary_wav_and_keeps_the_target() {
+        use std::time::{Duration, Instant};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        struct AbortOnDrop(tokio::task::AbortHandle);
+        impl Drop for AbortOnDrop {
+            fn drop(&mut self) {
+                self.0.abort();
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("kept.wav");
+        std::fs::write(&output, b"previous output").unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let mut server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut bytes = [0; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = socket.read(&mut bytes).await.unwrap();
+                assert!(read > 0 && request.len() < 16 * 1024);
+                request.extend_from_slice(&bytes[..read]);
+            }
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: 1000000000\r\nConnection: close\r\n\r\n").await.unwrap();
+            let _ = ready_tx.send(());
+            socket.read(&mut bytes).await
+        });
+        let _server_guard = AbortOnDrop(server.abort_handle());
+        let url = PathBuf::from(format!("http://{address}/stalled.wav"));
+        let target = output.clone();
+        let task =
+            tokio::spawn(async move { extract_audio_segment(&url, 0.0, 0.777, &target).await });
+        let _task_guard = AbortOnDrop(task.abort_handle());
+        tokio::time::timeout(Duration::from_secs(5), ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!task.is_finished());
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), &mut server)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let partial = std::fs::read_dir(directory.path()).unwrap().any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".bili-audio-")
+            });
+            if !partial {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "cancelled worker retained its temporary WAV"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         assert_eq!(std::fs::read(&output).unwrap(), b"previous output");
         assert_no_partial_wavs(directory.path());
     }

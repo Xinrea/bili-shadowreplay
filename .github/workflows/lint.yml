@@ -102,7 +102,7 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/apt-install
         with:
-          packages: libavformat-dev libavcodec-dev libavutil-dev libswresample-dev ffmpeg libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libfontconfig1-dev fonts-wqy-microhei clang libclang-dev ninja-build python3 libicu-dev libharfbuzz-dev libpng-dev zlib1g-dev libexpat1-dev libjpeg-dev
+          packages: libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libavfilter-dev ffmpeg libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libfontconfig1-dev fonts-wqy-microhei clang libclang-dev ninja-build python3 libicu-dev libharfbuzz-dev libpng-dev zlib1g-dev libexpat1-dev libjpeg-dev
 
       - name: Setup Python
         uses: actions/setup-python@v5

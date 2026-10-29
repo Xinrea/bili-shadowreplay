@@ -39,6 +39,7 @@ RUN apt-get update && apt-get install -y \
     libavcodec-dev \
     libavutil-dev \
     libswresample-dev \
+    libavfilter-dev \
     libfontconfig1-dev \
     libicu-dev \
     libharfbuzz-dev \

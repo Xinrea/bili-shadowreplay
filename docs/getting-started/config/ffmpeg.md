@@ -1,9 +1,11 @@
 # FFmpeg 配置
 
 FFmpeg 是一个开源的音视频处理工具，支持多种格式的音视频编解码、转码、剪辑、合并等操作。
-在本项目中，元数据、音频时间信息和 HLS 分片探测，以及波形、转写用完整 WAV 和 30 秒 WAV 分块，通过 `ffmpeg-next` 直接链接 `libavformat`、`libavcodec`、`libavutil` 和 `libswresample`。录制、转码、范围音频提取、Opus/FLAC 编码及字幕弹幕压制继续使用 FFmpeg CLI；部分回归测试也用 CLI 对照结果。
+在本项目中，元数据、音频时间信息和 HLS 分片探测，以及波形、转写用完整 WAV、30 秒 WAV 分块和范围 WAV 提取，通过 `ffmpeg-next` 直接链接 `libavformat`、`libavcodec`、`libavutil`、`libswresample` 和 `libavfilter`。录制、转码、Opus/FLAC 编码及字幕弹幕压制继续使用 FFmpeg CLI；部分回归测试也用 CLI 对照结果。
 
-Windows 和 macOS 安装包携带探测所需的动态库。macOS 仍需按下文安装 FFmpeg CLI，以使用录制和转码功能；Linux 使用目标发行版的 FFmpeg 运行库，`.deb` 会声明对应依赖。
+范围 WAV 提取保留原 `-ss ... -i ... -t ...` 的时间行为，包括 AAC 预滚、容器起点、采样率变化及末帧边界。输出固定为 16 kHz 单声道 PCM；由于沿用 CLI 的逐帧截止规则，样本数不保证恰好等于请求秒数乘以采样率。
+
+Windows 和 macOS 安装包携带原生媒体处理所需的动态库。macOS 仍需按下文安装 FFmpeg CLI，以使用录制和转码功能；Linux 使用目标发行版的 FFmpeg 运行库，`.deb` 会声明对应依赖。
 
 ## MacOS
 
@@ -55,7 +57,7 @@ Windows 版本安装后，FFmpeg 已经放置在了程序目录下，因此不�
 
 ## 从源码构建
 
-`ffmpeg-next` 需要 FFmpeg 开发头文件和动态库，只有 `ffmpeg`/`ffprobe` 可执行文件不能编译探测层。绑定使用 Clang 生成，开发库必须匹配目标架构；升级 FFmpeg 主版本后需重新编译应用。
+`ffmpeg-next` 需要 FFmpeg 开发头文件和动态库，只有 `ffmpeg`/`ffprobe` 可执行文件不能编译原生媒体层。绑定使用 Clang 生成，开发库必须匹配目标架构；升级 FFmpeg 主版本后需重新编译应用。
 
 ### macOS
 
@@ -83,10 +85,10 @@ codesign --verify --deep --strict /absolute/path/bili-shadowreplay.app
 Ubuntu 24.04 / Debian 的开发依赖：
 
 ```bash
-sudo apt install clang libclang-dev pkg-config libavformat-dev libavcodec-dev libavutil-dev libswresample-dev ffmpeg
+sudo apt install clang libclang-dev pkg-config libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libavfilter-dev ffmpeg
 ```
 
-CI 和 Docker builder 已安装这些开发包。Docker runtime 保持与 builder 相同的 Debian trixie 基线，通过发行版 `ffmpeg` 包获得匹配的运行库；镜像构建会用 `ldd` 检查所有动态依赖。Ubuntu 24.04 桌面 `.deb` 显式依赖 `libavformat60`、`libavcodec60`、`libavutil58` 和 `libswresample4`；其他发行版需使用自身匹配的包，不能直接照搬这些 ABI 名称。
+CI 和 Docker builder 已安装这些开发包。Docker runtime 保持与 builder 相同的 Debian trixie 基线，通过发行版 `ffmpeg` 包获得匹配的运行库；镜像构建会用 `ldd` 检查所有动态依赖。Ubuntu 24.04 桌面 `.deb` 显式依赖 `libavformat60`、`libavcodec60`、`libavutil58`、`libswresample4` 和 `libavfilter9`；其他发行版需使用自身匹配的包，不能直接照搬这些 ABI 名称。
 
 ### Windows
 

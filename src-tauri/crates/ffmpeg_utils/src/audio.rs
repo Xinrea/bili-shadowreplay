@@ -2,6 +2,7 @@
 //! blocking worker until native I/O and decoder work have stopped.
 
 use std::{
+    ops::ControlFlow,
     path::Path,
     ptr,
     sync::{
@@ -13,6 +14,9 @@ use std::{
 use ffmpeg_next::{self as ffmpeg, codec, ffi, format, frame, media, Packet};
 
 use crate::metadata::{open_input, run_media};
+
+mod range;
+pub use range::{decode_audio_range, AudioRange};
 
 pub trait AudioSink: Send + 'static {
     fn write(&mut self, samples: &[i16]) -> Result<(), String>;
@@ -124,28 +128,60 @@ fn decode_sync<S: AudioSink>(
         .map_err(|error| native_error("打开音频解码器失败", error))?;
     let mut pipeline = Pipeline::new(options.sample_rate, sink, cancelled.clone());
 
+    decode_frames(
+        &mut input,
+        index,
+        &mut decoder,
+        &cancelled,
+        |_| Ok(()),
+        |frame| {
+            pipeline.frame(frame)?;
+            Ok(ControlFlow::Continue(()))
+        },
+    )?;
+    pipeline.finish()
+}
+
+fn decode_frames<P, F>(
+    input: &mut format::context::Input,
+    index: usize,
+    decoder: &mut codec::decoder::Audio,
+    cancelled: &AtomicBool,
+    mut packet_map: P,
+    mut consume: F,
+) -> Result<(), String>
+where
+    P: FnMut(&mut Packet) -> Result<(), String>,
+    F: FnMut(&mut frame::Audio) -> Result<ControlFlow<()>, String>,
+{
     let mut decoded = frame::Audio::empty();
     loop {
-        check_cancelled(&cancelled)?;
+        check_cancelled(cancelled)?;
         // av_read_frame needs an empty packet. Drop every reference, including
         // skipped video packets, rather than retaining the recording's payload.
         let mut packet = Packet::empty();
-        match packet.read(&mut input) {
+        match packet.read(input) {
             Ok(()) => {
                 if packet.stream() != index {
                     continue;
                 }
+                packet_map(&mut packet)?;
                 match decoder.send_packet(&packet) {
                     Ok(()) => (),
                     Err(error) if again(error) => {
-                        drain_decoder(&mut decoder, &mut decoded, &mut pipeline)?;
+                        if drain_decoder(decoder, &mut decoded, cancelled, &mut consume)?.is_break()
+                        {
+                            return Ok(());
+                        }
                         decoder
                             .send_packet(&packet)
                             .map_err(|error| native_error("提交音频包失败", error))?;
                     }
                     Err(error) => return Err(native_error("提交音频包失败", error)),
                 }
-                drain_decoder(&mut decoder, &mut decoded, &mut pipeline)?;
+                if drain_decoder(decoder, &mut decoded, cancelled, &mut consume)?.is_break() {
+                    return Ok(());
+                }
             }
             Err(ffmpeg::Error::Eof) => break,
             Err(error) => return Err(native_error("读取音频包失败", error)),
@@ -154,32 +190,42 @@ fn decode_sync<S: AudioSink>(
     match decoder.send_eof() {
         Ok(()) | Err(ffmpeg::Error::Eof) => (),
         Err(error) if again(error) => {
-            drain_decoder(&mut decoder, &mut decoded, &mut pipeline)?;
+            if drain_decoder(decoder, &mut decoded, cancelled, &mut consume)?.is_break() {
+                return Ok(());
+            }
             decoder
                 .send_eof()
                 .map_err(|error| native_error("结束音频解码失败", error))?;
         }
         Err(error) => return Err(native_error("结束音频解码失败", error)),
     }
-    drain_decoder(&mut decoder, &mut decoded, &mut pipeline)?;
-    pipeline.finish()
+    let _ = drain_decoder(decoder, &mut decoded, cancelled, &mut consume)?;
+    Ok(())
 }
 
-fn drain_decoder<S: AudioSink>(
+fn drain_decoder<F>(
     decoder: &mut codec::decoder::Audio,
     frame: &mut frame::Audio,
-    pipeline: &mut Pipeline<S>,
-) -> Result<(), String> {
+    cancelled: &AtomicBool,
+    consume: &mut F,
+) -> Result<ControlFlow<()>, String>
+where
+    F: FnMut(&mut frame::Audio) -> Result<ControlFlow<()>, String>,
+{
     loop {
-        check_cancelled(&pipeline.cancelled)?;
+        check_cancelled(cancelled)?;
         match decoder.receive_frame(frame) {
-            Ok(()) => pipeline.frame(frame)?,
+            Ok(()) => {
+                if consume(frame)?.is_break() {
+                    return Ok(ControlFlow::Break(()));
+                }
+            }
             Err(ffmpeg::Error::Eof) => break,
             Err(error) if again(error) => break,
             Err(error) => return Err(native_error("解码音频失败", error)),
         }
     }
-    Ok(())
+    Ok(ControlFlow::Continue(()))
 }
 
 struct AudioFormat {
@@ -418,3 +464,6 @@ impl<S: AudioSink> Pipeline<S> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod range_tests;

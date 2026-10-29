@@ -8,7 +8,7 @@ name = "ffmpeg_utils"
 path = "src/lib.rs"
 
 [dependencies]
-ffmpeg-next = { version = "=9.0.0", default-features = false, features = ["format", "software-resampling"] }
+ffmpeg-next = { version = "=9.0.0", default-features = false, features = ["format", "software-resampling", "filter"] }
 tokio = { version = "1.48.0", features = ["fs", "process", "rt"] }
 serde = { version = "1.0.228", features = ["derive"] }
 

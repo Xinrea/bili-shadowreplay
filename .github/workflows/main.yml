@@ -1,6 +1,11 @@
 name: Release
 on:
   workflow_dispatch:
+    inputs:
+      build_only:
+        description: Build installers as Actions artifacts without creating a Release
+        type: boolean
+        default: true
   push:
     tags:
       - "v*"
@@ -10,11 +15,13 @@ jobs:
       prerelease: ${{ steps.release_info.outputs.prerelease }}
     permissions:
       contents: write
+    env:
+      BUILD_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.build_only }}
     strategy:
-      fail-fast: false
+      fail-fast: ${{ github.event_name == 'workflow_dispatch' && inputs.build_only }}
       matrix:
         include:
-          - platform: "macos-15-intel" # native Intel Homebrew headers and libraries.
+          - platform: "macos-15-intel" # CPU rendering; the native Metal worker is arm64-only.
             args: "--target x86_64-apple-darwin"
             target: "x86_64-apple-darwin"
             updater-target: "darwin-x86_64"
@@ -46,11 +53,12 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install FFmpeg 8 and 9 SDKs (macOS only)
-        if: runner.os == 'macOS'
+      - name: Install FFmpeg 8 and 9 SDKs (macOS arm64 only)
+        if: runner.os == 'macOS' && matrix.target == 'aarch64-apple-darwin'
         run: |
-          brew install ffmpeg@8 ffmpeg@9 pkg-config
-          echo "BSR_FFMPEG_PREFIXES=$(brew --prefix ffmpeg@8):$(brew --prefix ffmpeg@9)" >> "$GITHUB_ENV"
+          brew update
+          brew install ffmpeg@8 ffmpeg pkg-config
+          echo "BSR_FFMPEG_PREFIXES=$(brew --prefix ffmpeg@8):$(brew --prefix ffmpeg)" >> "$GITHUB_ENV"
 
       - name: install dependencies (ubuntu only)
         if: runner.os == 'Linux'
@@ -62,12 +70,29 @@ jobs:
             libicu-dev libharfbuzz-dev libfreetype-dev libfontconfig1-dev \
             libpng-dev zlib1g-dev libexpat1-dev libjpeg-dev
 
-      - name: Install Vulkan SDK (Linux and Windows)
-        if: runner.os == 'Linux' || runner.os == 'Windows'
+      - name: Install Vulkan SDK (Linux only)
+        if: runner.os == 'Linux'
         uses: humbletim/install-vulkan-sdk@30ba978f977e81b72d091fc8888feb1fb26f9aff # v1.2
         with:
           version: 1.4.363.0
           cache: true
+
+      - name: Install Vulkan SDK (Windows only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = "1.4.363.0"
+          $sdk = Join-Path $env:RUNNER_TEMP "VulkanSDK"
+          $installer = Join-Path $env:RUNNER_TEMP "vulkan-sdk.exe"
+          Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$version/windows/vulkan_sdk.exe" -OutFile $installer
+          & $installer --root $sdk --accept-licenses --default-answer --confirm-command install copy_only=1
+          if ($LASTEXITCODE -ne 0) { throw "Vulkan SDK installation failed: $LASTEXITCODE" }
+          foreach ($file in @("Include/vulkan/vulkan.h", "Include/vk_video/vulkan_video_codecs_common.h", "Bin/glslc.exe")) {
+            if (-not (Test-Path (Join-Path $sdk $file))) { throw "Vulkan SDK is missing $file" }
+          }
+          "VULKAN_SDK=$sdk" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "$sdk/Bin" | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+          & "$sdk/Bin/glslc.exe" --version
 
       - name: Install FFmpeg 8 and 9 SDKs and stage shared runtime (Linux only)
         if: runner.os == 'Linux'
@@ -138,8 +163,8 @@ jobs:
           # OUT_DIR. Keep them with the build script's cached output, or a
           # restored build links against a folder that no longer exists.
           cache-directories: src-tauri/target/sherpa-onnx-prebuilt
-          # Bumped so caches saved without that folder are not restored.
-          key: ${{ matrix.target || matrix.features || 'native' }}-sherpa-prebuilt
+          # Invalidate Windows Skia archives built before STL symbol isolation.
+          key: ${{ matrix.target || matrix.features || 'native' }}-sherpa-prebuilt${{ runner.os == 'Windows' && '-skia-stl' || '' }}
 
       - name: Install CUDA toolkit (Windows CUDA only)
         if: matrix.features == 'cuda'
@@ -171,15 +196,26 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          choco install pkgconfiglite -y --no-progress
-          if ($LASTEXITCODE -ne 0) { throw "Failed to install pkg-config" }
+          $pkgConfig = Get-Command pkg-config.exe -CommandType Application -ErrorAction SilentlyContinue
+          for ($attempt = 0; -not $pkgConfig -and $attempt -lt 3; $attempt++) {
+            choco install pkgconfiglite -y --no-progress
+            $pkgConfig = Get-Command pkg-config.exe -CommandType Application -ErrorAction SilentlyContinue
+          }
+          if (-not $pkgConfig) { throw "pkg-config is unavailable after installation" }
+          "PKG_CONFIG=$($pkgConfig.Source)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          & $pkgConfig.Source --version
           ./ffmpeg_setup.ps1 -Versions "8.1","9.0" -SdkRoot "$env:RUNNER_TEMP/ffmpeg"
+
+      - name: Check Vulkan export bindings (Windows build-only)
+        if: runner.os == 'Windows' && env.BUILD_ONLY == 'true'
+        run: cargo check --manifest-path src-tauri/Cargo.toml -p gpu-export --features vulkan --release --locked
 
       - name: install frontend dependencies
         # If you don't have `beforeBuildCommand` configured you may want to build your frontend here too.
         run: yarn install # change this to npm or pnpm depending on which one you use.
 
       - name: Validate updater signing key
+        if: env.BUILD_ONLY != 'true'
         shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -201,6 +237,7 @@ jobs:
           Copy-Item "$cudaPath\cublasLt64*.dll" -Destination $targetPath
 
       - name: Get previous tag
+        if: env.BUILD_ONLY != 'true'
         id: get_previous_tag
         env:
           CURRENT_TAG: ${{ steps.release_info.outputs.tag }}
@@ -217,6 +254,18 @@ jobs:
           echo "current_tag=$CURRENT_TAG" >> $GITHUB_OUTPUT
         shell: bash
 
+      - name: Disable updater artifacts for build-only run
+        if: env.BUILD_ONLY == 'true'
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const path = 'src-tauri/tauri.conf.json';
+          const config = JSON.parse(fs.readFileSync(path, 'utf8'));
+          config.bundle.createUpdaterArtifacts = false;
+          fs.writeFileSync(path, JSON.stringify(config));
+          NODE
+
       - uses: tauri-apps/tauri-action@1ddc7b49b13c3038297360482fcb3e058764d7c9 # v0.6.2
         id: tauri
         env:
@@ -230,7 +279,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ steps.release_info.outputs.tag }}
+          tagName: ${{ env.BUILD_ONLY != 'true' && steps.release_info.outputs.tag || '' }}
           releaseName: "BiliBili ShadowReplay v__VERSION__"
           releaseBody: "> [!NOTE]\n> 如果你是第一次下载安装，请参考 [安装准备](https://bsr.xinrea.cn/getting-started/installation/desktop.html) 选择合适的版本。\n> Linux 桌面版最低支持 Ubuntu 24.04；Ubuntu 22.04 不再受支持，AppImage 同样需要兼容的系统运行库。\n> Changelog: https://github.com/Xinrea/bili-shadowreplay/compare/${{ steps.get_previous_tag.outputs.previous_tag }}...${{ steps.get_previous_tag.outputs.current_tag }}"
           releaseDraft: true
@@ -248,6 +297,7 @@ jobs:
             "src-tauri/target/$RUST_TARGET/release/bundle/macos/bili-shadowreplay.app"
 
       - name: Create platform updater manifest
+        if: env.BUILD_ONLY != 'true'
         env:
           UPDATER_ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
           UPDATER_VERSION: ${{ steps.tauri.outputs.appVersion }}
@@ -255,15 +305,30 @@ jobs:
         run: node scripts/updater-manifest.mjs create updater-${{ matrix.updater-target }}.json
 
       - name: Collect updater manifests
+        if: env.BUILD_ONLY != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: updater-${{ matrix.updater-target }}
           path: updater-${{ matrix.updater-target }}.json
           if-no-files-found: error
 
+      - name: Collect build installers
+        if: env.BUILD_ONLY == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.updater-target }}
+          path: |
+            src-tauri/target/**/release/bundle/**/*.dmg
+            src-tauri/target/**/release/bundle/**/*.AppImage
+            src-tauri/target/**/release/bundle/**/*.deb
+            src-tauri/target/**/release/bundle/**/*.rpm
+            src-tauri/target/**/release/bundle/**/*.exe
+            src-tauri/target/**/release/bundle/**/*.msi
+          if-no-files-found: error
+
   publish-updater:
     needs: publish-tauri
-    if: needs.publish-tauri.outputs.prerelease == 'false'
+    if: needs.publish-tauri.outputs.prerelease == 'false' && (github.event_name != 'workflow_dispatch' || !inputs.build_only)
     runs-on: ubuntu-latest
     permissions:
       contents: write

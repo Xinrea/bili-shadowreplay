@@ -18,10 +18,14 @@ import { join, resolve } from "node:path";
 
 // Must match the skia-bindings version pinned through native-overlay.
 const SKIA_BINDINGS_VERSION = "0.82.0";
-const KEY = "7ca7f6be2332d3c9f3ad-x86_64-pc-windows-msvc-textlayout";
+const args = process.argv.slice(2);
+const vulkan = args.includes("--vulkan");
+const KEY = `7ca7f6be2332d3c9f3ad-x86_64-pc-windows-msvc-textlayout${vulkan ? "-vulkan" : ""}`;
 const ARCHIVE = `skia-binaries-${KEY}.tar.gz`;
 const ARCHIVE_URL = `https://github.com/rust-skia/skia-binaries/releases/download/${SKIA_BINDINGS_VERSION}/${ARCHIVE}`;
-const ARCHIVE_SHA256 = "300dcfe6ed498b37b5f3c0ef4ac6b8f23e4f6cf5cd603cd28c3139ca7de29eaf";
+const ARCHIVE_SHA256 = vulkan
+  ? "2d483906db2c7ee55983605ea71a6ceecf64329c6e1586276b10e38870fd1fbc"
+  : "300dcfe6ed498b37b5f3c0ef4ac6b8f23e4f6cf5cd603cd28c3139ca7de29eaf";
 
 // Every unversioned symbol that Skia's ICU and rusty_v8 137's ICU both define.
 const SHARED_ICU_SYMBOLS = [
@@ -37,7 +41,7 @@ const SHARED_ICU_SYMBOLS = [
 const PREFIX = "bsr_skia_";
 
 const root = resolve(import.meta.dirname, "..");
-const outputDir = resolve(process.argv[2] ?? join(root, "src-tauri", "target", "skia-binaries"));
+const outputDir = resolve(args.find((arg) => arg !== "--vulkan") ?? join(root, "src-tauri", "target", "skia-binaries"));
 
 function checkLockedVersion() {
   const lock = readFileSync(join(root, "src-tauri", "Cargo.lock"), "utf8");

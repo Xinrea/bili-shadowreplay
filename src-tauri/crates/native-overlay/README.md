@@ -113,3 +113,22 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features -
 ```
 
 The last command deliberately runs FFmpeg-dependent tests normally marked ignored; it requires a working FFmpeg with the encoders/filters used by those tests. Production exports stream premultiplied BGRA, explicitly composite in RGB, then convert the result to NV12 for hardware encoding (yuv420p for software). Input `alpha_mode=premultiplied` metadata is declared when the installed FFmpeg supports it; older versions use the explicit overlay alpha setting. Failed/cancelled streaming jobs drop the child/stdin, signal the blocking raster thread and release the bounded channel; they do not write a movie-sized intermediate raw-video file.
+
+## Optional GPU backends
+
+On macOS, the `metal` feature adds `Renderer::new_metal` and `render_metal`.
+They share the existing parser, fonts, scheduler, sprite cache and compositor.
+Text/effect sprites use GPU surfaces; `render_metal` submits into a caller-owned
+BGRA8Unorm texture without reading the composed frame back to the CPU. The caller
+must keep its device, queue and textures alive and retire GPU work before reusing
+textures. CPU `frame_into` and PNG callers keep their existing raster path.
+
+On Linux/Windows, the `vulkan` feature adds `Renderer::new_vulkan` and
+`render_vulkan` for caller-owned RGBA8 Vulkan images. The same fonts, layout
+and sprite cache use GPU surfaces; the caller owns image layout, synchronization
+and the device lifetime.
+
+The application's material danmaku and project exports use these backends through
+the `gpu-export` crate. Project video editing and audio retain their FFmpeg flow;
+generated subtitles and danmaku use the selected Skia backend.
+See `docs/development/native-overlay.md` for build and runtime dependencies.

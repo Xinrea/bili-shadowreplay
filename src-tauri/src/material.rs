@@ -3,12 +3,10 @@
 //! from its recording and waveform peaks.
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 
-use ffmpeg_utils::ffmpeg_command;
+use ffmpeg_utils::{decode_audio, AudioDecodeOptions, AudioSink};
 use recorder::danmu::DanmuEntry;
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncReadExt;
 
 /// Waveform resolution of [`Peaks`].
 pub const PEAKS_PER_SECOND: u32 = 50;
@@ -79,66 +77,99 @@ pub async fn peaks(video: &Path) -> Result<Peaks, String> {
     Ok(peaks)
 }
 
-async fn compute_peaks(video: &Path) -> Result<Peaks, String> {
-    let mut child = ffmpeg_command()
-        .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-i"])
-        .arg(video)
-        .args(["-vn", "-ac", "1", "-ar"])
-        .arg(PEAKS_SAMPLE_RATE.to_string())
-        .args(["-f", "s16le", "-"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("无法启动 FFmpeg: {e}"))?;
-    let mut stdout = child.stdout.take().ok_or("无法读取 FFmpeg 输出")?;
-    let window = (PEAKS_SAMPLE_RATE / PEAKS_PER_SECOND) as usize;
-    let mut peaks = Vec::new();
-    let mut current = 0u16;
-    let mut samples = 0usize;
-    let mut pending: Option<u8> = None;
-    let mut buffer = vec![0u8; 64 * 1024];
-    loop {
-        let read = stdout
-            .read(&mut buffer)
-            .await
-            .map_err(|e| format!("读取音频失败: {e}"))?;
-        if read == 0 {
-            break;
-        }
-        for &byte in &buffer[..read] {
-            // Samples are little-endian pairs; a read may split one.
-            let Some(low) = pending.take() else {
-                pending = Some(byte);
-                continue;
-            };
-            let sample = i16::from_le_bytes([low, byte]);
-            current = current.max(sample.unsigned_abs());
-            samples += 1;
-            if samples == window {
-                peaks.push((u32::from(current) * 255 / 32768) as u8);
-                current = 0;
-                samples = 0;
+#[derive(Default)]
+struct PeakSink {
+    peaks: Vec<u8>,
+    current: u16,
+    samples: usize,
+}
+
+impl PeakSink {
+    fn flush_window(&mut self) {
+        self.peaks
+            .push((u32::from(self.current) * 255 / 32768) as u8);
+        self.current = 0;
+        self.samples = 0;
+    }
+}
+
+impl AudioSink for PeakSink {
+    fn write(&mut self, samples: &[i16]) -> Result<(), String> {
+        let window = (PEAKS_SAMPLE_RATE / PEAKS_PER_SECOND) as usize;
+        for &sample in samples {
+            self.current = self.current.max(sample.unsigned_abs());
+            self.samples += 1;
+            if self.samples == window {
+                self.flush_window();
             }
         }
+        Ok(())
     }
-    if samples > 0 {
-        peaks.push((u32::from(current) * 255 / 32768) as u8);
+
+    fn finish(&mut self) -> Result<(), String> {
+        if self.samples > 0 {
+            self.flush_window();
+        }
+        Ok(())
     }
-    let status = child.wait().await.map_err(|e| e.to_string())?;
-    // A material without an audio stream has a flat waveform, not an error.
-    if !status.success() && !peaks.is_empty() {
-        return Err(format!("FFmpeg 提取波形失败: {status}"));
-    }
+}
+
+async fn compute_peaks(video: &Path) -> Result<Peaks, String> {
+    let decoded = decode_audio(
+        video,
+        AudioDecodeOptions {
+            sample_rate: PEAKS_SAMPLE_RATE,
+        },
+        PeakSink::default(),
+    )
+    .await?;
     Ok(Peaks {
         version: PEAKS_VERSION,
         rate: PEAKS_PER_SECOND,
-        peaks,
+        peaks: decoded.sink.peaks,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ffmpeg_utils::ffmpeg_command;
+
+    #[tokio::test]
+    async fn native_peaks_keep_full_scale_partial_windows_and_cached_results() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("peaks.wav");
+        let mut writer = hound::WavWriter::create(
+            &source,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: PEAKS_SAMPLE_RATE,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for sample in std::iter::repeat_n(i16::MIN, 160)
+            .chain(std::iter::repeat_n(16_384, 160))
+            .chain(std::iter::repeat_n(8_192, 7))
+        {
+            writer.write_sample(sample).unwrap();
+        }
+        writer.finalize().unwrap();
+
+        let computed = peaks(&source).await.unwrap();
+        assert_eq!(computed.rate, 50);
+        assert_eq!(computed.peaks, [255, 127, 63]);
+        assert!(peaks_path(&source).is_file());
+        std::fs::remove_file(&source).unwrap();
+        assert_eq!(peaks(&source).await.unwrap().peaks, computed.peaks);
+    }
+
+    #[tokio::test]
+    async fn native_peaks_without_an_audio_track_are_empty() {
+        let silent = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/video/test.mp4");
+        assert!(compute_peaks(&silent).await.unwrap().peaks.is_empty());
+    }
 
     async fn run_ffmpeg(args: &[&str], output: &Path) {
         let result = ffmpeg_command()

@@ -6,6 +6,7 @@
           "libavformat60",
           "libavcodec60",
           "libavutil58",
+          "libswresample4",
           "libicu74",
           "libharfbuzz0b",
           "libharfbuzz-subset0",

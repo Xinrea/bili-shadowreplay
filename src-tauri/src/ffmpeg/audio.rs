@@ -1,9 +1,16 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs::File,
+    io::BufWriter,
+    path::{Path, PathBuf},
+};
 
-use tempfile::{tempdir_in, TempDir};
+use tempfile::{tempdir_in, Builder, NamedTempFile, TempDir};
 
 use super::runner::{FfmpegJob, ProgressMode};
-use ffmpeg_utils::{probe_media, AudioStreamMetadata};
+use ffmpeg_utils::{decode_audio, probe_media, AudioDecodeOptions, AudioSink, AudioStreamMetadata};
+
+const TRANSCRIPTION_SAMPLE_RATE: u32 = 16_000;
+const CHUNK_SAMPLES: usize = TRANSCRIPTION_SAMPLE_RATE as usize * 30;
 
 /// Extract an audio sample for waveform display.
 pub async fn extract_audio_sample(file: &Path) -> Result<PathBuf, String> {
@@ -58,6 +65,34 @@ pub(crate) async fn extract_audio_chunks_guarded(
         .ok_or_else(|| format!("Output path has no parent: {}", output_path.display()))?;
     std::fs::create_dir_all(output_dir)
         .map_err(|error| format!("Failed to create output directory: {error}"))?;
+
+    if format == "wav" {
+        let directory = tempdir_in(output_dir)
+            .map_err(|error| format!("Failed to create chunk directory: {error}"))?;
+        let stem = output_path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("Invalid output file name: {}", output_path.display()))?;
+        let decoded = decode_audio(
+            file,
+            AudioDecodeOptions {
+                sample_rate: TRANSCRIPTION_SAMPLE_RATE,
+            },
+            WavChunkSink {
+                current: None,
+                directory,
+                stem: stem.to_string(),
+                index: 0,
+                samples_in_chunk: 0,
+            },
+        )
+        .await?;
+        if !decoded.has_audio {
+            return Err("Audio chunk extraction failed: input has no audio stream".into());
+        }
+        log::info!("Extracted {} native WAV chunks", decoded.sink.index);
+        return Ok(decoded.sink.directory);
+    }
 
     let duration = get_audio_duration(file).await?;
     log::info!("Audio duration: {duration} seconds");
@@ -123,33 +158,8 @@ pub(crate) async fn extract_audio_chunks_guarded(
 pub async fn extract_full_audio(file: &Path) -> Result<PathBuf, String> {
     log::info!("Extract full audio: {}", file.display());
     let output_path = file.with_extension("full.wav");
-    let job = FfmpegJob::new()
-        .args([
-            "-i".to_string(),
-            file.to_string_lossy().into_owned(),
-            "-ar".to_string(),
-            "16000".to_string(),
-            "-ac".to_string(),
-            "1".to_string(),
-            "-c:a".to_string(),
-            "pcm_s16le".to_string(),
-            "-vn".to_string(),
-            "-y".to_string(),
-        ])
-        .output(output_path.clone())
-        .progress(ProgressMode::Time)
-        .context("Extract full audio");
-
-    if let Err(error) = job.run_without_reporter().await {
-        let _ = tokio::fs::remove_file(&output_path).await;
-        return Err(error.to_string());
-    }
-    if output_path.exists() {
-        log::info!("Full audio extracted: {}", output_path.display());
-        Ok(output_path)
-    } else {
-        Err("Full audio extraction failed: output file not found".to_string())
-    }
+    write_native_wav(file, &output_path).await?;
+    Ok(output_path)
 }
 
 /// Extract a time segment as a 16 kHz mono WAV file.
@@ -188,6 +198,142 @@ pub(crate) async fn extract_audio_segment(
         Ok(())
     } else {
         Err("Audio segment extraction failed: output file not found".to_string())
+    }
+}
+
+/// The worker owns both handles until decoding and WAV finalization finish.
+/// On cancellation its temporary output is removed after the writer closes.
+struct WavSink {
+    writer: Option<hound::WavWriter<BufWriter<File>>>,
+    temporary: NamedTempFile,
+}
+
+impl WavSink {
+    fn new(directory: &Path) -> Result<Self, String> {
+        let temporary = Builder::new()
+            .prefix(".bili-audio-")
+            .suffix(".wav")
+            .tempfile_in(directory)
+            .map_err(|error| format!("Failed to create temporary WAV: {error}"))?;
+        let file = temporary
+            .reopen()
+            .map_err(|error| format!("Failed to open temporary WAV: {error}"))?;
+        let writer = hound::WavWriter::new(
+            BufWriter::new(file),
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: TRANSCRIPTION_SAMPLE_RATE,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .map_err(|error| format!("Failed to write WAV header: {error}"))?;
+        Ok(Self {
+            writer: Some(writer),
+            temporary,
+        })
+    }
+
+    fn publish(self, target: &Path) -> Result<(), String> {
+        if self.writer.is_some() {
+            return Err("Cannot publish an unfinished WAV".into());
+        }
+        self.temporary
+            .persist(target)
+            .map_err(|error| format!("Failed to store WAV {}: {error}", target.display()))?;
+        Ok(())
+    }
+}
+
+impl AudioSink for WavSink {
+    fn write(&mut self, samples: &[i16]) -> Result<(), String> {
+        let writer = self.writer.as_mut().ok_or("WAV is already finalized")?;
+        for &sample in samples {
+            writer
+                .write_sample(sample)
+                .map_err(|error| format!("Failed to write WAV samples: {error}"))?;
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<(), String> {
+        if let Some(writer) = self.writer.take() {
+            writer
+                .finalize()
+                .map_err(|error| format!("Failed to finalize WAV: {error}"))?;
+        }
+        Ok(())
+    }
+}
+
+async fn write_native_wav(file: &Path, output: &Path) -> Result<(), String> {
+    let directory = output
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let decoded = decode_audio(
+        file,
+        AudioDecodeOptions {
+            sample_rate: TRANSCRIPTION_SAMPLE_RATE,
+        },
+        WavSink::new(directory)?,
+    )
+    .await?;
+    if !decoded.has_audio {
+        return Err("WAV extraction failed: input has no audio stream".into());
+    }
+    decoded.sink.publish(output)
+}
+
+/// Its open writer drops before the directory, including if the async caller
+/// disappears while the worker is writing. Completed chunks stay guarded too.
+struct WavChunkSink {
+    current: Option<WavSink>,
+    directory: TempDir,
+    stem: String,
+    index: usize,
+    samples_in_chunk: usize,
+}
+
+impl WavChunkSink {
+    fn publish_current(&mut self) -> Result<(), String> {
+        if let Some(mut current) = self.current.take() {
+            current.finish()?;
+            current.publish(
+                &self
+                    .directory
+                    .path()
+                    .join(format!("{}_{:03}.wav", self.stem, self.index)),
+            )?;
+            self.index += 1;
+            self.samples_in_chunk = 0;
+        }
+        Ok(())
+    }
+}
+
+impl AudioSink for WavChunkSink {
+    fn write(&mut self, mut samples: &[i16]) -> Result<(), String> {
+        while !samples.is_empty() {
+            if self.current.is_none() {
+                self.current = Some(WavSink::new(self.directory.path())?);
+            }
+            let count = samples.len().min(CHUNK_SAMPLES - self.samples_in_chunk);
+            self.current
+                .as_mut()
+                .ok_or("Missing WAV chunk writer")?
+                .write(&samples[..count])?;
+            self.samples_in_chunk += count;
+            samples = &samples[count..];
+            if self.samples_in_chunk == CHUNK_SAMPLES {
+                self.publish_current()?;
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<(), String> {
+        self.publish_current()
     }
 }
 
@@ -383,5 +529,123 @@ mod preview_audio_tests {
                 .unwrap(),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod native_wav_tests {
+    use super::*;
+
+    fn write_pcm(path: &Path, rate: u32, channels: u16, samples: impl IntoIterator<Item = i16>) {
+        let mut writer = hound::WavWriter::create(
+            path,
+            hound::WavSpec {
+                channels,
+                sample_rate: rate,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for sample in samples {
+            writer.write_sample(sample).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    fn read_wav(path: &Path) -> Vec<i16> {
+        let reader = hound::WavReader::open(path).unwrap();
+        let spec = reader.spec();
+        assert_eq!(spec.channels, 1);
+        assert_eq!(spec.sample_rate, TRANSCRIPTION_SAMPLE_RATE);
+        assert_eq!(spec.bits_per_sample, 16);
+        assert_eq!(spec.sample_format, hound::SampleFormat::Int);
+        reader
+            .into_samples::<i16>()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    fn assert_no_partial_wavs(directory: &Path) {
+        assert!(std::fs::read_dir(directory).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".bili-audio-")));
+    }
+
+    #[tokio::test]
+    async fn native_wav_chunks_join_to_the_complete_audio_without_losing_boundary_samples() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.wav");
+        let expected = (0..CHUNK_SAMPLES + 11)
+            .map(|index| (index % 65_536) as u16 as i16)
+            .collect::<Vec<_>>();
+        write_pcm(
+            &source,
+            TRANSCRIPTION_SAMPLE_RATE,
+            1,
+            expected.iter().copied(),
+        );
+
+        let full = extract_full_audio(&source).await.unwrap();
+        assert_eq!(read_wav(&full), expected);
+        let chunks = extract_audio_chunks_guarded(&source, "wav").await.unwrap();
+        let chunk_dir = chunks.path().to_path_buf();
+        let mut files = std::fs::read_dir(&chunk_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        files.sort();
+        assert_eq!(files.len(), 2);
+        let first = read_wav(&files[0]);
+        let last = read_wav(&files[1]);
+        assert_eq!(first.len(), CHUNK_SAMPLES);
+        assert_eq!(last.len(), 11);
+        assert_eq!([first, last].concat(), expected);
+        drop(chunks);
+        assert!(!chunk_dir.exists());
+
+        assert_no_partial_wavs(directory.path());
+    }
+
+    #[tokio::test]
+    async fn native_wav_stereo_resampling_preserves_the_tail_and_format() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("stereo.wav");
+        let frames = 44_113;
+        write_pcm(
+            &source,
+            44_100,
+            2,
+            (0..frames).flat_map(|_| [16_384, -16_384]),
+        );
+        let output = extract_full_audio(&source).await.unwrap();
+        let samples = read_wav(&output);
+        let expected =
+            (frames as f64 * f64::from(TRANSCRIPTION_SAMPLE_RATE) / 44_100.0).ceil() as usize;
+        assert!(
+            samples.len().abs_diff(expected) <= 1,
+            "{} vs {expected}",
+            samples.len()
+        );
+        assert!(samples.iter().all(|sample| *sample == 0));
+        assert_no_partial_wavs(directory.path());
+    }
+
+    #[tokio::test]
+    async fn native_wav_failures_leave_existing_output_and_remove_temporary_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("kept.wav");
+        std::fs::write(&output, b"previous output").unwrap();
+        assert!(
+            write_native_wav(&directory.path().join("missing.wav"), &output)
+                .await
+                .is_err()
+        );
+        let no_audio = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/video/test.mp4");
+        assert!(write_native_wav(&no_audio, &output).await.is_err());
+        assert_eq!(std::fs::read(&output).unwrap(), b"previous output");
+        assert_no_partial_wavs(directory.path());
     }
 }

@@ -24,7 +24,7 @@ if (Test-Path $unpacked) { Remove-Item $unpacked -Recurse -Force }
 & 7z x $archive "-o$unpacked" -y | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Failed to unpack FFmpeg SDK" }
 $root = Join-Path $unpacked "ffmpeg-$version-full_build-shared"
-foreach ($required in @("include/libavformat/avformat.h", "lib/avformat.lib", "lib/avcodec.lib", "lib/avutil.lib", "bin/ffmpeg.exe", "bin/ffprobe.exe", "bin/ffplay.exe", "bin/avformat-63.dll", "bin/avcodec-63.dll", "bin/avutil-61.dll")) {
+foreach ($required in @("include/libavformat/avformat.h", "include/libswresample/swresample.h", "lib/avformat.lib", "lib/avcodec.lib", "lib/avutil.lib", "lib/swresample.lib", "bin/ffmpeg.exe", "bin/ffprobe.exe", "bin/ffplay.exe", "bin/avformat-63.dll", "bin/avcodec-63.dll", "bin/avutil-61.dll", "bin/swresample-7.dll")) {
     if (-not (Test-Path (Join-Path $root $required))) { throw "Incomplete FFmpeg SDK: $required" }
 }
 if (Test-Path $sdk) { Remove-Item $sdk -Recurse -Force }

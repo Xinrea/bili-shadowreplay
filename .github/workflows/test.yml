@@ -47,7 +47,7 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/apt-install
         with:
-          packages: libavformat-dev libavcodec-dev libavutil-dev libssl-dev pkg-config ffmpeg libfontconfig1-dev fonts-wqy-microhei clang libclang-dev ninja-build python3 libicu-dev libharfbuzz-dev libpng-dev zlib1g-dev libexpat1-dev libjpeg-dev
+          packages: libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libssl-dev pkg-config ffmpeg libfontconfig1-dev fonts-wqy-microhei clang libclang-dev ninja-build python3 libicu-dev libharfbuzz-dev libpng-dev zlib1g-dev libexpat1-dev libjpeg-dev
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable

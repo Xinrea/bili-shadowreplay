@@ -109,11 +109,21 @@ impl Drop for CancelOnDrop {
 }
 
 async fn run_probe(source: ProbeSource) -> Result<MediaProbe, String> {
+    run_media(move |cancelled| describe(&open_source(source, cancelled)?)).await
+}
+
+/// Own the cancellation signal outside the blocking task so dropping the async
+/// caller interrupts the native input while the worker retains its I/O guards.
+pub(crate) async fn run_media<T, F>(work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(Arc<AtomicBool>) -> Result<T, String> + Send + 'static,
+{
     let cancel = CancelOnDrop(Arc::new(AtomicBool::new(false)));
     let token = cancel.0.clone();
-    let result = tokio::task::spawn_blocking(move || probe_sync(source, token))
+    let result = tokio::task::spawn_blocking(move || work(token))
         .await
-        .map_err(|error| format!("媒体探测任务失败: {error}"))?;
+        .map_err(|error| format!("媒体处理任务失败: {error}"))?;
     drop(cancel);
     result
 }
@@ -137,7 +147,17 @@ impl Drop for OpeningContext {
     }
 }
 
-fn probe_sync(source: ProbeSource, cancelled: Arc<AtomicBool>) -> Result<MediaProbe, String> {
+pub(crate) fn open_input(
+    file_path: &Path,
+    cancelled: Arc<AtomicBool>,
+) -> Result<format::context::Input, String> {
+    open_source(ProbeSource::File(file_path.to_path_buf()), cancelled)
+}
+
+fn open_source(
+    source: ProbeSource,
+    cancelled: Arc<AtomicBool>,
+) -> Result<format::context::Input, String> {
     initialize()?;
     if cancelled.load(Ordering::Acquire) {
         return Err("媒体探测已取消".into());
@@ -199,7 +219,7 @@ fn probe_sync(source: ProbeSource, cancelled: Arc<AtomicBool>) -> Result<MediaPr
             ),
             None => format::context::Input::wrap_with_interrupt(context, interrupt.guard),
         };
-        describe(&input)
+        Ok(input)
     }
 }
 

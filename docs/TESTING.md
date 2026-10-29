@@ -31,7 +31,7 @@ src-tauri/
    ```bash
    sudo apt-get update
    sudo apt-get install -y libssl-dev pkg-config clang libclang-dev \
-     libavformat-dev libavcodec-dev libavutil-dev ffmpeg
+     libavformat-dev libavcodec-dev libavutil-dev libswresample-dev ffmpeg
    ```
 
 2. **Rust Toolchain**:
@@ -73,13 +73,18 @@ To verify metadata and recording behavior:
 ```bash
 cargo test --package ffmpeg_utils
 cargo test --package recorder --lib core::hls_recorder::tests
+cargo test --package bili-shadowreplay ffmpeg::audio
+cargo test --package bili-shadowreplay material::tests
 ```
 
 These tests use real MP4, WAV, TS and fMP4 fixtures. Native probing does not
 require `ffprobe` on `PATH`; one optional parity test compares fields with
 ffprobe when available. HLS tests download fixtures from a local HTTP server
 and verify init-map inheritance, EXTINF accounting, damaged TS appends and
-stream-shape changes. Other encoding tests still require the FFmpeg CLI.
+stream-shape changes. Native audio tests cover streaming decode/resampling,
+resampler tail draining, waveform windows, WAV output and contiguous 30-second
+chunks. Optional CLI comparisons also check compressed-audio PCM output and stream
+selection. Other encoding tests still require the FFmpeg CLI.
 
 To smoke-test Douyu against a **currently live** numeric room using the
 production `DouyuRecorder` loop for five minutes (requires `ffmpeg` on `PATH`):

@@ -17,10 +17,10 @@ test("macOS native FFmpeg dependencies relocate, survive repeated bundling and p
     const source = path.join(directory, "probe.c");
     const binary = path.join(directory, "bili-shadowreplay");
     const runtime = path.join(directory, "runtime");
-    fs.writeFileSync(source, "#include <stdio.h>\n#include <libavformat/avformat.h>\nint main(void) { printf(\"%u\\n\", avformat_version()); return 0; }\n");
+    fs.writeFileSync(source, "#include <stdio.h>\n#include <libavformat/avformat.h>\n#include <libswresample/swresample.h>\nint main(void) { printf(\"%u %u\\n\", avformat_version(), swresample_version()); return 0; }\n");
     const include = run("pkg-config", ["--variable=includedir", "libavformat"]).trim();
     const lib = run("pkg-config", ["--variable=libdir", "libavformat"]).trim();
-    run("cc", [source, `-I${include}`, `-L${lib}`, "-lavformat", "-mmacosx-version-min=15.0", "-Wl,-headerpad_max_install_names", "-o", binary]);
+    run("cc", [source, `-I${include}`, `-L${lib}`, "-lavformat", "-lswresample", "-mmacosx-version-min=15.0", "-Wl,-headerpad_max_install_names", "-o", binary]);
     const expected = run(binary, []);
     const minimum = run("sw_vers", ["-productVersion"]).trim();
     const original = fs.readFileSync(binary);
@@ -63,6 +63,7 @@ test("macOS native FFmpeg dependencies relocate, survive repeated bundling and p
     assert.equal(launched.status, 0, launched.stderr);
     assert.equal(launched.stdout, expected);
     assert.match(launched.stderr, /Contents\/Frameworks\/libavformat/);
+    assert.match(launched.stderr, /Contents\/Frameworks\/libswresample/);
     assert.doesNotMatch(launched.stderr, /\/opt\/homebrew\/|\/usr\/local\/Cellar\//);
 
     // An explicit CI target must not reuse an old native executable.

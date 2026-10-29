@@ -38,6 +38,7 @@ RUN apt-get update && apt-get install -y \
     libavformat-dev \
     libavcodec-dev \
     libavutil-dev \
+    libswresample-dev \
     libfontconfig1-dev \
     libicu-dev \
     libharfbuzz-dev \

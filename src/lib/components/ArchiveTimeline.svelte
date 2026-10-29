@@ -11,6 +11,7 @@
     VolumeX,
   } from "lucide-svelte";
   import type { Marker, Range, RecorderInfo } from "../interface";
+  import { PLAYBACK_RATES } from "../playback-rates";
   import {
     downsampleHeatPoints,
     layoutHeatBars,
@@ -40,6 +41,7 @@
     isPlaying?: boolean;
     isLive?: boolean;
     volume?: number;
+    playbackRate?: number;
     danmuEnabled?: boolean;
     danmuOffset?: number;
     canSendDanmaku?: boolean;
@@ -48,6 +50,7 @@
     onTogglePlayback?: () => void;
     onSeekLive?: () => void;
     onVolumeChange?: (volume: number) => void;
+    onPlaybackRateChange?: (rate: number) => void;
     onToggleDanmu?: () => void;
     onDanmuOffsetChange?: (offset: number) => void;
     onSendDanmaku?: (message: string) => void;
@@ -75,6 +78,7 @@
     isPlaying = false,
     isLive = false,
     volume = 1,
+    playbackRate = 1,
     danmuEnabled = true,
     danmuOffset = 0,
     canSendDanmaku = false,
@@ -83,6 +87,7 @@
     onTogglePlayback,
     onSeekLive,
     onVolumeChange,
+    onPlaybackRateChange,
     onToggleDanmu,
     onDanmuOffsetChange,
     onSendDanmaku,
@@ -92,7 +97,8 @@
     onNavigateLive,
   }: Props = $props();
   let danmu_message = $state("");
-  let show_offset_settings = $state(false);
+  let show_settings = $state(false);
+  let settings_control: HTMLDivElement;
 
   let visibleHeatPoints = $derived(
     heatPoints.filter(
@@ -256,6 +262,15 @@
   }
 </script>
 
+<!-- Wait for blur/change to commit the offset before unmounting its input. -->
+<svelte:window
+  onclick={(event) => {
+    if (show_settings && !settings_control.contains(event.target as Node)) {
+      show_settings = false;
+    }
+  }}
+/>
+
 <section class="timeline-panel" aria-label="片段时间线">
   <div class="timeline-header">
     <div class="timeline-controls">
@@ -362,64 +377,88 @@
         <Diamond size={12} />
         添加标记
       </button>
-      <div class="settings-control">
+      <div class="settings-control" bind:this={settings_control}>
         <button
           type="button"
           class="control-icon"
-          class:enabled={show_offset_settings}
-          title="弹幕偏移设置"
-          aria-expanded={show_offset_settings}
-          onclick={() => (show_offset_settings = !show_offset_settings)}
+          class:enabled={show_settings}
+          title="设置"
+          aria-label="设置"
+          aria-expanded={show_settings}
+          onclick={() => (show_settings = !show_settings)}
         >
           <Settings size={15} />
         </button>
-        {#if show_offset_settings}
-          <div class="settings-menu">
-            <label class="offset-control">
-              <span>弹幕偏移</span>
-              <input
-                type="number"
-                value={danmuOffset}
-                onchange={(event) =>
-                  onDanmuOffsetChange?.(
-                    Number((event.currentTarget as HTMLInputElement).value),
-                  )}
-              />
-              <span>秒</span>
-            </label>
-            <div class="menu-divider"></div>
-            <span class="menu-heading">弹幕导出</span>
-            <button
-              type="button"
-              class="menu-item"
-              onclick={() => onExportDanmu?.(false)}
-            >
-              导出弹幕为 TXT
-            </button>
-            <button
-              type="button"
-              class="menu-item"
-              onclick={() => onExportDanmu?.(true)}
-            >
-              导出弹幕为 ASS
-            </button>
-            <div class="menu-divider"></div>
-            <span class="menu-heading">快捷跳转</span>
-            {#each recorders as recorder}
-              <button
-                type="button"
-                class="menu-item live-room-item"
-                onclick={() => onNavigateLive?.(recorder)}
-              >
-                <Radio size={12} />
-                <span>
-                  正在直播 · {recorder.user_info.user_name ||
-                    recorder.room_info.room_title}
+        {#if show_settings}
+          <div class="settings-menu" role="group" aria-label="预览设置">
+            <section class="settings-section" aria-label="播放速度">
+              <span class="menu-heading">播放速度</span>
+              <div class="rate-options">
+                {#each PLAYBACK_RATES as rate}
+                  <button
+                    type="button"
+                    class="setting-option"
+                    class:active={playbackRate === rate}
+                    aria-pressed={playbackRate === rate}
+                    aria-label={`${rate} 倍速`}
+                    onclick={() => onPlaybackRateChange?.(rate)}
+                  >
+                    {rate}×
+                  </button>
+                {/each}
+              </div>
+            </section>
+            <section class="settings-section" aria-label="弹幕设置">
+              <label class="settings-row">
+                <span class="menu-heading">弹幕偏移</span>
+                <span class="offset-control">
+                  <input
+                    type="number"
+                    value={danmuOffset}
+                    onchange={(event) =>
+                      onDanmuOffsetChange?.(
+                        Number((event.currentTarget as HTMLInputElement).value),
+                      )}
+                  />
+                  <span>秒</span>
                 </span>
-              </button>
-            {:else}
-              <span class="menu-empty">没有其它正在直播的房间</span>
-            {/each}
+              </label>
+              <div class="settings-row">
+                <span class="menu-heading">弹幕导出</span>
+                <div class="export-options">
+                  <button
+                    type="button"
+                    class="setting-option"
+                    aria-label="导出弹幕为 TXT"
+                    onclick={() => onExportDanmu?.(false)}
+                  >TXT</button>
+                  <button
+                    type="button"
+                    class="setting-option"
+                    aria-label="导出弹幕为 ASS"
+                    onclick={() => onExportDanmu?.(true)}
+                  >ASS</button>
+                </div>
+              </div>
+            </section>
+            <section class="settings-section" aria-label="快捷跳转">
+              <span class="menu-heading">快捷跳转</span>
+              {#each recorders as recorder}
+                <button
+                  type="button"
+                  class="menu-item live-room-item"
+                  onclick={() => onNavigateLive?.(recorder)}
+                >
+                  <Radio size={12} />
+                  <span>
+                    正在直播 · {recorder.user_info.user_name ||
+                      recorder.room_info.room_title}
+                  </span>
+                </button>
+              {:else}
+                <span class="menu-empty">没有其它正在直播的房间</span>
+              {/each}
+            </section>
           </div>
         {/if}
       </div>
@@ -647,28 +686,24 @@
     display: inline-flex;
     height: 30px;
     align-items: center;
-    gap: 5px;
+    gap: 8px;
     border: 1px solid #303947;
-    border-radius: 8px;
-    background: #202733;
+    border-radius: 6px;
+    background: #151a23;
     padding: 0 8px;
-    color: #8490a3;
-    font-size: 10px;
+    color: #aeb9c9;
+    font-size: 11px;
     white-space: nowrap;
   }
 
-  .settings-control .offset-control {
-    width: 126px;
-    justify-content: space-between;
-  }
-
   .offset-control input {
-    width: 46px;
+    width: 64px;
     border: 0;
     outline: 0;
     background: transparent;
     color: #dce5f3;
-    font-size: 10px;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
     text-align: right;
     appearance: textfield;
   }
@@ -855,54 +890,93 @@
     padding: 0;
   }
 
-  .settings-control .offset-control {
-    position: absolute;
-    top: 38px;
-    right: 0;
-    z-index: 10;
-    box-shadow: 0 8px 20px rgb(0 0 0 / 28%);
-  }
-
   .settings-menu {
     position: absolute;
     bottom: 38px;
     right: 0;
     z-index: 20;
     display: flex;
-    width: 220px;
+    width: min(280px, calc(100vw - 32px));
+    max-height: calc(100vh - 260px);
+    overflow-y: auto;
     flex-direction: column;
-    gap: 3px;
     border: 1px solid #303947;
     border-radius: 10px;
     background: #202733;
-    padding: 8px;
+    padding: 12px;
     box-shadow: 0 10px 24px rgb(0 0 0 / 35%);
   }
 
-  .settings-menu .offset-control {
-    position: static;
-    width: 100%;
+  .settings-section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .settings-section + .settings-section {
+    margin-top: 12px;
+    border-top: 1px solid #303947;
+    padding-top: 12px;
+  }
+
+  .settings-row {
+    display: flex;
+    align-items: center;
     justify-content: space-between;
-    box-shadow: none;
+    gap: 12px;
   }
 
-  .menu-heading,
+  .menu-heading {
+    color: #aeb9c9;
+    font-size: 11px;
+    font-weight: 500;
+  }
+
   .menu-empty {
-    padding: 4px 6px 2px;
-    color: #718095;
-    font-size: 10px;
+    color: #8490a3;
+    font-size: 11px;
   }
 
-  .menu-divider {
-    height: 1px;
-    margin: 5px 0;
-    background: #303947;
+  .rate-options {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 5px;
+  }
+
+  .export-options {
+    display: flex;
+    gap: 6px;
+  }
+
+  .setting-option {
+    min-height: 30px;
+    border: 1px solid #303947;
+    border-radius: 6px;
+    background: #151a23;
+    padding: 0 8px;
+    color: #cbd7e8;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .setting-option:hover,
+  .setting-option.active {
+    border-color: #168de0;
+    background: #153b5c;
+    color: #65c2ff;
+  }
+
+  .settings-control button:focus-visible,
+  .offset-control:focus-within {
+    outline: 2px solid #65c2ff;
+    outline-offset: 2px;
   }
 
   .menu-item {
     display: flex;
     width: 100%;
-    height: 28px;
+    min-height: 28px;
+    flex-shrink: 0;
     align-items: center;
     gap: 7px;
     border-radius: 7px;
@@ -1193,6 +1267,10 @@
 
     .heat-row {
       display: none;
+    }
+
+    .settings-menu {
+      max-height: calc(100vh - 210px);
     }
   }
 </style>

@@ -39,6 +39,7 @@
     seek(offset: number): void;
     togglePlayback(): void;
     setVolume(volume: number): void;
+    setPlaybackRate(rate: number): void;
     toggleDanmu(): void;
     setDanmuOffset(offset: number): void;
     sendDanmaku(message: string): Promise<void>;
@@ -362,6 +363,7 @@
   let player_duration = $state(0);
   let selected_range_index = $state(-1);
   let player_volume = $state(1);
+  let player_playback_rate = $state(1);
   let player_is_playing = $state(false);
   let player_is_live = $state(false);
   let danmu_enabled = $state(true);
@@ -669,6 +671,7 @@
           bind:danmu_enabled
           bind:local_offset={danmu_offset}
           bind:volume={player_volume}
+          bind:playback_rate={player_playback_rate}
           bind:is_playing={player_is_playing}
           bind:playback_time={current_time}
           bind:duration={player_duration}
@@ -719,6 +722,7 @@
         isPlaying={player_is_playing}
         isLive={player_is_live}
         volume={player_volume}
+        playbackRate={player_playback_rate}
         danmuEnabled={danmu_enabled}
         danmuOffset={danmu_offset}
         canSendDanmaku={can_send_danmaku}
@@ -731,6 +735,7 @@
         onTogglePlayback={() => player?.togglePlayback()}
         onSeekLive={() => player?.seekLive()}
         onVolumeChange={(value) => player?.setVolume(value)}
+        onPlaybackRateChange={(value) => player?.setPlaybackRate(value)}
         onToggleDanmu={() => player?.toggleDanmu()}
         onDanmuOffsetChange={(value) => player?.setDanmuOffset(value)}
         onSendDanmaku={(message) => player?.sendDanmaku(message)}

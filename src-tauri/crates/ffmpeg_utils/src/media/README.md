@@ -1,7 +1,8 @@
 Structured media plans select input streams, copy or encode them, and configure
-output containers. They contain no process arguments. The initial executor
-supports one demuxed input and one atomic file output; a plan requiring more
-inputs or outputs fails before output publication.
+output containers. They contain no process arguments. File jobs and shared
+complex graphs support explicit stream routes, generated color/silence, bounded
+raw video and multiple outputs. Each filter input binds one selected stream;
+direct AllAudio routes expand in input order without another probe.
 
 Input-side seeking and output-side trimming have separate policies. Copied
 streams retain keyframe preroll; encoded streams pass through trim filters and
@@ -16,6 +17,16 @@ Audio encoding owns format negotiation, sample framing, duration cutoff and
 encoder draining independently of file decoding. File and graph callers can
 feed the same encoder stage directly after their respective filter sinks.
 
+The shared scheduler follows buffer-source demand. Streams awaiting their turn
+retain compressed packets rather than eagerly decoding whole inputs. Compressed
+queues are bounded by 64 MiB/16384 packets and decoded queues by 64 MiB/1024
+frames; these queue limits are not a hard budget for codec/filter allocations.
+Input, graph and encoder EOF are handled separately. All outputs close before
+publication; each rename is atomic, with preflight checks for predictable errors.
+Multiple files do not form a filesystem transaction. Segment callers retain
+their partial-file guards, and resource leases outlive worker completion through
+publication so scratch directories cannot disappear too early.
+
 Encoder AVOptions are validated against the linked codec and unused options
 are rejected. Hardware readiness opens the actual configured encoder, feeds
 three synthetic frames and drains it. It is not inferred from registry
@@ -28,8 +39,7 @@ write and close errors are propagated. Success publishes the file atomically
 before the final progress callback. Progress comes from media timestamps rather
 than parsing subprocess stderr.
 
-The single-input tests compare stream headers, metadata and every packet with
-the original commands on FFmpeg 6 and 9. The frame-clock tests and their exact
-CLI oracle are documented in video_clock/README.md. Remaining graph and overlay
-call sites migrate separately; this module does not parse arbitrary FFmpeg CLI
-commands or fall back to a process.
+Tests compare stream headers, metadata, dispositions and every packet with the
+original single-input and complex-graph commands on FFmpeg 6 and 9. The frame
+clock's exact CLI oracle is documented in video_clock/README.md. This module
+does not parse arbitrary FFmpeg CLI commands or fall back to a process.

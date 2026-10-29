@@ -21,6 +21,7 @@ pub(super) struct AudioEncoderStage {
     done: bool,
     cancelled: Arc<AtomicBool>,
     samples: u64,
+    next_pts: i64,
 }
 impl AudioEncoderStage {
     pub(super) fn new(
@@ -44,6 +45,7 @@ impl AudioEncoderStage {
             done: false,
             cancelled,
             samples: 0,
+            next_pts: 0,
         })
     }
     pub(super) fn ready(&self) -> bool {
@@ -171,16 +173,37 @@ impl AudioEncoderStage {
         util::check(&self.cancelled)?;
         let input_base: ffi::AVRational = filter_base.into();
         let output_base: ffi::AVRational = self.encoder_base().into();
-        let pts = frame.pts().ok_or("音频滤镜没有时间戳")?;
-        let shifted = unsafe { ffi::av_rescale_q(pts, input_base, output_base) }
-            .checked_sub(unsafe {
-                ffi::av_rescale_q(self.limits.output_start, util::MICROS, output_base)
-            })
-            .ok_or("音频时间戳溢出")?;
+        // fftools' fg_output_frame continues missing timestamps from the
+        // preceding filtered frame. apad can produce such frames when its
+        // input was empty; valid timestamps still preserve deliberate gaps.
+        let shifted = if let Some(pts) = frame.pts() {
+            unsafe { ffi::av_rescale_q(pts, input_base, output_base) }
+                .checked_sub(unsafe {
+                    ffi::av_rescale_q(self.limits.output_start, util::MICROS, output_base)
+                })
+                .ok_or("音频时间戳溢出")?
+        } else {
+            self.next_pts
+        };
+        let sample_rate = i32::try_from(frame.rate())
+            .ok()
+            .filter(|rate| *rate > 0)
+            .ok_or("音频滤镜输出采样率无效")?;
+        let duration = unsafe {
+            ffi::av_rescale_q(
+                frame.samples() as i64,
+                ffi::AVRational {
+                    num: 1,
+                    den: sample_rate,
+                },
+                output_base,
+            )
+        };
+        self.next_pts = shifted.checked_add(duration).ok_or("音频时间戳溢出")?;
         frame.set_pts(Some(shifted));
         unsafe {
             (*frame.as_mut_ptr()).time_base = output_base;
-            (*frame.as_mut_ptr()).duration = frame.samples() as i64;
+            (*frame.as_mut_ptr()).duration = duration;
         }
         if self.encoder.as_ref().unwrap().frame_size() == 0 {
             self.encode(&frame, output)?;

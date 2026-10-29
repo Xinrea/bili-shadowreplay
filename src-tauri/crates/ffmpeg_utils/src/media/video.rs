@@ -1,6 +1,7 @@
 use super::{
     util::{self, Device, Limits},
-    video_clock::{FrameSync, VideoClock},
+    video_clock::VideoClock,
+    video_encoder::VideoEncoderStage,
     EncodedPacketSink, FrameRatePolicy, VideoEncodeOptions,
 };
 use crate::video_frame::{display_matrix, filter_has_option, rotation_filters};
@@ -26,38 +27,34 @@ impl InputFormat {
             sar: frame.aspect_ratio(),
             space: unsafe { (*frame.as_ptr()).colorspace as i32 },
             range: unsafe { (*frame.as_ptr()).color_range as i32 },
-            matrix: frame.side_data(frame::side_data::Type::DisplayMatrix).and_then(|side| display_matrix(side.data())),
+            matrix: frame
+                .side_data(frame::side_data::Type::DisplayMatrix)
+                .and_then(|side| display_matrix(side.data())),
         }
     }
 }
 
 pub(super) struct VideoStage {
     decoder: Option<codec::decoder::Video>,
-    encoder: Option<codec::encoder::video::Encoder>,
-    codec: codec::Video,
+    encoding: VideoEncoderStage,
     options: VideoEncodeOptions,
     limits: Limits,
     graph: Option<filter::Graph>,
     input_format: Option<InputFormat>,
     clock: VideoClock,
-    sync: Option<FrameSync>,
     base: Rational,
     rate: Rational,
     rotation: Option<[i32; 9]>,
     device: Option<Device>,
-    global_header: bool,
-    mux_flags: i32,
-    preserve_initial_gap: bool,
-    avi_auto: bool,
     done: bool,
     cancelled: Arc<AtomicBool>,
-    pub frames: u64,
 }
 
 impl VideoStage {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         parameters: codec::Parameters,
+        source: &super::MediaInput,
         base: Rational,
         guessed_rate: Rational,
         average_rate: Rational,
@@ -71,13 +68,9 @@ impl VideoStage {
         timestamps_unreliable: bool,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Self, String> {
-        let mut decoder = codec::Context::from_parameters(parameters)
-            .map_err(|e| util::error("创建视频解码器失败", e))?
-            .decoder();
-        decoder.set_packet_time_base(base);
-        let decoder = decoder
+        let decoder = util::open_decoder(parameters, base, source)?
             .video()
-            .map_err(|e| util::error("打开视频解码器失败", e))?;
+            .map_err(|e| util::error("打开输入解码器失败", e))?;
         let decoder_rate = decoder.frame_rate().unwrap_or(Rational(0, 1));
         let stage = Self::create(
             Some(decoder),
@@ -114,10 +107,15 @@ impl VideoStage {
         timestamps_unreliable: bool,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Self, String> {
-        let codec = ffmpeg::encoder::find_by_name(&options.encoder)
-            .ok_or_else(|| format!("找不到视频编码器 {}", options.encoder))?
-            .video()
-            .map_err(|e| util::error("视频编码器类型错误", e))?;
+        let encoding = VideoEncoderStage::new(
+            options.clone(),
+            limits,
+            global_header,
+            mux_flags,
+            preserve_initial_gap,
+            avi_auto,
+            cancelled.clone(),
+        )?;
         let device = options
             .hardware_device
             .as_ref()
@@ -125,41 +123,37 @@ impl VideoStage {
             .transpose()?;
         Ok(Self {
             decoder,
-            encoder: None,
-            codec,
+            encoding,
             options,
             limits,
             graph: None,
             input_format: None,
             clock: VideoClock::new(base, average_rate, decoder_rate, timestamps_unreliable),
-            sync: None,
             base,
             rate,
             rotation,
             device,
-            global_header,
-            mux_flags,
-            preserve_initial_gap,
-            avi_auto,
             done: false,
             cancelled,
-            frames: 0,
         })
     }
     pub(super) fn ready(&self) -> bool {
-        self.encoder.is_some()
+        self.encoding.ready()
     }
     pub(super) fn done(&self) -> bool {
-        self.done
+        self.done || self.encoding.done()
+    }
+    pub(super) fn frames(&self) -> u64 {
+        self.encoding.frames()
     }
     pub(super) fn parameters(&self) -> Option<codec::Parameters> {
-        self.encoder.as_ref().map(codec::Parameters::from)
+        self.encoding.parameters()
     }
     pub(super) fn encoder_base(&self) -> Rational {
-        self.encoder.as_ref().unwrap().time_base()
+        self.encoding.encoder_base()
     }
     pub(super) fn frame_rate(&self) -> Rational {
-        unsafe { (*self.encoder.as_ref().unwrap().as_ptr()).framerate.into() }
+        self.encoding.frame_rate()
     }
     pub(super) fn autorotate(&self) -> bool {
         self.options.autorotate
@@ -234,30 +228,12 @@ impl VideoStage {
         {
             filters.push(filter.clone());
         }
-        let formats = if let Some(encoder) = &self.encoder {
+        if let Some((width, height)) = self.encoding.size() {
             if self.device.is_none() {
-                filters.push(format!("scale={}:{}", encoder.width(), encoder.height()));
+                filters.push(format!("scale={width}:{height}"));
             }
-            encoder
-                .format()
-                .descriptor()
-                .ok_or("视频编码格式无效")?
-                .name()
-                .to_owned()
-        } else {
-            self.codec
-                .formats()
-                .ok_or("视频编码器没有像素格式列表")?
-                .map(|format| {
-                    format
-                        .descriptor()
-                        .map(|d| d.name().to_owned())
-                        .ok_or("视频像素格式无效")
-                })
-                .collect::<Result<Vec<_>, _>>()?
-                .join("|")
-        };
-        filters.push(format!("format=pix_fmts={formats}"));
+        }
+        filters.push(self.encoding.format_filter()?);
         if let Some(trim) = self.limits.trim(false, false) {
             filters.push(trim);
         }
@@ -287,92 +263,8 @@ impl VideoStage {
                 }
             }
         };
-        if self.encoder.is_none() {
-            let pixel_id = unsafe { ffi::av_buffersink_get_format(sink.as_mut_ptr()) };
-            let pixel = self
-                .codec
-                .formats()
-                .and_then(|mut formats| {
-                    formats.find(|format| ffi::AVPixelFormat::from(*format) as i32 == pixel_id)
-                })
-                .ok_or("滤镜输出不是编码器支持的视频格式")?;
-            let mut encoder = codec::Context::new_with_codec(*self.codec)
-                .encoder()
-                .video()
-                .map_err(|e| util::error("创建视频编码器失败", e))?;
-            encoder.set_width(unsafe { ffi::av_buffersink_get_w(sink.as_mut_ptr()) } as u32);
-            encoder.set_height(unsafe { ffi::av_buffersink_get_h(sink.as_mut_ptr()) } as u32);
-            encoder.set_format(pixel);
-            encoder.set_time_base(rate.invert());
-            encoder.set_frame_rate(Some(rate));
-            if let Some(value) = self.options.bit_rate {
-                encoder.set_bit_rate(value as usize);
-            }
-            if let Some(value) = self.options.max_rate {
-                encoder.set_max_bit_rate(value as usize);
-            }
-            if let Some(value) = self.options.gop {
-                encoder.set_gop(value);
-            }
-            if self.global_header {
-                unsafe {
-                    (*encoder.as_mut_ptr()).flags |= ffi::AV_CODEC_FLAG_GLOBAL_HEADER as i32;
-                }
-            }
-            unsafe {
-                let raw = &mut *encoder.as_mut_ptr();
-                raw.flags |= ffi::AV_CODEC_FLAG_FRAME_DURATION as i32;
-                raw.sample_aspect_ratio =
-                    ffi::av_buffersink_get_sample_aspect_ratio(sink.as_mut_ptr());
-                raw.colorspace = (*frame.as_ptr()).colorspace;
-                raw.color_range = (*frame.as_ptr()).color_range;
-                raw.color_primaries = (*frame.as_ptr()).color_primaries;
-                raw.color_trc = (*frame.as_ptr()).color_trc;
-                raw.chroma_sample_location = (*frame.as_ptr()).chroma_location;
-                if let Some(value) = self.options.buffer_size {
-                    raw.rc_buffer_size = value as i32;
-                }
-                if let Some(value) = self.options.threads {
-                    raw.thread_count = value as i32;
-                }
-                if let Some(device) = &self.device {
-                    raw.hw_device_ctx = ffi::av_buffer_ref(device.raw);
-                    if raw.hw_device_ctx.is_null() {
-                        return Err("复制视频硬件设备失败".into());
-                    }
-                }
-                let frames = ffi::av_buffersink_get_hw_frames_ctx(sink.as_mut_ptr());
-                if !frames.is_null() {
-                    raw.hw_frames_ctx = ffi::av_buffer_ref(frames);
-                    if raw.hw_frames_ctx.is_null() {
-                        return Err("复制硬件视频帧池失败".into());
-                    }
-                }
-                if let Some(tag) = &self.options.tag {
-                    let bytes: [u8; 4] = tag
-                        .as_bytes()
-                        .try_into()
-                        .map_err(|_| "视频编码标签必须为4字节")?;
-                    raw.codec_tag = u32::from_le_bytes(bytes);
-                }
-            }
-            util::open_codec(encoder.as_mut(), *self.codec, &self.options.options)?;
-            self.encoder = Some(codec::encoder::video::Encoder(encoder));
-        }
-        if self.sync.is_none() {
-            self.sync = Some(
-                FrameSync::new(
-                    self.options.frame_rate,
-                    rate,
-                    filter_base,
-                    self.encoder_base(),
-                    self.mux_flags,
-                    self.limits.output_start,
-                )?
-                .preserve_initial_gap(self.preserve_initial_gap)
-                .avi_auto(self.avi_auto),
-            );
-        }
+        self.encoding
+            .open_from_sink(&mut sink, frame, rate, filter_base, self.device.as_ref())?;
         self.graph = Some(graph);
         self.input_format = Some(InputFormat::of(frame));
         Ok(())
@@ -383,7 +275,7 @@ impl VideoStage {
         packet: &Packet,
         output: &mut EncodedPacketSink<'_>,
     ) -> Result<(), String> {
-        if self.done {
+        if self.done() {
             return Ok(());
         }
         match self
@@ -408,7 +300,7 @@ impl VideoStage {
     }
     fn decode(&mut self, packets: &mut EncodedPacketSink<'_>) -> Result<(), String> {
         let mut frame = frame::Video::empty();
-        while !self.done {
+        while !self.done() {
             util::check(&self.cancelled)?;
             match self.decoder.as_mut().unwrap().receive_frame(&mut frame) {
                 Ok(()) => (),
@@ -485,67 +377,13 @@ impl VideoStage {
             unsafe {
                 (*frame.as_mut_ptr()).time_base = sink.sink().time_base().into();
             }
-            let batch = self.sync.as_mut().unwrap().push(Some(&frame))?;
-            for frame in batch {
-                if self.done {
-                    break;
-                }
-                if self.done {
-                    break;
-                }
-                util::check(&self.cancelled)?;
-                self.encode(&mut frame?, packets)?;
-            }
+            self.encoding
+                .submit_filtered(frame, sink.sink().time_base(), packets)?;
         }
         Ok(())
-    }
-    fn encode(
-        &mut self,
-        frame: &mut frame::Video,
-        packets: &mut EncodedPacketSink<'_>,
-    ) -> Result<(), String> {
-        if !self.limits.encode(
-            frame.pts().ok_or("视频编码帧没有时间戳")?,
-            self.encoder_base().into(),
-        ) {
-            self.done = true;
-            return Ok(());
-        }
-        unsafe {
-            (*frame.as_mut_ptr()).pict_type = ffi::AVPictureType::AV_PICTURE_TYPE_NONE;
-            (*frame.as_mut_ptr()).quality =
-                (*self.encoder.as_ref().unwrap().as_ptr()).global_quality;
-        }
-        match self.encoder.as_mut().unwrap().send_frame(frame) {
-            Ok(()) => (),
-            Err(e) if util::again(e) => {
-                self.drain(packets)?;
-                self.encoder
-                    .as_mut()
-                    .unwrap()
-                    .send_frame(frame)
-                    .map_err(|e| util::error("提交视频编码帧失败", e))?;
-            }
-            Err(e) => return Err(util::error("提交视频编码帧失败", e)),
-        }
-        self.frames = self.frames.checked_add(1).ok_or("视频帧计数溢出")?;
-        self.drain(packets)?;
-        Ok(())
-    }
-    fn drain(&mut self, packets: &mut EncodedPacketSink<'_>) -> Result<bool, String> {
-        loop {
-            util::check(&self.cancelled)?;
-            let mut packet = Packet::empty();
-            match self.encoder.as_mut().unwrap().receive_packet(&mut packet) {
-                Ok(()) => packets(packet, self.encoder_base())?,
-                Err(ffmpeg::Error::Eof) => return Ok(true),
-                Err(e) if util::again(e) => return Ok(false),
-                Err(e) => return Err(util::error("读取视频编码包失败", e)),
-            }
-        }
     }
     pub(super) fn finish(&mut self, output: &mut EncodedPacketSink<'_>) -> Result<(), String> {
-        if !self.done {
+        if !self.done() {
             if self.decoder.is_some() {
                 match self.decoder.as_mut().unwrap().send_eof() {
                     Ok(()) | Err(ffmpeg::Error::Eof) => (),
@@ -561,7 +399,7 @@ impl VideoStage {
                 }
                 self.decode(output)?;
             }
-            if !self.done {
+            if !self.done() {
                 if let Some(graph) = self.graph.as_mut() {
                     graph
                         .get("in")
@@ -573,37 +411,7 @@ impl VideoStage {
                 }
             }
         }
-        if self.encoder.is_none() {
-            return Err("视频流缺少可配置的编码参数".into());
-        }
-        if let Some(sync) = self.sync.as_mut() {
-            let batch = sync.push(None)?;
-            for frame in batch {
-                if self.done {
-                    break;
-                }
-                if self.done {
-                    break;
-                }
-                util::check(&self.cancelled)?;
-                self.encode(&mut frame?, output)?;
-            }
-        }
-        match self.encoder.as_mut().unwrap().send_eof() {
-            Ok(()) | Err(ffmpeg::Error::Eof) => (),
-            Err(e) if util::again(e) => {
-                self.drain(output)?;
-                self.encoder
-                    .as_mut()
-                    .unwrap()
-                    .send_eof()
-                    .map_err(|e| util::error("结束视频编码失败", e))?;
-            }
-            Err(e) => return Err(util::error("结束视频编码失败", e)),
-        }
-        if !self.drain(output)? {
-            return Err("视频编码器结束后仍要求输入".into());
-        }
+        self.encoding.finish(output)?;
         self.done = true;
         Ok(())
     }
@@ -670,7 +478,7 @@ impl VideoStage {
             stage.frame(&mut frame, &mut |_, _| Ok(()))?;
         }
         stage.finish(&mut |_, _| Ok(()))?;
-        if stage.frames != 3 {
+        if stage.frames() != 3 {
             return Err("硬件探测没有完成三帧编码".into());
         }
         Ok(())

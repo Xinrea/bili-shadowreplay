@@ -46,7 +46,7 @@ pub(super) async fn probe(options: VideoEncodeOptions) -> Result<(), String> {
     .await
 }
 
-fn validate_video(options: &VideoEncodeOptions) -> Result<(), String> {
+pub(super) fn validate_video(options: &VideoEncodeOptions) -> Result<(), String> {
     let codec = ffmpeg::encoder::find_by_name(&options.encoder)
         .ok_or_else(|| format!("找不到视频编码器 {}", options.encoder))?;
     if codec.medium() != media::Type::Video {
@@ -92,9 +92,10 @@ fn validate(plan: &MediaPlan) -> Result<(), String> {
     let input = &plan.inputs[0];
     let output = &plan.outputs[0];
     util::options(&input.options)?;
-    if input.path == output.path
+    util::options(&input.decoder_options)?;
+    if input.file_path()? == output.path
         || input
-            .path
+            .file_path()?
             .canonicalize()
             .ok()
             .zip(output.path.canonicalize().ok())
@@ -112,9 +113,13 @@ fn validate(plan: &MediaPlan) -> Result<(), String> {
         util::time(value)?;
     }
     util::options(&output.options)?;
+    if matches!(plan.progress_total, MediaProgressTotal::Known(value) if !value.is_finite() || value < 0.0)
+    {
+        return Err("媒体进度总时长无效".into());
+    }
     crate::metadata::initialize()?;
     for route in &plan.routes {
-        if route.input != 0 || route.output != 0 {
+        if !matches!(route.source, StreamSource::Input { input: 0, .. }) || route.output != 0 {
             return Err("媒体路由引用了不存在的输入或输出".into());
         }
         match &route.mode {
@@ -154,16 +159,17 @@ struct Completed {
     target: std::path::PathBuf,
     result: MediaJobResult,
     progress: Progress,
+    _resources: Vec<MediaResourceLease>,
 }
-struct Progress {
+pub(super) struct Progress {
     callback: Option<MediaProgressCallback>,
     start: Instant,
     last: Instant,
-    processed: f64,
+    pub(super) processed: f64,
     total: Option<f64>,
 }
 impl Progress {
-    fn new(callback: Option<MediaProgressCallback>, total: Option<f64>) -> Self {
+    pub(super) fn new(callback: Option<MediaProgressCallback>, total: Option<f64>) -> Self {
         let now = Instant::now();
         Self {
             callback,
@@ -173,7 +179,7 @@ impl Progress {
             total,
         }
     }
-    fn packet(&mut self, packet: &Packet, base: Rational) {
+    pub(super) fn packet(&mut self, packet: &Packet, base: Rational) {
         if let Some(pts) = packet.pts().or(packet.dts()) {
             let seconds = (pts as f64 + packet.duration().max(0) as f64)
                 * f64::from(base.numerator())
@@ -184,7 +190,7 @@ impl Progress {
         }
         self.emit(MediaStage::Processing, false);
     }
-    fn emit(&mut self, stage: MediaStage, force: bool) {
+    pub(super) fn emit(&mut self, stage: MediaStage, force: bool) {
         if !force && self.last.elapsed() < Duration::from_millis(100) {
             return;
         }
@@ -459,7 +465,7 @@ impl Mux {
     }
 }
 
-fn format_name(output: &MediaOutput) -> Result<String, String> {
+pub(super) fn format_name(output: &MediaOutput) -> Result<String, String> {
     let filename = CString::new(crate::path_str(&output.path)?).map_err(|e| e.to_string())?;
     let name = output
         .format
@@ -485,7 +491,7 @@ fn format_name(output: &MediaOutput) -> Result<String, String> {
         .map(str::to_owned)
         .map_err(|e| e.to_string())
 }
-fn selected(
+pub(super) fn selected(
     input: &format::context::Input,
     selector: StreamSelector,
     subtitle_codec: codec::Id,
@@ -494,6 +500,7 @@ fn selected(
     match selector {
         StreamSelector::AutoVideo => video_stream(input),
         StreamSelector::AutoAudio => audio_stream(input),
+        StreamSelector::AllAudio => None, // Expanded once, after opening inputs.
         StreamSelector::FirstVideo => input
             .streams()
             .find(|s| s.parameters().medium() == media::Type::Video)
@@ -545,13 +552,14 @@ fn selected(
 }
 
 fn execute(
-    plan: MediaPlan,
+    mut plan: MediaPlan,
     callback: Option<MediaProgressCallback>,
     cancelled: Arc<AtomicBool>,
 ) -> Result<Completed, String> {
     let source = &plan.inputs[0];
     let target = &plan.outputs[0];
     let mut input = super::input::open(source, cancelled.clone())?;
+    plan.routes = super::input::expand_routes(&plan.routes, &[Some(&input)])?;
     let origin = unsafe { (*input.as_ptr()).start_time };
     let origin = if origin == ffi::AV_NOPTS_VALUE {
         0
@@ -598,17 +606,7 @@ fn execute(
         output_seek: target.seek.is_some(),
         output_duration: target.duration.map(util::time).transpose()?,
     };
-    let mut total = (input.duration() > 0).then(|| {
-        (input.duration() as f64 / f64::from(ffi::AV_TIME_BASE) - start as f64 / 1_000_000.0)
-            .max(0.0)
-    });
-    if let Some(duration) = source.duration {
-        total = Some(total.map_or(duration, |v| v.min(duration)));
-    }
-    total = total.map(|v| (v - output_start as f64 / 1_000_000.0).max(0.0));
-    if let Some(duration) = target.duration {
-        total = Some(total.map_or(duration, |v| v.min(duration)));
-    }
+    let total = super::input::progress_total(&plan, &[Some(&input)])?;
     let mut progress = Progress::new(callback, total);
     progress.emit(MediaStage::Processing, true);
     let name = format_name(target)?;
@@ -659,9 +657,14 @@ fn execute(
             matches!(&route.mode, StreamMode::Subtitle(options) if options.encoder.is_some());
         let subtitle_codec =
             subtitle_encoder.map_or(default_subtitle_codec.into(), |codec| codec.id());
-        let Some(index) = selected(&input, route.selector, subtitle_codec, force_subtitle) else {
+        let Some(index) = selected(
+            &input,
+            route_selector(route)?,
+            subtitle_codec,
+            force_subtitle,
+        ) else {
             if route.required {
-                return Err(format!("输入0没有匹配流 {:?}", route.selector));
+                return Err(format!("输入0没有匹配流 {:?}", route_selector(route)?));
             } else {
                 continue;
             }
@@ -691,6 +694,7 @@ fn execute(
                 }
                 RouteMode::Audio(Box::new(AudioStage::new(
                     parameters,
+                    source,
                     base,
                     options.clone(),
                     limits,
@@ -715,6 +719,7 @@ fn execute(
                 };
                 RouteMode::Video(Box::new(VideoStage::new(
                     parameters,
+                    source,
                     base,
                     rate.into(),
                     stream.avg_frame_rate(),
@@ -952,7 +957,7 @@ fn execute(
         .iter()
         .map(|r| {
             if let RouteMode::Video(stage) = &r.mode {
-                stage.frames
+                stage.frames()
             } else {
                 0
             }
@@ -978,9 +983,10 @@ fn execute(
             processed: progress.processed,
         },
         progress,
+        _resources: std::mem::take(&mut plan.resources),
     })
 }
-fn encoder_tag(name: &str) -> String {
+pub(super) fn encoder_tag(name: &str) -> String {
     let version = codec::version();
     format!(
         "Lavc{}.{}.{} {name}",
@@ -988,4 +994,11 @@ fn encoder_tag(name: &str) -> String {
         (version >> 8) & 255,
         version & 255
     )
+}
+
+fn route_selector(route: &StreamRoute) -> Result<StreamSelector, String> {
+    match route.source {
+        StreamSource::Input { selector, .. } => Ok(selector),
+        _ => Err("单输入计划不能含滤镜输出路由".into()),
+    }
 }

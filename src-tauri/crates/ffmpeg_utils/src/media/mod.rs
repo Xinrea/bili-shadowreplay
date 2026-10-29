@@ -5,13 +5,17 @@ use std::{collections::BTreeMap, fmt, path::PathBuf, sync::Arc};
 
 mod audio;
 mod audio_encoder;
+mod decode;
 mod execute;
+mod graph;
 mod input;
 mod packet_clock;
+mod raw_video;
 mod subtitle;
 mod util;
 mod video;
 mod video_clock;
+mod video_encoder;
 
 #[cfg(test)]
 mod single_input_tests;
@@ -25,11 +29,24 @@ pub struct MediaPlan {
     pub inputs: Vec<MediaInput>,
     pub outputs: Vec<MediaOutput>,
     pub routes: Vec<StreamRoute>,
+    pub filter_graph: Option<FilterGraphPlan>,
+    pub resources: Vec<MediaResourceLease>,
+    pub progress_total: MediaProgressTotal,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub enum MediaProgressTotal {
+    #[default]
+    FirstInput,
+    AllInputs,
+    Known(f64),
 }
 
 #[derive(Debug, Clone)]
 pub struct MediaInput {
-    pub path: PathBuf,
+    pub source: MediaSource,
+    pub decoder_threads: Option<usize>,
+    pub decoder_options: AvOptions,
     pub format: Option<String>,
     pub options: AvOptions,
     pub seek: Option<InputSeek>,
@@ -42,13 +59,37 @@ pub struct MediaInput {
 impl MediaInput {
     pub fn file(path: impl Into<PathBuf>) -> Self {
         Self {
-            path: path.into(),
+            source: MediaSource::File(path.into()),
+            decoder_threads: None,
+            decoder_options: AvOptions::new(),
             format: None,
             options: AvOptions::new(),
             seek: None,
             duration: None,
             copy_timestamps: false,
             _lease: None,
+        }
+    }
+
+    pub fn generated_video(source: ColorSource) -> Self {
+        let mut input = Self::file(PathBuf::new());
+        input.source = MediaSource::GeneratedVideo(source);
+        input
+    }
+    pub fn generated_audio(source: SilenceSource) -> Self {
+        let mut input = Self::file(PathBuf::new());
+        input.source = MediaSource::GeneratedAudio(source);
+        input
+    }
+    pub fn raw_video(spec: RawVideoSpec) -> Self {
+        let mut input = Self::file(PathBuf::new());
+        input.source = MediaSource::RawVideo(spec);
+        input
+    }
+    pub(super) fn file_path(&self) -> Result<&std::path::Path, String> {
+        match &self.source {
+            MediaSource::File(path) => Ok(path),
+            _ => Err("该媒体输入不是文件源".into()),
         }
     }
 
@@ -59,6 +100,104 @@ impl MediaInput {
         input._lease = Some(Arc::new(path));
         input
     }
+}
+
+/// File paths and generated/live sources are explicit; no pseudo pipe names.
+#[derive(Debug, Clone)]
+pub enum MediaSource {
+    File(PathBuf),
+    GeneratedVideo(ColorSource),
+    GeneratedAudio(SilenceSource),
+    RawVideo(RawVideoSpec),
+}
+#[derive(Debug, Clone)]
+pub struct ColorSource {
+    pub color: String,
+    pub width: u32,
+    pub height: u32,
+    pub frame_rate_num: u32,
+    pub frame_rate_den: u32,
+}
+#[derive(Debug, Clone)]
+pub struct SilenceSource {
+    pub sample_rate: u32,
+    pub channel_layout: String,
+}
+#[derive(Debug, Clone)]
+pub enum StreamSource {
+    Input {
+        input: usize,
+        selector: StreamSelector,
+    },
+    Filter {
+        label: String,
+    },
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaKind {
+    Video,
+    Audio,
+}
+#[derive(Debug, Clone)]
+pub struct GraphInput {
+    pub input: usize,
+    pub selector: StreamSelector,
+    pub label: String,
+    pub required: bool,
+}
+#[derive(Debug, Clone)]
+pub struct GraphOutput {
+    pub label: String,
+    pub kind: MediaKind,
+}
+#[derive(Debug, Clone)]
+pub struct FilterGraphPlan {
+    pub spec: String,
+    pub inputs: Vec<GraphInput>,
+    pub outputs: Vec<GraphOutput>,
+}
+/// Shared ownership keeps all scratch assets alive through worker and renderer
+/// shutdown, including when the awaiting future is dropped.
+#[derive(Clone)]
+pub struct MediaResourceLease {
+    _resource: Arc<dyn Send + Sync>,
+}
+impl MediaResourceLease {
+    pub fn new<T: Send + Sync + 'static>(resource: T) -> Self {
+        Self {
+            _resource: Arc::new(resource),
+        }
+    }
+}
+impl fmt::Debug for MediaResourceLease {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("MediaResourceLease(..)")
+    }
+}
+#[derive(Default)]
+pub struct MediaBindings {
+    pub raw_video: Vec<(usize, RawVideoInput)>,
+}
+pub use raw_video::{
+    raw_video_channel, RawVideoAlpha, RawVideoCancelHandle, RawVideoFrame, RawVideoInput,
+    RawVideoSender, RawVideoSpec, RawVideoStats,
+};
+
+/// Parse a decimal frame rate using the same FFmpeg parser as input `-r`.
+pub fn parse_frame_rate(value: f64) -> Result<(u32, u32), MediaError> {
+    if !value.is_finite() || value <= 0.0 {
+        return Err("视频帧率无效".to_owned().into());
+    }
+    let value =
+        std::ffi::CString::new(value.to_string()).map_err(|e| MediaError::from(e.to_string()))?;
+    let mut rate = ffmpeg_next::ffi::AVRational { num: 0, den: 1 };
+    if unsafe { ffmpeg_next::ffi::av_parse_video_rate(&mut rate, value.as_ptr()) } < 0
+        || rate.num <= 0
+        || rate.den <= 0
+    {
+        return Err("视频帧率无效".to_owned().into());
+    }
+    Ok((rate.num as u32, rate.den as u32))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -102,9 +241,8 @@ pub enum NegativeTs {
 
 #[derive(Debug, Clone)]
 pub struct StreamRoute {
-    pub input: usize,
+    pub source: StreamSource,
     pub output: usize,
-    pub selector: StreamSelector,
     pub required: bool,
     pub mode: StreamMode,
 }
@@ -113,6 +251,8 @@ pub struct StreamRoute {
 pub enum StreamSelector {
     AutoVideo,
     AutoAudio,
+    /// Map every audio stream, as an explicit `-map i:a?` does.
+    AllAudio,
     AutoSubtitle,
     FirstVideo,
     FirstAudio,
@@ -258,11 +398,30 @@ pub async fn execute_media_plan(
     plan: MediaPlan,
     progress: Option<MediaProgressCallback>,
 ) -> Result<MediaJobResult, MediaError> {
-    execute::run(plan, progress).await.map_err(MediaError::from)
+    execute_with_sources(plan, MediaBindings::default(), progress).await
 }
 
 /// Open the real encoder with the render options, encode three synthetic
 /// 320x240/30 fps frames, and drain it. Registry membership alone is not a probe.
 pub async fn probe_video_encoder(options: VideoEncodeOptions) -> Result<(), MediaError> {
     execute::probe(options).await.map_err(MediaError::from)
+}
+
+/// Bind exclusive live sources to a cloneable declarative media plan.
+pub async fn execute_with_sources(
+    plan: MediaPlan,
+    sources: MediaBindings,
+    progress: Option<MediaProgressCallback>,
+) -> Result<MediaJobResult, MediaError> {
+    if plan.filter_graph.is_some()
+        || plan.inputs.len() != 1
+        || plan.outputs.len() != 1
+        || !sources.raw_video.is_empty()
+    {
+        graph::run(plan, sources, progress)
+            .await
+            .map_err(Into::into)
+    } else {
+        execute::run(plan, progress).await.map_err(Into::into)
+    }
 }

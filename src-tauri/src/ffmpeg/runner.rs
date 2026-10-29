@@ -42,15 +42,57 @@ pub async fn run_native_media<R: ProgressReporterTrait>(
     context: impl Into<String>,
     reporter: Option<&R>,
 ) -> Result<ffmpeg_utils::MediaJobResult, String> {
+    run_native_media_with_sources(plan, Default::default(), mode, context, reporter).await
+}
+
+/// Bind only the first streams explicitly referenced by our graph builders.
+/// Generated silence has no input audio label and therefore requires no track.
+pub(super) fn first_stream_graph_inputs(spec: &str, count: usize) -> Vec<ffmpeg_utils::GraphInput> {
+    let mut inputs = Vec::new();
+    for input in 0..count {
+        for (kind, selector) in [
+            ("v", ffmpeg_utils::StreamSelector::FirstVideo),
+            ("a", ffmpeg_utils::StreamSelector::FirstAudio),
+        ] {
+            let label = format!("{input}:{kind}");
+            if spec.contains(&format!("[{label}]")) {
+                inputs.push(ffmpeg_utils::GraphInput {
+                    input,
+                    selector,
+                    label,
+                    required: true,
+                });
+            }
+        }
+    }
+    inputs
+}
+
+/// Execute the same reporter bridge with bounded live frame sources.
+pub async fn run_native_media_with_sources<R: ProgressReporterTrait>(
+    mut plan: ffmpeg_utils::MediaPlan,
+    bindings: ffmpeg_utils::MediaBindings,
+    mode: ProgressMode,
+    context: impl Into<String>,
+    reporter: Option<&R>,
+) -> Result<ffmpeg_utils::MediaJobResult, String> {
+    if let ProgressMode::Stage { total, .. } = &mode {
+        plan.progress_total = match total {
+            ProgressTotal::FirstInput => ffmpeg_utils::MediaProgressTotal::FirstInput,
+            ProgressTotal::AllInputs => ffmpeg_utils::MediaProgressTotal::AllInputs,
+            ProgressTotal::Known(seconds) => ffmpeg_utils::MediaProgressTotal::Known(*seconds),
+        };
+    }
     let context = context.into();
     let Some(reporter) = reporter.filter(|_| !matches!(mode, ProgressMode::None)) else {
-        return ffmpeg_utils::execute_media_plan(plan, None)
+        return ffmpeg_utils::execute_with_sources(plan, bindings, None)
             .await
             .map_err(|error| format!("{context}: {error}"));
     };
     let (sender, mut receiver) = tokio::sync::watch::channel(None::<ffmpeg_utils::MediaProgress>);
-    let job = ffmpeg_utils::execute_media_plan(
+    let job = ffmpeg_utils::execute_with_sources(
         plan,
+        bindings,
         Some(Box::new(move |progress| {
             sender.send_replace(Some(progress));
         })),
@@ -821,12 +863,15 @@ mod native_media_tests {
             inputs: vec![MediaInput::file(input)],
             outputs: vec![MediaOutput::file(output)],
             routes: vec![StreamRoute {
-                input: 0,
+                source: ffmpeg_utils::StreamSource::Input {
+                    input: 0,
+                    selector: StreamSelector::AutoVideo,
+                },
                 output: 0,
-                selector: StreamSelector::AutoVideo,
                 required: true,
                 mode: StreamMode::Copy,
             }],
+            ..Default::default()
         }
     }
 

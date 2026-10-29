@@ -23,6 +23,7 @@ struct CodedPacket {
 #[derive(Debug, PartialEq, Eq)]
 struct Stream {
     kind: media::Type,
+    disposition: i32,
     codec: ffmpeg::codec::Id,
     size: (i32, i32),
     audio: (i32, i32),
@@ -56,6 +57,7 @@ fn snapshot(path: &Path) -> Movie {
                 let raw = unsafe { &*parameters.as_ptr() };
                 Stream {
                     kind: parameters.medium(),
+                    disposition: unsafe { (*stream.as_ptr()).disposition },
                     codec: parameters.id(),
                     size: (raw.width, raw.height),
                     audio: (raw.sample_rate, raw.ch_layout.nb_channels),
@@ -123,6 +125,10 @@ fn assert_movie(actual: &Movie, expected: &Movie, case: &str) {
         "{case}: selected streams"
     );
     for (index, (actual, expected)) in actual.streams.iter().zip(&expected.streams).enumerate() {
+        assert_eq!(
+            actual.disposition, expected.disposition,
+            "{case}: stream {index} disposition"
+        );
         assert_eq!(
             (actual.kind, actual.codec, actual.size, actual.audio),
             (expected.kind, expected.codec, expected.size, expected.audio),
@@ -211,20 +217,27 @@ fn plan(input: &Path, output: &Path, video: StreamMode, audio: StreamMode) -> Me
         outputs: vec![MediaOutput::file(output)],
         routes: vec![
             StreamRoute {
-                input: 0,
+                source: StreamSource::Input {
+                    input: 0,
+                    selector: StreamSelector::AutoVideo,
+                },
                 output: 0,
-                selector: StreamSelector::AutoVideo,
+
                 required: false,
                 mode: video,
             },
             StreamRoute {
-                input: 0,
+                source: StreamSource::Input {
+                    input: 0,
+                    selector: StreamSelector::AutoAudio,
+                },
                 output: 0,
-                selector: StreamSelector::AutoAudio,
+
                 required: false,
                 mode: audio,
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -597,12 +610,16 @@ async fn cancelled_native_media_plan_closes_input_and_cleans_worker_output_witho
                 inputs: vec![MediaInput::file(input)],
                 outputs: vec![MediaOutput::file(output)],
                 routes: vec![StreamRoute {
-                    input: 0,
+                    source: StreamSource::Input {
+                        input: 0,
+                        selector: StreamSelector::AutoAudio,
+                    },
                     output: 0,
-                    selector: StreamSelector::AutoAudio,
+
                     required: true,
                     mode: StreamMode::Copy,
                 }],
+                ..Default::default()
             };
             execute_media_plan(request, None)
                 .await
@@ -660,9 +677,12 @@ async fn native_copy_trim_maps_subtitles_as_cli_and_rejects_explicit_incompatibl
     });
     request.outputs[0].duration = Some(0.777);
     request.routes.push(StreamRoute {
-        input: 0,
+        source: StreamSource::Input {
+            input: 0,
+            selector: StreamSelector::AutoSubtitle,
+        },
         output: 0,
-        selector: StreamSelector::AutoSubtitle,
+
         required: false,
         mode: StreamMode::Copy,
     });
@@ -722,13 +742,22 @@ async fn native_copy_trim_maps_subtitles_as_cli_and_rejects_explicit_incompatibl
         .iter()
         .position(|stream| stream.kind == media::Type::Subtitle)
         .unwrap();
-    request
-        .routes
-        .retain(|route| !matches!(route.selector, StreamSelector::AutoSubtitle));
+    request.routes.retain(|route| {
+        !matches!(
+            route.source,
+            StreamSource::Input {
+                selector: StreamSelector::AutoSubtitle,
+                ..
+            }
+        )
+    });
     request.routes.push(StreamRoute {
-        input: 0,
+        source: StreamSource::Input {
+            input: 0,
+            selector: StreamSelector::Index(subtitle),
+        },
         output: 0,
-        selector: StreamSelector::Index(subtitle),
+
         required: true,
         mode: StreamMode::Copy,
     });
@@ -758,9 +787,12 @@ fn default_subtitle_plan(
 ) -> MediaPlan {
     let mut request = plan(input, output, video, audio);
     request.routes.push(StreamRoute {
-        input: 0,
+        source: StreamSource::Input {
+            input: 0,
+            selector: StreamSelector::AutoSubtitle,
+        },
         output: 0,
-        selector: StreamSelector::AutoSubtitle,
+
         required: false,
         mode: StreamMode::Subtitle(SubtitleEncodeOptions::default()),
     });
@@ -1052,3 +1084,4 @@ async fn native_rotation_matrix_copy_and_autorotate_match_cli() {
 }
 
 mod concat;
+mod graphs;

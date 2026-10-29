@@ -162,6 +162,15 @@ when subtitles are invalid. On FFmpeg 6/9, ten rendered JPEG frames across two
 styles also match the former CLI byte for byte. Library-only checks run without
 an executable; the pixel oracle is optional when the matching CLI is available.
 
+Shared-graph tests compare decoded concat and xfade/acrossfade against matching
+FFmpeg 6/9 commands, including mixed 12/24 fps inputs, explicit 30 fps, every
+coded packet, stream disposition and all copied audio tracks. Library-only tests
+cover generated color, simultaneous video/WAV outputs, exact PCM, predictable
+and late publication errors, and resources retained through final publication.
+An empty-audio atrim/apad graph also checks missing-PTS continuation and terminal
+filter-chain separators. The raw-frame reader has separate bounded-queue,
+buffer-ownership, cancellation, EOF/count and downstream-error tests.
+
 Native FLV-to-HLS tests use a six-second checked-in audiovisual fixture. They
 compare the playlist, segment durations and every copied packet with the CLI,
 including timestamps, and verify append behavior without replacing old segments.

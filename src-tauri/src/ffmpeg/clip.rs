@@ -22,27 +22,34 @@ pub(super) fn single_input_plan(
         outputs: vec![MediaOutput::file(output)],
         routes: vec![
             StreamRoute {
-                input: 0,
+                source: ffmpeg_utils::StreamSource::Input {
+                    input: 0,
+                    selector: StreamSelector::AutoVideo,
+                },
                 output: 0,
-                selector: StreamSelector::AutoVideo,
                 required: false,
                 mode: video,
             },
             StreamRoute {
-                input: 0,
+                source: ffmpeg_utils::StreamSource::Input {
+                    input: 0,
+                    selector: StreamSelector::AutoAudio,
+                },
                 output: 0,
-                selector: StreamSelector::AutoAudio,
                 required: false,
                 mode: audio,
             },
             StreamRoute {
-                input: 0,
+                source: ffmpeg_utils::StreamSource::Input {
+                    input: 0,
+                    selector: StreamSelector::AutoSubtitle,
+                },
                 output: 0,
-                selector: StreamSelector::AutoSubtitle,
                 required: false,
                 mode: StreamMode::Subtitle(SubtitleEncodeOptions::default()),
             },
         ],
+        ..Default::default()
     }
 }
 
@@ -234,7 +241,13 @@ pub async fn trim_video<R: ProgressReporterTrait>(
     plan.outputs[0].duration = Some(duration);
     // Preserve automatic subtitles when the target muxer accepts their type.
     for route in &mut plan.routes {
-        if matches!(route.selector, StreamSelector::AutoSubtitle) {
+        if matches!(
+            &route.source,
+            ffmpeg_utils::StreamSource::Input {
+                selector: StreamSelector::AutoSubtitle,
+                ..
+            }
+        ) {
             route.mode = StreamMode::Copy;
         }
     }

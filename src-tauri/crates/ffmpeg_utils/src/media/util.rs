@@ -66,6 +66,29 @@ pub(super) fn open_codec(
     }
     unused(&dictionary, "编码器")
 }
+/// Open decoding with checked input codec options, independently of demuxer
+/// options. The wrapper's open_with discards leftovers, so use the raw API.
+pub(super) fn open_decoder(
+    parameters: codec::Parameters,
+    base: ffmpeg::Rational,
+    input: &super::MediaInput,
+) -> Result<codec::decoder::Opened, String> {
+    let decoder_codec = ffmpeg::decoder::find(parameters.id()).ok_or("找不到输入解码器")?;
+    let mut decoder = codec::Context::from_parameters(parameters)
+        .map_err(|e| error("创建解码器失败", e))?
+        .decoder();
+    decoder.set_packet_time_base(base);
+    if let Some(threads) = input.decoder_threads {
+        if threads == 0 || threads > i32::MAX as usize {
+            return Err("解码线程数无效".into());
+        }
+        unsafe {
+            (*decoder.as_mut_ptr()).thread_count = threads as i32;
+        }
+    }
+    open_codec(decoder.as_mut(), decoder_codec, &input.decoder_options)?;
+    Ok(codec::decoder::Opened(decoder))
+}
 pub(super) fn validate_options(codec: ffmpeg::Codec, values: &AvOptions) -> Result<(), String> {
     let mut context = codec::Context::new_with_codec(codec);
     for key in values.keys() {

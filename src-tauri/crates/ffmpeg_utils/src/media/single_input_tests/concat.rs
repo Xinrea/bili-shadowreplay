@@ -5,9 +5,12 @@ fn concat_plan(list: &Path, output: &Path) -> MediaPlan {
     request.inputs[0].format = Some("concat".into());
     request.inputs[0].options.insert("safe".into(), "0".into());
     request.routes.push(StreamRoute {
-        input: 0,
+        source: StreamSource::Input {
+            input: 0,
+            selector: StreamSelector::AutoSubtitle,
+        },
         output: 0,
-        selector: StreamSelector::AutoSubtitle,
+
         required: false,
         mode: StreamMode::Copy,
     });
@@ -179,19 +182,23 @@ async fn cancelled_concat_retains_its_list_until_the_native_input_closes() {
                 .options
                 .insert("protocol_whitelist".into(), "file,http,tcp".into());
             *observed.lock().unwrap() = Some((
-                input.path.clone(),
+                input.file_path().unwrap().to_path_buf(),
                 Arc::downgrade(input._lease.as_ref().unwrap()),
             ));
             let request = MediaPlan {
                 inputs: vec![input],
                 outputs: vec![MediaOutput::file(output)],
                 routes: vec![StreamRoute {
-                    input: 0,
+                    source: StreamSource::Input {
+                        input: 0,
+                        selector: StreamSelector::FirstAudio,
+                    },
                     output: 0,
-                    selector: StreamSelector::FirstAudio,
+
                     required: true,
                     mode: StreamMode::Copy,
                 }],
+                ..Default::default()
             };
             execute_media_plan(request, None)
                 .await

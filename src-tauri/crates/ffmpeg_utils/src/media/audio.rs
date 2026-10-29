@@ -23,6 +23,7 @@ pub(super) struct AudioStage {
 impl AudioStage {
     pub(super) fn new(
         parameters: codec::Parameters,
+        source: &super::MediaInput,
         base: Rational,
         options: AudioEncodeOptions,
         limits: Limits,
@@ -31,13 +32,9 @@ impl AudioStage {
     ) -> Result<Self, String> {
         let filter = options.filter.clone();
         let encoding = AudioEncoderStage::new(options, limits, global_header, cancelled.clone())?;
-        let mut decoder = codec::Context::from_parameters(parameters)
-            .map_err(|e| util::error("创建音频解码器失败", e))?
-            .decoder();
-        decoder.set_packet_time_base(base);
-        let decoder = decoder
+        let decoder = util::open_decoder(parameters, base, source)?
             .audio()
-            .map_err(|e| util::error("打开音频解码器失败", e))?;
+            .map_err(|e| util::error("打开输入解码器失败", e))?;
         let mut output = Self {
             decoder,
             encoding,

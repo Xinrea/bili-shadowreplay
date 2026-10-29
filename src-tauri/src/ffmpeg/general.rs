@@ -9,10 +9,11 @@ use tokio::io::AsyncWriteExt;
 use crate::{
     ffmpeg::{
         hwaccel,
-        runner::{run_command, ProgressMode, ProgressTotal},
+        runner::{first_stream_graph_inputs, run_native_media, ProgressMode, ProgressTotal},
     },
     progress::progress_reporter::ProgressReporterTrait,
 };
+#[cfg(test)]
 use ffmpeg_utils::ffmpeg_command;
 
 /// Generate a random filename in hex
@@ -44,23 +45,6 @@ fn escape_concat_path(path: &Path) -> String {
     // Only escape backslashes and single quotes
     // Do NOT escape square brackets - they work fine in single-quoted paths
     path_str.replace('\\', "\\\\").replace('\'', "'\\''")
-}
-
-pub async fn handle_ffmpeg_process(
-    reporter: Option<&impl ProgressReporterTrait>,
-    ffmpeg_process: tokio::process::Command,
-    total: ProgressTotal,
-) -> Result<(), String> {
-    log::info!("[FFmpeg] {:?}", ffmpeg_process);
-    run_command(
-        ffmpeg_process,
-        ProgressMode::stage("合并视频", total),
-        "FFmpeg",
-        reporter,
-    )
-    .await
-    .map(|_| ())
-    .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -406,7 +390,13 @@ async fn run_concat_demuxer(
     plan.inputs[0].options.insert("safe".into(), "0".into());
     if copy_subtitles {
         for route in &mut plan.routes {
-            if matches!(route.selector, ffmpeg_utils::StreamSelector::AutoSubtitle) {
+            if matches!(
+                &route.source,
+                ffmpeg_utils::StreamSource::Input {
+                    selector: ffmpeg_utils::StreamSelector::AutoSubtitle,
+                    ..
+                }
+            ) {
                 route.mode = ffmpeg_utils::StreamMode::Copy;
             }
         }
@@ -427,47 +417,71 @@ async fn encode_filter_concat(
     reporter: Option<&impl ProgressReporterTrait>,
     videos: &[PathBuf],
     output_path: &Path,
-    filter_complex: String,
+    mut filter_complex: String,
     total: ProgressTotal,
     bitrate: Option<NonZeroU32>,
     settings: Option<&crate::project::RenderSettings>,
 ) -> Result<(), String> {
-    let mut ffmpeg_process = ffmpeg_command();
-
     ensure_output_folder(output_path)?;
-
-    for video in videos {
-        ffmpeg_process.args([
-            "-i",
-            video
-                .to_str()
-                .ok_or_else(|| format!("Invalid video path (non-UTF8): {}", video.display()))?,
-        ]);
-    }
-
     let video_encoder = hwaccel::material_encoder(settings).await;
-    if hwaccel::is_vaapi_encoder(video_encoder) {
-        let filter_complex = format!(
-            "{filter_complex};[outv]{}[outv_hw]",
+    let mut video = hwaccel::native_video_options(video_encoder, None, bitrate, settings)?;
+    // Keep upload in the shared graph so negotiation spans the composition.
+    video.filter = None;
+    let video_label = if hwaccel::is_vaapi_encoder(video_encoder) {
+        filter_complex.push_str(&format!(
+            ";[outv]{}[outv_hw]",
             hwaccel::vaapi_filter_suffix()
-        );
-        ffmpeg_process.args(["-filter_complex", filter_complex.as_str()]);
-        ffmpeg_process.args(["-map", "[outv_hw]"]);
+        ));
+        "outv_hw"
     } else {
-        ffmpeg_process.args(["-filter_complex", &filter_complex]);
-        ffmpeg_process.args(["-map", "[outv]"]);
-    }
-    ffmpeg_process.args(["-map", "[outa]"]);
-
-    hwaccel::apply_x264_encoder_only(&mut ffmpeg_process, video_encoder);
-    hwaccel::apply_material_quality(&mut ffmpeg_process, video_encoder, bitrate, settings);
-    ffmpeg_process.args(["-c:a", "aac"]);
-    ffmpeg_process.args(["-y"]);
-    ffmpeg_process.args([output_path
-        .to_str()
-        .ok_or_else(|| format!("Invalid output path (non-UTF8): {}", output_path.display()))?]);
-
-    handle_ffmpeg_process(reporter, ffmpeg_process, total).await
+        "outv"
+    };
+    let graph_inputs = first_stream_graph_inputs(&filter_complex, videos.len());
+    let plan = ffmpeg_utils::MediaPlan {
+        inputs: videos.iter().map(ffmpeg_utils::MediaInput::file).collect(),
+        outputs: vec![ffmpeg_utils::MediaOutput::file(output_path)],
+        filter_graph: Some(ffmpeg_utils::FilterGraphPlan {
+            spec: filter_complex,
+            inputs: graph_inputs,
+            outputs: vec![
+                ffmpeg_utils::GraphOutput {
+                    label: video_label.into(),
+                    kind: ffmpeg_utils::MediaKind::Video,
+                },
+                ffmpeg_utils::GraphOutput {
+                    label: "outa".into(),
+                    kind: ffmpeg_utils::MediaKind::Audio,
+                },
+            ],
+        }),
+        routes: vec![
+            ffmpeg_utils::StreamRoute {
+                source: ffmpeg_utils::StreamSource::Filter {
+                    label: video_label.into(),
+                },
+                output: 0,
+                required: true,
+                mode: ffmpeg_utils::StreamMode::Video(video),
+            },
+            ffmpeg_utils::StreamRoute {
+                source: ffmpeg_utils::StreamSource::Filter {
+                    label: "outa".into(),
+                },
+                output: 0,
+                required: true,
+                mode: ffmpeg_utils::StreamMode::Audio(ffmpeg_utils::AudioEncodeOptions::default()),
+            },
+        ],
+        ..Default::default()
+    };
+    run_native_media(
+        plan,
+        ProgressMode::stage("合并视频", total),
+        "Concat video",
+        reporter,
+    )
+    .await
+    .map(|_| ())
 }
 
 /// Concatenate videos with optional transition effects. Joining several

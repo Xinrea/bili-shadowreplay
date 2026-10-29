@@ -200,12 +200,16 @@ fn plan(input: &Path, output: &Path) -> super::super::MediaPlan {
         inputs: vec![MediaInput::file(input)],
         outputs: vec![MediaOutput::file(output)],
         routes: vec![StreamRoute {
-            input: 0,
+            source: StreamSource::Input {
+                input: 0,
+                selector: StreamSelector::AutoSubtitle,
+            },
             output: 0,
-            selector: StreamSelector::AutoSubtitle,
+
             required: true,
             mode: StreamMode::Subtitle(SubtitleEncodeOptions::default()),
         }],
+        ..Default::default()
     }
 }
 

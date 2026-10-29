@@ -28,10 +28,14 @@ pub use command::{ffmpeg_command, ffmpeg_path, ffprobe_command, ffprobe_path, pa
 pub use hls::{record_to_hls, HlsRecordingOptions};
 pub use image::normalize_image_to_png;
 pub use media::{
-    execute_media_plan, probe_video_encoder, AudioEncodeOptions, AvOptions, FrameRatePolicy,
-    HardwareDevice, InputSeek, MediaError, MediaInput, MediaJobResult, MediaOutput, MediaPlan,
-    MediaProgress, MediaProgressCallback, MediaStage, NegativeTs, StreamMode, StreamRoute,
-    StreamSelector, SubtitleEncodeOptions, VideoEncodeOptions,
+    execute_media_plan, execute_with_sources, parse_frame_rate, probe_video_encoder,
+    raw_video_channel, AudioEncodeOptions, AvOptions, ColorSource, FilterGraphPlan,
+    FrameRatePolicy, GraphInput, GraphOutput, HardwareDevice, InputSeek, MediaBindings, MediaError,
+    MediaInput, MediaJobResult, MediaKind, MediaOutput, MediaPlan, MediaProgress,
+    MediaProgressCallback, MediaProgressTotal, MediaResourceLease, MediaSource, MediaStage,
+    NegativeTs, RawVideoAlpha, RawVideoCancelHandle, RawVideoFrame, RawVideoInput, RawVideoSender,
+    RawVideoSpec, RawVideoStats, SilenceSource, StreamMode, StreamRoute, StreamSelector,
+    StreamSource, SubtitleEncodeOptions, VideoEncodeOptions,
 };
 pub use metadata::{
     extract_video_metadata, extract_video_metadata_with_init, probe_media, AudioStreamMetadata,

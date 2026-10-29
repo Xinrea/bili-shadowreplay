@@ -299,19 +299,17 @@ async fn prepare_images(danmus: &[DanmuEntry], directory: &Path) -> HashMap<Url,
         .await
 }
 
-fn overlay_graph(fps: f64, vaapi: bool) -> String {
+fn overlay_graph(fps: f64, encoder: &str) -> String {
     // Change FPS before compositing, not only at the encoder, so motion is
     // actually evaluated at 60+ FPS rather than duplicating already-drawn frames.
     let mut filter = format!(
-        "[0:v]{},fps={fps}[base];\n\
-         [base][1:v]overlay=shortest=1:format=auto:alpha=straight[composited];\n",
+        "[0:v]{},fps={fps},format=bgra[base];\n\
+         [base][1:v]overlay=shortest=1:format=rgb:alpha=premultiplied[composited];\n",
         hwaccel::H264_SCALE_PAD_FILTER,
     );
-    let format = if vaapi {
-        hwaccel::vaapi_filter_suffix()
-    } else {
-        "format=yuv420p"
-    };
+    // Keep the premultiplied colours in RGB until they have been composited;
+    // converting the transparent layer to subsampled YUV first damages edges.
+    let format = hwaccel::output_format_filter(encoder);
     filter.push_str(&format!("[composited]{format}[outv]\n"));
     filter
 }
@@ -376,6 +374,20 @@ pub async fn encode_video_danmu<R: ProgressReporterTrait>(
     options: &Danmu2AssOptions,
     bitrate: Option<NonZeroU32>,
 ) -> Result<PathBuf, String> {
+    encode_video_danmu_with_settings(reporter, file, danmus, options, bitrate, None).await
+}
+
+pub async fn encode_video_danmu_with_settings<R: ProgressReporterTrait>(
+    reporter: Option<&R>,
+    file: &Path,
+    danmus: &[DanmuEntry],
+    options: &Danmu2AssOptions,
+    bitrate: Option<NonZeroU32>,
+    settings: Option<&crate::project::RenderSettings>,
+) -> Result<PathBuf, String> {
+    if let Some(settings) = settings {
+        settings.validate()?;
+    }
     // Use fixed relative names inside a private job directory. No user/CDN path
     // is interpolated into filter syntax (including Windows drive letters).
     let directory = tempfile::Builder::new()
@@ -386,7 +398,16 @@ pub async fn encode_video_danmu<R: ProgressReporterTrait>(
         reporter.update("准备弹幕和表情图片中").await;
     }
     let plan = danmu_plan(danmus, options, directory.path()).await?;
-    encode_danmu_plan(reporter, file, plan, options, bitrate, directory.path()).await
+    encode_danmu_plan(
+        reporter,
+        file,
+        plan,
+        options,
+        bitrate,
+        directory.path(),
+        settings,
+    )
+    .await
 }
 
 /// FFmpeg rebases all streams against the container start, not the first
@@ -448,6 +469,7 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
     options: &Danmu2AssOptions,
     bitrate: Option<NonZeroU32>,
     directory: &Path,
+    settings: Option<&crate::project::RenderSettings>,
 ) -> Result<PathBuf, String> {
     let filename = file
         .file_name()
@@ -463,8 +485,8 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
         .await
         .map_err(|error| format!("Failed to inspect source video: {error}"))?;
     let fps = danmu_output_fps(metadata.fps);
-    let encoder = hwaccel::get_x264_encoder().await;
-    let graph = overlay_graph(fps, hwaccel::is_vaapi_encoder(encoder));
+    let encoder = hwaccel::material_encoder(settings).await;
+    let graph = overlay_graph(fps, encoder);
     let spec = OverlaySpec {
         input: native_overlay::RenderInput {
             documents: vec![native_overlay::AssSource {
@@ -484,13 +506,13 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
         .current_dir(directory)
         .args(["-nostdin", "-i"])
         .arg(&input);
-    add_overlay_input(&mut command, &spec)?;
+    add_overlay_input(&mut command, &spec).await?;
     command
         .arg("-filter_complex")
         .arg(graph)
         .args(["-map", "[outv]", "-map", "0:a?"]);
     hwaccel::apply_x264_encoder_only(&mut command, encoder);
-    hwaccel::apply_x264_quality_args_with_bitrate(&mut command, encoder, bitrate);
+    hwaccel::apply_material_quality(&mut command, encoder, bitrate, settings);
     command
         .args(["-c:a", "copy", "-r", &fps.to_string(), "-y"])
         .arg(&absolute_output);
@@ -661,18 +683,21 @@ mod tests {
 
     #[test]
     fn text_only_and_vaapi_graphs_have_explicit_output_formats() {
-        let text = overlay_graph(60.0, false);
-        assert!(text.contains("fps=60[base]"));
-        assert!(text.contains("[base][1:v]overlay=shortest=1:format=auto:alpha=straight"));
+        let text = overlay_graph(60.0, "libx264");
+        assert!(text.contains("fps=60,format=bgra[base]"));
+        assert!(text.contains("[base][1:v]overlay=shortest=1:format=rgb:alpha=premultiplied"));
         assert!(!text.contains("ass="));
         assert!(
             !text.contains("setpts"),
             "do not rebase video without audio"
         );
         assert!(text.contains("format=yuv420p[outv]"));
-        let hardware = overlay_graph(120.0, true);
-        assert!(hardware.contains("fps=120[base]"));
+        let hardware = overlay_graph(120.0, "hevc_vaapi");
+        assert!(hardware.contains("fps=120,format=bgra[base]"));
         assert!(hardware.ends_with("format=nv12,hwupload[outv]\n"));
+        for encoder in ["h264_videotoolbox", "hevc_nvenc"] {
+            assert!(overlay_graph(60.0, encoder).ends_with("format=nv12[outv]\n"));
+        }
     }
 
     #[tokio::test]
@@ -941,9 +966,17 @@ mod tests {
         });
         let job = directory.path().join("job");
         std::fs::create_dir(&job).unwrap();
-        let output = encode_danmu_plan(None::<&NoopReporter>, &source, plan, &options, None, &job)
-            .await
-            .unwrap();
+        let output = encode_danmu_plan(
+            None::<&NoopReporter>,
+            &source,
+            plan,
+            &options,
+            None,
+            &job,
+            None,
+        )
+        .await
+        .unwrap();
         let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
         assert_eq!((metadata.width, metadata.height), (1920, 1080));
         assert_eq!(metadata.fps, 60.0);
@@ -1061,6 +1094,7 @@ mod tests {
             &options,
             None,
             directory.path(),
+            None,
         )
         .await
         .unwrap();

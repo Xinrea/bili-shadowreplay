@@ -70,8 +70,8 @@ const EPSILON: f64 = 1e-6;
 const RENDER_STAGE: &str = "导出切片";
 /// Part of every segment's key: change it with what a segment's graph draws,
 /// so that segments rendered before are not used again.
-/// 3: generated subtitles are drawn with the system fonts, as previewed.
-const RENDER_VERSION: u32 = 3;
+/// 5: native overlays use premultiplied BGRA/RGB composition and hardware NV12.
+const RENDER_VERSION: u32 = 5;
 
 pub struct RenderClip {
     /// The same however the timeline is edited around the clip.
@@ -816,8 +816,9 @@ impl NativeFonts {
 /// Put the streamed overlay on the same project clock as the joined clips.
 fn native_overlay_filter(video: &str, input: usize, start: f64) -> String {
     format!(
-        "[{input}:v]setpts=PTS+{start:.6}/TB[native];\n\
-         [{video}][native]overlay=x=0:y=0:eof_action=pass:repeatlast=0[native_overlaid];\n"
+        "[{video}]format=bgra[native_base];\n\
+         [{input}:v]setpts=PTS+{start:.6}/TB[native];\n\
+         [native_base][native]overlay=x=0:y=0:eof_action=pass:repeatlast=0:format=rgb:alpha=premultiplied[native_overlaid];\n"
     )
 }
 
@@ -854,6 +855,11 @@ impl Render<'_> {
             hwaccel::project_quality_args(self.encoder, &job.render_settings).join(" "),
             segment.frames,
             segment.samples,
+        );
+        let _ = writeln!(
+            key,
+            "{}",
+            serde_json::to_string(&job.render_settings).unwrap()
         );
         let _ = writeln!(
             key,
@@ -1048,11 +1054,7 @@ impl Render<'_> {
             ));
             current = "native_overlaid".to_string();
         }
-        let format = if hwaccel::is_vaapi_encoder(self.encoder) {
-            hwaccel::vaapi_filter_suffix()
-        } else {
-            "format=yuv420p"
-        };
+        let format = hwaccel::output_format_filter(self.encoder);
         // Exactly as many frames as planned: `overlay` goes on as long as any
         // of its inputs does, and a file ending well before its clip has no
         // frames for the parts after its end. Then back to the segment's own
@@ -1110,7 +1112,7 @@ impl Render<'_> {
             }
         }
         if let Some(spec) = &native {
-            add_overlay_input(&mut command, spec)?;
+            add_overlay_input(&mut command, spec).await?;
         }
         command
             .arg(danmu::filter_complex_file_option().await)
@@ -1419,7 +1421,7 @@ async fn render_in_segments<R: ProgressReporterTrait>(
     job: &ProjectRender<'_>,
     limits: SegmentLimits,
 ) -> Result<RenderStats, String> {
-    let encoder = hwaccel::get_x264_encoder().await;
+    let encoder = hwaccel::get_render_encoder(&job.render_settings).await;
     render_with_encoder(reporter, job, limits, encoder).await
 }
 
@@ -2277,8 +2279,9 @@ mod tests {
         }
         assert_eq!(
             native_overlay_filter("subtitled", 5, spec.start),
-            "[5:v]setpts=PTS+2.000000/TB[native];\n\
-             [subtitled][native]overlay=x=0:y=0:eof_action=pass:repeatlast=0[native_overlaid];\n"
+            "[subtitled]format=bgra[native_base];\n\
+             [5:v]setpts=PTS+2.000000/TB[native];\n\
+             [native_base][native]overlay=x=0:y=0:eof_action=pass:repeatlast=0:format=rgb:alpha=premultiplied[native_overlaid];\n"
         );
     }
 
@@ -2370,17 +2373,20 @@ mod tests {
     fn changing_output_settings_invalidates_cached_segments() {
         let mut project = job(vec![clip(true, 30.0)], 0.0, 0.0);
         let original = keys(&project, "");
-        project.render_settings.quality = crate::project::VideoQuality::High;
+        project.render_settings.priority = crate::project::EncodingPriority::Quality;
         let high = keys(&project, "");
         assert_ne!(original, high);
         project.render_settings.bitrate_kbps = 12_000;
-        assert_ne!(high, keys(&project, ""));
+        let bitrate = keys(&project, "");
+        assert_ne!(high, bitrate);
+        project.render_settings.codec = crate::project::VideoCodec::H264;
+        assert_ne!(bitrate, keys(&project, ""));
     }
 
     #[tokio::test]
     #[ignore = "requires FFmpeg with libx264"]
     async fn selected_output_settings_render_and_replace_cached_video() {
-        use crate::project::{RenderSettings, VideoQuality};
+        use crate::project::{EncodingPriority, RenderSettings, VideoCodec};
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("source.mp4");
         let output = directory.path().join("output.mp4");
@@ -2418,8 +2424,9 @@ mod tests {
             danmus: Vec::new(),
             danmu_options: Danmu2AssOptions::default(),
             render_settings: RenderSettings {
-                quality: VideoQuality::High,
-                bitrate_kbps: 0,
+                codec: VideoCodec::H264,
+                priority: EncodingPriority::Quality,
+                bitrate_kbps: 10_000,
             },
             output: &output,
             segment_cache: Some(&cache),

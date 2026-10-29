@@ -1,4 +1,4 @@
-//! Stream native-rendered straight RGBA into FFmpeg without video-sized temp files.
+//! Stream native-rendered premultiplied BGRA into FFmpeg without video-sized temp files.
 
 use std::{
     sync::{
@@ -84,14 +84,100 @@ impl OverlaySpec {
     }
 }
 
-/// Append one raw RGBA input. Callers own input numbering and compositing.
-pub fn add_overlay_input(command: &mut Command, spec: &OverlaySpec) -> Result<(), String> {
+fn supports_input_alpha_mode(help: &str) -> bool {
+    help.lines().any(|line| {
+        let mut parts = line.split_whitespace();
+        parts.next() == Some("-alpha_mode")
+            && parts.next() == Some("<int>")
+            && parts.next().is_some_and(|flags| flags.contains('D'))
+    })
+}
+
+#[derive(PartialEq, Eq)]
+struct AlphaProbeKey {
+    program: std::ffi::OsString,
+    directory: Option<std::path::PathBuf>,
+    environment: Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>,
+}
+
+async fn input_alpha_mode_supported(command: &Command) -> Result<bool, String> {
+    // One bounded cache entry; use the actual command's executable, including
+    // the benchmark's explicit FFmpeg path, rather than probing a different PATH binary.
+    static SUPPORT: tokio::sync::Mutex<Option<(AlphaProbeKey, bool)>> =
+        tokio::sync::Mutex::const_new(None);
+    let source = command.as_std();
+    let key = AlphaProbeKey {
+        program: source.get_program().to_owned(),
+        directory: source.get_current_dir().map(ToOwned::to_owned),
+        environment: source
+            .get_envs()
+            .map(|(key, value)| (key.to_owned(), value.map(ToOwned::to_owned)))
+            .collect(),
+    };
+    let mut cached = SUPPORT.lock().await;
+    if let Some((previous, supported)) = cached.as_ref() {
+        if previous == &key {
+            return Ok(*supported);
+        }
+    }
+    let mut probe = Command::new(&key.program);
+    if let Some(directory) = &key.directory {
+        probe.current_dir(directory);
+    }
+    for (name, value) in &key.environment {
+        if let Some(value) = value {
+            probe.env(name, value);
+        } else {
+            probe.env_remove(name);
+        }
+    }
+    probe.kill_on_drop(true);
+    #[cfg(windows)]
+    probe.creation_flags(0x08000000); // CREATE_NO_WINDOW, as in the FFmpeg factory.
+    let output = tokio::time::timeout(
+        Duration::from_secs(10),
+        probe.args(["-hide_banner", "-h", "full"]).output(),
+    )
+    .await
+    .map_err(|_| "Timed out querying FFmpeg alpha mode support".to_string())?
+    .map_err(|error| format!("Cannot query FFmpeg alpha mode support: {error}"))?;
+    if !output.status.success() {
+        return Err("Cannot query FFmpeg alpha mode support".to_string());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stdout.contains("AVCodecContext AVOptions:")
+        && !stderr.contains("AVCodecContext AVOptions:")
+    {
+        return Err(
+            "FFmpeg help did not report decoder options; cannot determine alpha mode support"
+                .to_string(),
+        );
+    }
+    let supported = supports_input_alpha_mode(&stdout) || supports_input_alpha_mode(&stderr);
+    if !supported {
+        log::info!("FFmpeg has no input alpha_mode option; using explicit RGB premultiplied overlay semantics");
+    }
+    *cached = Some((key, supported));
+    Ok(supported)
+}
+
+/// Append one raw premultiplied BGRA input. New FFmpeg releases use input alpha
+/// metadata when negotiating conversions; declare it before `-i`. Older releases
+/// lack this option, but still support explicit RGB overlay alpha=premultiplied.
+pub async fn add_overlay_input(command: &mut Command, spec: &OverlaySpec) -> Result<(), String> {
     spec.layout()?;
+    let supported = input_alpha_mode_supported(command).await?;
+    append_overlay_input(command, spec, supported);
+    Ok(())
+}
+
+fn append_overlay_input(command: &mut Command, spec: &OverlaySpec, alpha_metadata: bool) {
+    command.args(["-f", "rawvideo", "-pixel_format", "bgra"]);
+    if alpha_metadata {
+        command.args(["-alpha_mode", "premultiplied"]);
+    }
     command.args([
-        "-f",
-        "rawvideo",
-        "-pixel_format",
-        "rgba",
         "-video_size",
         &format!("{}x{}", spec.width, spec.height),
         "-framerate",
@@ -99,7 +185,6 @@ pub fn add_overlay_input(command: &mut Command, spec: &OverlaySpec) -> Result<()
         "-i",
         "pipe:0",
     ]);
-    Ok(())
 }
 
 /// The blocking renderer checks this between frames. Dropping the receiver also
@@ -179,7 +264,7 @@ async fn run_overlay_inner<R: ProgressReporterTrait>(
             let allocation = profile.then(Instant::now);
             for _ in 0..pool_size {
                 seed.try_send(vec![0; frame_bytes])
-                    .map_err(|_| "Cannot initialize RGBA buffer pool")?;
+                    .map_err(|_| "Cannot initialize BGRA buffer pool")?;
                 stats.buffer_allocations += 1;
             }
             // Only the runner may keep the return channel open while rendering.
@@ -201,7 +286,10 @@ async fn run_overlay_inner<R: ProgressReporterTrait>(
                 if cancelled.load(Ordering::Acquire) || sender.is_closed() {
                     break;
                 }
-                renderer.frame_into(spec.start + frame as f64 / spec.fps, &mut bytes)?;
+                renderer.frame_premultiplied_bgra_into(
+                    spec.start + frame as f64 / spec.fps,
+                    &mut bytes,
+                )?;
                 if cancelled.load(Ordering::Acquire) {
                     break;
                 }
@@ -283,6 +371,14 @@ pub fn image_events(images: &[ImageDanmu], opacity: f64) -> Vec<native_overlay::
 mod tests {
     use super::*;
 
+    #[derive(Clone)]
+    struct Reporter;
+    #[async_trait::async_trait]
+    impl ProgressReporterTrait for Reporter {
+        async fn update(&self, _: &str) {}
+        async fn finish(&self, _: bool, _: &str) {}
+    }
+
     fn spec() -> OverlaySpec {
         OverlaySpec {
             input: native_overlay::RenderInput::default(),
@@ -340,13 +436,6 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires FFmpeg"]
     async fn pooled_stream_profiles_real_ffmpeg_and_handles_early_eof() {
-        #[derive(Clone)]
-        struct Reporter;
-        #[async_trait::async_trait]
-        impl ProgressReporterTrait for Reporter {
-            async fn update(&self, _: &str) {}
-            async fn finish(&self, _: bool, _: &str) {}
-        }
         for early in [false, true] {
             let mut spec = spec();
             spec.width = 64;
@@ -363,10 +452,10 @@ mod tests {
                 "-i",
                 "color=black:s=64x64:r=30:d=1",
             ]);
-            add_overlay_input(&mut command, &spec).unwrap();
+            add_overlay_input(&mut command, &spec).await.unwrap();
             command.args([
                 "-filter_complex",
-                "[0:v][1:v]overlay=shortest=1:alpha=straight[v]",
+                "[0:v]format=bgra[base];[base][1:v]overlay=shortest=1:format=rgb:alpha=premultiplied[v]",
                 "-map",
                 "[v]",
                 "-f",
@@ -399,11 +488,11 @@ mod tests {
     }
 
     #[test]
-    fn raw_input_is_rgba_and_rounds_up_the_last_partial_frame() {
+    fn raw_input_is_premultiplied_bgra_and_rounds_up_the_last_partial_frame() {
         let spec = spec();
         assert_eq!(spec.layout().unwrap(), (1920 * 1080 * 4, 61));
         let mut command = Command::new("ffmpeg");
-        add_overlay_input(&mut command, &spec).unwrap();
+        append_overlay_input(&mut command, &spec, true);
         let args: Vec<_> = command
             .as_std()
             .get_args()
@@ -415,7 +504,9 @@ mod tests {
                 "-f",
                 "rawvideo",
                 "-pixel_format",
-                "rgba",
+                "bgra",
+                "-alpha_mode",
+                "premultiplied",
                 "-video_size",
                 "1920x1080",
                 "-framerate",
@@ -424,15 +515,178 @@ mod tests {
                 "pipe:0"
             ]
         );
+        let mut legacy = Command::new("ffmpeg");
+        append_overlay_input(&mut legacy, &spec, false);
+        let args: Vec<_> = legacy
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect();
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-pixel_format", "bgra"]));
+        assert!(!args.contains(&"-alpha_mode"));
     }
 
     #[test]
-    fn rejects_unbounded_work_before_appending_input() {
+    fn alpha_mode_detection_requires_a_decoder_option_not_just_a_filter_option() {
+        assert!(supports_input_alpha_mode(
+            "  -alpha_mode <int> ED.V....... alpha mode"
+        ));
+        assert!(supports_input_alpha_mode(
+            "  -alpha_mode <int> .D.V....... alpha mode"
+        ));
+        assert!(!supports_input_alpha_mode(
+            "  -alpha_mode <int> ..FV....... alpha mode"
+        ));
+        assert!(!supports_input_alpha_mode(
+            "  -alpha_mode <int> E..V....... alpha mode"
+        ));
+        assert!(!supports_input_alpha_mode(
+            "  -alpha_modes <string> ..FV....... alpha modes"
+        ));
+        assert!(!supports_input_alpha_mode(""));
+    }
+
+    #[tokio::test]
+    async fn failed_alpha_probe_is_not_treated_as_an_old_ffmpeg() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut command = Command::new(directory.path().join("missing-ffmpeg"));
+        let error = add_overlay_input(&mut command, &spec()).await.unwrap_err();
+        assert!(
+            error.contains("Cannot query FFmpeg alpha mode support"),
+            "{error}"
+        );
+        assert_eq!(command.as_std().get_args().count(), 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires FFmpeg"]
+    async fn premultiplied_stream_matches_straight_preview_on_coloured_backgrounds() {
+        use native_overlay::{AssSource, ImageEvent, RenderInput, SourceKind};
+        let directory = tempfile::tempdir().unwrap();
+        let image = directory.path().join("translucent.png");
+        let made = ffmpeg_utils::ffmpeg_command()
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=0xE03060@0.5:s=16x16:d=0.1,format=rgba",
+                "-frames:v",
+                "1",
+                "-y",
+            ])
+            .arg(&image)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            made.status.success(),
+            "{}",
+            String::from_utf8_lossy(&made.stderr)
+        );
+        let input = RenderInput {
+            documents: vec![AssSource {
+                kind: SourceKind::Subtitle,
+                text: "[Script Info]\nScriptType: v4.00+\nPlayResX: 128\nPlayResY: 96\n\
+                    [V4+ Styles]\n\
+                    Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
+                    Style: Default,Arial,28,&H600040E0,&H00FFFFFF,&H8000C040,&H90000000,0,0,0,0,100,100,0,0,1,2,3,5,0,0,0,1\n\
+                    [Events]\n\
+                    Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+                    Dialogue: 0,0:00:00.00,0:00:00.80,Default,,0,0,0,,Bg\n".into(),
+            }],
+            images: vec![ImageEvent {
+                path: image,
+                start: 0.2,
+                end: 0.8,
+                from: (0.0, 0.0),
+                to: (0.0, 0.0),
+                width: 480.0,
+                height: 360.0,
+                opacity: 0.5,
+            }],
+        };
+        let (width, height, fps, frames) = (128, 96, 10.0, 10usize);
+        let frame_bytes = width as usize * height as usize * 4;
+        let mut preview = system_renderer(width, height, input.clone()).unwrap();
+        let previews: Vec<_> = (0..frames)
+            .map(|frame| preview.frame(frame as f64 / fps).unwrap())
+            .collect();
+        assert!(previews[5].chunks_exact(4).any(|p| p[3] > 0 && p[3] < 255));
+        assert!(previews[9].chunks_exact(4).all(|p| p == [0, 0, 0, 0]));
+
+        for background in [[0u8, 0, 0], [255, 255, 255], [16, 192, 224]] {
+            let output = directory.path().join("composited.bgra");
+            let spec = OverlaySpec {
+                input: input.clone(),
+                width,
+                height,
+                fps,
+                start: 0.0,
+                duration: 1.0,
+            };
+            let mut command = ffmpeg_utils::ffmpeg_command();
+            command.args(["-v", "error", "-nostdin", "-f", "lavfi", "-i"]);
+            command.arg(format!(
+                "color=c=0x{:02X}{:02X}{:02X}:s={width}x{height}:r={fps}:d=1,format=bgra",
+                background[0], background[1], background[2],
+            ));
+            // Use the actual executable's capability. Omitting metadata on new
+            // FFmpeg is not an old-version simulation: it may auto-premultiply
+            // pixels again during filter negotiation.
+            add_overlay_input(&mut command, &spec).await.unwrap();
+            command.args([
+                "-filter_complex",
+                "[0:v]format=bgra[base];[base][1:v]overlay=shortest=1:format=rgb:alpha=premultiplied[v]",
+                "-map", "[v]", "-c:v", "rawvideo", "-pix_fmt", "bgra", "-f", "rawvideo", "-y",
+            ]).arg(&output);
+            run_overlay_command(
+                command,
+                spec,
+                ProgressMode::None,
+                "premultiplied alpha test",
+                None::<&Reporter>,
+            )
+            .await
+            .unwrap();
+            let actual = tokio::fs::read(output).await.unwrap();
+            assert_eq!(actual.len(), frame_bytes * frames);
+            for (frame, (drawn, composited)) in previews
+                .iter()
+                .zip(actual.chunks_exact(frame_bytes))
+                .enumerate()
+            {
+                for (pixel, (rgba, bgra)) in drawn
+                    .chunks_exact(4)
+                    .zip(composited.chunks_exact(4))
+                    .enumerate()
+                {
+                    assert_eq!(bgra[3], 255);
+                    for channel in 0..3 {
+                        let alpha = u32::from(rgba[3]);
+                        let expected = (u32::from(rgba[channel]) * alpha
+                            + u32::from(background[channel]) * (255 - alpha)
+                            + 127)
+                            / 255;
+                        let delta = (i32::from(bgra[2 - channel]) - expected as i32).abs();
+                        assert!(delta <= 2,
+                            "background={background:?} frame={frame} pixel={pixel} channel={channel}: {rgba:?} -> {bgra:?}, expected {expected}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_unbounded_work_before_appending_input() {
         for invalid in [f64::NAN, f64::INFINITY, -1.0, 0.0, 241.0] {
             let mut spec = spec();
             spec.fps = invalid;
             let mut command = Command::new("ffmpeg");
-            assert!(add_overlay_input(&mut command, &spec).is_err());
+            assert!(add_overlay_input(&mut command, &spec).await.is_err());
             assert_eq!(command.as_std().get_args().count(), 0);
         }
         let mut spec = spec();

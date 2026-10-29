@@ -17,6 +17,21 @@ pub async fn transcode<R: ProgressReporterTrait>(
     copy_codecs: bool,
     bitrate: Option<NonZeroU32>,
 ) -> Result<(), String> {
+    transcode_with_settings(reporter, file, output_path, copy_codecs, bitrate, None).await
+}
+
+pub async fn transcode_with_settings<R: ProgressReporterTrait>(
+    reporter: Option<&R>,
+    file: &Path,
+    output_path: &Path,
+    copy_codecs: bool,
+    bitrate: Option<NonZeroU32>,
+    settings: Option<&crate::project::RenderSettings>,
+) -> Result<(), String> {
+    if let Some(settings) = settings {
+        settings.validate()?;
+    }
+    let copy_codecs = copy_codecs && settings.is_none();
     log::info!("Transcode: {} copy: {}", file.display(), copy_codecs);
     let mut command = ffmpeg_command();
     command.arg("-i").arg(file);
@@ -24,14 +39,14 @@ pub async fn transcode<R: ProgressReporterTrait>(
     if copy_codecs {
         command.args(["-c:v", "copy", "-c:a", "copy"]);
     } else {
-        let video_encoder = hwaccel::get_x264_encoder().await;
+        let video_encoder = hwaccel::material_encoder(settings).await;
         hwaccel::apply_x264_encoder_args(
             &mut command,
             video_encoder,
             Some(hwaccel::H264_SCALE_PAD_FILTER),
         );
         command.args(["-c:a", "aac"]);
-        hwaccel::apply_x264_quality_args_with_bitrate(&mut command, video_encoder, bitrate);
+        hwaccel::apply_material_quality(&mut command, video_encoder, bitrate, settings);
         command.args(["-threads", "0"]);
     }
 
@@ -50,6 +65,118 @@ pub async fn transcode<R: ProgressReporterTrait>(
     .await
     .map(|_| ())
     .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod encoding_tests {
+    use super::*;
+    use crate::project::{RenderSettings, VideoCodec};
+
+    #[tokio::test]
+    async fn explicit_material_settings_encode_codec_instead_of_copying() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.mp4");
+        let output = ffmpeg_command()
+            .args([
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=s=320x180:r=30:d=0.3",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=duration=0.3",
+                "-c:v",
+                "libx264",
+                "-c:a",
+                "aac",
+                "-y",
+            ])
+            .arg(&source)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let mut input = source;
+        for (codec, name) in [(VideoCodec::Hevc, "hevc"), (VideoCodec::H264, "h264")] {
+            let settings = RenderSettings {
+                codec,
+                ..RenderSettings::default()
+            };
+            let destination = dir.path().join(format!("{name}.mp4"));
+            transcode_with_settings(
+                None::<&crate::progress::progress_reporter::ProgressReporter>,
+                &input,
+                &destination,
+                true, // Explicit settings must override a copy request.
+                None,
+                Some(&settings),
+            )
+            .await
+            .unwrap();
+            let metadata = ffmpeg_utils::extract_video_metadata(&destination)
+                .await
+                .unwrap();
+            assert_eq!(metadata.video_codec, name);
+            input = destination;
+        }
+    }
+
+    #[tokio::test]
+    async fn material_join_uses_explicit_codec_and_priority() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.mp4");
+        let output = ffmpeg_command()
+            .args([
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=s=320x180:r=30:d=0.3",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=duration=0.3",
+                "-c:v",
+                "libx264",
+                "-c:a",
+                "aac",
+                "-y",
+            ])
+            .arg(&source)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let destination = dir.path().join("joined.mp4");
+        let settings = RenderSettings {
+            priority: crate::project::EncodingPriority::Quality,
+            bitrate_kbps: 4000,
+            ..RenderSettings::default()
+        };
+        super::super::general::concat_videos_with_settings(
+            None::<&crate::progress::progress_reporter::ProgressReporter>,
+            &[source.clone(), source],
+            &destination,
+            None,
+            NonZeroU32::new(8000), // New settings override the legacy bitrate.
+            Some(&settings),
+        )
+        .await
+        .unwrap();
+        let metadata = ffmpeg_utils::extract_video_metadata(&destination)
+            .await
+            .unwrap();
+        assert_eq!(metadata.video_codec, "hevc");
+        assert!(metadata.duration >= 0.5);
+    }
 }
 
 /// Trim a video without re-encoding its streams.

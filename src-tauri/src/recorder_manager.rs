@@ -72,6 +72,10 @@ pub struct ClipRangeParams {
     /// the encoder's default quality. See [`ClipRangeParams::video_bitrate`].
     #[serde(default)]
     pub danmu_bitrate: Option<NonZeroU32>,
+    /// Explicit encoding for newly generated materials. Omission preserves
+    /// legacy stream-copy behavior and the danmu_bitrate override.
+    #[serde(default)]
+    pub render_settings: Option<crate::project::RenderSettings>,
     pub local_offset: i64,
     /// Fix encoding after clip
     pub fix_encoding: bool,
@@ -86,6 +90,83 @@ impl ClipRangeParams {
     pub fn video_bitrate(&self) -> Option<NonZeroU32> {
         self.danmu.then_some(self.danmu_bitrate).flatten()
     }
+
+    /// Joining already encodes multiple ranges. Burning also encodes and
+    /// normalizes the picture, so it satisfies an explicit fix request too.
+    pub fn needs_final_encode(&self, danmu_embedded: bool) -> bool {
+        self.render_settings.is_some()
+            && !danmu_embedded
+            && (self.ranges.len() <= 1 || self.fix_encoding)
+    }
+}
+
+#[cfg(test)]
+mod encoding_tests {
+    use super::*;
+
+    #[test]
+    fn whole_clip_settings_use_camel_case_wire_and_legacy_defaults() {
+        let mut wire = serde_json::json!({
+            "encodeDanmu": false, "platform": "bilibili",
+            "roomId": "room", "parentId": "parent"
+        });
+        let legacy: GenerateWholeClipParams = serde_json::from_value(wire.clone()).unwrap();
+        assert!(legacy.render_settings.is_none());
+        let settings = crate::project::RenderSettings::default();
+        wire["renderSettings"] = serde_json::to_value(&settings).unwrap();
+        let current: GenerateWholeClipParams = serde_json::from_value(wire).unwrap();
+        assert_eq!(current.render_settings, Some(settings.clone()));
+        assert_eq!(
+            serde_json::to_value(current).unwrap()["renderSettings"],
+            serde_json::to_value(settings).unwrap()
+        );
+    }
+
+    fn params() -> ClipRangeParams {
+        serde_json::from_value(serde_json::json!({
+            "title": "", "note": "", "cover": "", "platform": "bilibili",
+            "room_id": "", "live_id": "", "ranges": [],
+            "local_offset": 0, "fix_encoding": false, "transition": null
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn omitted_material_settings_keep_legacy_copy_and_danmu_bitrate() {
+        let mut params = params();
+        assert!(params.render_settings.is_none());
+        assert!(!params.needs_final_encode(false));
+        params.danmu_bitrate = NonZeroU32::new(8000);
+        assert_eq!(params.video_bitrate(), None);
+        params.danmu = true;
+        assert_eq!(params.video_bitrate(), NonZeroU32::new(8000));
+        assert!(!params.needs_final_encode(false));
+    }
+
+    #[test]
+    fn explicit_settings_guarantee_encoding_without_redundant_final_passes() {
+        let mut params = params();
+        params.render_settings = Some(crate::project::RenderSettings::default());
+        for count in 0..=2 {
+            params.ranges = vec![
+                Range {
+                    start: 0.0,
+                    end: 1.0
+                };
+                count
+            ];
+            for danmu in [false, true] {
+                params.danmu = danmu;
+                for fix in [false, true] {
+                    params.fix_encoding = fix;
+                    // The requested danmu toggle alone is not proof of an encode:
+                    // missing/empty/super-chat-only danmaku still need the guard.
+                    assert_eq!(params.needs_final_encode(false), count <= 1 || fix);
+                    assert!(!params.needs_final_encode(true));
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -97,6 +178,8 @@ pub struct GenerateWholeClipParams {
     pub parent_id: String,
     pub selected_live_ids: Option<Vec<String>>,
     pub output_name: Option<String>,
+    #[serde(default)]
+    pub render_settings: Option<crate::project::RenderSettings>,
 }
 
 pub struct RelatedPlaylist {
@@ -392,7 +475,12 @@ impl RecorderManager {
         room_id: &str,
         recorder: &RecorderInfo,
     ) {
-        if !self.config.read().await.auto_generate.enabled {
+        let auto_generate = self.config.read().await.auto_generate.clone();
+        if !auto_generate.enabled {
+            return;
+        }
+        if let Err(error) = auto_generate.render_settings.validate() {
+            log::error!("Invalid automatic material encoding settings: {error}");
             return;
         }
 
@@ -410,6 +498,17 @@ impl RecorderManager {
             }
         };
 
+        // Capture the same immutable inputs for task metadata and its deferred
+        // worker. Later settings changes apply only to newly scheduled jobs.
+        let params = GenerateWholeClipParams {
+            encode_danmu: auto_generate.encode_danmu,
+            platform: platform.as_str().to_string(),
+            room_id: room_id.to_string(),
+            parent_id,
+            selected_live_ids: None,
+            output_name: None,
+            render_settings: Some(auto_generate.render_settings),
+        };
         let Ok(task) = self
             .db
             .generate_task(
@@ -418,7 +517,9 @@ impl RecorderManager {
                 &serde_json::json!({
                     "platform": platform.as_str(),
                     "room_id": room_id,
-                    "parent_id": parent_id,
+                    "parent_id": params.parent_id,
+                    "encode_danmu": params.encode_danmu,
+                    "render_settings": params.render_settings,
                 })
                 .to_string(),
             )
@@ -442,7 +543,6 @@ impl RecorderManager {
 
         let self_clone = self.clone();
         let task_id = task.id.clone();
-        let room_id = room_id.to_string();
         let enqueue_result = self
             .task_manager
             .add_task(Task::new(
@@ -450,22 +550,7 @@ impl RecorderManager {
                 TaskPriority::Normal,
                 async move {
                     if let Err(e) = self_clone
-                        .generate_whole_clip(
-                            Some(&reporter),
-                            GenerateWholeClipParams {
-                                encode_danmu: self_clone
-                                    .config
-                                    .read()
-                                    .await
-                                    .auto_generate
-                                    .encode_danmu,
-                                platform: platform.as_str().to_string(),
-                                room_id,
-                                parent_id,
-                                selected_live_ids: None,
-                                output_name: None,
-                            },
-                        )
+                        .generate_whole_clip(Some(&reporter), params)
                         .await
                     {
                         log::error!("Failed to generate whole clip: {e}");
@@ -1052,6 +1137,11 @@ impl RecorderManager {
         clip_file: PathBuf,
         params: &ClipRangeParams,
     ) -> Result<(PathBuf, Vec<Range>), RecorderManagerError> {
+        if let Some(settings) = &params.render_settings {
+            settings
+                .validate()
+                .map_err(|err| RecorderManagerError::ClipError { err })?;
+        }
         let cache_path = self.config.read().await.cache.clone();
         let cache_path = Path::new(&cache_path);
         let playlist_path = cache_path
@@ -1079,19 +1169,22 @@ impl RecorderManager {
             .map_err(|e| RecorderManagerError::ClipError { err: e.to_string() })?;
             Vec::new()
         } else {
-            crate::ffmpeg::playlist::clip_multiple_from_playlist(
+            crate::ffmpeg::playlist::clip_multiple_with_settings(
                 reporter,
                 &playlist_path,
                 &clip_file,
                 &params.ranges,
                 params.transition.as_deref(),
                 params.video_bitrate(),
+                params.render_settings.as_ref(),
             )
             .await
             .map_err(|e| RecorderManagerError::ClipError { err: e.to_string() })?
         };
 
-        if params.fix_encoding {
+        // Explicit settings defer fixing until after the optional danmaku burn,
+        // avoiding an extra encode when burning already normalizes the picture.
+        if params.fix_encoding && params.render_settings.is_none() {
             // transcode clip_file
             let tmp_clip_file = clip_file.with_extension("tmp.mp4");
             let fixing = reporter.map(|reporter| reporter.stage("修复编码"));
@@ -1637,6 +1730,11 @@ impl RecorderManager {
         reporter: Option<&ProgressReporter>,
         params: GenerateWholeClipParams,
     ) -> Result<(), RecorderManagerError> {
+        if let Some(settings) = &params.render_settings {
+            settings
+                .validate()
+                .map_err(|err| RecorderManagerError::ClipError { err })?;
+        }
         let GenerateWholeClipParams {
             encode_danmu,
             platform,
@@ -1644,6 +1742,7 @@ impl RecorderManager {
             parent_id,
             selected_live_ids,
             output_name,
+            render_settings,
         } = params;
 
         let platform = PlatformType::from_str(&platform).map_err(|_| {
@@ -1741,6 +1840,7 @@ impl RecorderManager {
             danmu_tracks,
             &danmu_options,
             &output_path,
+            render_settings.as_ref(),
         )
         .await
         {
@@ -1832,6 +1932,15 @@ mod live_end_tests {
         .execute(&pool)
         .await
         .unwrap();
+        sqlx::query(
+            "CREATE TABLE tasks (
+                id TEXT PRIMARY KEY, type TEXT, status TEXT, message TEXT,
+                metadata TEXT, created_at TEXT
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         Database::new(
             pool,
             crate::database::credentials::CredentialCipher::new(&[0; 32]).unwrap(),
@@ -1855,6 +1964,115 @@ mod live_end_tests {
             .await
             .unwrap();
         db.update_record_delta(live, 4.0, 1024).await.unwrap();
+    }
+
+    #[cfg(feature = "headless")]
+    #[tokio::test]
+    async fn auto_generate_live_end_validates_and_snapshots_queued_settings() {
+        use crate::project::{EncodingPriority, RenderSettings, VideoCodec};
+        use crate::task::TaskManagerConfig;
+        use crate::webhook::poster::WebhookConfig;
+        use tokio::time::{timeout, Duration};
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(database().await);
+        add_archive(&db, PlatformType::BiliBili, "session", "archive").await;
+        let config = Arc::new(RwLock::new(
+            Config::load(&dir.path().join("config.toml"), dir.path(), dir.path()).unwrap(),
+        ));
+        let mut tasks = TaskManager::with_config(TaskManagerConfig {
+            check_interval_ms: 5,
+            ..TaskManagerConfig::default()
+        });
+        tasks.start();
+        let tasks = Arc::new(tasks);
+        // Occupy the only worker so settings can change after submission.
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        tasks
+            .add_task(Task::new(
+                "blocker".into(),
+                TaskPriority::Normal,
+                async move {
+                    let _ = started_tx.send(());
+                    let _ = release_rx.await;
+                    Ok(())
+                },
+            ))
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(2), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        let manager = RecorderManager::new(
+            EventBus::new(),
+            db.clone(),
+            config.clone(),
+            tasks.clone(),
+            dir.path().into(),
+            WebhookPoster::new(WebhookConfig::default()).unwrap(),
+        );
+        let ended = ended_recorder("session", "archive");
+        manager
+            .handle_live_end(PlatformType::BiliBili, "10220184", &ended)
+            .await;
+        assert!(db.get_tasks().await.unwrap().is_empty());
+        {
+            let mut config = config.write().await;
+            config.auto_generate.enabled = true;
+            config.auto_generate.render_settings.bitrate_kbps = 0;
+        }
+        manager
+            .handle_live_end(PlatformType::BiliBili, "10220184", &ended)
+            .await;
+        assert!(db.get_tasks().await.unwrap().is_empty());
+        let selected = RenderSettings {
+            codec: VideoCodec::H264,
+            priority: EncodingPriority::Quality,
+            bitrate_kbps: 16_000,
+        };
+        {
+            let mut config = config.write().await;
+            config.auto_generate.encode_danmu = true;
+            config.auto_generate.render_settings = selected.clone();
+        }
+        manager
+            .handle_live_end(PlatformType::BiliBili, "10220184", &ended)
+            .await;
+        let queued = db.get_tasks().await.unwrap().pop().unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&queued.metadata).unwrap();
+        assert_eq!(metadata["encode_danmu"], true);
+        assert_eq!(
+            metadata["render_settings"],
+            serde_json::to_value(selected).unwrap()
+        );
+        {
+            let mut config = config.write().await;
+            config.auto_generate.enabled = false;
+            config.auto_generate.encode_danmu = false;
+            config.auto_generate.render_settings.bitrate_kbps = 0;
+        }
+        release_tx.send(()).unwrap();
+        let finished = timeout(Duration::from_secs(3), async {
+            loop {
+                let task = db.get_task(&queued.id).await.unwrap();
+                if task.status == "failed" || task.status == "success" {
+                    break task;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        // This fixture deliberately has no playlist file: reaching concat proves
+        // the worker kept valid scheduled settings instead of rereading zero.
+        assert!(
+            finished.message.contains("Failed to concat playlists"),
+            "{}",
+            finished.message
+        );
+        assert_eq!(finished.metadata, queued.metadata);
     }
 
     #[tokio::test]

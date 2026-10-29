@@ -219,8 +219,9 @@ export interface AudioFile {
 }
 
 export interface RenderSettings {
-  quality: "high" | "balanced" | "compact";
-  /** Zero selects quality mode; positive Kbps selects bitrate mode and ignores quality. */
+  codec: "h264" | "hevc";
+  priority: "quality" | "speed";
+  /** Target video bitrate in Kbps, independent of encoding priority. */
   bitrate_kbps: number;
 }
 
@@ -460,6 +461,7 @@ export interface Danmu2AssOptions {
 export interface AutoGenerateConfig {
   enabled: boolean;
   encode_danmu: boolean;
+  render_settings: RenderSettings;
 }
 
 export interface DiskInfo {
@@ -563,6 +565,8 @@ export interface ClipRangeParams {
   danmu: boolean;
   /** Video bitrate in kbps for burning danmaku; null keeps the encoder default. */
   danmu_bitrate?: number | null;
+  /** Explicit encoding settings for the generated material, with or without danmaku. */
+  render_settings?: RenderSettings;
   local_offset: number;
   fix_encoding: boolean;
   transition?: string;

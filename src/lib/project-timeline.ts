@@ -65,7 +65,20 @@ export function newId(): string {
 }
 
 export function defaultRenderSettings(): RenderSettings {
-  return { quality: "balanced", bitrate_kbps: 0 };
+  return { codec: "hevc", priority: "speed", bitrate_kbps: 10000 };
+}
+
+/** Read timelines saved before codec and encoding priority were configurable. */
+export function normalizeRenderSettings(value?: Partial<RenderSettings> & { quality?: string } | null): RenderSettings {
+  const defaults = defaultRenderSettings();
+  const legacy = value?.codec == null && value?.priority == null;
+  return {
+    codec: value?.codec ?? defaults.codec,
+    priority: value?.priority ?? (legacy && value?.quality === "high" ? "quality" : defaults.priority),
+    bitrate_kbps: legacy && value?.bitrate_kbps === 0
+      ? defaults.bitrate_kbps
+      : value?.bitrate_kbps ?? defaults.bitrate_kbps,
+  };
 }
 
 export function emptyTimeline(style: SubtitleStyle | null = null): ProjectTimeline {
@@ -91,7 +104,7 @@ export function parseTimeline(json: string): ProjectTimeline {
       tracks: Array.isArray(value.tracks) ? kindTracks(value.tracks) : [],
       subtitle_style: value.subtitle_style ?? null,
       danmu: Boolean(value.danmu),
-      render_settings: value.render_settings ?? defaultRenderSettings(),
+      render_settings: normalizeRenderSettings(value.render_settings),
       audio_tracks: Array.isArray(value.audio_tracks)
         ? value.audio_tracks.map((track: AudioTrack) => ({
             id: track.id,

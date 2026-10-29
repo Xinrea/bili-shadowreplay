@@ -18,11 +18,11 @@ use crate::database::task::TaskRow;
 use crate::database::upload::UploadRow;
 use crate::database::video::VideoRow;
 use crate::database::{Database, DatabaseError};
+use crate::ffmpeg::hwaccel;
 use crate::ffmpeg::project::{
     limit_segment_caches, project_frame_rate, render_project, OverlayLayer, ProjectRender,
     RenderClip, RenderOverlay, RenderSound, VideoLayer,
 };
-use crate::ffmpeg::runner::TempArtifact;
 use crate::handlers::subtitle_fonts::prepare_subtitle_font_directory;
 use crate::handlers::utils::{decode_data_url, get_disk_info_inner};
 use crate::handlers::video::{
@@ -32,7 +32,7 @@ use crate::handlers::video::{
 use crate::material::Peaks;
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
 use crate::project::{
-    srt_cues, AudioSource, OverlayContent, RenderSettings, Timeline, TimelineClip, VideoQuality,
+    srt_cues, AudioSource, OverlayContent, RenderSettings, Timeline, TimelineClip,
 };
 use crate::recorder_manager::ClipRangeParams;
 use crate::state::State;
@@ -206,18 +206,6 @@ fn validate_timeline(
     )
 }
 
-/// The material a project is exported and uploaded as: one untouched material
-/// without subtitles or danmaku, which needs no rendering.
-fn plain_material<'a>(
-    timeline: &Timeline,
-    materials: &'a HashMap<i64, VideoRow>,
-) -> Option<&'a VideoRow> {
-    let material = materials.get(&timeline.clips.first()?.material_id)?;
-    timeline
-        .single_full_material(material_duration(material))
-        .map(|_| material)
-}
-
 fn project_view(project: ProjectRow, materials: &HashMap<i64, VideoRow>) -> ProjectView {
     let timeline = Timeline::parse(&project.timeline).unwrap_or_default();
     let display_cover = if project.cover.is_empty() {
@@ -231,7 +219,7 @@ fn project_view(project: ProjectRow, materials: &HashMap<i64, VideoRow>) -> Proj
         project.cover.clone()
     };
     ProjectView {
-        needs_render: plain_material(&timeline, materials).is_none(),
+        needs_render: true,
         duration: timeline.duration(),
         clip_count: timeline.clips.len(),
         display_cover,
@@ -558,7 +546,7 @@ pub async fn update_project_danmu(
 
 /// Patch output settings shared with uploads, independently of timeline edits.
 /// Omitted fields keep their latest saved values; render settings are one field
-/// because bitrate and quality together select the encoding mode.
+/// because codec, priority and bitrate together select the encoding behavior.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_project_output_settings(
     state: state_type!(),
@@ -763,9 +751,8 @@ pub async fn get_material_danmu(state: state_type!(), id: i64) -> Result<Vec<Dan
 
 /// Kept free on every disk written to, for other use.
 const FREE_SPACE_RESERVE: u64 = 1024 * 1024 * 1024;
-/// Bytes an export writes per second of the project: its video, at the rate
-/// the hardware encoders keep to and libx264 seldom passes at 1080p, and its
-/// sound.
+/// Baseline space budget for video and encoded sound. Higher selected bitrates
+/// add their headroom to both output and segment budgets.
 const EXPORT_BYTES_PER_SECOND: u64 = 12_000_000 / 8 + 192_000 / 8;
 /// Bytes its segments take per second besides: the same video, and WAV sound.
 const SEGMENT_BYTES_PER_SECOND: u64 = 12_000_000 / 8 + 48_000 * 2 * 2;
@@ -1038,9 +1025,6 @@ pub(crate) async fn project_upload_video(
     let materials = materials_by_id(state, &timeline.material_ids()).await?;
     let audio = audio_by_id(state, &timeline.audio_ids()).await;
     validate_timeline(&timeline, &materials, &audio)?;
-    if let Some(material) = plain_material(&timeline, &materials) {
-        return Ok((output_dir(state).await.join(&material.file), None));
-    }
     if timeline.has_visible_subtitles() && subtitle_ass.is_none() {
         return Err("切片有字幕，但没有提供字幕样式".to_string());
     }
@@ -1113,7 +1097,8 @@ async fn upload_render(
     source: ExportSource<'_>,
     directory: &Path,
 ) -> Result<(PathBuf, Option<oneshot::Receiver<Result<(), String>>>), String> {
-    let hash = source.render_hash();
+    let encoder = hwaccel::get_render_encoder(&source.timeline.render_settings).await;
+    let hash = source.render_hash(encoder);
     let target = directory.join(format!("{UPLOAD_RENDER_PREFIX}{hash}.mp4"));
     if target.is_file() {
         return Ok((target, None));
@@ -1245,12 +1230,24 @@ struct ExportSource<'a> {
 
 impl ExportSource<'_> {
     /// Identifies what rendering this source contains.
-    fn render_hash(&self) -> String {
+    fn render_hash(&self, encoder: &str) -> String {
         let mut extra = format!(
-            "native:{}:{}\n",
+            "encoder:{encoder}\nnative:{}:{}\n",
             self.generated_subtitle,
             native_overlay::RENDERER_VERSION
         );
+        extra.push_str(&serde_json::to_string(&self.timeline.render_settings).unwrap());
+        extra.push('\0');
+        // Match segment caching: changes to effective encoder defaults (e.g.
+        // GOP length) must also invalidate the complete video prepared for upload.
+        extra.push_str(
+            &serde_json::to_string(&hwaccel::project_quality_args(
+                encoder,
+                &self.timeline.render_settings,
+            ))
+            .unwrap(),
+        );
+        extra.push('\0');
         extra.push_str(self.subtitle_ass.as_deref().unwrap_or_default());
         if self.timeline.danmu {
             extra.push_str(&serde_json::to_string(&self.danmu_options).unwrap_or_default());
@@ -1270,8 +1267,6 @@ impl ExportSource<'_> {
 /// cannot change a waiting job.
 struct ExportJob {
     title: String,
-    /// The material to copy instead of rendering.
-    plain: Option<PathBuf>,
     timeline: Timeline,
     /// Each material's file, by id.
     files: HashMap<i64, PathBuf>,
@@ -1387,7 +1382,6 @@ async fn queue_export(
         project,
     } = source;
     let output = output_dir(state).await;
-    let plain = plain_material(&timeline, materials).map(|material| output.join(&material.file));
     let overlay_images = decode_overlay_images(&overlay_images)?;
     if !has_overlay_images(&timeline, &overlay_images) {
         return Err("切片有文字或贴纸，但没有提供它们的画面".to_string());
@@ -1403,49 +1397,32 @@ async fn queue_export(
     let cache = PathBuf::from(&state.config.read().await.cache);
     let segment_cache = project.map(|id| cache.join(segment_cache_dir(id)));
     // The export beside its target, and its segments in the project's cache,
-    // or else beside the target too. A plain material is copied.
+    // or else beside the target too. Every project is encoded.
     let target_path = target.path();
     let beside_target = target_path.parent().unwrap_or(target_path).to_path_buf();
     let seconds = timeline.duration().max(0.0).ceil() as u64;
     // Higher selected bitrates also need more space for the output and segments.
-    let peak_kbps = if timeline.render_settings.bitrate_kbps > 0 {
-        u64::from(timeline.render_settings.bitrate_kbps) * 5 / 4
-    } else if timeline.render_settings.quality == VideoQuality::High {
-        20_000
-    } else {
-        12_000
-    };
+    let peak_kbps = u64::from(timeline.render_settings.bitrate_kbps) * 5 / 4;
     let extra_video_bytes = peak_kbps.saturating_sub(12_000) * 1000 / 8 * seconds;
-    let writes = match &plain {
-        Some(material) => {
-            let size = tokio::fs::metadata(material).await.map_or(0, |m| m.len());
-            vec![(beside_target, size)]
-        }
-        None => {
-            // A segment cache holds segments of an export before: those this
-            // one shows are not written again, and the others are removed
-            // before it writes, so at most the rest of the budget is needed.
-            let cached = match &segment_cache {
-                Some(directory) => directory_size(directory).await,
-                None => 0,
-            };
-            vec![
-                (
-                    beside_target.clone(),
-                    seconds * EXPORT_BYTES_PER_SECOND + extra_video_bytes,
-                ),
-                (
-                    segment_cache.clone().unwrap_or(beside_target),
-                    segment_writes(seconds, cached, extra_video_bytes),
-                ),
-            ]
-        }
+    // Existing segments are either reused or removed before writing replacements.
+    let cached = match &segment_cache {
+        Some(directory) => directory_size(directory).await,
+        None => 0,
     };
+    let writes = vec![
+        (
+            beside_target.clone(),
+            seconds * EXPORT_BYTES_PER_SECOND + extra_video_bytes,
+        ),
+        (
+            segment_cache.clone().unwrap_or(beside_target),
+            segment_writes(seconds, cached, extra_video_bytes),
+        ),
+    ];
     check_free_space(&writes).await?;
 
     let job = ExportJob {
         title,
-        plain,
         files: materials
             .iter()
             .map(|(id, material)| (*id, output.join(&material.file)))
@@ -1530,17 +1507,7 @@ async fn export_project_inner(
     // export never replaces an existing file with a broken one.
     let stem = target.file_stem().unwrap_or_default().to_string_lossy();
     let staging = target.with_file_name(format!("{stem}.part.mp4"));
-    match &job.plain {
-        Some(material) => {
-            reporter.update("复制素材文件").await;
-            let guard = TempArtifact::new(&staging);
-            tokio::fs::copy(material, &staging)
-                .await
-                .map_err(|e| format!("复制素材文件失败: {e}"))?;
-            guard.keep();
-        }
-        None => render_timeline(reporter, &job, &staging).await?,
-    }
+    render_timeline(reporter, &job, &staging).await?;
     if let Err(e) = tokio::fs::rename(&staging, &target).await {
         let _ = tokio::fs::remove_file(&staging).await;
         return Err(format!("保存导出文件失败: {e}"));
@@ -1803,6 +1770,7 @@ pub async fn create_legacy_projects(db: Arc<Database>, output: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::project::{EncodingPriority, VideoCodec};
 
     #[tokio::test]
     async fn segments_in_the_cache_are_not_counted_as_written_again() {
@@ -1928,7 +1896,8 @@ mod tests {
     async fn output_settings_patches_preserve_omitted_fields_and_timeline_edits() {
         let (db, project) = output_settings_project().await;
         let bitrate_settings = RenderSettings {
-            quality: VideoQuality::High,
+            codec: VideoCodec::H264,
+            priority: EncodingPriority::Quality,
             bitrate_kbps: 12_000,
         };
         // Another dialog and the editor save after this export dialog opened.
@@ -1951,17 +1920,14 @@ mod tests {
         patch_project_output_settings(&db, project.id, Some(true), None)
             .await
             .unwrap();
-        let quality_settings = RenderSettings {
-            quality: VideoQuality::Compact,
-            bitrate_kbps: 0,
-        };
-        patch_project_output_settings(&db, project.id, None, Some(quality_settings.clone()))
+        let default_settings = RenderSettings::default();
+        patch_project_output_settings(&db, project.id, None, Some(default_settings.clone()))
             .await
             .unwrap();
         let stored = Timeline::parse(&db.get_project(project.id).await.unwrap().timeline).unwrap();
         assert!(stored.danmu);
-        // Replacing render settings replaces both mode and quality, not just one.
-        assert_eq!(stored.render_settings, quality_settings);
+        // Replacing render settings replaces codec, priority and bitrate together.
+        assert_eq!(stored.render_settings, default_settings);
         assert_eq!(stored.clips[0].end, 8.0);
     }
 
@@ -1986,10 +1952,10 @@ mod tests {
     async fn output_settings_invalid_patches_do_not_change_any_field() {
         let (db, project) = output_settings_project().await;
         let timeline = Timeline::parse(&project.timeline).unwrap();
-        for bitrate_kbps in [1, 100_001] {
+        for bitrate_kbps in [0, 1, 499, 100_001] {
             let settings = RenderSettings {
-                quality: VideoQuality::High,
                 bitrate_kbps,
+                ..RenderSettings::default()
             };
             let expected_error = settings.validate().unwrap_err();
             let error = patch_project_output_settings(
@@ -2052,7 +2018,8 @@ mod tests {
         edit_project_timeline(&db, project.id, |timeline| {
             timeline.danmu = true;
             timeline.render_settings = RenderSettings {
-                quality: VideoQuality::High,
+                codec: VideoCodec::H264,
+                priority: EncodingPriority::Quality,
                 bitrate_kbps: 12_000,
             };
             true
@@ -2067,7 +2034,8 @@ mod tests {
                 .unwrap();
             // Both new and old editors preserve settings saved by the upload dialog.
             assert!(saved.danmu);
-            assert_eq!(saved.render_settings.quality, VideoQuality::High);
+            assert_eq!(saved.render_settings.codec, VideoCodec::H264);
+            assert_eq!(saved.render_settings.priority, EncodingPriority::Quality);
             assert_eq!(saved.render_settings.bitrate_kbps, 12_000);
         }
         let stored = Timeline::parse(&db.get_project(project.id).await.unwrap().timeline).unwrap();
@@ -2333,7 +2301,7 @@ mod tests {
     }
 
     #[test]
-    fn a_render_is_identified_by_its_overlay_pictures_too() {
+    fn a_render_is_identified_by_effective_encoding_and_overlay_pictures() {
         let (materials, audio) = (HashMap::new(), HashMap::new());
         let timeline = Timeline::from_materials(&[(1, 10.0)]);
         let source = |images: Vec<OverlayImage>| ExportSource {
@@ -2355,21 +2323,42 @@ mod tests {
             x,
             y: 0.0,
         };
-        let drawn = source(vec![image("data:image/png;base64,AAAA", 10.0)]).render_hash();
+        let drawn = source(vec![image("data:image/png;base64,AAAA", 10.0)]).render_hash("libx265");
         assert_eq!(
             drawn,
-            source(vec![image("data:image/png;base64,AAAA", 10.0)]).render_hash()
+            source(vec![image("data:image/png;base64,AAAA", 10.0)]).render_hash("libx265")
+        );
+        assert_ne!(
+            drawn,
+            source(vec![image("data:image/png;base64,AAAA", 10.0)]).render_hash("hevc_nvenc")
         );
         // Drawn differently, as with another font, or placed elsewhere.
         assert_ne!(
             drawn,
-            source(vec![image("data:image/png;base64,AAAB", 10.0)]).render_hash()
+            source(vec![image("data:image/png;base64,AAAB", 10.0)]).render_hash("libx265")
         );
         assert_ne!(
             drawn,
-            source(vec![image("data:image/png;base64,AAAA", 11.0)]).render_hash()
+            source(vec![image("data:image/png;base64,AAAA", 11.0)]).render_hash("libx265")
         );
-        assert_ne!(drawn, source(Vec::new()).render_hash());
+        assert_ne!(drawn, source(Vec::new()).render_hash("libx265"));
+        let plain = source(Vec::new());
+        let mut extra = format!(
+            "encoder:libx265\nnative:false:{}\n",
+            native_overlay::RENDERER_VERSION,
+        );
+        extra.push_str(&serde_json::to_string(&timeline.render_settings).unwrap());
+        extra.push('\0');
+        assert_ne!(plain.render_hash("libx265"), timeline.render_hash(&extra));
+        extra.push_str(
+            &serde_json::to_string(&hwaccel::project_quality_args(
+                "libx265",
+                &timeline.render_settings,
+            ))
+            .unwrap(),
+        );
+        extra.push('\0');
+        assert_eq!(plain.render_hash("libx265"), timeline.render_hash(&extra));
     }
 
     #[test]

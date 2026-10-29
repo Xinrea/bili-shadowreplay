@@ -104,10 +104,12 @@ pub struct LlmConfig {
     pub model: String,
 }
 
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct AutoGenerateConfig {
     pub enabled: bool,
     pub encode_danmu: bool,
+    #[serde(default)]
+    pub render_settings: crate::project::RenderSettings,
 }
 
 fn default_danmu_ass_options() -> Danmu2AssOptions {
@@ -150,6 +152,7 @@ fn default_auto_generate_config() -> AutoGenerateConfig {
     AutoGenerateConfig {
         enabled: false,
         encode_danmu: false,
+        render_settings: crate::project::RenderSettings::default(),
     }
 }
 
@@ -522,6 +525,48 @@ mod powerlive_config_tests {
                 .is_err());
             assert_eq!(serde_json::to_value(&config).unwrap(), before);
         }
+    }
+}
+
+#[cfg(test)]
+mod auto_generate_tests {
+    use super::*;
+    use crate::project::{EncodingPriority, RenderSettings, VideoCodec};
+
+    #[test]
+    fn auto_generate_defaults_migrate_and_persist_encoding_settings() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let fresh = Config::load(&path, directory.path(), directory.path()).unwrap();
+        assert_eq!(
+            fresh.auto_generate.render_settings,
+            RenderSettings::default()
+        );
+        assert!(!fresh.auto_generate.enabled);
+        let mut legacy = toml::Value::try_from(&fresh).unwrap();
+        legacy["auto_generate"]
+            .as_table_mut()
+            .unwrap()
+            .remove("render_settings");
+        std::fs::write(&path, toml::to_string(&legacy).unwrap()).unwrap();
+        let mut loaded = Config::load(&path, directory.path(), directory.path()).unwrap();
+        assert_eq!(
+            loaded.auto_generate.render_settings,
+            RenderSettings::default()
+        );
+        loaded.auto_generate.enabled = true;
+        loaded.auto_generate.encode_danmu = true;
+        loaded.auto_generate.render_settings = RenderSettings {
+            codec: VideoCodec::H264,
+            priority: EncodingPriority::Quality,
+            bitrate_kbps: 16_000,
+        };
+        loaded.try_save().unwrap();
+        let reloaded = Config::load(&path, directory.path(), directory.path()).unwrap();
+        assert_eq!(reloaded.auto_generate, loaded.auto_generate);
+        legacy.as_table_mut().unwrap().remove("auto_generate");
+        let missing: Config = legacy.try_into().unwrap();
+        assert_eq!(missing.auto_generate, fresh.auto_generate);
     }
 }
 

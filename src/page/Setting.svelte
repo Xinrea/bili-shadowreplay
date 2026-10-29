@@ -28,6 +28,8 @@
   import PowerLiveHotwords from "../lib/components/PowerLiveHotwords.svelte";
   import PowerLiveSentenceLength from "../lib/components/PowerLiveSentenceLength.svelte";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
+  import RenderSettingsFields from "../lib/components/RenderSettingsFields.svelte";
+  import { defaultRenderSettings, normalizeRenderSettings } from "../lib/project-timeline";
   import { registerCommands } from "../lib/stores/commands";
   import {
     themePreference,
@@ -138,6 +140,7 @@
       options: [
         { id: "auto-generate", title: "生成整场录播素材", keywords: ["auto", "material", "whole"] },
         { id: "auto-generate-danmu", title: "整场生成时压制弹幕", keywords: ["auto", "material", "danmaku"] },
+        { id: "auto-generate-encoding", title: "自动生成编码设置", keywords: ["auto", "codec", "hevc", "h264", "bitrate", "画质", "码率"] },
       ],
     },
   ];
@@ -236,6 +239,7 @@
     auto_generate: {
       enabled: false,
       encode_danmu: false,
+      render_settings: defaultRenderSettings(),
     },
     status_check_interval: 30, // 默认30秒
     whisper_language: "",
@@ -258,6 +262,9 @@
   let llmError = $state("");
   let showModelList = $state(false);
   let llmSaveChain: Promise<void> = Promise.resolve();
+  let autoGenerateLoading = $state(true);
+  let autoGenerateSaving = $state(false);
+  let autoGenerateError = $state("");
   let launchAtLogin = $state(false);
   let mcpStatus: McpServerStatus | null = $state(null);
   let mcpLoading = $state(true);
@@ -384,8 +391,28 @@
 
   async function get_config() {
     let config: Config = await invoke("get_config");
+    config.auto_generate.render_settings = normalizeRenderSettings(config.auto_generate.render_settings);
     setting_model = config;
+    autoGenerateLoading = false;
     console.log(config);
+  }
+
+  async function updateAutoGenerate() {
+    if (autoGenerateLoading || autoGenerateSaving) return;
+    autoGenerateSaving = true;
+    autoGenerateError = "";
+    const settings = setting_model.auto_generate;
+    try {
+      await invoke("update_auto_generate", {
+        enabled: settings.enabled,
+        encodeDanmu: settings.encode_danmu,
+        renderSettings: { ...settings.render_settings },
+      });
+    } catch (error) {
+      autoGenerateError = "自动生成设置保存失败：" + String(error);
+    } finally {
+      autoGenerateSaving = false;
+    }
   }
 
   async function browse_folder() {
@@ -1613,7 +1640,7 @@
               <SquareBottomDashedScissors class="h-4 w-4 text-fg-muted" />
               <span>自动素材生成</span>
             </h2>
-            <div class="ui-card divide-y divide-line">
+            <fieldset class="ui-card min-w-0 overflow-hidden" disabled={autoGenerateLoading || autoGenerateSaving}>
               <!-- Auto Clip Generation -->
               <div class="px-4 py-3" data-setting="auto-generate">
                 <div class="flex items-center justify-between gap-6">
@@ -1622,53 +1649,73 @@
                       生成整场录播素材
                     </h3>
                     <p class="ui-hint mt-0.5">
-                      启用后，直播结束时会自动把整场录播生成为素材
+                      直播结束后，自动生成整场录播素材
                     </p>
                   </div>
                   <label class="ui-switch">
                     <input
                       type="checkbox"
+                      aria-label="生成整场录播素材"
                       bind:checked={setting_model.auto_generate.enabled}
-                      onchange={async () => {
-                        await invoke("update_auto_generate", {
-                          enabled: setting_model.auto_generate.enabled,
-                          encodeDanmu: setting_model.auto_generate.encode_danmu,
-                        });
-                      }}
+                      onchange={updateAutoGenerate}
                     />
                     <span></span>
                   </label>
                 </div>
               </div>
-              <!-- Auto Clip Encode Danmu -->
+              <!-- A quiet settings area, not another card inside the card. -->
               {#if setting_model.auto_generate.enabled}
-                <div class="px-4 py-3" data-setting="auto-generate-danmu">
-                  <div class="flex items-center justify-between gap-6">
-                    <div>
-                      <h3 class="ui-label">
-                        整场生成时压制弹幕
-                      </h3>
-                      <p class="ui-hint mt-0.5">
-                        启用后，自动生成整场素材时会同时压制弹幕，会显著增加生成时间
-                      </p>
+                <div
+                  role="group"
+                  aria-label="自动生成子选项"
+                  class="space-y-4 border-t border-line bg-sunken/30 py-4 pl-6 pr-4 sm:pl-8"
+                >
+                  <div data-setting="auto-generate-danmu">
+                    <div class="flex items-center justify-between gap-4">
+                      <div>
+                        <h3 class="text-[12px] font-normal text-fg-secondary">
+                          压制弹幕
+                        </h3>
+                        <p class="ui-hint mt-0.5">
+                          将弹幕写入视频画面，会增加生成时间
+                        </p>
+                      </div>
+                      <label class="ui-switch">
+                        <input
+                          type="checkbox"
+                          aria-label="整场生成时压制弹幕"
+                          bind:checked={setting_model.auto_generate.encode_danmu}
+                          onchange={updateAutoGenerate}
+                        />
+                        <span></span>
+                      </label>
                     </div>
-                    <label class="ui-switch">
-                      <input
-                        type="checkbox"
-                        bind:checked={setting_model.auto_generate.encode_danmu}
-                        onchange={async () => {
-                          await invoke("update_auto_generate", {
-                            enabled: setting_model.auto_generate.enabled,
-                            encodeDanmu: setting_model.auto_generate.encode_danmu,
-                          });
-                        }}
-                      />
-                      <span></span>
-                    </label>
                   </div>
+                  <div data-setting="auto-generate-encoding">
+                    <RenderSettingsFields
+                      layout="rows"
+                      showHint={false}
+                      bind:value={setting_model.auto_generate.render_settings}
+                      disabled={autoGenerateLoading || autoGenerateSaving}
+                      onChange={updateAutoGenerate}
+                    />
+                  </div>
+                  <p class="ui-hint">
+                    素材会按以上设置重新编码。修改自动保存，仅影响之后创建的任务。
+                  </p>
                 </div>
               {/if}
-            </div>
+            </fieldset>
+            {#if autoGenerateError}
+              <div class="flex flex-wrap items-center gap-2">
+                <p class="text-[12px] text-danger-fg" role="alert">{autoGenerateError}</p>
+                <button class="ui-btn ui-btn-sm" onclick={updateAutoGenerate} disabled={autoGenerateSaving}>
+                  重试保存
+                </button>
+              </div>
+            {:else if autoGenerateSaving}
+              <p class="ui-hint" role="status">正在保存自动生成设置…</p>
+            {/if}
           </div>
         {/if}
       </div>

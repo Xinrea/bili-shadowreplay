@@ -497,6 +497,8 @@ pub async fn fetch_hls(state: state_type!(), uri: String) -> Result<Vec<u8>, Str
         .map_err(|e| e.to_string())
 }
 
+// Keep the flat IPC arguments compatible with existing desktop and web callers.
+#[allow(clippy::too_many_arguments)]
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn generate_whole_clip(
     state: state_type!(),
@@ -506,7 +508,11 @@ pub async fn generate_whole_clip(
     parent_id: String,
     selected_live_ids: Option<Vec<String>>,
     output_name: Option<String>,
+    render_settings: Option<crate::project::RenderSettings>,
 ) -> Result<TaskRow, String> {
+    if let Some(settings) = &render_settings {
+        settings.validate()?;
+    }
     log::info!("Generate whole clip for {platform} {room_id} {parent_id}");
 
     let task = state
@@ -521,6 +527,7 @@ pub async fn generate_whole_clip(
                 "encode_danmu": encode_danmu,
                 "selected_live_ids": selected_live_ids,
                 "output_name": output_name,
+                "render_settings": render_settings,
             })
             .to_string(),
         )
@@ -553,6 +560,7 @@ pub async fn generate_whole_clip(
                             parent_id,
                             selected_live_ids,
                             output_name,
+                            render_settings,
                         },
                     )
                     .await

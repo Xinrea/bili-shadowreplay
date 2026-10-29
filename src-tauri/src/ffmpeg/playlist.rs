@@ -25,6 +25,30 @@ pub async fn clip_multiple_from_playlist(
     transition: Option<&str>,
     bitrate: Option<NonZeroU32>,
 ) -> Result<Vec<Range>, String> {
+    clip_multiple_with_settings(
+        reporter,
+        playlist_path,
+        output_path,
+        ranges,
+        transition,
+        bitrate,
+        None,
+    )
+    .await
+}
+
+pub async fn clip_multiple_with_settings(
+    reporter: Option<&impl ProgressReporterTrait>,
+    playlist_path: &Path,
+    output_path: &Path,
+    ranges: &[Range],
+    transition: Option<&str>,
+    bitrate: Option<NonZeroU32>,
+    settings: Option<&crate::project::RenderSettings>,
+) -> Result<Vec<Range>, String> {
+    if let Some(settings) = settings {
+        settings.validate()?;
+    }
     let output_dir = output_path
         .parent()
         .ok_or_else(|| format!("Output path has no parent: {}", output_path.display()))?;
@@ -63,6 +87,8 @@ pub async fn clip_multiple_from_playlist(
     }
 
     // A single clip is only remuxed here, so it stays part of extraction.
+    // Defer its explicit encode to the material's burn/fix/final stage rather
+    // than re-encoding before we know whether danmaku needs burning.
     let merging = reporter.map(|reporter| {
         reporter.stage(if count > 1 {
             "合并片段"
@@ -70,12 +96,13 @@ pub async fn clip_multiple_from_playlist(
             "提取片段"
         })
     });
-    super::general::concat_videos_with_transition(
+    super::general::concat_videos_with_settings(
         merging.as_ref(),
         &clips,
         output_path,
         transition,
         bitrate,
+        settings.filter(|_| count > 1),
     )
     .await?;
     Ok(covered)
@@ -305,7 +332,11 @@ pub async fn concat_playlists_to_video(
     danmu_tracks: Vec<Option<Vec<recorder::danmu::DanmuEntry>>>,
     danmu_options: &crate::danmu2ass::Danmu2AssOptions,
     output_path: &Path,
+    settings: Option<&crate::project::RenderSettings>,
 ) -> Result<bool, String> {
+    if let Some(settings) = settings {
+        settings.validate()?;
+    }
     let output_dir = output_path
         .parent()
         .ok_or_else(|| format!("Output path has no parent: {}", output_path.display()))?;
@@ -315,6 +346,15 @@ pub async fn concat_playlists_to_video(
         .map_err(|e| format!("Failed to create playlist concat directory: {e}"))?;
     let mut segments = Vec::new();
     let mut burned = false;
+    // If any source needs burning, encode all sources through the same overlay
+    // path (including empty tracks) so matching outputs can be joined by copy.
+    // Otherwise defer encoding to the final join, including single-input jobs.
+    let encode_segments = settings.is_some()
+        && danmu_tracks
+            .iter()
+            .flatten()
+            .flatten()
+            .any(recorder::danmu::DanmuEntry::is_danmu);
 
     for (i, playlist) in playlists.iter().enumerate() {
         let mut video_path = temp_dir.path().join(format!("playlist-{i}.mp4"));
@@ -322,16 +362,49 @@ pub async fn concat_playlists_to_video(
             log::error!("Failed to generate playlist video: {e}");
             continue;
         }
-        if let Some(danmus) = danmu_tracks.get(i).and_then(Option::as_ref) {
-            video_path =
-                super::encode_video_danmu(reporter, &video_path, danmus, danmu_options, None)
-                    .await?;
+        let track = danmu_tracks.get(i).and_then(Option::as_ref);
+        if encode_segments || (settings.is_none() && track.is_some()) {
+            let danmus = track.map(Vec::as_slice).unwrap_or_default();
+            video_path = match settings {
+                Some(settings) => {
+                    super::encode_video_danmu_with_settings(
+                        reporter,
+                        &video_path,
+                        danmus,
+                        danmu_options,
+                        None,
+                        Some(settings),
+                    )
+                    .await?
+                }
+                None => {
+                    super::encode_video_danmu(reporter, &video_path, danmus, danmu_options, None)
+                        .await?
+                }
+            };
             burned |= danmus.iter().any(recorder::danmu::DanmuEntry::is_danmu);
         }
         segments.push(video_path);
     }
 
-    super::general::concat_videos(reporter, &segments, output_path).await?;
+    match settings {
+        Some(settings) if encode_segments => {
+            super::general::concat_encoded_videos(reporter, &segments, output_path, settings)
+                .await?;
+        }
+        Some(settings) => {
+            super::general::concat_videos_with_settings(
+                reporter,
+                &segments,
+                output_path,
+                None,
+                None,
+                Some(settings),
+            )
+            .await?;
+        }
+        None => super::general::concat_videos(reporter, &segments, output_path).await?,
+    }
     Ok(burned)
 }
 
@@ -409,18 +482,18 @@ seg-3.mp4
     }
 
     /// A recording with a keyframe every 2 s, cut into 2 s HLS segments.
-    async fn create_test_playlist(dir: &Path) -> std::path::PathBuf {
+    async fn create_test_playlist(dir: &Path, duration: f64) -> std::path::PathBuf {
         let playlist = dir.join("playlist.m3u8");
         let output = ffmpeg_utils::ffmpeg_command()
             .args([
                 "-f",
                 "lavfi",
                 "-i",
-                "color=c=blue:s=320x180:r=30:d=30",
+                &format!("color=c=blue:s=320x180:r=30:d={duration}"),
                 "-f",
                 "lavfi",
                 "-i",
-                "sine=d=30",
+                &format!("sine=d={duration}"),
                 "-c:v",
                 "libx264",
                 // B-frames, as live streams have, make a copied cut run past its end.
@@ -458,7 +531,7 @@ seg-3.mp4
     #[tokio::test]
     async fn joined_ranges_report_the_recording_the_output_covers() {
         let dir = tempfile::tempdir().unwrap();
-        let playlist = create_test_playlist(dir.path()).await;
+        let playlist = create_test_playlist(dir.path(), 30.0).await;
         let output = dir.path().join("joined.mp4");
         // Neither range starts on a keyframe.
         let ranges = [
@@ -493,5 +566,116 @@ seg-3.mp4
             assert_eq!(covered.start, asked.start);
             assert!(covered.end >= asked.end - 0.05, "{covered:?} {asked:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn whole_clip_explicit_settings_cover_missing_empty_and_burned_danmu() {
+        use crate::project::{EncodingPriority, RenderSettings, VideoCodec};
+        use recorder::danmu::DanmuEntry;
+        type Reporter = crate::progress::progress_reporter::ProgressReporter;
+
+        let dir = tempfile::tempdir().unwrap();
+        let playlist = create_test_playlist(dir.path(), 0.3).await;
+        let options = crate::danmu2ass::Danmu2AssOptions::default();
+        for (codec, name) in [(VideoCodec::Hevc, "hevc"), (VideoCodec::H264, "h264")] {
+            for count in [1, 2] {
+                for mode in ["missing", "empty", "burn"] {
+                    let burn = mode == "burn";
+                    let settings = RenderSettings {
+                        codec,
+                        priority: if burn {
+                            EncodingPriority::Quality
+                        } else {
+                            EncodingPriority::Speed
+                        },
+                        bitrate_kbps: 4000,
+                    };
+                    let mut tracks = vec![None; count];
+                    let entries = if burn {
+                        vec![DanmuEntry {
+                            ts: 0,
+                            event_type: "danmu".into(),
+                            content: "whole recording".into(),
+                            emoji_content: None,
+                            user_name: None,
+                            price: None,
+                            sc_duration: None,
+                        }]
+                    } else {
+                        Vec::new()
+                    };
+                    if mode != "missing" {
+                        tracks[0] = Some(entries);
+                    }
+                    let output = dir.path().join(format!("{name}-{count}-{mode}.mp4"));
+                    let embedded = concat_playlists_to_video(
+                        None::<&Reporter>,
+                        &vec![playlist.as_path(); count],
+                        tracks,
+                        &options,
+                        &output,
+                        Some(&settings),
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(embedded, burn);
+                    let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+                    assert_eq!(metadata.video_codec, name);
+                    if count == 1 {
+                        // Even H.264 -> H.264 must encode rather than copy.
+                        assert_eq!((metadata.width, metadata.height), (1920, 1080));
+                    }
+                    assert!(metadata.duration >= 0.25 * count as f64);
+                    let decoded = ffmpeg_utils::ffmpeg_command()
+                        .args(["-v", "error", "-i"])
+                        .arg(&output)
+                        .args(["-f", "null", "-"])
+                        .output()
+                        .await
+                        .unwrap();
+                    assert!(
+                        decoded.status.success(),
+                        "{}",
+                        String::from_utf8_lossy(&decoded.stderr)
+                    );
+                }
+            }
+        }
+        let legacy = dir.path().join("legacy.mp4");
+        assert!(!concat_playlists_to_video(
+            None::<&Reporter>,
+            &[playlist.as_path()],
+            vec![None],
+            &options,
+            &legacy,
+            None,
+        )
+        .await
+        .unwrap());
+        let metadata = ffmpeg_utils::extract_video_metadata(&legacy).await.unwrap();
+        assert_eq!(metadata.video_codec, "h264");
+        assert_eq!((metadata.width, metadata.height), (320, 180));
+    }
+
+    #[tokio::test]
+    async fn whole_clip_rejects_invalid_settings_before_creating_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("not-created/output.mp4");
+        let invalid = crate::project::RenderSettings {
+            bitrate_kbps: 0,
+            ..crate::project::RenderSettings::default()
+        };
+        let error = concat_playlists_to_video(
+            None::<&crate::progress::progress_reporter::ProgressReporter>,
+            &[],
+            Vec::new(),
+            &crate::danmu2ass::Danmu2AssOptions::default(),
+            &output,
+            Some(&invalid),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, invalid.validate().unwrap_err());
+        assert!(!output.parent().unwrap().exists());
     }
 }

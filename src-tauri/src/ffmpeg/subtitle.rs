@@ -139,15 +139,11 @@ pub async fn encode_video_subtitle<R: ProgressReporterTrait>(
     Ok(output_filename)
 }
 
-fn native_subtitle_graph(vaapi: bool) -> String {
-    let output_format = if vaapi {
-        hwaccel::vaapi_filter_suffix()
-    } else {
-        "format=yuv420p"
-    };
+fn native_subtitle_graph(encoder: &str) -> String {
+    let output_format = hwaccel::output_format_filter(encoder);
     // FFmpeg shifts the source's common container origin, preserving relative
     // A/V delay. Never rebase only video with setpts=PTS-STARTPTS here.
-    format!("[0:v]{scale}[base];[base][1:v]overlay=format=auto:alpha=straight:eof_action=pass:repeatlast=0:shortest=0,{output_format}[video]",scale=hwaccel::H264_SCALE_PAD_FILTER)
+    format!("[0:v]{scale},format=bgra[base];[base][1:v]overlay=format=rgb:alpha=premultiplied:eof_action=pass:repeatlast=0:shortest=0,{output_format}[video]",scale=hwaccel::H264_SCALE_PAD_FILTER)
 }
 
 async fn encode_native_srt<R: ProgressReporterTrait>(
@@ -200,10 +196,10 @@ async fn encode_native_srt<R: ProgressReporterTrait>(
     let encoder = hwaccel::get_x264_encoder().await;
     let mut command = ffmpeg_command();
     command.arg("-i").arg(file);
-    add_overlay_input(&mut command, &spec)?;
+    add_overlay_input(&mut command, &spec).await?;
     command.args([
         "-filter_complex",
-        &native_subtitle_graph(hwaccel::is_vaapi_encoder(encoder)),
+        &native_subtitle_graph(encoder),
         "-map",
         "[video]",
         "-map",
@@ -485,12 +481,16 @@ mod subtitle_filter_tests {
 
     #[test]
     fn native_graph_preserves_source_timeline_and_ends_with_source_video() {
-        let graph = native_subtitle_graph(false);
-        assert!(graph.starts_with(&format!("[0:v]{}[base]", hwaccel::H264_SCALE_PAD_FILTER)));
-        assert!(graph.contains("alpha=straight:eof_action=pass:repeatlast=0:shortest=0"));
+        let graph = native_subtitle_graph("libx264");
+        assert!(graph.starts_with(&format!(
+            "[0:v]{},format=bgra[base]",
+            hwaccel::H264_SCALE_PAD_FILTER
+        )));
+        assert!(graph.contains("alpha=premultiplied:eof_action=pass:repeatlast=0:shortest=0"));
         assert!(!graph.contains("setpts"));
         assert!(graph.ends_with("format=yuv420p[video]"));
-        assert!(native_subtitle_graph(true).ends_with("format=nv12,hwupload[video]"));
+        assert!(native_subtitle_graph("h264_vaapi").ends_with("format=nv12,hwupload[video]"));
+        assert!(native_subtitle_graph("h264_videotoolbox").ends_with("format=nv12[video]"));
     }
 
     #[test]

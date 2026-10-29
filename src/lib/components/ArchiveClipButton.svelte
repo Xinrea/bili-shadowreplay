@@ -10,6 +10,8 @@
     type Range,
   } from "../interface";
   import { announceTask, openTaskCenter, settleTask, wasCancelled } from "../stores/tasks";
+  import { defaultRenderSettings } from "../project-timeline";
+  import RenderSettingsFields from "./RenderSettingsFields.svelte";
 
   // Progress is shown by <TaskCenter />, which the host window must mount.
 
@@ -43,14 +45,7 @@
   let embedDanmu = $state(false);
   /** Join the ranges into a single material instead of one per range. */
   let mergeRanges = $state(false);
-  /** Bitrate in kbps for burning danmaku; null keeps the encoder default. */
-  let danmuBitrate = $state<number | null>(null);
-  const DANMU_BITRATES: { label: string; value: number | null }[] = [
-    { label: "自动", value: null },
-    { label: "6 Mbps", value: 6000 },
-    { label: "10 Mbps", value: 10000 },
-    { label: "16 Mbps", value: 16000 },
-  ];
+  let renderSettings = $state(defaultRenderSettings());
   /** Requests still awaiting a result; several may run at once. */
   let inFlight = 0;
 
@@ -104,7 +99,7 @@
       live_id: archive.live_id,
       ranges: activeRanges,
       danmu: embedDanmu,
-      danmu_bitrate: embedDanmu ? danmuBitrate : null,
+      render_settings: { ...renderSettings },
       local_offset:
         localOffset ??
         (parseInt(
@@ -274,7 +269,7 @@
                 </div>
                 <p class="text-[11px] text-fg-muted">
                   {mergeRanges
-                    ? "按选区顺序拼接成一个素材，可以直接投稿；拼接需要重新编码，耗时较长"
+                    ? "按选区顺序拼接成一个素材，可以直接投稿"
                     : "每个选区单独生成素材，可以放进切片里继续剪辑"}
                 </p>
               </div>
@@ -315,30 +310,12 @@
               </p>
             </div>
 
-            {#if embedDanmu}
-              <div class="space-y-1.5">
-                <div class="ui-label">码率</div>
-                <div class="ui-tabs" role="radiogroup" aria-label="码率">
-                  {#each DANMU_BITRATES as choice (choice.label)}
-                    <button
-                      type="button"
-                      role="radio"
-                      class="ui-tab"
-                      class:active={danmuBitrate === choice.value}
-                      aria-checked={danmuBitrate === choice.value}
-                      onclick={() => (danmuBitrate = choice.value)}
-                    >
-                      {choice.label}
-                    </button>
-                  {/each}
-                </div>
-                <p class="text-[11px] text-fg-muted">
-                  {danmuBitrate === null
-                    ? "按编码器默认质量压制：软件编码按画质（CRF 20），硬件编码约 8 Mbps"
-                    : "生成素材时的每次重新编码都按这个目标码率，码率越高画面和弹幕越清晰，文件也越大"}
-                </p>
-              </div>
-            {/if}
+            <div class="space-y-1.5">
+              <RenderSettingsFields bind:value={renderSettings} />
+              <p class="text-[11px] text-fg-muted">
+                素材将按以上设置重新编码，无论是否内嵌弹幕。
+              </p>
+            </div>
 
             <div class="space-y-2.5">
               <label class="flex cursor-pointer items-start gap-2.5">

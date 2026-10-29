@@ -1616,8 +1616,9 @@
     // Only persist after the file picker succeeds. Omitted options are kept
     // atomically by the backend, including changes made while the picker was open.
     const danmu = exportDanmu !== exportBase.danmu ? exportDanmu : null;
-    // Quality and bitrate together identify the encoding mode, so patch them as one option.
-    const renderSettings = exportSettings.quality !== exportBase.renderSettings.quality ||
+    // Persist the complete encoding choice as one option.
+    const renderSettings = exportSettings.codec !== exportBase.renderSettings.codec ||
+        exportSettings.priority !== exportBase.renderSettings.priority ||
         exportSettings.bitrate_kbps !== exportBase.renderSettings.bitrate_kbps
       ? $state.snapshot(exportSettings)
       : null;

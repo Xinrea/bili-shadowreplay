@@ -16,7 +16,7 @@ const code = ts.transpileModule(handlers.map((node) => node.getText(parsed)).joi
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText;
 const plain = (value) => JSON.parse(JSON.stringify(value));
-const defaults = () => ({ quality: "balanced", bitrate_kbps: 0 });
+const defaults = () => ({ codec: "hevc", priority: "speed", bitrate_kbps: 10000 });
 
 function fixture({ desktop = true, pick = async () => "/export.mp4", danmu = false } = {}) {
   const saved = { clips: [{ id: "clip", material_id: 1, start: 0, end: 10 }], danmu, render_settings: defaults() };
@@ -83,7 +83,7 @@ test("an untouched export dialog uses settings saved by another window", async (
   const f = fixture();
   await f.state.openExportSettings();
   f.saved.danmu = true;
-  f.saved.render_settings = { quality: "balanced", bitrate_kbps: 16000 };
+  f.saved.render_settings = { ...defaults(), bitrate_kbps: 16000 };
   // A background refresh must not redefine which options the user edited.
   await f.state.projectRefresh.run();
   await f.state.confirmExport();
@@ -96,7 +96,7 @@ test("an untouched export dialog uses settings saved by another window", async (
 test("editing only danmaku preserves encoding changed while the file picker is open", async () => {
   const f = fixture({ pick: async () => {
     assert.deepEqual(f.patches, []);
-    f.saved.render_settings = { quality: "balanced", bitrate_kbps: 16000 };
+    f.saved.render_settings = { ...defaults(), codec: "h264", priority: "quality", bitrate_kbps: 16000 };
     return "/export.mp4";
   } });
   await f.state.openExportSettings();
@@ -104,6 +104,8 @@ test("editing only danmaku preserves encoding changed while the file picker is o
   await f.state.confirmExport();
   assert.deepEqual(f.patches, [{ id: 1, danmu: true, renderSettings: null }]);
   assert.equal(f.exports[0].timeline.render_settings.bitrate_kbps, 16000);
+  assert.equal(f.exports[0].timeline.render_settings.codec, "h264");
+  assert.equal(f.exports[0].timeline.render_settings.priority, "quality");
   assert.equal(f.exports[0].timeline.danmu, true);
   assert.ok(f.calls.indexOf("pick") < f.calls.indexOf("update_project_output_settings"));
   assert.deepEqual(f.alerts, []);
@@ -111,23 +113,36 @@ test("editing only danmaku preserves encoding changed while the file picker is o
 
 test("editing encoding preserves remote danmaku and writes the complete encoding mode", async () => {
   const f = fixture();
-  f.saved.render_settings = { quality: "balanced", bitrate_kbps: 8000 };
+  f.saved.render_settings = { ...defaults(), bitrate_kbps: 8000 };
   await f.state.openExportSettings();
   f.saved.danmu = true;
-  f.state.exportSettings = { quality: "high", bitrate_kbps: 0 };
+  f.state.exportSettings = { codec: "h264", priority: "quality", bitrate_kbps: 10000 };
   await f.state.confirmExport();
-  assert.deepEqual(f.patches, [{ id: 1, danmu: null, renderSettings: { quality: "high", bitrate_kbps: 0 } }]);
+  assert.deepEqual(f.patches, [{ id: 1, danmu: null, renderSettings: f.state.exportSettings }]);
   assert.equal(f.exports[0].timeline.danmu, true);
   assert.deepEqual(f.exports[0].timeline.render_settings, f.state.exportSettings);
   assert.deepEqual(f.alerts, []);
 });
+
+for (const [field, value] of [["codec", "h264"], ["priority", "quality"], ["bitrate_kbps", 16000]]) {
+  test(`changing only ${field} persists all encoding settings`, async () => {
+    const f = fixture();
+    await f.state.openExportSettings();
+    assert.deepEqual(plain(f.state.exportSettings), defaults());
+    f.state.exportSettings[field] = value;
+    await f.state.confirmExport();
+    assert.deepEqual(f.patches, [{ id: 1, danmu: null, renderSettings: { ...defaults(), [field]: value } }]);
+    assert.deepEqual(f.exports[0].timeline.render_settings, f.patches[0].renderSettings);
+    assert.deepEqual(f.alerts, []);
+  });
+}
 
 test("cancelling the file picker persists nothing and keeps the export dialog editable", async () => {
   const f = fixture({ pick: async () => null });
   await f.state.openExportSettings();
   const before = plain(f.saved);
   f.state.exportDanmu = true;
-  f.state.exportSettings = { quality: "balanced", bitrate_kbps: 16000 };
+  f.state.exportSettings = { ...defaults(), bitrate_kbps: 16000 };
   await f.state.confirmExport();
   assert.deepEqual(f.patches, []);
   assert.deepEqual(f.exports, []);
@@ -142,11 +157,11 @@ test("options restored to their opening values do not overwrite remote updates",
   const f = fixture();
   await f.state.openExportSettings();
   f.state.exportDanmu = true;
-  f.state.exportSettings = { quality: "high", bitrate_kbps: 0 };
+  f.state.exportSettings = { ...defaults(), priority: "quality" };
   f.state.exportDanmu = false;
   f.state.exportSettings = defaults();
   f.saved.danmu = true;
-  f.saved.render_settings = { quality: "compact", bitrate_kbps: 0 };
+  f.saved.render_settings = { ...defaults(), codec: "h264", bitrate_kbps: 4000 };
   await f.state.confirmExport();
   assert.deepEqual(f.patches, []);
   assert.deepEqual(f.exports[0].timeline, f.saved);
@@ -156,9 +171,9 @@ test("web export saves explicit false and new settings without opening a file pi
   const f = fixture({ desktop: false, danmu: true });
   await f.state.openExportSettings();
   f.state.exportDanmu = false;
-  f.state.exportSettings = { quality: "balanced", bitrate_kbps: 12000 };
+  f.state.exportSettings = { ...defaults(), bitrate_kbps: 12000 };
   await f.state.confirmExport();
-  assert.deepEqual(f.patches, [{ id: 1, danmu: false, renderSettings: { quality: "balanced", bitrate_kbps: 12000 } }]);
+  assert.deepEqual(f.patches, [{ id: 1, danmu: false, renderSettings: { ...defaults(), bitrate_kbps: 12000 } }]);
   assert.equal(f.calls.includes("pick"), false);
   assert.equal(f.exports[0].target, null);
   assert.equal(f.exports[0].timeline.danmu, false);

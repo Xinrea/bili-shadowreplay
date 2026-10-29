@@ -13,13 +13,6 @@ struct TestImage(PathBuf);
 
 impl TestImage {
     fn new() -> Self {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "native-overlay-cache-{}-{}.png",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
         let mut s = surface(8, 4, CACHE_BYTES).unwrap();
         s.canvas().clear(Color::RED);
         let mut paint = Paint::default();
@@ -27,6 +20,17 @@ impl TestImage {
         paint.set_blend_mode(BlendMode::Src);
         s.canvas()
             .draw_rect(Rect::from_xywh(4.0, 0.0, 4.0, 4.0), &paint);
+        Self::from_surface(s)
+    }
+
+    fn from_surface(mut s: Surface) -> Self {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "native-overlay-cache-{}-{}.png",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         fs::write(
             &path,
             s.image_snapshot()
@@ -288,6 +292,13 @@ fn image_artwork_is_contained_and_centered_in_reserved_footprint() {
 
 #[test]
 fn frame_into_rejects_wrong_lengths_without_changing_render_state() {
+    check_invalid_frame_lengths(Renderer::frame_into, "RGBA");
+    check_invalid_frame_lengths(Renderer::frame_premultiplied_bgra_into, "BGRA");
+}
+
+type FrameWriter = fn(&mut Renderer, f64, &mut [u8]) -> Result<(), String>;
+
+fn check_invalid_frame_lengths(write: FrameWriter, format: &str) {
     let image = TestImage::new();
     let mut source = input("😀", STYLE);
     source.images.push(image.event());
@@ -296,7 +307,7 @@ fn frame_into_rejects_wrong_lengths_without_changing_render_state() {
     let expected = 192 * 108 * 4;
     // First reject an active timestamp: no cache preparation or frame is counted.
     let mut short = vec![0x5a; expected - 1];
-    assert!(r.frame_into(1.0, &mut short).is_err());
+    assert!(write(&mut r, 1.0, &mut short).is_err());
     assert!(short.iter().all(|byte| *byte == 0x5a));
     assert_eq!(counters(&r.stats()), [0; 5]);
     assert_eq!(timings(&r.stats()), [Duration::ZERO; 5]);
@@ -309,8 +320,11 @@ fn frame_into_rejects_wrong_lengths_without_changing_render_state() {
     let placed = r.placed.clone();
     for (time, length) in [(10.0, 0), (0.0, expected - 1), (f64::NAN, expected + 1)] {
         let mut wrong = vec![0x5a; length];
-        let error = r.frame_into(time, &mut wrong).unwrap_err();
-        assert!(error.contains("RGBA buffer length"), "{error}");
+        let error = write(&mut r, time, &mut wrong).unwrap_err();
+        assert!(
+            error.contains(&format!("{format} buffer length")),
+            "{error}"
+        );
         assert!(wrong.iter().all(|byte| *byte == 0x5a));
         assert_eq!(counters(&r.stats()), counters(&before));
         assert_eq!(timings(&r.stats()), timings(&before));
@@ -436,6 +450,11 @@ fn evicted_image_redecodes_with_identical_pixels_after_backward_seek() {
 
 #[test]
 fn profiling_is_opt_in_cumulative_and_excludes_png_work() {
+    check_profiling(Renderer::frame_into);
+    check_profiling(Renderer::frame_premultiplied_bgra_into);
+}
+
+fn check_profiling(write: FrameWriter) {
     let image = TestImage::new();
     let mut source = input("😀", STYLE);
     source.images.push(image.event());
@@ -449,7 +468,7 @@ fn profiling_is_opt_in_cumulative_and_excludes_png_work() {
     // Cold caches exercise all five stages, not just composition/readback.
     r.cache = ByteLru::new(CACHE_BYTES);
     let mut buffer = vec![0; 192 * 108 * 4];
-    r.frame_into(1.0, &mut buffer).unwrap();
+    write(&mut r, 1.0, &mut buffer).unwrap();
     let profiled = r.stats();
     assert!(timings(&profiled)
         .iter()
@@ -464,11 +483,165 @@ fn profiling_is_opt_in_cumulative_and_excludes_png_work() {
 
     r.set_profiling(false);
     r.cache = ByteLru::new(CACHE_BYTES);
-    r.frame_into(1.0, &mut buffer).unwrap();
+    write(&mut r, 1.0, &mut buffer).unwrap();
     assert_eq!(timings(&r.stats()), timings(&profiled));
     assert_eq!(counters(&r.stats()), [3, 1, 4, 1, 4]);
     // Returned stats are snapshots, not live handles.
     assert_eq!(counters(&profiled), [2, 0, 2, 0, 2]);
+}
+
+fn assert_premultiplied_bgra(straight: &[u8], premultiplied: &[u8]) {
+    assert_eq!(straight.len(), premultiplied.len());
+    for (rgba, bgra) in straight.chunks_exact(4).zip(premultiplied.chunks_exact(4)) {
+        assert_eq!(rgba[3], bgra[3]);
+        for (channel, straight_channel) in [2, 1, 0].into_iter().enumerate() {
+            let expected = (u16::from(rgba[straight_channel]) * u16::from(rgba[3]) + 127) / 255;
+            // Unpremultiplication and re-quantization can differ by one byte.
+            assert!(
+                bgra[channel].abs_diff(expected as u8) <= 1,
+                "{rgba:?} vs {bgra:?}"
+            );
+            assert!(bgra[channel] <= bgra[3], "{bgra:?}");
+        }
+    }
+}
+
+#[test]
+fn premultiplied_bgra_has_explicit_channel_order_for_both_native_surface_formats() {
+    let colors = [
+        Color::from_argb(255, 231, 83, 17),
+        Color::from_argb(128, 210, 122, 34),
+        Color::from_argb(1, 255, 0, 0),
+        Color::from_argb(0, 19, 91, 203),
+    ];
+    let mut s = surface(4, 1, CACHE_BYTES).unwrap();
+    for (x, color) in colors.into_iter().enumerate() {
+        let mut paint = Paint::default();
+        paint.set_color(color).set_blend_mode(BlendMode::Src);
+        s.canvas()
+            .draw_rect(Rect::from_xywh(x as f32, 0.0, 1.0, 1.0), &paint);
+    }
+    let image = TestImage::from_surface(s);
+    let mut event = image.event();
+    event.to = event.from;
+    event.width = 40.0;
+    event.height = 10.0;
+    event.opacity = 1.0;
+    for color_type in [ColorType::RGBA8888, ColorType::BGRA8888] {
+        let mut r = Renderer::new(
+            192,
+            108,
+            RenderInput {
+                documents: vec![],
+                images: vec![event.clone()],
+            },
+            vec![],
+        )
+        .unwrap();
+        // Exercise both N32 storage possibilities on every test platform.
+        r.surface = surfaces::raster(
+            &ImageInfo::new((192, 108), color_type, AlphaType::Premul, None),
+            None,
+            None,
+        )
+        .unwrap();
+        let mut bgra = vec![0xa5; 192 * 108 * 4];
+        r.frame_premultiplied_bgra_into(1.0, &mut bgra).unwrap();
+        assert_eq!(&bgra[..4], &[17, 83, 231, 255]);
+        for (actual, expected) in bgra[4..8].iter().zip([17u8, 61, 105, 128]) {
+            assert!(actual.abs_diff(expected) <= 1);
+        }
+        assert_eq!(&bgra[8..12], &[0, 0, 1, 1]);
+        assert!(bgra[12..].iter().all(|v| *v == 0));
+        // Compare directly with stored premultiplied pixels, without a straight
+        // intermediate or assumptions about native channel order/row padding.
+        let native = r.surface.peek_pixels().unwrap();
+        assert_eq!(native.alpha_type(), AlphaType::Premul);
+        for (row, packed) in native
+            .bytes()
+            .unwrap()
+            .chunks(native.row_bytes())
+            .zip(bgra.chunks(192 * 4))
+        {
+            for (stored, output) in row[..192 * 4].chunks_exact(4).zip(packed.chunks_exact(4)) {
+                let expected = if native.color_type() == ColorType::RGBA8888 {
+                    [stored[2], stored[1], stored[0], stored[3]]
+                } else {
+                    stored.try_into().unwrap()
+                };
+                assert_eq!(output, expected);
+            }
+        }
+        let rgba = r.frame(1.0).unwrap();
+        assert_eq!(&rgba[..4], &[231, 83, 17, 255]);
+        assert_premultiplied_bgra(&rgba, &bgra);
+    }
+}
+
+#[test]
+fn premultiplied_bgra_reuses_buffers_for_translucent_effects_images_and_seeks() {
+    let image = TestImage::new();
+    let style = STYLE
+        .replace("&H00FFFFFF", "&H804020E0")
+        .replace("&H00000000", "&H8020D040")
+        .replace("&H80000000", "&H80E04020")
+        .replace(",1,3,2,2,", ",1,6,8,2,");
+    let mut source = input("Text 😀", &style);
+    source.images.push(image.event());
+    let mut r = Renderer::new(960, 540, source.clone(), vec![]).unwrap();
+    let mut reference = Renderer::new(960, 540, source, vec![]).unwrap();
+    let preview = reference.png(1.0).unwrap();
+    let mut buffer = vec![0xa5; 960 * 540 * 4];
+    let pointer = buffer.as_ptr();
+    for time in [0.0, 1.0, 1.5, 2.99, 3.0, 8.0, 1.5, 0.99, 1.0] {
+        r.frame_premultiplied_bgra_into(time, &mut buffer).unwrap();
+        assert_eq!(buffer.as_ptr(), pointer);
+        let straight = reference.frame(time).unwrap();
+        assert_premultiplied_bgra(&straight, &buffer);
+        if (1.0..3.0).contains(&time) {
+            // Isolate the subtitle region from the moving image. Red fill,
+            // green outline and blue shadow must each be present and translucent.
+            let text = &buffer[400 * 960 * 4..];
+            for dominant in 0..3 {
+                assert!(
+                    text.chunks_exact(4).any(|p| {
+                        p[3] > 30
+                            && p[3] < 200
+                            && (0..3)
+                                .all(|c| c == dominant || p[dominant] > p[c].saturating_add(20))
+                    }),
+                    "missing translucent channel {dominant} at {time}"
+                );
+            }
+        } else {
+            assert!(buffer.iter().all(|byte| *byte == 0));
+        }
+    }
+    assert_eq!(counters(&r.stats()), [9, 4, 1, 4, 1]);
+    assert_eq!(r.png(1.0).unwrap(), preview);
+    let straight = r.frame(1.0).unwrap();
+    assert_eq!(straight, reference.frame(1.0).unwrap());
+    let png = Image::from_encoded(Data::new_copy(&preview)).unwrap();
+    let info = ImageInfo::new((960, 540), ColorType::RGBA8888, AlphaType::Unpremul, None);
+    let mut decoded = vec![0; straight.len()];
+    assert!(png.read_pixels(
+        &info,
+        &mut decoded,
+        960 * 4,
+        (0, 0),
+        skia_safe::image::CachingHint::Disallow
+    ));
+    assert!(straight
+        .iter()
+        .zip(decoded)
+        .all(|(a, b)| a.abs_diff(b) <= 1));
+    let before = r.stats().frames;
+    for time in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        buffer.fill(0xa5);
+        assert!(r.frame_premultiplied_bgra_into(time, &mut buffer).is_err());
+        assert!(buffer.iter().all(|byte| *byte == 0xa5));
+    }
+    assert_eq!(r.stats().frames, before);
 }
 
 #[test]

@@ -498,16 +498,50 @@ pub(crate) async fn create_material(
         Ok(danmus) if params.danmu => {
             // Super chats are not drawn, so they alone leave nothing to burn.
             if danmus.iter().any(DanmuEntry::is_danmu) {
-                burn_material_danmus(state, reporter, &file, &danmus, params.video_bitrate())
-                    .await?;
+                burn_material_danmus(
+                    state,
+                    reporter,
+                    &file,
+                    &danmus,
+                    params.video_bitrate(),
+                    params.render_settings.as_ref(),
+                )
+                .await?;
                 danmu_embedded = true;
             }
         }
         Ok(danmus) => crate::material::save_danmus(&file, &danmus).await?,
         Err(e) => log::warn!("Failed to cut danmaku for material {}: {e}", file.display()),
     }
+    // Explicit settings must affect even an untouched single range, including
+    // when danmaku was requested but no drawable entries could be loaded.
+    let final_encode = params.needs_final_encode(danmu_embedded);
+    if final_encode {
+        let parent = file.parent().ok_or("Material path has no parent")?;
+        let temporary = tempfile::Builder::new()
+            .prefix(".bili-encode-")
+            .suffix(".mp4")
+            .tempfile_in(parent)
+            .map_err(|error| error.to_string())?
+            .into_temp_path();
+        ffmpeg::clip::transcode_with_settings(
+            Some(reporter),
+            &file,
+            &temporary,
+            false,
+            params.video_bitrate(),
+            params.render_settings.as_ref(),
+        )
+        .await?;
+        tokio::fs::remove_file(&file)
+            .await
+            .map_err(|error| error.to_string())?;
+        tokio::fs::rename(&temporary, &file)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
     // Burning re-encodes the material; the ranges above still describe the cut.
-    let duration = if danmu_embedded {
+    let duration = if danmu_embedded || final_encode {
         match ffmpeg_utils::extract_video_metadata(&file).await {
             Ok(video) if video.duration > 0.0 => video.duration,
             _ => duration,
@@ -613,6 +647,7 @@ async fn burn_material_danmus(
     file: &Path,
     danmus: &[DanmuEntry],
     bitrate: Option<std::num::NonZeroU32>,
+    settings: Option<&crate::project::RenderSettings>,
 ) -> Result<(), String> {
     let options = state.config.read().await.danmu_ass_options.clone();
     let parent = file
@@ -627,8 +662,15 @@ async fn burn_material_danmus(
         let _ = tokio::fs::remove_file(file).await;
         return Err(format!("移动素材失败: {} ({e})", file.display()));
     }
-    let burned =
-        ffmpeg::encode_video_danmu(Some(reporter), &cut, danmus, &options, bitrate).await?;
+    let burned = ffmpeg::encode_video_danmu_with_settings(
+        Some(reporter),
+        &cut,
+        danmus,
+        &options,
+        bitrate,
+        settings,
+    )
+    .await?;
     tokio::fs::rename(&burned, file)
         .await
         .map_err(|e| format!("保存压制弹幕的素材失败: {} ({e})", file.display()))
@@ -2535,6 +2577,121 @@ mod queued_subtitle_tests {
     }
 
     #[tokio::test]
+    async fn auto_generate_updates_preserve_settings_and_reject_without_mutation() {
+        use crate::handlers::config::update_auto_generate;
+        use crate::project::{EncodingPriority, RenderSettings, VideoCodec};
+
+        let dir = tempfile::tempdir().unwrap();
+        let state = fixture(dir.path(), 1, false).await;
+        let path = dir.path().join("config.toml");
+        state.config.write().await.config_path = path.to_string_lossy().into_owned();
+        let selected = RenderSettings {
+            codec: VideoCodec::H264,
+            priority: EncodingPriority::Quality,
+            bitrate_kbps: 16_000,
+        };
+        update_auto_generate(state.clone(), true, true, Some(selected.clone()))
+            .await
+            .unwrap();
+        update_auto_generate(state.clone(), false, false, None)
+            .await
+            .unwrap();
+        let before = state.config.read().await.auto_generate.clone();
+        assert_eq!(before.render_settings, selected);
+        assert!(!before.enabled && !before.encode_danmu);
+        let saved = std::fs::read(&path).unwrap();
+        for bitrate_kbps in [0, 499, 100_001] {
+            let invalid = RenderSettings {
+                bitrate_kbps,
+                ..selected.clone()
+            };
+            let error = update_auto_generate(state.clone(), true, true, Some(invalid.clone()))
+                .await
+                .unwrap_err();
+            assert_eq!(error, invalid.validate().unwrap_err());
+            assert_eq!(state.config.read().await.auto_generate, before);
+            assert_eq!(std::fs::read(&path).unwrap(), saved);
+        }
+        let loaded = Config::load(&path, dir.path(), dir.path()).unwrap();
+        assert_eq!(loaded.auto_generate, before);
+        // A save error must also leave the active settings untouched.
+        state.config.write().await.config_path = dir.path().to_string_lossy().into_owned();
+        assert!(update_auto_generate(state.clone(), true, true, None)
+            .await
+            .is_err());
+        assert_eq!(state.config.read().await.auto_generate, before);
+    }
+
+    #[tokio::test]
+    async fn whole_clip_settings_are_validated_before_queueing_and_saved_in_metadata() {
+        use crate::project::RenderSettings;
+        use crate::recorder_manager::GenerateWholeClipParams;
+
+        let dir = tempfile::tempdir().unwrap();
+        let state = fixture(dir.path(), 1, false).await;
+        for bitrate_kbps in [0, 499, 100_001] {
+            let invalid = RenderSettings {
+                bitrate_kbps,
+                ..RenderSettings::default()
+            };
+            let error = crate::handlers::recorder::generate_whole_clip(
+                state.clone(),
+                false,
+                "bilibili".into(),
+                "room".into(),
+                "parent".into(),
+                None,
+                None,
+                Some(invalid.clone()),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error, invalid.validate().unwrap_err());
+            assert!(state.db.get_tasks().await.unwrap().is_empty());
+            assert_eq!(state.task_manager.queue_size().await, 0);
+            assert!(state
+                .recorder_manager
+                .generate_whole_clip(
+                    None,
+                    GenerateWholeClipParams {
+                        encode_danmu: false,
+                        platform: "bilibili".into(),
+                        room_id: "room".into(),
+                        parent_id: "parent".into(),
+                        selected_live_ids: None,
+                        output_name: None,
+                        render_settings: Some(invalid),
+                    }
+                )
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("500"));
+        }
+        let settings = RenderSettings::default();
+        let task = crate::handlers::recorder::generate_whole_clip(
+            state.clone(),
+            false,
+            "bilibili".into(),
+            "room".into(),
+            "parent".into(),
+            None,
+            None,
+            Some(settings.clone()),
+        )
+        .await
+        .unwrap();
+        let stored = state.db.get_task(&task.id).await.unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&stored.metadata).unwrap();
+        assert_eq!(
+            metadata["render_settings"],
+            serde_json::to_value(settings).unwrap()
+        );
+        assert_eq!(state.task_manager.queue_size().await, 1);
+        cancel(state, task.id).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn whole_clip_rejected_by_a_full_queue_is_marked_failed() {
         let dir = tempfile::tempdir().unwrap();
         let state = fixture(dir.path(), 1, false).await;
@@ -2548,6 +2705,7 @@ mod queued_subtitle_tests {
             "bilibili".into(),
             "room".into(),
             "parent".into(),
+            None,
             None,
             None,
         )

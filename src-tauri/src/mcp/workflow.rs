@@ -152,7 +152,7 @@ pub(super) fn definitions(clip_range_params: Value) -> Vec<(&'static str, String
         ),
         (
             "update_project_output_settings",
-            "Change how a project is rendered for exports and uploads: burning the materials' danmaku, and the video quality or bitrate.".into(),
+            "Change how a project is rendered for exports and uploads: burning the materials' danmaku, and the video codec, encoding priority and bitrate.".into(),
             schema(
                 json!({
                     "id": { "type": "integer", "description": "Project id." },
@@ -160,10 +160,11 @@ pub(super) fn definitions(clip_range_params: Value) -> Vec<(&'static str, String
                     "render_settings": {
                         "type": "object",
                         "properties": {
-                            "quality": { "type": "string", "enum": ["high", "balanced", "compact"] },
-                            "bitrate_kbps": { "type": "integer", "minimum": 0, "maximum": 100000, "description": "0 renders by quality; 500 to 100000 renders at this bitrate instead." }
+                            "codec": { "type": "string", "enum": ["hevc", "h264"], "default": "hevc" },
+                            "priority": { "type": "string", "enum": ["speed", "quality"], "default": "speed" },
+                            "bitrate_kbps": { "type": "integer", "minimum": 500, "maximum": 100000, "default": 10000, "description": "Target video bitrate in Kbps." }
                         },
-                        "required": ["quality", "bitrate_kbps"],
+                        "required": ["codec", "priority", "bitrate_kbps"],
                         "additionalProperties": false
                     }
                 }),
@@ -413,6 +414,29 @@ pub(super) async fn update_upload_danmu(state: &State, args: &Value) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_settings_schema_matches_current_render_settings() {
+        let (_, _, schema) = definitions(json!({}))
+            .into_iter()
+            .find(|(name, _, _)| *name == "update_project_output_settings")
+            .unwrap();
+        let settings = &schema["properties"]["render_settings"];
+        assert_eq!(
+            settings["required"],
+            json!(["codec", "priority", "bitrate_kbps"])
+        );
+        let properties = &settings["properties"];
+        assert_eq!(properties["codec"]["enum"], json!(["hevc", "h264"]));
+        assert_eq!(properties["priority"]["enum"], json!(["speed", "quality"]));
+        assert_eq!(properties["bitrate_kbps"]["minimum"], 500);
+        assert_eq!(properties["bitrate_kbps"]["maximum"], 100000);
+        assert!(properties.get("quality").is_none());
+        let defaults = serde_json::to_value(RenderSettings::default()).unwrap();
+        for field in ["codec", "priority", "bitrate_kbps"] {
+            assert_eq!(properties[field]["default"], defaults[field]);
+        }
+    }
 
     #[test]
     fn profile_fields_patch_only_what_is_given() {

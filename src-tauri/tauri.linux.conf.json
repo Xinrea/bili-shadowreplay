@@ -3,6 +3,9 @@
     "linux": {
       "deb": {
         "depends": [
+          "libavformat60",
+          "libavcodec60",
+          "libavutil58",
           "libicu74",
           "libharfbuzz0b",
           "libharfbuzz-subset0",

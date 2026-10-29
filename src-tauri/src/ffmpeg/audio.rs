@@ -1,14 +1,9 @@
-use std::{
-    path::{Path, PathBuf},
-    process::Stdio,
-};
+use std::path::{Path, PathBuf};
 
-use async_ffmpeg_sidecar::{event::FfmpegEvent, log_parser::FfmpegLogParser};
 use tempfile::{tempdir_in, TempDir};
-use tokio::io::BufReader;
 
 use super::runner::{FfmpegJob, ProgressMode};
-use ffmpeg_utils::{ffprobe_command, path_str};
+use ffmpeg_utils::{probe_media, AudioStreamMetadata};
 
 /// Extract an audio sample for waveform display.
 pub async fn extract_audio_sample(file: &Path) -> Result<PathBuf, String> {
@@ -214,46 +209,23 @@ pub(crate) const AAC_FRAME_SAMPLES: i64 = 1024;
 
 /// The timing of a file's first sound stream; `None` without one.
 pub(crate) async fn probe_audio_timing(file: &Path) -> Result<Option<AudioTiming>, String> {
-    let output = ffprobe_command()
-        .args([
-            "-v",
-            "error",
-            "-select_streams",
-            "a:0",
-            "-show_entries",
-            "stream=codec_name,sample_rate,start_time",
-            "-of",
-            "default=noprint_wrappers=1",
-        ])
-        .arg(path_str(file)?)
-        .stdin(Stdio::null())
-        .output()
-        .await
-        .map_err(|error| format!("Failed to run ffprobe: {error}"))?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-    }
-    Ok(parse_audio_timing(&String::from_utf8_lossy(&output.stdout)))
+    Ok(probe_media(file)
+        .await?
+        .audio
+        .as_ref()
+        .and_then(audio_timing))
 }
 
-fn parse_audio_timing(probe: &str) -> Option<AudioTiming> {
-    let field = |name: &str| {
-        probe
-            .lines()
-            .find_map(|line| line.strip_prefix(name)?.strip_prefix('='))
-            .map(str::trim)
-    };
-    let sample_rate: u32 = field("sample_rate")?
-        .parse()
-        .ok()
-        .filter(|rate| *rate > 0)?;
-    let start = field("start_time")
-        .and_then(|value| value.parse::<f64>().ok())
-        .unwrap_or(0.0);
+fn audio_timing(audio: &AudioStreamMetadata) -> Option<AudioTiming> {
+    let sample_rate = audio.sample_rate;
+    if sample_rate == 0 {
+        return None;
+    }
+    let start = audio.start_time.unwrap_or(0.0);
     Some(AudioTiming {
         sample_rate,
         start: (start * f64::from(sample_rate)).round() as i64,
-        aac: field("codec_name") == Some("aac"),
+        aac: audio.codec == "aac",
     })
 }
 
@@ -330,53 +302,13 @@ pub(crate) async fn extract_preview_audio(
         .map_err(|error| error.to_string())
 }
 
-/// Get the duration of an audio/video file in seconds using ffprobe.
+/// Get the container duration in whole seconds, rounding up for audio chunks.
 pub(crate) async fn get_audio_duration(file: &Path) -> Result<u64, String> {
-    let mut command = ffprobe_command();
-    let mut child = command
-        .args([
-            "-v",
-            "quiet",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "csv=p=0",
-        ])
-        .arg("-i")
-        .arg(path_str(file)?)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("Failed to spawn ffprobe process: {error}"))?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or("ffprobe stdout pipe unavailable")?;
-    let mut parser = FfmpegLogParser::new(BufReader::new(stdout));
-    let mut duration = None;
-    loop {
-        match parser.parse_next_event().await {
-            Ok(FfmpegEvent::LogEOF) => break,
-            Ok(FfmpegEvent::Log(_, content)) => {
-                if let Ok(seconds) = content.trim().parse::<f64>() {
-                    duration = Some(seconds.ceil() as u64);
-                }
-            }
-            Ok(FfmpegEvent::Error(error)) => return Err(error),
-            Ok(_) => {}
-            Err(error) => return Err(format!("Failed to parse ffprobe output: {error}")),
-        }
-    }
-
-    let status = child
-        .wait()
-        .await
-        .map_err(|error| format!("Failed to wait for ffprobe: {error}"))?;
-    if !status.success() {
-        return Err(format!("ffprobe exited with status {status}"));
-    }
-    duration.ok_or_else(|| "Failed to parse duration".to_string())
+    probe_media(file)
+        .await?
+        .container_duration
+        .map(|seconds| seconds.ceil() as u64)
+        .ok_or_else(|| "Failed to read container duration".to_string())
 }
 
 #[cfg(test)]
@@ -385,7 +317,11 @@ mod preview_audio_tests {
 
     #[test]
     fn sound_is_counted_from_its_first_sample_and_aac_put_on_its_frame_grid() {
-        let aac = parse_audio_timing("codec_name=aac\nsample_rate=48000\nstart_time=0.000000\n");
+        let aac = audio_timing(&AudioStreamMetadata {
+            codec: "aac".to_string(),
+            sample_rate: 48000,
+            start_time: Some(0.0),
+        });
         assert_eq!(
             aac,
             Some(AudioTiming {
@@ -395,13 +331,28 @@ mod preview_audio_tests {
             })
         );
         // The priming an MP3 encoder leaves.
-        let mp3 =
-            parse_audio_timing("codec_name=mp3\nsample_rate=44100\nstart_time=0.025057\n").unwrap();
+        let mp3 = audio_timing(&AudioStreamMetadata {
+            codec: "mp3".to_string(),
+            sample_rate: 44100,
+            start_time: Some(0.025057),
+        })
+        .unwrap();
         assert_eq!((mp3.start, mp3.aac), (1105, false));
-        let unknown =
-            parse_audio_timing("codec_name=opus\nsample_rate=48000\nstart_time=N/A\n").unwrap();
+        let unknown = audio_timing(&AudioStreamMetadata {
+            codec: "opus".to_string(),
+            sample_rate: 48000,
+            start_time: None,
+        })
+        .unwrap();
         assert_eq!(unknown.start, 0);
-        assert_eq!(parse_audio_timing(""), None);
+        assert_eq!(
+            audio_timing(&AudioStreamMetadata {
+                codec: "aac".to_string(),
+                sample_rate: 0,
+                start_time: None,
+            }),
+            None
+        );
 
         assert_eq!(
             preview_audio_filters(aac.unwrap(), 50.0, 10.0),
@@ -411,5 +362,26 @@ mod preview_audio_tests {
         );
         assert!(preview_audio_filters(mp3, 10.0, 10.0)
             .starts_with("asettb=1/44100,asetpts='round(STARTPTS)-(1105)+N',atrim=start_pts=441000:end_pts=882000"));
+    }
+
+    #[tokio::test]
+    async fn native_audio_probe_keeps_sample_rate_duration_and_silent_video_behavior() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+        let wav = fixtures.join("audio/test.wav");
+        assert_eq!(
+            probe_audio_timing(&wav).await.unwrap(),
+            Some(AudioTiming {
+                sample_rate: 16000,
+                start: 0,
+                aac: false,
+            })
+        );
+        assert_eq!(get_audio_duration(&wav).await.unwrap(), 84);
+        assert_eq!(
+            probe_audio_timing(&fixtures.join("video/test.mp4"))
+                .await
+                .unwrap(),
+            None
+        );
     }
 }

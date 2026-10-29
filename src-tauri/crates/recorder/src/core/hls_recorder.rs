@@ -931,7 +931,7 @@ impl HlsRecorder {
 
     /// Length used for archive accounting.
     ///
-    /// fMP4 fragments often report absolute decode timestamps to ffprobe, so
+    /// fMP4 fragments often report absolute decode timestamps to the probe, so
     /// the container duration is unusable; prefer the playlist `#EXTINF`.
     fn segment_duration_secs(
         segment: &MediaSegment,
@@ -1471,6 +1471,217 @@ mod tests {
         (recorder, work_dir)
     }
 
+    fn probe_fixture(name: &str) -> Vec<u8> {
+        fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures")
+                .join(name),
+        )
+        .unwrap()
+    }
+
+    async fn native_probe_recorder(
+        server: &MockServer,
+    ) -> (
+        HlsRecorder,
+        tempfile::TempDir,
+        broadcast::Receiver<RecorderEvent>,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let (events, receiver) = broadcast::channel(4);
+        let stream = Arc::new(HlsStream::new(
+            "probe-live".to_string(),
+            server.uri(),
+            "/master.m3u8".to_string(),
+            String::new(),
+            Format::TS,
+            Codec::Avc,
+            0,
+        ));
+        let recorder = HlsRecorder::new(
+            "probe-room".to_string(),
+            stream,
+            reqwest::Client::new(),
+            None,
+            events,
+            directory.path().to_path_buf(),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await
+        .unwrap();
+        (recorder, directory, receiver)
+    }
+
+    #[tokio::test]
+    async fn native_probe_fmp4_keeps_extinf_duration_and_restores_stream_shape_on_resume() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/video");
+        let init = fs::read(fixtures.join("init.m4s")).unwrap();
+        let media = fs::read(fixtures.join("segment.m4s")).unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/master.m3u8"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "#EXTM3U\n#EXT-X-TARGETDURATION:3\n#EXT-X-MEDIA-SEQUENCE:1\n\
+                 #EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:1.25,\nfirst.m4s\n\
+                 #EXTINF:2.5,\nsecond.m4s\n",
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/init.mp4"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(init))
+            .expect(1)
+            .mount(&server)
+            .await;
+        for name in ["/first.m4s", "/second.m4s"] {
+            Mock::given(method("GET"))
+                .and(path(name))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(media.clone()))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let (recorder, directory, mut events) = native_probe_recorder(&server).await;
+
+        recorder.update_entries().await.unwrap();
+
+        let metadata = recorder.pre_metadata.read().await.clone().unwrap();
+        assert_eq!((metadata.width, metadata.height), (1920, 1080));
+        assert_eq!(metadata.video_codec, "h264");
+        assert_eq!(metadata.audio_codec, "aac");
+        assert!(
+            metadata.duration > 10.0,
+            "fixture's absolute fMP4 time must differ from its EXTINF span"
+        );
+        let archive = recorder.playlist.lock().await.playlist.clone();
+        assert_eq!(archive.segments.len(), 2);
+        assert_eq!(archive.segments[0].duration, 1.25);
+        assert_eq!(archive.segments[1].duration, 2.5);
+        assert!(archive.segments[0].map.is_some());
+        assert_eq!(recorder.sequence.load(Ordering::Relaxed), 2);
+        match events.try_recv().unwrap() {
+            RecorderEvent::RecordUpdate {
+                duration_secs,
+                cached_size_bytes,
+                ..
+            } => {
+                assert_eq!(duration_secs, 3.75);
+                assert_eq!(cached_size_bytes, 2 * media.len() as u64);
+            }
+            event => panic!("unexpected event: {event:?}"),
+        }
+
+        // A restart probes the cached last media segment with its saved MAP.
+        // It must not lose the baseline used to detect the next stream change.
+        let (sender, _receiver) = broadcast::channel(1);
+        let resumed = HlsRecorder::new(
+            recorder.room_id.clone(),
+            recorder.stream.clone(),
+            reqwest::Client::new(),
+            None,
+            sender,
+            directory.path().to_path_buf(),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resumed.pre_metadata.read().await.as_ref(), Some(&metadata));
+        assert!(resumed.fmp4_init.read().await.is_some());
+        assert_eq!(resumed.sequence.load(Ordering::Relaxed), 2);
+        server.verify().await;
+        drop(resumed);
+        drop(recorder);
+    }
+
+    #[tokio::test]
+    async fn native_probe_hls_appends_fragment_without_sps_pps_to_previous_segment() {
+        let valid = probe_fixture("probe-h264.ts");
+        let incomplete = probe_fixture("probe-h264-no-parameters.ts");
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/master.m3u8"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n\
+                 #EXTINF:0.4,\nfirst.ts\n#EXTINF:0.4,\nsecond.ts\n",
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        for (name, bytes) in [
+            ("/first.ts", valid.clone()),
+            ("/second.ts", incomplete.clone()),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(name))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(bytes))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let (recorder, directory, mut events) = native_probe_recorder(&server).await;
+
+        recorder.update_entries().await.unwrap();
+
+        let archive = recorder.playlist.lock().await.playlist.clone();
+        assert_eq!(archive.segments.len(), 1);
+        assert!((archive.segments[0].duration - 0.8).abs() < 1e-6);
+        assert_eq!(
+            fs::read(directory.path().join(&archive.segments[0].uri)).unwrap(),
+            [valid, incomplete].concat()
+        );
+        assert!(!directory.path().join("segment-2.ts").exists());
+        assert_eq!(recorder.sequence.load(Ordering::Relaxed), 2);
+        let metadata = recorder.pre_metadata.read().await.clone().unwrap();
+        assert_eq!((metadata.width, metadata.height), (64, 48));
+        assert_eq!(metadata.video_codec, "h264");
+        match events.try_recv().unwrap() {
+            RecorderEvent::RecordUpdate { duration_secs, .. } => {
+                assert!((duration_secs - 0.8).abs() < 1e-6);
+            }
+            event => panic!("unexpected event: {event:?}"),
+        }
+        server.verify().await;
+        drop(recorder);
+    }
+
+    #[tokio::test]
+    async fn native_probe_hls_rejects_resolution_and_codec_changes() {
+        for changed in ["probe-h264-resized.ts", "probe-mpeg2.ts"] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/master.m3u8"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(
+                    "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n\
+                     #EXTINF:0.4,\nfirst.ts\n#EXTINF:0.4,\nsecond.ts\n",
+                ))
+                .expect(1)
+                .mount(&server)
+                .await;
+            for (name, fixture) in [("/first.ts", "probe-h264.ts"), ("/second.ts", changed)] {
+                Mock::given(method("GET"))
+                    .and(path(name))
+                    .respond_with(ResponseTemplate::new(200).set_body_bytes(probe_fixture(fixture)))
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+            }
+            let (recorder, _directory, _events) = native_probe_recorder(&server).await;
+
+            assert!(
+                matches!(
+                    recorder.update_entries().await,
+                    Err(RecorderError::ResolutionChanged { .. })
+                ),
+                "{changed} must start a new recording instead of joining incompatible packets"
+            );
+            assert_eq!(recorder.playlist.lock().await.playlist.segments.len(), 1);
+            assert_eq!(recorder.sequence.load(Ordering::Relaxed), 1);
+            server.verify().await;
+            drop(recorder);
+        }
+    }
+
     /// Serve `playlist` at the index URL and answer the program segment with a
     /// stub body. The ad segments must never be requested, which `server.verify()`
     /// asserts afterwards.
@@ -1578,8 +1789,8 @@ mod tests {
     /// Twitch hangs `#EXT-X-MAP` on the first stitched-ad segment. Skipping that
     /// ad must still cache the init so later program fragments inherit it.
     ///
-    /// This test intentionally avoids calling ffprobe: CI runners may not ship
-    /// ffmpeg, and the regression is about map discovery while skipping ads.
+    /// Stub media bytes keep this test focused on map discovery while skipping
+    /// ads. The native probe tests below cover real fMP4 fragments.
     #[tokio::test]
     async fn skipping_ad_that_carries_fmp4_map_still_caches_init_for_program() {
         let init_body = b"fmp4-init-section".to_vec();

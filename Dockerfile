@@ -35,6 +35,9 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     glib-2.0-dev \
     libclang-dev \
+    libavformat-dev \
+    libavcodec-dev \
+    libavutil-dev \
     libfontconfig1-dev \
     libicu-dev \
     libharfbuzz-dev \

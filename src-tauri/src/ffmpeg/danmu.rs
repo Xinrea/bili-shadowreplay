@@ -413,53 +413,31 @@ pub async fn encode_video_danmu_with_settings<R: ProgressReporterTrait>(
 /// FFmpeg rebases all streams against the container start, not the first
 /// video frame. A delayed video can therefore end later than its track length.
 /// Cover that timeline (and let the primary video end the overlay naturally).
-fn overlay_timeline_duration(probe: &serde_json::Value, track_duration: f64) -> f64 {
-    let number = |value: &serde_json::Value| {
-        value
-            .as_str()
-            .and_then(|value| value.parse::<f64>().ok())
-            .filter(|value| value.is_finite())
-    };
-    let format = &probe["format"];
-    let container_start = number(&format["start_time"]).unwrap_or(0.0);
-    let video_start = probe["streams"]
-        .as_array()
-        .and_then(|streams| {
-            streams
-                .iter()
-                .find(|stream| stream["codec_type"] == "video")
-        })
-        .and_then(|video| number(&video["start_time"]))
-        .unwrap_or(container_start);
+fn overlay_timeline_duration(
+    track_duration: f64,
+    container_start: Option<f64>,
+    video_start: Option<f64>,
+    container_duration: Option<f64>,
+) -> f64 {
+    let container_start = container_start.unwrap_or(0.0);
+    let video_start = video_start.unwrap_or(container_start);
     (track_duration + (video_start - container_start).max(0.0))
-        .max(number(&format["duration"]).unwrap_or(0.0))
+        .max(container_duration.unwrap_or(0.0))
 }
 
 pub(super) async fn probe_overlay_duration(
     file: &Path,
     track_duration: f64,
 ) -> Result<f64, String> {
-    let output = ffmpeg_utils::ffprobe_command()
-        .args([
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration,start_time:stream=codec_type,start_time",
-            "-of",
-            "json",
-        ])
-        .arg(file)
-        .output()
+    let probe = ffmpeg_utils::probe_media(file)
         .await
-        .map_err(|error| error.to_string())?;
-    if !output.status.success() {
-        return Err(format!(
-            "Failed to inspect overlay timeline: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    let probe = serde_json::from_slice(&output.stdout).map_err(|error| error.to_string())?;
-    Ok(overlay_timeline_duration(&probe, track_duration))
+        .map_err(|error| format!("Failed to inspect overlay timeline: {error}"))?;
+    Ok(overlay_timeline_duration(
+        track_duration,
+        probe.container_start_time,
+        probe.video_start_time,
+        probe.container_duration,
+    ))
 }
 
 async fn encode_danmu_plan<R: ProgressReporterTrait>(
@@ -580,18 +558,19 @@ mod tests {
 
     #[test]
     fn overlay_duration_covers_delayed_video_without_using_absolute_pts() {
-        let delayed = serde_json::json!({
-            "format": {"start_time":"0.0", "duration":"5.0"},
-            "streams": [{"codec_type":"audio", "start_time":"0.0"},
-                        {"codec_type":"video", "start_time":"2.0"}],
-        });
-        assert_eq!(overlay_timeline_duration(&delayed, 3.0), 5.0);
-        let ts = serde_json::json!({
-            "format": {"start_time":"10000.0", "duration":"3.0"},
-            "streams": [{"codec_type":"video", "start_time":"10000.2"}],
-        });
-        assert!((overlay_timeline_duration(&ts, 3.0) - 3.2).abs() < 0.001);
-        assert_eq!(overlay_timeline_duration(&serde_json::json!({}), 3.0), 3.0);
+        assert_eq!(
+            overlay_timeline_duration(3.0, Some(0.0), Some(2.0), Some(5.0)),
+            5.0
+        );
+        assert!(
+            (overlay_timeline_duration(3.0, Some(10000.0), Some(10000.2), Some(3.0)) - 3.2).abs()
+                < 0.001
+        );
+        assert_eq!(overlay_timeline_duration(3.0, None, None, None), 3.0);
+        assert_eq!(
+            overlay_timeline_duration(3.0, Some(10000.0), None, None),
+            3.0
+        );
     }
 
     #[test]

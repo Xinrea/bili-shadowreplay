@@ -14,11 +14,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: "macos-latest" # for Intel based macs.
+          - platform: "macos-15-intel" # Native x86_64 FFmpeg libraries.
             args: "--target x86_64-apple-darwin"
             target: "x86_64-apple-darwin"
             updater-target: "darwin-x86_64"
-          - platform: "macos-latest" # for Apple silicon macs.
+          - platform: "macos-15" # Native ARM libraries must preserve the macOS 15 baseline.
             args: "--target aarch64-apple-darwin"
             target: "aarch64-apple-darwin"
             updater-target: "darwin-aarch64"
@@ -52,9 +52,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            libavformat-dev libavcodec-dev libavutil-dev \
             clang libclang-dev ninja-build python3 pkg-config \
             libicu-dev libharfbuzz-dev libfreetype-dev libfontconfig1-dev \
             libpng-dev zlib1g-dev libexpat1-dev libjpeg-dev
+
+      - name: Install FFmpeg development libraries (macOS only)
+        if: runner.os == 'macOS'
+        run: |
+          brew install ffmpeg pkg-config
+          echo "PKG_CONFIG_PATH=$(brew --prefix ffmpeg)/lib/pkgconfig" >> "$GITHUB_ENV"
 
       - name: Configure source Skia with system libraries (Linux only)
         if: runner.os == 'Linux'
@@ -80,7 +87,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable # Set this to dtolnay/rust-toolchain@nightly
         with:
           # Those targets are only used on macos runners so it's in an `if` to slightly speed up windows and linux builds.
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
           # llvm-objcopy patches the Windows Skia archive below.
           components: ${{ runner.os == 'Windows' && 'llvm-tools' || '' }}
 
@@ -176,10 +183,15 @@ jobs:
           echo "current_tag=$CURRENT_TAG" >> $GITHUB_OUTPUT
         shell: bash
 
+      - name: Check macOS native runtime bundling
+        if: runner.os == 'macOS'
+        run: node --test scripts/ffmpeg-bundle.test.mjs
+
       - uses: tauri-apps/tauri-action@1ddc7b49b13c3038297360482fcb3e058764d7c9 # v0.6.2
         id: tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUST_TARGET: ${{ matrix.target }}
           CMAKE_OSX_DEPLOYMENT_TARGET: "13.3"
           CMAKE_CUDA_ARCHITECTURES: "75"
           WHISPER_BACKEND: ${{ matrix.features }}
@@ -203,6 +215,7 @@ jobs:
         env:
           RUST_TARGET: ${{ matrix.target }}
         run: |
+          node scripts/bundle-macos-ffmpeg.mjs --verify "src-tauri/target/$RUST_TARGET/release/bundle/macos/bili-shadowreplay.app"
           codesign --verify --deep --strict --verbose=2 \
             "src-tauri/target/$RUST_TARGET/release/bundle/macos/bili-shadowreplay.app"
 

@@ -18,7 +18,7 @@ BiliBili ShadowReplay 是一个基于 Tauri 2 的混合桌面应用，采用前�
 - **桌面框架**: Tauri 2
 - **语言**: Rust (async/await with Tokio)
 - **数据库**: SQLite with sqlx (WAL mode)
-- **视频处理**: FFmpeg (via async-ffmpeg-sidecar)
+- **视频处理**: FFmpeg CLI（转码/录制/合成）与 ffmpeg-next（直接链接探测），async-ffmpeg-sidecar 解析 CLI 进度
 - **语音识别**: Whisper-rs (支持 CUDA/Metal 加速)
 - **流媒体处理**: M3U8-rs
 - **HTTP 服务**: Axum
@@ -149,7 +149,7 @@ src-tauri/
 │   │           ├── twitch/
 │   │           └── youtube.rs
 │   ├── danmu_stream/            # 弹幕流处理库
-│   └── ffmpeg_utils/            # 应用与 recorder 共用的 ffmpeg/ffprobe 调用与元数据探测
+│   └── ffmpeg_utils/            # 应用与 recorder 共用的原生媒体探测与 FFmpeg CLI 工厂
 └── ...
 ```
 
@@ -174,7 +174,7 @@ src-tauri/
 
 - **recorder**: 核心录制功能，包含多平台实现
 - **danmu_stream**: 弹幕流处理，支持实时弹幕捕获和存储
-- **ffmpeg_utils**: 应用层与 recorder 共用的 ffmpeg/ffprobe 调用封装与 `VideoMetadata` 探测，避免两边各维护一套
+- **ffmpeg_utils**: 应用层与 recorder 共用的 `ffmpeg-next` 媒体探测与 `VideoMetadata` 类型；fMP4 通过可 seek 的 AVIO 拼接 init 和 media，编码仍使用统一的 FFmpeg CLI 命令工厂
 
 ## 数据流
 

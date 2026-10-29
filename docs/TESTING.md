@@ -18,7 +18,7 @@ src-tauri/
 │   │   │   └── helpers_test.rs
 │   │   └── Cargo.toml
 │   ├── danmu_stream/      # Danmu provider tests
-│   ├── ffmpeg_utils/      # Shared ffmpeg/ffprobe plumbing; probes the
+│   ├── ffmpeg_utils/      # Native ffmpeg-next probes and FFmpeg CLI helpers;
 │   │                      # fixtures in `src-tauri/tests/video/`
 │   └── whisper-cpp-rs/    # (Excluded from CI - requires CMake)
 ```
@@ -30,7 +30,8 @@ src-tauri/
 1. **System Dependencies** (Ubuntu/Debian):
    ```bash
    sudo apt-get update
-   sudo apt-get install -y libssl-dev pkg-config
+   sudo apt-get install -y libssl-dev pkg-config clang libclang-dev \
+     libavformat-dev libavcodec-dev libavutil-dev ffmpeg
    ```
 
 2. **Rust Toolchain**:
@@ -64,6 +65,21 @@ cargo test --package recorder -- --nocapture
 # Run a single test
 cargo test --package recorder test_platform_type_string_conversion
 ```
+
+The native probe layer requires matching FFmpeg development libraries; see
+[FFmpeg build configuration](getting-started/config/ffmpeg.md).
+To verify metadata and recording behavior:
+
+```bash
+cargo test --package ffmpeg_utils
+cargo test --package recorder --lib core::hls_recorder::tests
+```
+
+These tests use real MP4, WAV, TS and fMP4 fixtures. Native probing does not
+require `ffprobe` on `PATH`; one optional parity test compares fields with
+ffprobe when available. HLS tests download fixtures from a local HTTP server
+and verify init-map inheritance, EXTINF accounting, damaged TS appends and
+stream-shape changes. Other encoding tests still require the FFmpeg CLI.
 
 To smoke-test Douyu against a **currently live** numeric room using the
 production `DouyuRecorder` loop for five minutes (requires `ffmpeg` on `PATH`):
@@ -101,7 +117,7 @@ cargo test --package recorder --test '*'
 | Recorder core | ✅ Good | Playlist, HLS recorder internals |
 | Pure utilities | ✅ Excellent | Platform type, sanitize filename, etc. |
 | Danmu providers | ⚠️ Limited | Basic tests, mostly inline |
-| FFmpeg integration | ❌ None | Requires further work |
+| FFmpeg integration | ✅ Probe coverage | Native metadata parity, fMP4 AVIO and real HLS segment processing |
 | End-to-end flows | ❌ None | Future work |
 
 **Total**: ~91 library tests passing (live-network smoke tests are `#[ignore]`)

@@ -16,6 +16,7 @@ mod util;
 mod video;
 mod video_clock;
 mod video_encoder;
+mod video_processor;
 
 #[cfg(test)]
 mod single_input_tests;
@@ -177,11 +178,16 @@ impl fmt::Debug for MediaResourceLease {
 #[derive(Default)]
 pub struct MediaBindings {
     pub raw_video: Vec<(usize, RawVideoInput)>,
+    /// Original plan route index. Factories cross into the media worker; their
+    /// thread-affine processors and GPU handles are created and dropped there.
+    pub video_processors: Vec<(usize, Box<dyn VideoFrameProcessorFactory>)>,
 }
+pub use ffmpeg_next::{frame::Video as VideoFrame, Rational as VideoRational};
 pub use raw_video::{
     raw_video_channel, RawVideoAlpha, RawVideoCancelHandle, RawVideoFrame, RawVideoInput,
     RawVideoSender, RawVideoSpec, RawVideoStats,
 };
+pub use video_processor::{VideoFrameInfo, VideoFrameProcessor, VideoFrameProcessorFactory};
 
 /// Parse a decimal frame rate using the same FFmpeg parser as input `-r`.
 pub fn parse_frame_rate(value: f64) -> Result<(u32, u32), MediaError> {
@@ -288,6 +294,9 @@ pub struct VideoEncodeOptions {
     pub threads: Option<usize>,
     pub options: AvOptions,
     pub hardware_device: Option<HardwareDevice>,
+    /// Feed normalized NV12 frames through a bound worker-local processor
+    /// before encoding. The processor supplies the encoder's actual frame pool.
+    pub frame_processor: bool,
 }
 
 impl Default for VideoEncodeOptions {
@@ -305,6 +314,7 @@ impl Default for VideoEncodeOptions {
             threads: None,
             options: AvOptions::new(),
             hardware_device: None,
+            frame_processor: false,
         }
     }
 }
@@ -417,6 +427,11 @@ pub async fn execute_with_sources(
         || plan.inputs.len() != 1
         || plan.outputs.len() != 1
         || !sources.raw_video.is_empty()
+        || !sources.video_processors.is_empty()
+        || plan.routes.iter().any(|route| {
+            matches!(&route.mode,
+            StreamMode::Video(options) if options.frame_processor)
+        })
     {
         graph::run(plan, sources, progress)
             .await

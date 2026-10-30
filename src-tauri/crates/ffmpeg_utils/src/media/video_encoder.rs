@@ -2,10 +2,11 @@
 use super::{
     util::{self, Device, Limits},
     video_clock::FrameSync,
-    EncodedPacketSink, FrameRatePolicy, VideoEncodeOptions,
+    EncodedPacketSink, FrameRatePolicy, VideoEncodeOptions, VideoFrameInfo,
+    VideoFrameProcessor, VideoFrameProcessorFactory,
 };
 use ffmpeg_next::{self as ffmpeg, codec, ffi, filter, frame, Packet, Rational};
-use std::sync::{atomic::AtomicBool, Arc};
+use std::{collections::VecDeque, sync::{atomic::AtomicBool, Arc}};
 pub(super) struct VideoEncoderStage {
     encoder: Option<codec::encoder::video::Encoder>,
     codec: codec::Video,
@@ -19,6 +20,9 @@ pub(super) struct VideoEncoderStage {
     done: bool,
     cancelled: Arc<AtomicBool>,
     frames: u64,
+    processor_factory: Option<Box<dyn VideoFrameProcessorFactory>>,
+    processor: Option<Box<dyn VideoFrameProcessor>>,
+    pending_processed: VecDeque<(i64, i64)>,
 }
 impl VideoEncoderStage {
     #[allow(clippy::too_many_arguments)]
@@ -48,7 +52,17 @@ impl VideoEncoderStage {
             done: false,
             cancelled,
             frames: 0,
+            processor_factory: None,
+            processor: None,
+            pending_processed: VecDeque::new(),
         })
+    }
+    pub(super) fn with_processor_factory(
+        mut self,
+        factory: Option<Box<dyn VideoFrameProcessorFactory>>,
+    ) -> Self {
+        self.processor_factory = factory;
+        self
     }
     pub(super) fn frames(&self) -> u64 {
         self.frames
@@ -57,6 +71,9 @@ impl VideoEncoderStage {
         self.encoder.as_ref().map(|e| (e.width(), e.height()))
     }
     pub(super) fn format_filter(&self) -> Result<String, String> {
+        if self.options.frame_processor {
+            return Ok("format=pix_fmts=nv12".into());
+        }
         let formats = if let Some(encoder) = &self.encoder {
             encoder
                 .format()
@@ -123,7 +140,26 @@ impl VideoEncoderStage {
             } else {
                 filter_base
             };
-            let pixel_id = unsafe { ffi::av_buffersink_get_format(sink.as_mut_ptr()) };
+            if self.options.frame_processor {
+                let factory = self.processor_factory.take().ok_or("视频帧处理器缺少工厂")?;
+                self.processor = Some(factory.create(
+                    VideoFrameInfo {
+                        width: unsafe { ffi::av_buffersink_get_w(sink.as_mut_ptr()) } as u32,
+                        height: unsafe { ffi::av_buffersink_get_h(sink.as_mut_ptr()) } as u32,
+                        frame_rate: rate,
+                        time_base: encoder_base,
+                    },
+                    self.cancelled.clone(),
+                )?);
+            }
+            let processed_template = self.processor.as_ref()
+                .map(|processor| processor.output_template()).transpose()?;
+            let template = processed_template.as_ref().unwrap_or(frame);
+            let pixel_id = if processed_template.is_some() {
+                unsafe { (*template.as_ptr()).format }
+            } else {
+                unsafe { ffi::av_buffersink_get_format(sink.as_mut_ptr()) }
+            };
             let pixel = if let Some(mut formats) = self.codec.formats() {
                 formats
                     .find(|format| ffi::AVPixelFormat::from(*format) as i32 == pixel_id)
@@ -142,8 +178,17 @@ impl VideoEncoderStage {
                 .encoder()
                 .video()
                 .map_err(|e| util::error("创建视频编码器失败", e))?;
-            encoder.set_width(unsafe { ffi::av_buffersink_get_w(sink.as_mut_ptr()) } as u32);
-            encoder.set_height(unsafe { ffi::av_buffersink_get_h(sink.as_mut_ptr()) } as u32);
+            let (width, height) = if processed_template.is_some() {
+                (template.width(), template.height())
+            } else {
+                (unsafe { ffi::av_buffersink_get_w(sink.as_mut_ptr()) } as u32,
+                 unsafe { ffi::av_buffersink_get_h(sink.as_mut_ptr()) } as u32)
+            };
+            if width == 0 || height == 0 {
+                return Err("视频帧处理器返回无效输出尺寸".into());
+            }
+            encoder.set_width(width);
+            encoder.set_height(height);
             encoder.set_format(pixel);
             encoder.set_time_base(encoder_base);
             encoder.set_frame_rate(Some(rate));
@@ -164,13 +209,14 @@ impl VideoEncoderStage {
             unsafe {
                 let raw = &mut *encoder.as_mut_ptr();
                 raw.flags |= ffi::AV_CODEC_FLAG_FRAME_DURATION as i32;
-                raw.sample_aspect_ratio =
-                    ffi::av_buffersink_get_sample_aspect_ratio(sink.as_mut_ptr());
-                raw.colorspace = (*frame.as_ptr()).colorspace;
-                raw.color_range = (*frame.as_ptr()).color_range;
-                raw.color_primaries = (*frame.as_ptr()).color_primaries;
-                raw.color_trc = (*frame.as_ptr()).color_trc;
-                raw.chroma_sample_location = (*frame.as_ptr()).chroma_location;
+                raw.sample_aspect_ratio = if processed_template.is_some() {
+                    (*template.as_ptr()).sample_aspect_ratio
+                } else { ffi::av_buffersink_get_sample_aspect_ratio(sink.as_mut_ptr()) };
+                raw.colorspace = (*template.as_ptr()).colorspace;
+                raw.color_range = (*template.as_ptr()).color_range;
+                raw.color_primaries = (*template.as_ptr()).color_primaries;
+                raw.color_trc = (*template.as_ptr()).color_trc;
+                raw.chroma_sample_location = (*template.as_ptr()).chroma_location;
                 if let Some(value) = self.options.buffer_size {
                     raw.rc_buffer_size = value as i32;
                 }
@@ -183,7 +229,9 @@ impl VideoEncoderStage {
                         return Err("复制视频硬件设备失败".into());
                     }
                 }
-                let frames = ffi::av_buffersink_get_hw_frames_ctx(sink.as_mut_ptr());
+                let frames = if processed_template.is_some() {
+                    (*template.as_ptr()).hw_frames_ctx
+                } else { ffi::av_buffersink_get_hw_frames_ctx(sink.as_mut_ptr()) };
                 if !frames.is_null() {
                     raw.hw_frames_ctx = ffi::av_buffer_ref(frames);
                     if raw.hw_device_ctx.is_null() {
@@ -246,13 +294,13 @@ impl VideoEncoderStage {
                 break;
             }
             util::check(&self.cancelled)?;
-            self.encode(&mut frame?, packets)?;
+            self.encode(frame?, packets)?;
         }
         Ok(())
     }
     fn encode(
         &mut self,
-        frame: &mut frame::Video,
+        mut frame: frame::Video,
         packets: &mut EncodedPacketSink<'_>,
     ) -> Result<(), String> {
         if !self.limits.encode(
@@ -262,6 +310,61 @@ impl VideoEncoderStage {
             self.done = true;
             return Ok(());
         }
+        if let Some(processor) = &mut self.processor {
+            self.pending_processed.push_back((
+                frame.pts().ok_or("视频编码帧没有时间戳")?,
+                unsafe { (*frame.as_ptr()).duration },
+            ));
+            let ready = processor.process(frame)?;
+            self.send_processed(ready, packets)?;
+            if self.pending_processed.len() > 8 {
+                return Err("视频帧处理器缓冲超过八帧".into());
+            }
+        } else {
+            self.send_frame(&mut frame, packets)?;
+        }
+        self.frames = self.frames.checked_add(1).ok_or("视频帧计数溢出")?;
+        Ok(())
+    }
+    fn send_processed(
+        &mut self,
+        frames: Vec<frame::Video>,
+        packets: &mut EncodedPacketSink<'_>,
+    ) -> Result<(), String> {
+        for mut frame in frames {
+            util::check(&self.cancelled)?;
+            let expected = self.pending_processed.pop_front()
+                .ok_or("视频帧处理器返回了未提交的帧")?;
+            let encoder = self.encoder.as_ref().ok_or("视频编码器尚未创建")?;
+            let actual = (frame.pts().ok_or("处理后视频帧缺少时间戳")?,
+                          unsafe { (*frame.as_ptr()).duration });
+            if actual != expected {
+                return Err("视频帧处理器改变了帧顺序、时间戳或时长".into());
+            }
+            if frame.width() != encoder.width() || frame.height() != encoder.height()
+                || frame.format() != encoder.format()
+            {
+                return Err("视频帧处理器改变了编码输出格式".into());
+            }
+            unsafe {
+                let expected_pool = (*encoder.as_ptr()).hw_frames_ctx;
+                let actual_pool = (*frame.as_ptr()).hw_frames_ctx;
+                if !expected_pool.is_null() && (actual_pool.is_null()
+                    || (*expected_pool).data != (*actual_pool).data)
+                {
+                    return Err("视频帧处理器返回了不同硬件帧池".into());
+                }
+                (*frame.as_mut_ptr()).time_base = encoder.time_base().into();
+            }
+            self.send_frame(&mut frame, packets)?;
+        }
+        Ok(())
+    }
+    fn send_frame(
+        &mut self,
+        frame: &mut frame::Video,
+        packets: &mut EncodedPacketSink<'_>,
+    ) -> Result<(), String> {
         unsafe {
             (*frame.as_mut_ptr()).pict_type = ffi::AVPictureType::AV_PICTURE_TYPE_NONE;
             (*frame.as_mut_ptr()).quality =
@@ -279,7 +382,6 @@ impl VideoEncoderStage {
             }
             Err(e) => return Err(util::error("提交视频编码帧失败", e)),
         }
-        self.frames = self.frames.checked_add(1).ok_or("视频帧计数溢出")?;
         self.drain(packets)?;
         Ok(())
     }
@@ -306,7 +408,14 @@ impl VideoEncoderStage {
                     break;
                 }
                 util::check(&self.cancelled)?;
-                self.encode(&mut frame?, output)?;
+                self.encode(frame?, output)?;
+            }
+        }
+        if let Some(processor) = &mut self.processor {
+            let ready = processor.flush()?;
+            self.send_processed(ready, output)?;
+            if !self.pending_processed.is_empty() {
+                return Err("视频帧处理器结束后仍有未输出帧".into());
             }
         }
         match self.encoder.as_mut().unwrap().send_eof() {

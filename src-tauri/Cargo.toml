@@ -89,6 +89,8 @@ libc = "0.2"
 custom-protocol = ["tauri/custom-protocol"]
 cuda = ["whisper-cpp-rs/cuda"]
 headless = []
+# Optional native GPU export. Device/codec support is probed before selecting it.
+vulkan-export = ["native-overlay/vulkan", "ffmpeg_utils/vulkan-video"]
 default = ["gui", "credential-encryption"]
 credential-encryption = ["dep:keyring", "dep:ring"]
 gui = [

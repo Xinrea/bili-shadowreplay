@@ -194,7 +194,26 @@ fn validate(plan: &MediaPlan, sources: &MediaBindings) -> Result<(), String> {
             return Err(format!("原始视频输入{i}没有绑定生产者"));
         }
     }
-    for route in &plan.routes {
+    let mut processed = BTreeSet::new();
+    for (index, _) in &sources.video_processors {
+        if !processed.insert(*index) {
+            return Err("视频帧处理器重复绑定".into());
+        }
+        if !matches!(
+            plan.routes.get(*index),
+            Some(StreamRoute {
+                source: StreamSource::Filter { .. },
+                mode: StreamMode::Video(VideoEncodeOptions {
+                    frame_processor: true,
+                    ..
+                }),
+                ..
+            })
+        ) {
+            return Err("视频帧处理器必须绑定已声明处理器的滤镜视频路由".into());
+        }
+    }
+    for (index, route) in plan.routes.iter().enumerate() {
         if route.output >= plan.outputs.len() {
             return Err("媒体路由引用了不存在的输出".into());
         }
@@ -202,7 +221,15 @@ fn validate(plan: &MediaPlan, sources: &MediaBindings) -> Result<(), String> {
             return Err("媒体路由引用了不存在的输入".into());
         }
         match &route.mode {
-            StreamMode::Video(o) => execute::validate_video(o)?,
+            StreamMode::Video(o) => {
+                execute::validate_video(o)?;
+                if o.frame_processor && !processed.contains(&index) {
+                    return Err("视频帧处理器缺少绑定".into());
+                }
+                if o.frame_processor && o.hardware_device.is_some() {
+                    return Err("视频帧处理器自行管理硬件设备，不能再指定图设备".into());
+                }
+            }
             StreamMode::Audio(o) => {
                 let c = ffmpeg::encoder::find_by_name(&o.encoder)
                     .ok_or_else(|| format!("找不到音频编码器 {}", o.encoder))?;
@@ -593,6 +620,19 @@ impl Job {
         callback: Option<MediaProgressCallback>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Self, String> {
+        // Bind by the filter label before AllAudio expands direct routes, so
+        // application route indices retain their declared meaning.
+        let mut processors = std::collections::BTreeMap::new();
+        for (index, factory) in sources.video_processors {
+            let Some(StreamRoute {
+                source: StreamSource::Filter { label },
+                ..
+            }) = plan.routes.get(index)
+            else {
+                return Err("视频帧处理器路由不存在".into());
+            };
+            processors.insert(label.clone(), factory);
+        }
         let mut files = Vec::new();
         for input in &plan.inputs {
             files.push(if matches!(input.source, MediaSource::File(_)) {
@@ -626,19 +666,22 @@ impl Job {
                 output_duration: target.duration.map(util::time).transpose()?,
             };
             let (source, mode) = match &route.source {
-                StreamSource::Filter { .. } => {
+                StreamSource::Filter { label } => {
                     let mode = match &route.mode {
                         StreamMode::Video(o) => {
                             metadata.set("encoder", &execute::encoder_tag(&o.encoder));
-                            Mode::Video(Box::new(VideoEncoderStage::new(
-                                o.clone(),
-                                limits,
-                                output.global,
-                                output.flags,
-                                plan.inputs.iter().any(|i| i.copy_timestamps),
-                                execute::format_name(target)? == "avi",
-                                cancelled.clone(),
-                            )?))
+                            Mode::Video(Box::new(
+                                VideoEncoderStage::new(
+                                    o.clone(),
+                                    limits,
+                                    output.global,
+                                    output.flags,
+                                    plan.inputs.iter().any(|i| i.copy_timestamps),
+                                    execute::format_name(target)? == "avi",
+                                    cancelled.clone(),
+                                )?
+                                .with_processor_factory(processors.remove(label)),
+                            ))
                         }
                         StreamMode::Audio(o) => {
                             metadata.set("encoder", &execute::encoder_tag(&o.encoder));
@@ -803,6 +846,9 @@ impl Job {
                     .ok_or("媒体章节偏移溢出")?;
                 copy_chapters(&file.context, &mut output.native.output, offset)?;
             }
+        }
+        if !processors.is_empty() {
+            return Err("视频帧处理器未连接至滤镜图".into());
         }
         let mut decoders = Vec::new();
         let mut bindings = Vec::new();

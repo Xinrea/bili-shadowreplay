@@ -1,0 +1,85 @@
+From ddfa842088cd86bd48bc4533f10a4b5badcbd02d Mon Sep 17 00:00:00 2001
+From: Lynne <dev@lynne.ee>
+Date: Tue, 14 Jul 2026 00:29:22 +0900
+Subject: [PATCH] vulkan_encode: destroy image views of queued pictures on
+ uninit
+
+ff_hw_base_encode_close() frees any pictures still in the encode
+queue without invoking the encoder's free callback, leaking their
+image views when an encoder is closed without fully draining it.
+Also uninit the packet buffer pool before the base encode context,
+rather than after.
+---
+ libavcodec/vulkan_encode.c | 41 ++++++++++++++++++++++++++------------
+ 1 file changed, 28 insertions(+), 13 deletions(-)
+
+diff --git a/libavcodec/vulkan_encode.c b/libavcodec/vulkan_encode.c
+index 39c43300c40ee..1e69c732428d8 100644
+--- a/libavcodec/vulkan_encode.c
++++ b/libavcodec/vulkan_encode.c
+@@ -28,6 +28,27 @@ const AVCodecHWConfigInternal *const ff_vulkan_encode_hw_configs[] = {
+     NULL,
+ };
+ 
++static void vulkan_encode_free_pic(FFVulkanEncodeContext *ctx,
++                                   FFHWBaseEncodePicture *pic)
++{
++    FFVulkanFunctions *vk = &ctx->s.vkfn;
++
++    FFVulkanEncodePicture *vp = pic->priv;
++
++    if (vp->in.view)
++        vk->DestroyImageView(ctx->s.hwctx->act_dev, vp->in.view,
++                             ctx->s.hwctx->alloc);
++
++    if (!ctx->common.layered_dpb && vp->dpb.view)
++        vk->DestroyImageView(ctx->s.hwctx->act_dev, vp->dpb.view,
++                             ctx->s.hwctx->alloc);
++
++    vp->in.view = VK_NULL_HANDLE;
++    vp->dpb.view = VK_NULL_HANDLE;
++
++    ctx->slots[vp->dpb_slot.slotIndex] = NULL;
++}
++
+ av_cold void ff_vulkan_encode_uninit(FFVulkanEncodeContext *ctx)
+ {
+     FFVulkanContext *s = &ctx->s;
+@@ -42,10 +63,15 @@ av_cold void ff_vulkan_encode_uninit(FFVulkanEncodeContext *ctx)
+                                              ctx->session_params,
+                                              s->hwctx->alloc);
+ 
+-    ff_hw_base_encode_close(&ctx->base);
++    /* Destroy the image views of any pictures still in the queue,
++     * as ff_hw_base_encode_close() only frees the picture structs */
++    for (FFHWBaseEncodePicture *pic = ctx->base.pic_start; pic; pic = pic->next)
++        vulkan_encode_free_pic(ctx, pic);
+ 
+     av_buffer_pool_uninit(&ctx->buf_pool);
+ 
++    ff_hw_base_encode_close(&ctx->base);
++
+     ff_vk_video_common_uninit(s, &ctx->common);
+ 
+     ff_vk_uninit(s);
+@@ -95,19 +121,8 @@ static int vulkan_encode_init(AVCodecContext *avctx, FFHWBaseEncodePicture *pic)
+ static int vulkan_encode_free(AVCodecContext *avctx, FFHWBaseEncodePicture *pic)
+ {
+     FFVulkanEncodeContext *ctx = avctx->priv_data;
+-    FFVulkanFunctions *vk = &ctx->s.vkfn;
+-
+-    FFVulkanEncodePicture *vp = pic->priv;
+-
+-    if (vp->in.view)
+-        vk->DestroyImageView(ctx->s.hwctx->act_dev, vp->in.view,
+-                             ctx->s.hwctx->alloc);
+-
+-    if (!ctx->common.layered_dpb && vp->dpb.view)
+-        vk->DestroyImageView(ctx->s.hwctx->act_dev, vp->dpb.view,
+-                             ctx->s.hwctx->alloc);
+ 
+-    ctx->slots[vp->dpb_slot.slotIndex] = NULL;
++    vulkan_encode_free_pic(ctx, pic);
+ 
+     return 0;
+ }

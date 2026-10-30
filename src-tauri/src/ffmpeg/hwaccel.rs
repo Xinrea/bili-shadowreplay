@@ -68,6 +68,20 @@ pub fn is_vaapi_encoder(encoder: &str) -> bool {
     matches!(encoder, "h264_vaapi" | "hevc_vaapi")
 }
 
+pub(super) fn is_vulkan_encoder(encoder: &str) -> bool {
+    matches!(encoder, "h264_vulkan" | "hevc_vulkan")
+}
+
+/// Part of segment identity: CPU RGB composition and GPU NV12 composition
+/// have distinct colour-conversion and frame ownership policies.
+pub(super) fn render_backend_identity(encoder: &str) -> &'static str {
+    if is_vulkan_encoder(encoder) {
+        "vulkan-nv12-overlay-v1"
+    } else {
+        "cpu-bgra-overlay-v1"
+    }
+}
+
 /// 返回 VAAPI 硬件上传滤镜片段。
 pub fn vaapi_filter_suffix() -> &'static str {
     VAAPI_FILTER_SUFFIX
@@ -79,7 +93,7 @@ pub fn vaapi_filter_suffix() -> &'static str {
 pub fn output_format_filter(encoder: &str) -> &'static str {
     if is_vaapi_encoder(encoder) {
         vaapi_filter_suffix()
-    } else if TARGET_ENCODERS.contains(&encoder) {
+    } else if TARGET_ENCODERS.contains(&encoder) || is_vulkan_encoder(encoder) {
         "format=nv12"
     } else {
         "format=yuv420p"
@@ -146,6 +160,7 @@ pub fn quality_args_with_bitrate(encoder: &str, bitrate: Option<NonZeroU32>) -> 
 /// 返回指定 H.264 编码器应使用的质量参数。
 pub fn quality_args_for_encoder(encoder: &str) -> &'static [&'static str] {
     match encoder {
+        "h264_vulkan" | "hevc_vulkan" => &["-rc_mode", "vbr", "-b:v", "8000k"],
         VAAPI_ENCODER => &["-b:v", "8000k", "-maxrate", "10000k", "-bufsize", "16000k"],
         NVENC_ENCODER => &[
             "-preset", "p5", "-rc", "vbr", "-cq", "23", "-b:v", "8000k", "-maxrate", "10000k",
@@ -183,6 +198,7 @@ pub fn project_quality_args(
     use crate::project::EncodingPriority;
     let quality = settings.priority == EncodingPriority::Quality;
     let options: &[&str] = match encoder {
+        "h264_vulkan" | "hevc_vulkan" => &["-rc_mode", "vbr"],
         "h264_nvenc" | "hevc_nvenc" => {
             &["-preset", if quality { "p7" } else { "p1" }, "-rc", "vbr"]
         }
@@ -211,9 +227,41 @@ pub fn project_quality_args(
     with_output_gop(args)
 }
 
-/// Choose and probe an encoder for each codec/priority combination. Unlike the
-/// legacy selector, the probe uses exactly the options the render will use.
+/// Choose and probe an encoder for project/overlay exports, whose native plans
+/// can bind the Vulkan frame processor. Ordinary conversion callers use
+/// `material_encoder` and retain their existing composition path.
 pub async fn get_render_encoder(settings: &crate::project::RenderSettings) -> &'static str {
+    use crate::project::{EncodingPriority, VideoCodec};
+    static CACHES: [tokio::sync::OnceCell<&'static str>; 4] =
+        [const { tokio::sync::OnceCell::const_new() }; 4];
+    let hevc = settings.codec == VideoCodec::Hevc;
+    let index = usize::from(hevc) * 2 + usize::from(settings.priority == EncodingPriority::Quality);
+    CACHES[index]
+        .get_or_init(|| async {
+            #[cfg(all(feature = "vulkan-export", not(target_os = "macos")))]
+            {
+                if settings.priority == EncodingPriority::Speed {
+                    let candidate = if hevc { "hevc_vulkan" } else { "h264_vulkan" };
+                    if super::native_gpu::probe_encoder(candidate).await {
+                        return candidate;
+                    }
+                } else {
+                    log::info!(
+                        "Quality-priority export keeps the CPU compositor and its existing encoder profile"
+                    );
+                }
+            }
+            get_cpu_render_encoder(settings).await
+        })
+        .await
+}
+
+/// CPU composition with the existing hardware/software encoder profiles. This
+/// is selected before starting a plan when its source is outside the GPU's SDR
+/// colour contract, or when GPU initialization is unavailable.
+pub(super) async fn get_cpu_render_encoder(
+    settings: &crate::project::RenderSettings,
+) -> &'static str {
     use crate::project::{EncodingPriority, VideoCodec};
     static CACHES: [tokio::sync::OnceCell<&'static str>; 4] =
         [const { tokio::sync::OnceCell::const_new() }; 4];
@@ -242,6 +290,15 @@ pub async fn get_render_encoder(settings: &crate::project::RenderSettings) -> &'
 /// Optional settings keep old material callers on the old H.264 path.
 pub async fn material_encoder(settings: Option<&crate::project::RenderSettings>) -> &'static str {
     match settings {
+        Some(settings) => get_cpu_render_encoder(settings).await,
+        None => get_x264_encoder().await,
+    }
+}
+
+pub(super) async fn material_overlay_encoder(
+    settings: Option<&crate::project::RenderSettings>,
+) -> &'static str {
+    match settings {
         Some(settings) => get_render_encoder(settings).await,
         None => get_x264_encoder().await,
     }
@@ -255,6 +312,12 @@ pub fn native_video_options(
     bitrate: Option<NonZeroU32>,
     settings: Option<&crate::project::RenderSettings>,
 ) -> Result<ffmpeg_utils::VideoEncodeOptions, String> {
+    if is_vulkan_encoder(encoder)
+        && settings
+            .is_some_and(|settings| settings.priority == crate::project::EncodingPriority::Quality)
+    {
+        return Err("Vulkan export currently supports speed priority; use the existing quality backend for quality priority".into());
+    }
     let args = match settings {
         Some(settings) => project_quality_args(encoder, settings),
         None => quality_args_with_bitrate(encoder, bitrate),
@@ -262,6 +325,7 @@ pub fn native_video_options(
     let mut options = ffmpeg_utils::VideoEncodeOptions {
         encoder: encoder.to_owned(),
         filter: filter.map(str::to_owned),
+        frame_processor: is_vulkan_encoder(encoder),
         ..Default::default()
     };
     for pair in args.as_chunks::<2>().0 {
@@ -278,8 +342,8 @@ pub fn native_video_options(
                 )
             }
             "-tag:v" => options.tag = Some(value.to_owned()),
-            "-preset" | "-crf" | "-cq" | "-rc" | "-quality" | "-prio_speed" | "-rate_control"
-            | "-compression_level" => {
+            "-preset" | "-crf" | "-cq" | "-rc" | "-rc_mode" | "-quality" | "-prio_speed"
+            | "-rate_control" | "-compression_level" => {
                 options
                     .options
                     .insert(flag[1..].to_owned(), value.to_owned());
@@ -464,6 +528,20 @@ mod tests {
         "h264_vaapi",
         "h264_v4l2m2m",
     ];
+
+    #[test]
+    fn vulkan_speed_profile_preserves_export_limits_and_rejects_quality_downgrade() {
+        let mut settings = crate::project::RenderSettings::default();
+        let options =
+            super::native_video_options("hevc_vulkan", None, None, Some(&settings)).unwrap();
+        assert!(options.frame_processor);
+        assert_eq!(options.bit_rate, Some(10_000_000));
+        assert_eq!(options.gop, Some(120));
+        assert_eq!(options.tag.as_deref(), Some("hvc1"));
+        assert_eq!(super::output_format_filter("hevc_vulkan"), "format=nv12");
+        settings.priority = crate::project::EncodingPriority::Quality;
+        assert!(super::native_video_options("hevc_vulkan", None, None, Some(&settings)).is_err());
+    }
 
     #[test]
     fn composited_output_uses_nv12_only_for_hardware_encoders() {

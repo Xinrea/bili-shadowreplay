@@ -241,7 +241,13 @@ async fn prepare_images(danmus: &[DanmuEntry], directory: &Path) -> HashMap<Url,
         .await
 }
 
-fn overlay_graph(fps: f64, encoder: &str) -> String {
+pub(super) fn overlay_graph(fps: f64, encoder: &str) -> String {
+    if hwaccel::is_vulkan_encoder(encoder) {
+        return format!(
+            "[0:v]{},fps={fps},scale=out_color_matrix=bt709:out_range=tv,format=nv12[outv]\n",
+            hwaccel::H264_SCALE_PAD_FILTER,
+        );
+    }
     // Change FPS before compositing, not only at the encoder, so motion is
     // actually evaluated at 60+ FPS rather than duplicating already-drawn frames.
     let mut filter = format!(
@@ -405,7 +411,14 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
         .await
         .map_err(|error| format!("Failed to inspect source video: {error}"))?;
     let fps = danmu_output_fps(metadata.fps);
-    let encoder = hwaccel::material_encoder(settings).await;
+    let mut encoder = hwaccel::material_overlay_encoder(settings).await;
+    if hwaccel::is_vulkan_encoder(encoder) && !ffmpeg_utils::video_is_sdr_bt709(file).await? {
+        log::info!("Source colour metadata selects the existing CPU composition backend");
+        encoder = match settings {
+            Some(settings) => hwaccel::get_cpu_render_encoder(settings).await,
+            None => hwaccel::get_x264_encoder().await,
+        };
+    }
     let graph = overlay_graph(fps, encoder);
     let spec = OverlaySpec {
         input: native_overlay::RenderInput {
@@ -450,6 +463,7 @@ pub(super) fn overlay_media_plan(
     label: &str,
     video: ffmpeg_utils::VideoEncodeOptions,
 ) -> MediaPlan {
+    let gpu_composition = video.frame_processor;
     MediaPlan {
         inputs: vec![MediaInput::file(input)],
         outputs: vec![MediaOutput::file(output)],
@@ -474,20 +488,29 @@ pub(super) fn overlay_media_plan(
         ],
         filter_graph: Some(FilterGraphPlan {
             spec: graph,
-            inputs: vec![
-                GraphInput {
+            inputs: if gpu_composition {
+                vec![GraphInput {
                     input: 0,
                     selector: StreamSelector::FirstVideo,
                     label: "0:v".into(),
                     required: true,
-                },
-                GraphInput {
-                    input: 1,
-                    selector: StreamSelector::FirstVideo,
-                    label: "1:v".into(),
-                    required: true,
-                },
-            ],
+                }]
+            } else {
+                vec![
+                    GraphInput {
+                        input: 0,
+                        selector: StreamSelector::FirstVideo,
+                        label: "0:v".into(),
+                        required: true,
+                    },
+                    GraphInput {
+                        input: 1,
+                        selector: StreamSelector::FirstVideo,
+                        label: "1:v".into(),
+                        required: true,
+                    },
+                ]
+            },
             outputs: vec![GraphOutput {
                 label: label.into(),
                 kind: MediaKind::Video,
@@ -518,15 +541,44 @@ mod tests {
 
     #[tokio::test]
     async fn native_danmu_export_preserves_sixty_fps_and_copied_audio_without_cli() {
+        assert_danmu_export(None).await;
+    }
+
+    #[cfg(feature = "vulkan-export")]
+    #[tokio::test]
+    #[ignore = "Requires a Vulkan Video GPU and the FFmpeg 9 SDK"]
+    async fn native_gpu_danmu_export_keeps_real_video_audio_alpha_and_previous_output() {
+        for (codec, expected) in [
+            (crate::project::VideoCodec::H264, "h264_vulkan"),
+            (crate::project::VideoCodec::Hevc, "hevc_vulkan"),
+        ] {
+            let settings = crate::project::RenderSettings {
+                codec,
+                ..Default::default()
+            };
+            assert_eq!(hwaccel::get_render_encoder(&settings).await, expected);
+            eprintln!("native_gpu_danmu_export backend=vulkan encoder={expected}");
+            assert_danmu_export(Some(settings)).await;
+        }
+    }
+
+    async fn assert_danmu_export(settings: Option<crate::project::RenderSettings>) {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("source.mp4");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/video/subtitle-black.mp4");
         std::fs::copy(fixture, &source).unwrap();
+        if settings.is_some() {
+            assert!(ffmpeg_utils::video_is_sdr_bt709(&source).await.unwrap());
+        }
         let options = Danmu2AssOptions::default();
         let plan = DanmuRenderPlan {
             ass: super::super::subtitle_native::srt_to_ass(
                 "1\n00:00:00,000 --> 00:00:00,800\nNative\n",
-                "FontName=Arial,FontSize=36,PrimaryColour=&H000000FF",
+                if settings.is_some() {
+                    "FontName=Arial,FontSize=36,PrimaryColour=&H800000FF"
+                } else {
+                    "FontName=Arial,FontSize=36,PrimaryColour=&H000000FF"
+                },
             )
             .unwrap(),
             images: vec![],
@@ -538,7 +590,7 @@ mod tests {
             &options,
             None,
             None,
-            None,
+            settings.as_ref(),
         )
         .await
         .unwrap();
@@ -581,7 +633,7 @@ mod tests {
             &options,
             None,
             None,
-            None
+            settings.as_ref()
         )
         .await
         .is_err());
@@ -622,6 +674,15 @@ mod tests {
                 .count()
                 > 50
         );
+        if settings.is_some() {
+            assert!(
+                pixels
+                    .chunks_exact(4)
+                    .filter(|p| p[0] > p[1].saturating_add(30) && p[0] > p[2].saturating_add(30))
+                    .all(|p| p[0] < 190),
+                "50%-opaque red must be composited once over the source black"
+            );
+        }
     }
 
     fn emoji(url: &str) -> EmojiContent {

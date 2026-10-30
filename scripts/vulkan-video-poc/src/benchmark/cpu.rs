@@ -249,6 +249,7 @@ pub fn run(spec: &BenchmarkSpec, input: RenderInput, output: &Path) -> Result<Va
         plan,
         MediaBindings {
             raw_video: vec![(1, source)],
+            ..Default::default()
         },
         None,
     ));

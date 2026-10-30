@@ -1,8 +1,11 @@
 # Windows Vulkan Video PoC
 
 This standalone harness exercises the real overlay scene compositor and linked
-FFmpeg libraries without starting Tauri or the speech runtimes. It is an opt-in
-development path, not yet the application's export backend.
+FFmpeg libraries without starting Tauri or the speech runtimes. The application
+also exposes an opt-in `vulkan-export` backend through the existing native
+MediaPlan for real-video danmaku, project exports and uploads; see
+[native-overlay.md](../../docs/development/native-overlay.md). The standalone
+generated-background benchmark remains a separate subpipeline measurement.
 
 ```text
 ASS / images / fonts

@@ -1,6 +1,6 @@
 //! Read the linked SDK's identity and codec registry without launching tools.
 
-use std::{ffi::CStr, ptr};
+use std::{ffi::CStr, path::Path, ptr, sync::Arc};
 
 use ffmpeg_next::ffi;
 
@@ -38,6 +38,34 @@ pub fn available_video_encoders() -> Vec<String> {
     encoders
 }
 
+/// Conservative header preflight for the SDR BT.709 GPU compositor. Unknown
+/// tags retain the application's existing SDR interpretation. Explicit HDR or
+/// other primaries must use a pipeline that performs their colour conversion.
+/// The worker still validates actual filtered frames, including stream changes.
+pub async fn video_is_sdr_bt709(path: &Path) -> Result<bool, String> {
+    let path = path.to_owned();
+    crate::metadata::run_media(move |cancelled| {
+        let input = crate::metadata::open_input(&path, Arc::clone(&cancelled))?;
+        for stream in input.streams() {
+            let parameters = stream.parameters();
+            if parameters.medium() != ffmpeg_next::media::Type::Video
+                || stream.disposition().contains(ffmpeg_next::format::stream::Disposition::ATTACHED_PIC)
+            { continue; }
+            let raw = unsafe { &*parameters.as_ptr() };
+            if !sdr_bt709(raw.color_primaries, raw.color_trc) { return Ok(false); }
+        }
+        Ok(true)
+    }).await
+}
+
+fn sdr_bt709(primaries: ffi::AVColorPrimaries, transfer: ffi::AVColorTransferCharacteristic) -> bool {
+    matches!(primaries, ffi::AVColorPrimaries::AVCOL_PRI_UNSPECIFIED
+        | ffi::AVColorPrimaries::AVCOL_PRI_BT709)
+        && matches!(transfer,
+            ffi::AVColorTransferCharacteristic::AVCOL_TRC_UNSPECIFIED
+            | ffi::AVColorTransferCharacteristic::AVCOL_TRC_BT709)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -53,5 +81,15 @@ mod tests {
             let codec = ffmpeg_next::encoder::find_by_name(&name).unwrap();
             assert_eq!(codec.medium(), ffmpeg_next::media::Type::Video);
         }
+    }
+
+    #[test]
+    fn gpu_colour_preflight_keeps_hdr_and_other_primaries_on_the_cpu_path() {
+        use ffi::{AVColorPrimaries::*, AVColorTransferCharacteristic::*};
+        assert!(sdr_bt709(AVCOL_PRI_UNSPECIFIED, AVCOL_TRC_UNSPECIFIED));
+        assert!(sdr_bt709(AVCOL_PRI_BT709, AVCOL_TRC_BT709));
+        assert!(!sdr_bt709(AVCOL_PRI_BT2020, AVCOL_TRC_SMPTE2084));
+        assert!(!sdr_bt709(AVCOL_PRI_BT709, AVCOL_TRC_ARIB_STD_B67));
+        assert!(!sdr_bt709(AVCOL_PRI_SMPTE170M, AVCOL_TRC_BT709));
     }
 }

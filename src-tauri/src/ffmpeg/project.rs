@@ -73,8 +73,8 @@ const EPSILON: f64 = 1e-6;
 const RENDER_STAGE: &str = "导出切片";
 /// Part of every segment's key: change it with what a segment's graph draws,
 /// so that segments rendered before are not used again.
-/// 5: native overlays use premultiplied BGRA/RGB composition and hardware NV12.
-const RENDER_VERSION: u32 = 5;
+/// 6: native MediaPlan routes can compose real NV12 video on the Vulkan device.
+const RENDER_VERSION: u32 = 6;
 
 pub struct RenderClip {
     /// The same however the timeline is edited around the clip.
@@ -898,9 +898,10 @@ impl Render<'_> {
         );
         let _ = writeln!(
             key,
-            "native {} {}",
+            "native {} {} {}",
             job.generated_subtitle,
-            ::native_overlay::RENDERER_VERSION
+            ::native_overlay::RENDERER_VERSION,
+            hwaccel::render_backend_identity(self.encoder),
         );
         for part in &segment.parts {
             let clip = &job.clips[part.clip];
@@ -1081,7 +1082,8 @@ impl Render<'_> {
             }
         }
         let native = self.native_overlay(segment);
-        if native.is_some() {
+        let gpu = hwaccel::is_vulkan_encoder(self.encoder);
+        if !gpu && native.is_some() {
             filter.push_str(&native_overlay_filter(
                 &current,
                 segment.parts.len() + overlays.len(),
@@ -1089,7 +1091,11 @@ impl Render<'_> {
             ));
             current = "native_overlaid".to_string();
         }
-        let format = hwaccel::output_format_filter(self.encoder);
+        let format = if gpu {
+            "scale=out_color_matrix=bt709:out_range=tv,format=nv12"
+        } else {
+            hwaccel::output_format_filter(self.encoder)
+        };
         // Exactly as many frames as planned: `overlay` goes on as long as any
         // of its inputs does, and a file ending well before its clip has no
         // frames for the parts after its end. Then back to the segment's own
@@ -1147,8 +1153,10 @@ impl Render<'_> {
             }
         }
         let native_input = inputs.len();
-        let graph_inputs =
-            first_stream_graph_inputs(&filter, inputs.len() + usize::from(native.is_some()));
+        let graph_inputs = first_stream_graph_inputs(
+            &filter,
+            inputs.len() + usize::from(!gpu && native.is_some()),
+        );
         let mut video_options =
             hwaccel::native_video_options(self.encoder, None, None, Some(&job.render_settings))?;
         // The composition already ends with the selected format/hardware upload.
@@ -1217,7 +1225,16 @@ impl Render<'_> {
         log::info!("Render project segment {index}: {plan:?}");
         log::debug!("Project segment {index} filter graph:\n{filter}");
         let progress = ProgressMode::stage(RENDER_STAGE, ProgressTotal::Known(end - start));
-        if let Some(spec) = native {
+        if let Some(spec) = native.or_else(|| {
+            gpu.then(|| OverlaySpec {
+                input: ::native_overlay::RenderInput::default(),
+                width: 1920,
+                height: 1080,
+                fps,
+                start,
+                duration: end - start,
+            })
+        }) {
             run_overlay_plan(
                 plan,
                 spec,
@@ -1554,6 +1571,36 @@ async fn render_with_encoder_and_resources<R: ProgressReporterTrait>(
     job.render_settings.validate()?;
     if job.clips.is_empty() {
         return Err("时间轴上没有片段".to_string());
+    }
+    let mut encoder = encoder;
+    if hwaccel::is_vulkan_encoder(encoder) {
+        let mut sources = std::collections::HashSet::new();
+        sources.extend(
+            job.clips
+                .iter()
+                .filter(|clip| !clip.is_blank())
+                .map(|clip| clip.path.clone()),
+        );
+        let fps = output_fps(&job.clips, !job.danmus.is_empty());
+        let end = job
+            .clips
+            .iter()
+            .map(|clip| clip.planned_duration(fps))
+            .sum();
+        for shown in segment_overlays(&job.overlays, 0.0, end) {
+            if let OverlayLayer::Video(layer) = &shown.overlay.layer {
+                sources.insert(layer.path.clone());
+            }
+        }
+        for source in sources {
+            if !ffmpeg_utils::video_is_sdr_bt709(&source).await? {
+                log::info!(
+                    "Project source colour metadata selects the existing CPU composition backend"
+                );
+                encoder = hwaccel::get_cpu_render_encoder(&job.render_settings).await;
+                break;
+            }
+        }
     }
     let output = std::path::absolute(job.output).map_err(|error| error.to_string())?;
     // Assets live in the persistent cache or beside the export on a disk with
@@ -2574,6 +2621,20 @@ mod tests {
 
     #[tokio::test]
     async fn native_generated_segments_keep_exact_pcm_cache_and_previous_export_without_cli() {
+        assert_generated_segments("libx264").await;
+    }
+
+    #[cfg(feature = "vulkan-export")]
+    #[tokio::test]
+    #[ignore = "Requires a Vulkan Video GPU and the FFmpeg 9 SDK"]
+    async fn native_gpu_project_segments_keep_audio_cache_and_previous_export() {
+        for encoder in ["h264_vulkan", "hevc_vulkan"] {
+            eprintln!("native_gpu_project backend=vulkan encoder={encoder}");
+            assert_generated_segments(encoder).await;
+        }
+    }
+
+    async fn assert_generated_segments(encoder: &'static str) {
         let directory = tempfile::tempdir().unwrap();
         let cache = directory.path().join("cache [项目]'s");
         let output = directory.path().join("export.mp4");
@@ -2587,7 +2648,11 @@ mod tests {
             danmus: Vec::new(),
             danmu_options: Danmu2AssOptions::default(),
             render_settings: crate::project::RenderSettings {
-                codec: crate::project::VideoCodec::H264,
+                codec: if encoder == "hevc_vulkan" {
+                    crate::project::VideoCodec::Hevc
+                } else {
+                    crate::project::VideoCodec::H264
+                },
                 ..Default::default()
             },
             output: &output,
@@ -2597,7 +2662,7 @@ mod tests {
             seconds: 0.1,
             parts: 16,
         };
-        let first = render_with_encoder(&NoopReporter, &project, limits, "libx264")
+        let first = render_with_encoder(&NoopReporter, &project, limits, encoder)
             .await
             .unwrap();
         assert_eq!(
@@ -2609,7 +2674,14 @@ mod tests {
         );
         let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
         assert_eq!((metadata.width, metadata.height), (1920, 1080));
-        assert_eq!(metadata.video_codec, "h264");
+        assert_eq!(
+            metadata.video_codec,
+            if encoder == "hevc_vulkan" {
+                "hevc"
+            } else {
+                "h264"
+            }
+        );
         assert_eq!(metadata.audio_codec, "aac");
         assert!((metadata.duration - 0.2).abs() < 1e-6);
         let mut wavs = 0;
@@ -2628,7 +2700,7 @@ mod tests {
             }
         }
         assert_eq!(wavs, 2);
-        let again = render_with_encoder(&NoopReporter, &project, limits, "libx264")
+        let again = render_with_encoder(&NoopReporter, &project, limits, encoder)
             .await
             .unwrap();
         assert_eq!(
@@ -2643,7 +2715,7 @@ mod tests {
         missing.path = directory.path().join("missing.wav");
         project.sounds.push(missing);
         assert!(
-            render_with_encoder(&NoopReporter, &project, limits, "libx264")
+            render_with_encoder(&NoopReporter, &project, limits, encoder)
                 .await
                 .is_err()
         );
@@ -2655,6 +2727,20 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_native_project_cleans_worker_assets_and_keeps_previous_export_without_cli() {
+        assert_cancelled_native_project("libx264").await;
+    }
+
+    #[cfg(feature = "vulkan-export")]
+    #[tokio::test]
+    #[ignore = "Requires a Vulkan Video GPU and the FFmpeg 9 SDK"]
+    async fn native_gpu_project_cancellation_keeps_previous_export_and_releases_assets() {
+        for encoder in ["h264_vulkan", "hevc_vulkan"] {
+            eprintln!("native_gpu_cancel backend=vulkan encoder={encoder}");
+            assert_cancelled_native_project(encoder).await;
+        }
+    }
+
+    async fn assert_cancelled_native_project(encoder: &'static str) {
         #[derive(Clone)]
         struct PauseOnProgress(Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>);
         #[async_trait]
@@ -2696,7 +2782,7 @@ mod tests {
                 &PauseOnProgress(Arc::new(Mutex::new(Some(ready)))),
                 &project,
                 SEGMENT_LIMITS,
-                "libx264",
+                encoder,
             )
             .await
         });

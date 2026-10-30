@@ -33,7 +33,23 @@ node scripts/prepare-windows-skia.mjs --vulkan
 
 该选项选择官方 Skia 0.82 `textlayout-vulkan` 预编译包，校验下载 SHA-256、包内版本和 feature key 后执行相同的 ICU 符号处理。默认调用仍准备 `textlayout` CPU 包。它只准备链接依赖，Vulkan 设备与编码能力由运行时探测；源码构建时的 Skia feature 必须与所选压缩包一致。
 
-Windows 的 Skia GPU → FFmpeg Vulkan Video 独立验证入口位于仓库的 [`scripts/vulkan-video-poc`](https://github.com/Xinrea/bili-shadowreplay/blob/main/scripts/vulkan-video-poc/README.md)。它复用真实弹幕渲染器，在同一个 Vulkan 设备上完成绘制、NV12 转换和 H.264/HEVC 硬件编码，并提供 API 跟踪、输出视频与画面内容的独立校验；文档包含已验证结果和 FFmpeg SDK 尚存的退出清理问题。该 PoC 尚未接入正式导出路径。
+## Windows：真实视频 GPU 导出
+
+使用 `vulkan-export` Cargo feature 构建应用，将 GPU 合成接到正式弹幕压制、项目导出和投稿的原生 `MediaPlan` 中：
+
+```powershell
+$prepared = node scripts/prepare-windows-skia.mjs --vulkan
+$env:SKIA_BINARIES_URL = ($prepared | Where-Object { $_ -like 'SKIA_BINARIES_URL=*' }) -replace '^SKIA_BINARIES_URL=', ''
+yarn tauri build --features vulkan-export
+```
+
+现有原生解码和项目滤镜图负责剪辑、缩放、静态图层与时间轴，输出 NV12 视频底图；底图上传一次，Skia 在共享 Vulkan 设备上绘制预乘透明叠层，libplacebo 在 GPU 合成并输出 NV12 硬件帧，随后由原 `MediaPlan` 编码和封装。音频复制/混音、进度、取消、临时文件发布及资源 lease 继续使用现有实现，没有 rawvideo 管道或外部 FFmpeg 进程。
+
+速度优先导出先用一个小样本实际渲染、编码和解码检查蓝色底图与半透明红色叠层，成功后才选择 Vulkan。质量优先保留已有编码策略；明确不符合 SDR BT.709 范围的源在启动前选择 CPU 合成。执行中的错误不会静默重跑。CPU 与 Vulkan 分片使用不同缓存身份。macOS 暂不自动选择该后端。
+
+需要匹配的 FFmpeg 9 开发 SDK、`libplacebo`、Vulkan Video 编码器与驱动。FFmpeg 9.0.2 仍有已知的 Vulkan 编码器退出图片视图清理问题；源码回补及校验说明见 [`scripts/ffmpeg-sdk-patches`](../../scripts/ffmpeg-sdk-patches/README.md)。功能测试通过不等于旧 SDK 的 Vulkan validation 全量无错误。实际运行与验证记录见独立工具的 [README](../../scripts/vulkan-video-poc/README.md)。
+
+Windows 的 Skia GPU → FFmpeg Vulkan Video 独立验证入口位于仓库的 [`scripts/vulkan-video-poc`](https://github.com/Xinrea/bili-shadowreplay/blob/main/scripts/vulkan-video-poc/README.md)。它与应用共享 Vulkan 合成器，保留生成底图的独立性能基线，并提供 API 跟踪、输出视频与画面内容的独立校验。正式导出回归记录见 [Windows 验证回执](../../scripts/vulkan-video-poc/validation/windows-production-export-2026-10-30.json)。
 
 ## Linux：Ubuntu 24.04 起
 

@@ -1,0 +1,110 @@
+{
+  "recorded_on": "2026-10-30",
+  "scope": "Windows production Rust MediaPlan export functions, built headless with the optional vulkan-export feature. Real video is decoded on the CPU and uploaded; Skia composition and FFmpeg Vulkan Video encoding do not read rendered images back to the CPU. Multi-frame asynchronous rendering is not included.",
+  "source": {
+    "base_commit": "03359e49",
+    "complete_sync_manifest_sha256": "a6e8cb25de144426fbf703b20dc3dee0187f555f29c77fc796f31440d906de8f",
+    "verified_files": 978,
+    "executable_sha256": "df35ba2e65ade08ad75a2b6daccd43b35799ee3ecfb0d9cfade9f162e45c68aa",
+    "implementation_sha256": {
+      "src-tauri/crates/ffmpeg_utils/src/vulkan_video.rs": "66aa900f4593ec4792595f7c0e8be67b2e4d9d488b3b5743f49e0d191b6b3af4",
+      "src-tauri/crates/ffmpeg_utils/src/vulkan_video/compositor.rs": "0cec1e98bbe8cadf4c09d817ef19c222cc32c26be3d300645ac60a165169b681",
+      "src-tauri/src/ffmpeg/native_gpu.rs": "d1b2710edd225b623c781b01ebdab210b1930ca364335ecd784f4581d21e2886"
+    }
+  },
+  "environment": {
+    "platform": "Windows x64",
+    "gpu": "NVIDIA GeForce RTX 5070",
+    "gpu_driver": "617.42",
+    "rust": "1.90.0",
+    "node": "22.16.0",
+    "skia": "0.82.0 textlayout-vulkan",
+    "ffmpeg": "Gyan 9.0.2 full_build-shared",
+    "process_integrity_sid": "S-1-16-8192",
+    "ffmpeg_dll_sha256": {
+      "avformat-63.dll": "360e66109b2ce3f02d56cd940e625a6909304eea1f4d0fcbbbb2d40d74308ee0",
+      "avcodec-63.dll": "4d458a276fda363709ed2ac4ad14aea122c536e61919feebd919d5f8490be7a9",
+      "swresample-7.dll": "1f2a0bdca315f1a05fe398e7a0d97db8d0e34ba2a86ec59303bf32bbd9430123",
+      "avutil-61.dll": "9230e42b6b8e1fa20ec83af1eb4c4b2ae90b0c8d7c29093369250eed562372df",
+      "avfilter-12.dll": "4ec6eb2db944740c364d93b29d91c9137beb38d09e923f6ed14f31aa039851de",
+      "swscale-10.dll": "af91db7f45644157469a110438a8c648314927ec83e334d4cacac3870d99fabe"
+    }
+  },
+  "regression": {
+    "command": "cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --features headless,vulkan-export native_gpu_ -- --ignored --nocapture --test-threads=1",
+    "passed": 5,
+    "failed": 0,
+    "elapsed_seconds": 18.56,
+    "cases": [
+      "danmu real-video background, subtitle alpha, copied audio, and preserving the previous output",
+      "complete capability probe: blue background and non-linear half-transparent red overlay in all three compressed frames",
+      "moving-video full decoded frame/PTS grid, copied audio, matching temporal samples, and changing content",
+      "project cancellation preserves the previous output and releases resources",
+      "project segments preserve audio/cache behavior and the previous output"
+    ],
+    "moving_video": {
+      "h264_vulkan": {
+        "encoded_frames": 361,
+        "unique_decoded_frames": 360
+      },
+      "hevc_vulkan": {
+        "encoded_frames": 361,
+        "unique_decoded_frames": 357
+      }
+    },
+    "renderer_pixel_readback_nanoseconds": 0,
+    "libplacebo_render_errors": 0
+  },
+  "vulkan_validation": {
+    "tests_passed": 5,
+    "elapsed_seconds": 21.5666255,
+    "layer_version": "1.4.366",
+    "layer_dll_sha256": "f05bdd58e2f8247fb64b0e0267aeff9c0bab925b7de4c190f8594ae1eb2c31df",
+    "core_validation": true,
+    "synchronization_validation": true,
+    "validation_clean": false,
+    "validation_error_counts": {
+      "VUID-vkDestroyDevice-device-05137": 12
+    },
+    "other_vuid_or_sync_hazard_identifiers": [],
+    "known_sdk_issue": "The unmodified FFmpeg 9.0.2 baseline retains queued Vulkan encoder image views at device destruction. Upstream FFmpeg commit ddfa842088cd86bd48bc4533f10a4b5badcbd02d fixes this; the backport source patch is archived in scripts/ffmpeg-sdk-patches. A matching replacement SDK has not yet passed this run."
+  },
+  "vulkan_api_capture": {
+    "tests_passed": 5,
+    "elapsed_seconds": 21.1824463,
+    "layer_version": "1.4.309",
+    "layer_dll_sha256": "774aca0e7ccc5baaff0473e2707d6325f892ad8a0269da40618c8f85f696e17b",
+    "transport": "Complete process stdout, including all Vulkan instance/device lifetimes; independent verify.py ignores non-API test lines.",
+    "trace": {
+      "sha256": "b2fb21981f964f3310cf90ea3378a289f5933e1c6fb454fe5f3ae347844160d1",
+      "bytes": 37183464,
+      "recorded_calls": 355071,
+      "draw_records": 8146,
+      "queue_submit_records": 17572,
+      "image_readback_records": 0,
+      "command_counts": {
+        "vkCmdCopyBufferToImage": 1836,
+        "vkCmdDraw": 8138,
+        "vkCmdDrawIndexed": 8,
+        "vkCmdEncodeVideoKHR": 878,
+        "vkCreateDevice": 14,
+        "vkDestroyDevice": 14,
+        "vkMapMemory": 120,
+        "vkQueueSubmit": 2646,
+        "vkQueueSubmit2": 14926
+      },
+      "scope": "Recorded application Vulkan calls; buffer mapping and opaque driver internals are not classified as image readback"
+    },
+    "readback_scope": "Zero recorded image-to-host Vulkan copy commands. Buffer mappings include encoded bitstream access; CPU-decoded base-frame and texture uploads remain. This does not establish opaque driver internals or GPU video decoding."
+  },
+  "workspace_isolation": {
+    "new_validation_source": true,
+    "original_windows_checkout_unchanged": true,
+    "original_checkout_preexisting_dirty_files": 3
+  },
+  "limitations": [
+    "Optional feature; GUI packaging and default release SDK selection are outside this headless validation.",
+    "The known FFmpeg 9.0.2 cleanup error prevents claiming a clean validation-layer run.",
+    "The elapsed times are correctness-test durations, not an export performance benchmark."
+  ]
+}

@@ -5,8 +5,10 @@ repos:
     rev: v6.0.0
     hooks:
       - id: trailing-whitespace
+        # Preserve the pinned upstream patch verbatim, including blank context.
+        exclude: '^scripts/ffmpeg-sdk-patches/0001-vulkan-encode-free-queued-picture-views\.patch$'
       - id: end-of-file-fixer
-        exclude: '(\.json$|public/|^src-tauri/crates/recorder/tests/fixtures/probe-[^/]+\.ts$)'
+        exclude: '(\.json$|public/|^src-tauri/crates/recorder/tests/fixtures/probe-[^/]+\.ts$|^scripts/ffmpeg-sdk-patches/0001-vulkan-encode-free-queued-picture-views\.patch$)'
 
   - repo: local
     hooks:

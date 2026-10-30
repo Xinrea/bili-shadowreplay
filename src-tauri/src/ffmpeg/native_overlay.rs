@@ -123,6 +123,11 @@ pub async fn run_overlay_plan<R: ProgressReporterTrait>(
     context: impl Into<String>,
     reporter: Option<&R>,
 ) -> Result<MediaJobResult, String> {
+    spec.layout()?;
+    #[cfg(feature = "vulkan-export")]
+    if super::native_gpu::uses_vulkan(&plan) {
+        return super::native_gpu::run_overlay_plan(plan, spec, progress, context, reporter).await;
+    }
     let profile = log::log_enabled!(log::Level::Debug);
     let (output, stats) = run_overlay_inner(
         plan,
@@ -262,6 +267,7 @@ async fn run_overlay_inner<R: ProgressReporterTrait>(
         plan,
         MediaBindings {
             raw_video: vec![(input_index, input)],
+            ..Default::default()
         },
         progress,
         context.clone(),

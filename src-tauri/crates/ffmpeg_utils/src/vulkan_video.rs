@@ -5,7 +5,10 @@
 //! Vulkan Video encoder consumes that hardware pool. No pixel mapping, upload,
 //! download or software-frame input is exposed by this module.
 
+mod compositor;
 mod sync;
+
+pub use compositor::{VulkanCompositor, VulkanCompositorStats};
 
 use std::{
     cell::Cell,
@@ -262,6 +265,19 @@ struct FramePool {
 }
 impl FramePool {
     fn new(device: VulkanDevice, options: &VulkanVideoOptions) -> Result<Rc<Self>, String> {
+        Self::new_format(
+            device,
+            options,
+            ffi::AVPixelFormat::AV_PIX_FMT_RGBA,
+            0x4 | 0x8 | 0x10,
+        )
+    }
+    fn new_format(
+        device: VulkanDevice,
+        options: &VulkanVideoOptions,
+        format: ffi::AVPixelFormat,
+        usage: u32,
+    ) -> Result<Rc<Self>, String> {
         let raw = unsafe { ffi::av_hwframe_ctx_alloc(device.0.raw.0) };
         if raw.is_null() {
             return Err("Allocate Vulkan RGB frame pool".into());
@@ -269,14 +285,21 @@ impl FramePool {
         let raw = BufferRef(raw);
         let ctx = unsafe { &mut *(*raw.0).data.cast::<ffi::AVHWFramesContext>() };
         ctx.format = ffi::AVPixelFormat::AV_PIX_FMT_VULKAN;
-        ctx.sw_format = ffi::AVPixelFormat::AV_PIX_FMT_RGBA;
+        ctx.sw_format = format;
         ctx.width = options.width as i32;
         ctx.height = options.height as i32;
-        ctx.initial_pool_size = 3;
+        // NV12 flags are finalized after pool initialization and before its
+        // first upload. Keep that pool dynamic so init cannot preallocate an
+        // image with the driver's unsupported alias/profile combination.
+        ctx.initial_pool_size = if format == ffi::AVPixelFormat::AV_PIX_FMT_NV12 {
+            0
+        } else {
+            3
+        };
         let vk = unsafe { &mut *ctx.hwctx.cast::<ffi::AVVulkanFramesContext>() };
         // SAMPLED | STORAGE | COLOR_ATTACHMENT. FFmpeg also supplies transfer
         // usages for its own layout transitions; this code never copies pixels.
-        vk.usage = 0x4 | 0x8 | 0x10;
+        vk.usage = usage as _;
         unsafe {
             check(
                 ffi::av_hwframe_ctx_init(raw.0),
@@ -354,6 +377,140 @@ impl Drop for VulkanFrameLease {
     }
 }
 
+fn acquire_pool_frame(
+    pool: &Rc<FramePool>,
+    options: &VulkanVideoOptions,
+    pts: i64,
+) -> Result<VulkanFrameLease, String> {
+    if pool.active_lease.get() {
+        return Err("Submit or drop the active Vulkan frame lease before acquiring another".into());
+    }
+    let mut frame = frame::Video::empty();
+    unsafe {
+        check(
+            ffi::av_hwframe_get_buffer(pool.raw.0, frame.as_mut_ptr(), 0),
+            "Acquire Vulkan RGB frame",
+        )?;
+    }
+    let vk = unsafe { &*(*frame.as_ptr()).data[0].cast::<ffi::AVVkFrame>() };
+    if vk.img[0] == 0 || vk.img[1] != 0 {
+        return Err("Expected one RGBA Vulkan image".into());
+    }
+    let image = VulkanImageInfo {
+        image: vk.img[0],
+        memory: vk.mem[0],
+        memory_offset: vk.offset[0] as u64,
+        memory_size: vk.size[0] as u64,
+        layout: vk.layout[0] as u32,
+        format: pool.format,
+        usage: pool.usage,
+        queue_family: vk.queue_family[0],
+        sharing_mode: u32::from(vk.queue_family[0] == u32::MAX),
+    };
+    pool.lock_queue();
+    unsafe {
+        let raw = &mut *frame.as_mut_ptr();
+        raw.pts = pts;
+        raw.duration = 1;
+        raw.time_base = options.rate().invert().into();
+        raw.sample_aspect_ratio = ffi::AVRational { num: 1, den: 1 };
+        raw.colorspace = ffi::AVColorSpace::AVCOL_SPC_RGB;
+        raw.color_range = ffi::AVColorRange::AVCOL_RANGE_JPEG;
+        raw.color_primaries = ffi::AVColorPrimaries::AVCOL_PRI_BT709;
+        raw.color_trc = ffi::AVColorTransferCharacteristic::AVCOL_TRC_IEC61966_2_1;
+        // The renderer composes onto an opaque background before encoding.
+        raw.alpha_mode = ffi::AVAlphaMode::AVALPHA_MODE_PREMULTIPLIED;
+    }
+    let mut lease = VulkanFrameLease {
+        frame,
+        pool: pool.clone(),
+        image,
+        wait: Duration::ZERO,
+    };
+    pool.active_lease.set(true);
+    let started = Instant::now();
+    // A device-side semaphore wait plus a real image barrier establishes
+    // visibility across FFmpeg's compute/transfer and Skia's graphics queue.
+    // The host wait only serializes command-buffer reuse in this first PoC.
+    let vk = lease.vk_frame();
+    let next = pool.device.0.sync.transition(
+        vk.img[0],
+        vk.sem[0],
+        vk.sem_value[0],
+        vk.layout[0] as u32,
+        2,
+        vk.access[0],
+    )?;
+    // Skia m133 infers HOST_WRITE access from GENERAL images. Supply a
+    // render-attachment layout to keep its inferred source access valid
+    // for graphics stages without introducing a host access or copy.
+    vk.layout[0] = 2; // VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+    vk.access[0] = 0x80 | 0x100; // COLOR_ATTACHMENT_READ | WRITE
+    vk.sem_value[0] = next;
+    pool.device.0.sync.wait(vk.sem[0], next)?;
+    lease.image.layout = 2;
+    lease.wait = started.elapsed();
+    Ok(lease)
+}
+
+fn complete_pool_frame(
+    pool: &Rc<FramePool>,
+    mut lease: VulkanFrameLease,
+    state: VulkanImageState,
+) -> Result<(frame::Video, Duration), String> {
+    if !Rc::ptr_eq(&lease.pool, pool) {
+        return Err("Foreign Vulkan frame lease".into());
+    }
+    if state.queue_family != lease.image.queue_family {
+        return Err("Renderer changed Vulkan image ownership unexpectedly".into());
+    }
+    let mut gpu_wait = lease.wait;
+    let fc = pool.context();
+    let hw = unsafe { &*(*fc).hwctx.cast::<ffi::AVVulkanFramesContext>() };
+    let vk = lease.vk_frame();
+    if let Some(lock) = hw.lock_frame {
+        unsafe { lock(fc, vk) };
+    }
+    vk.layout[0] = state.layout as i32;
+    vk.access[0] = 0x100 | 0x10000; // COLOR_ATTACHMENT_WRITE | MEMORY_WRITE
+    let signalled = pool.device.0.sync.transition(
+        vk.img[0],
+        vk.sem[0],
+        vk.sem_value[0],
+        state.layout,
+        1,
+        vk.access[0],
+    );
+    if let Ok(next) = signalled {
+        vk.sem_value[0] = next;
+        vk.layout[0] = 1;
+        vk.access[0] = 0x8000 | 0x10000;
+    }
+    let semaphore = vk.sem[0];
+    if let Some(unlock) = hw.unlock_frame {
+        unsafe { unlock(fc, vk) };
+    }
+    let next = signalled?;
+    let wait = Instant::now();
+    pool.device.0.sync.wait(semaphore, next)?;
+    gpu_wait += wait.elapsed();
+    lease.unlock_queue();
+    Ok((reference_video_frame(&lease.frame)?, gpu_wait))
+}
+
+/// `Video::clone` allocates a software pixel buffer and does not retain Vulkan
+/// frames. Use checked AVFrame references when sharing a hardware image.
+fn reference_video_frame(source: &frame::Video) -> Result<frame::Video, String> {
+    let mut frame = frame::Video::empty();
+    unsafe {
+        check(
+            ffi::av_frame_ref(frame.as_mut_ptr(), source.as_ptr()),
+            "Retain Vulkan hardware frame",
+        )?;
+    }
+    Ok(frame)
+}
+
 pub struct VulkanVideoSession {
     encoder: Option<codec::encoder::video::Encoder>,
     graph: Option<filter::Graph>,
@@ -388,7 +545,7 @@ impl VulkanVideoSession {
         }
         let device = VulkanDevice::new(&options.device_selector)?;
         let pool = FramePool::new(device.clone(), &options)?;
-        let mut graph = build_graph(&device, &pool, &options)?;
+        let mut graph = build_graph(&device, &pool, None, &options)?;
         prepare_nv12_encode_pool(&mut graph)?;
         let encoder = open_encoder(&mut graph, &device, &options)?;
         let parent = target
@@ -436,80 +593,11 @@ impl VulkanVideoSession {
 
     pub fn acquire_frame(&mut self, pts: i64) -> Result<VulkanFrameLease, String> {
         self.check_cancelled()?;
-        if self.pool.active_lease.get() {
-            return Err(
-                "Submit or drop the active Vulkan frame lease before acquiring another".into(),
-            );
-        }
         if pts != self.stats.submitted_frames as i64 {
             return Err("Vulkan frames must be supplied with consecutive frame-index PTS".into());
         }
-        let mut frame = frame::Video::empty();
-        unsafe {
-            check(
-                ffi::av_hwframe_get_buffer(self.pool.raw.0, frame.as_mut_ptr(), 0),
-                "Acquire Vulkan RGB frame",
-            )?;
-        }
-        let vk = unsafe { &*(*frame.as_ptr()).data[0].cast::<ffi::AVVkFrame>() };
-        if vk.img[0] == 0 || vk.img[1] != 0 {
-            return Err("Expected one RGBA Vulkan image".into());
-        }
-        let image = VulkanImageInfo {
-            image: vk.img[0],
-            memory: vk.mem[0],
-            memory_offset: vk.offset[0] as u64,
-            memory_size: vk.size[0] as u64,
-            layout: vk.layout[0] as u32,
-            format: self.pool.format,
-            usage: self.pool.usage,
-            queue_family: vk.queue_family[0],
-            sharing_mode: u32::from(vk.queue_family[0] == u32::MAX),
-        };
-        self.pool.lock_queue();
-        unsafe {
-            let raw = &mut *frame.as_mut_ptr();
-            raw.pts = pts;
-            raw.duration = 1;
-            raw.time_base = self.options.rate().invert().into();
-            raw.sample_aspect_ratio = ffi::AVRational { num: 1, den: 1 };
-            raw.colorspace = ffi::AVColorSpace::AVCOL_SPC_RGB;
-            raw.color_range = ffi::AVColorRange::AVCOL_RANGE_JPEG;
-            raw.color_primaries = ffi::AVColorPrimaries::AVCOL_PRI_BT709;
-            raw.color_trc = ffi::AVColorTransferCharacteristic::AVCOL_TRC_IEC61966_2_1;
-            // The renderer composes onto an opaque background before encoding.
-            raw.alpha_mode = ffi::AVAlphaMode::AVALPHA_MODE_PREMULTIPLIED;
-        }
-        let mut lease = VulkanFrameLease {
-            frame,
-            pool: self.pool.clone(),
-            image,
-            wait: Duration::ZERO,
-        };
-        self.pool.active_lease.set(true);
-        let started = Instant::now();
-        // A device-side semaphore wait plus a real image barrier establishes
-        // visibility across FFmpeg's compute/transfer and Skia's graphics queue.
-        // The host wait only serializes command-buffer reuse in this first PoC.
-        let vk = lease.vk_frame();
-        let next = self.device.0.sync.transition(
-            vk.img[0],
-            vk.sem[0],
-            vk.sem_value[0],
-            vk.layout[0] as u32,
-            2,
-            vk.access[0],
-        )?;
-        // Skia m133 infers HOST_WRITE access from GENERAL images. Supply a
-        // render-attachment layout to keep its inferred source access valid
-        // for graphics stages without introducing a host access or copy.
-        vk.layout[0] = 2; // VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-        vk.access[0] = 0x80 | 0x100; // COLOR_ATTACHMENT_READ | WRITE
-        vk.sem_value[0] = next;
-        self.device.0.sync.wait(vk.sem[0], next)?;
-        lease.image.layout = 2;
-        lease.wait = started.elapsed();
-        self.images.insert(image.image);
+        let lease = acquire_pool_frame(&self.pool, &self.options, pts)?;
+        self.images.insert(lease.image.image);
         self.stats.unique_rgb_images = self.images.len();
         Ok(lease)
     }
@@ -521,48 +609,13 @@ impl VulkanVideoSession {
     /// from this session. The initial PoC uses a synchronous GPU flush.
     pub unsafe fn submit_frame(
         &mut self,
-        mut lease: VulkanFrameLease,
+        lease: VulkanFrameLease,
         state: VulkanImageState,
     ) -> Result<(), String> {
         self.check_cancelled()?;
-        if !Rc::ptr_eq(&lease.pool, &self.pool) {
-            return Err("Foreign Vulkan frame lease".into());
-        }
-        if state.queue_family != lease.image.queue_family {
-            return Err("Renderer changed Vulkan image ownership unexpectedly".into());
-        }
-        self.stats.gpu_wait += lease.wait;
         let started = Instant::now();
-        let fc = self.pool.context();
-        let hw = unsafe { &*(*fc).hwctx.cast::<ffi::AVVulkanFramesContext>() };
-        let vk = lease.vk_frame();
-        if let Some(lock) = hw.lock_frame {
-            unsafe { lock(fc, vk) };
-        }
-        vk.layout[0] = state.layout as i32;
-        vk.access[0] = 0x100 | 0x10000; // COLOR_ATTACHMENT_WRITE | MEMORY_WRITE
-        let signalled = self.device.0.sync.transition(
-            vk.img[0],
-            vk.sem[0],
-            vk.sem_value[0],
-            state.layout,
-            1,
-            vk.access[0],
-        );
-        if let Ok(next) = signalled {
-            vk.sem_value[0] = next;
-            vk.layout[0] = 1;
-            vk.access[0] = 0x8000 | 0x10000;
-        }
-        let semaphore = vk.sem[0];
-        if let Some(unlock) = hw.unlock_frame {
-            unsafe { unlock(fc, vk) };
-        }
-        let next = signalled?;
-        let wait = Instant::now();
-        self.device.0.sync.wait(semaphore, next)?;
-        self.stats.gpu_wait += wait.elapsed();
-        lease.unlock_queue();
+        let (frame, wait) = complete_pool_frame(&self.pool, lease, state)?;
+        self.stats.gpu_wait += wait;
         unsafe {
             let source = self
                 .graph
@@ -573,7 +626,7 @@ impl VulkanVideoSession {
             check(
                 ffi::av_buffersrc_add_frame_flags(
                     source.as_ptr() as *mut _,
-                    lease.frame.as_ptr() as *mut _,
+                    frame.as_ptr() as *mut _,
                     ffi::AV_BUFFERSRC_FLAG_KEEP_REF as i32,
                 ),
                 "Feed Vulkan frame",
@@ -682,26 +735,19 @@ impl VulkanVideoSession {
     }
 }
 
-fn build_graph(
-    device: &VulkanDevice,
+fn add_vulkan_source(
+    graph: &mut filter::Graph,
     pool: &FramePool,
     options: &VulkanVideoOptions,
-) -> Result<filter::Graph, String> {
-    let mut graph = filter::Graph::new();
+    name: &CStr,
+    rgb: bool,
+) -> Result<(), String> {
     unsafe {
-        (*graph.as_mut_ptr()).nb_threads = 1;
-        // Reject any graph negotiation that would insert software scaling or
-        // another implicit format converter into this GPU-only path.
-        ffi::avfilter_graph_set_auto_convert(
-            graph.as_mut_ptr(),
-            ffi::AVFILTER_AUTO_CONVERT_NONE as u32,
-        );
         let buffer = ffi::avfilter_get_by_name(c"buffer".as_ptr());
         if buffer.is_null() {
             return Err("FFmpeg build lacks the buffer filter".into());
         }
-        let source =
-            ffi::avfilter_graph_alloc_filter(graph.as_mut_ptr(), buffer, c"gpu_in".as_ptr());
+        let source = ffi::avfilter_graph_alloc_filter(graph.as_mut_ptr(), buffer, name.as_ptr());
         if source.is_null() {
             return Err("Allocate Vulkan buffer source".into());
         }
@@ -716,9 +762,21 @@ fn build_graph(
         (*params).frame_rate = options.rate().into();
         (*params).sample_aspect_ratio = ffi::AVRational { num: 1, den: 1 };
         (*params).hw_frames_ctx = pool.raw.0;
-        (*params).color_space = ffi::AVColorSpace::AVCOL_SPC_RGB;
-        (*params).color_range = ffi::AVColorRange::AVCOL_RANGE_JPEG;
-        (*params).alpha_mode = ffi::AVAlphaMode::AVALPHA_MODE_PREMULTIPLIED;
+        (*params).color_space = if rgb {
+            ffi::AVColorSpace::AVCOL_SPC_RGB
+        } else {
+            ffi::AVColorSpace::AVCOL_SPC_BT709
+        };
+        (*params).color_range = if rgb {
+            ffi::AVColorRange::AVCOL_RANGE_JPEG
+        } else {
+            ffi::AVColorRange::AVCOL_RANGE_MPEG
+        };
+        (*params).alpha_mode = if rgb {
+            ffi::AVAlphaMode::AVALPHA_MODE_PREMULTIPLIED
+        } else {
+            ffi::AVAlphaMode::AVALPHA_MODE_UNSPECIFIED
+        };
         let result = ffi::av_buffersrc_parameters_set(source, params);
         ffi::av_free(params.cast());
         check(result, "Set Vulkan buffer source parameters")?;
@@ -726,6 +784,29 @@ fn build_graph(
             ffi::avfilter_init_str(source, ptr::null()),
             "Initialize Vulkan buffer source",
         )?;
+    }
+    Ok(())
+}
+
+fn build_graph(
+    device: &VulkanDevice,
+    pool: &FramePool,
+    base_pool: Option<&FramePool>,
+    options: &VulkanVideoOptions,
+) -> Result<filter::Graph, String> {
+    let mut graph = filter::Graph::new();
+    unsafe {
+        (*graph.as_mut_ptr()).nb_threads = 1;
+        // Reject any graph negotiation that would insert software scaling or
+        // another implicit format converter into this GPU-only path.
+        ffi::avfilter_graph_set_auto_convert(
+            graph.as_mut_ptr(),
+            ffi::AVFILTER_AUTO_CONVERT_NONE as u32,
+        );
+    }
+    add_vulkan_source(&mut graph, pool, options, c"gpu_in", true)?;
+    if let Some(base_pool) = base_pool {
+        add_vulkan_source(&mut graph, base_pool, options, c"video_in", false)?;
     }
     // libplacebo imports its device in its init callback. Graph::add would
     // initialize first and create a second VkDevice before we can attach the
@@ -744,12 +825,16 @@ fn build_graph(
         if (*context).hw_device_ctx.is_null() {
             return Err("Retain shared libplacebo Vulkan device".into());
         }
+        let args = if base_pool.is_some() {
+            // Both sources already use the output geometry and SDR BT.709 clock.
+            // Disable linear-light blending/tone mapping and extra image effects
+            // to match the existing nonlinear premultiplied-overlay contract.
+            c"inputs=2:format=nv12:colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv:disable_linear=1:peak_detect=0:apply_dolbyvision=0:apply_filmgrain=0:deband=0:dithering=none:sigmoid=0"
+        } else {
+            c"format=nv12:colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv"
+        };
         check(
-            ffi::avfilter_init_str(
-                context,
-                c"format=nv12:colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv"
-                    .as_ptr(),
-            ),
+            ffi::avfilter_init_str(context, args.as_ptr()),
             "Initialize libplacebo GPU conversion",
         )?;
     }
@@ -761,7 +846,12 @@ fn build_graph(
             "pixel_formats=vulkan",
         )
         .map_err(|e| e.to_string())?;
-    graph.get("gpu_in").unwrap().link(0, &mut placebo, 0);
+    if base_pool.is_some() {
+        graph.get("video_in").unwrap().link(0, &mut placebo, 0);
+        graph.get("gpu_in").unwrap().link(0, &mut placebo, 1);
+    } else {
+        graph.get("gpu_in").unwrap().link(0, &mut placebo, 0);
+    }
     placebo.link(0, &mut sink, 0);
     graph
         .validate()
@@ -858,7 +948,10 @@ fn open_encoder(
 
 fn check(result: i32, context: &str) -> Result<(), String> {
     if result < 0 {
-        Err(format!("{context}: {}", ffmpeg::Error::from(result)))
+        Err(format!(
+            "{context}: {} (FFmpeg code {result})",
+            ffmpeg::Error::from(result)
+        ))
     } else {
         Ok(())
     }
@@ -867,6 +960,35 @@ fn check(result: i32, context: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shared_hardware_frames_retain_buffers_without_allocating_software_pixels() {
+        // Ref-only opaque buffers exercise AVFrame ownership without creating
+        // a GPU or passing these sentinel contents to a Vulkan API.
+        let mut source = frame::Video::empty();
+        unsafe {
+            let raw = &mut *source.as_mut_ptr();
+            raw.format = ffi::AVPixelFormat::AV_PIX_FMT_VULKAN as i32;
+            raw.width = 320;
+            raw.height = 240;
+            raw.buf[0] = ffi::av_buffer_alloc(std::mem::size_of::<ffi::AVVkFrame>());
+            raw.hw_frames_ctx = ffi::av_buffer_alloc(std::mem::size_of::<ffi::AVHWFramesContext>());
+            assert!(!raw.buf[0].is_null() && !raw.hw_frames_ctx.is_null());
+            raw.data[0] = (*raw.buf[0]).data;
+        }
+        let retained = reference_video_frame(&source).unwrap();
+        unsafe {
+            let actual = &*retained.as_ptr();
+            let original = &*source.as_ptr();
+            assert_eq!(actual.data[0], original.data[0]);
+            assert_eq!((*actual.hw_frames_ctx).data, (*original.hw_frames_ctx).data);
+            assert_eq!(ffi::av_buffer_get_ref_count(original.buf[0]), 2);
+            assert_eq!(ffi::av_buffer_get_ref_count(original.hw_frames_ctx), 2);
+        }
+        drop(source);
+        unsafe {
+            assert_eq!(ffi::av_buffer_get_ref_count((*retained.as_ptr()).buf[0]), 1);
+        }
+    }
     #[test]
     fn validates_contract_before_touching_a_device_or_output() {
         let good = VulkanVideoOptions::default();

@@ -260,8 +260,9 @@ pub struct RenderStats {
     pub image_cache_misses: u64,
 }
 
-/// CPU-only Skia compositor. Owns fonts, one output surface and a 64 MiB
-/// byte-accounted LRU, not a raster for every event in a movie.
+/// Skia scene compositor. The default constructor uses a CPU surface; the
+/// optional Vulkan exporter supplies GPU targets and GPU sprite surfaces.
+/// Retains a 64 MiB byte-accounted sprite LRU rather than a raster per event.
 pub struct Renderer {
     width: u32,
     height: u32,
@@ -287,6 +288,18 @@ impl Renderer {
         height: u32,
         input: RenderInput,
         font_paths: Vec<PathBuf>,
+    ) -> Result<Self, String> {
+        Self::new_with_surface(width, height, input, font_paths, || {
+            surface(width as i32, height as i32, MAX_FRAME_BYTES)
+        })
+    }
+
+    fn new_with_surface(
+        width: u32,
+        height: u32,
+        input: RenderInput,
+        font_paths: Vec<PathBuf>,
+        create_surface: impl FnOnce() -> Result<Surface, String>,
     ) -> Result<Self, String> {
         raster_bytes(width as f32, height as f32, MAX_FRAME_BYTES)?;
         let mut events = Vec::new();
@@ -330,7 +343,7 @@ impl Renderer {
         Ok(Self {
             width,
             height,
-            surface: surface(width as i32, height as i32, MAX_FRAME_BYTES)?,
+            surface: create_surface()?,
             fonts: Fonts::new(font_paths)?,
             events,
             images,
@@ -345,6 +358,56 @@ impl Renderer {
             stats: RenderStats::default(),
             missing_glyphs: 0,
         })
+    }
+
+    #[cfg(feature = "vulkan")]
+    pub(super) fn new_gpu_scene(
+        width: u32,
+        height: u32,
+        input: RenderInput,
+        font_paths: Vec<PathBuf>,
+    ) -> Result<Self, String> {
+        // A target is borrowed only for a render call. Keep a four-byte raster
+        // placeholder between calls, never a CPU-sized video frame.
+        Self::new_with_surface(width, height, input, font_paths, || surface(1, 1, 4))
+    }
+
+    #[cfg(feature = "vulkan")]
+    pub(super) fn compose_gpu(
+        &mut self,
+        time: f64,
+        background: Color,
+        context: &mut skia_safe::gpu::DirectContext,
+        target: Surface,
+    ) -> Result<(Surface, Duration, Duration), String> {
+        let placeholder = std::mem::replace(&mut self.surface, target);
+        let start = Instant::now();
+        let before = self.stats.text_layout + self.stats.text_raster + self.stats.image_prepare;
+        let result = self.compose_with_backend(
+            time,
+            self.profiling,
+            background,
+            &mut SurfaceFactory::vulkan(context),
+        );
+        let composition = start.elapsed();
+        if self.profiling {
+            let preparation =
+                self.stats.text_layout + self.stats.text_raster + self.stats.image_prepare - before;
+            self.stats.composition += composition.saturating_sub(preparation);
+        }
+        let start = Instant::now();
+        // Initial PoC synchronizes completion on the CPU, not the pixels. This
+        // also makes failure cleanup safe after a partially drawn frame. A later
+        // queue-submit bridge can replace this wait with timeline semaphores.
+        context.flush_and_submit_surface(&mut self.surface, skia_safe::gpu::SyncCpu::Yes);
+        let submitted = start.elapsed();
+        let target = std::mem::replace(&mut self.surface, placeholder);
+        result?;
+        if context.abandoned() {
+            return Err("Skia Vulkan context was abandoned while rendering".into());
+        }
+        self.stats.frames += 1;
+        Ok((target, composition, submitted))
     }
 
     /// Count of unresolved glyphs encountered on cache misses. Skia paints
@@ -445,7 +508,12 @@ impl Renderer {
             .ok_or_else(|| "PNG encoding failed".into())
     }
 
-    fn text_sprite(&mut self, id: usize, profile: bool) -> Result<Sprite, String> {
+    fn text_sprite(
+        &mut self,
+        id: usize,
+        profile: bool,
+        backend: &mut SurfaceFactory<'_>,
+    ) -> Result<Sprite, String> {
         if let Some(sprite) = self.cache.get(id) {
             self.stats.text_cache_hits += 1;
             return Ok(sprite);
@@ -491,7 +559,7 @@ impl Renderer {
             MAX_TEXT_RASTER_BYTES,
         )?;
         let started = profile.then(Instant::now);
-        let mut fill = surface(w, h, CACHE_BYTES)?;
+        let mut fill = backend.allocate(w, h, CACHE_BYTES)?;
         fill.canvas().translate((pad, pad)).scale((sx, sy));
         paragraph.paint(fill.canvas(), (0.0, 0.0));
         let fill = fill.image_snapshot();
@@ -505,11 +573,11 @@ impl Renderer {
             self.stats.text_layout += started.elapsed();
         }
         let started = profile.then(Instant::now);
-        let mut alpha = surface(w, h, CACHE_BYTES)?;
+        let mut alpha = backend.allocate(w, h, CACHE_BYTES)?;
         alpha.canvas().translate((pad, pad)).scale((sx, sy));
         mask.paint(alpha.canvas(), (0.0, 0.0));
         let alpha = alpha.image_snapshot();
-        let mut styled = surface(w, h, CACHE_BYTES)?;
+        let mut styled = backend.allocate(w, h, CACHE_BYTES)?;
         let canvas = styled.canvas();
         if style.border == 3 {
             let rect = Rect::from_xywh(
@@ -533,7 +601,7 @@ impl Renderer {
             if outline > 0.0 {
                 dilation.set_image_filter(image_filters::dilate((outline, outline), None, None));
             }
-            let mut silhouette = surface(w, h, CACHE_BYTES)?;
+            let mut silhouette = backend.allocate(w, h, CACHE_BYTES)?;
             silhouette
                 .canvas()
                 .draw_image(&alpha, (0.0, 0.0), Some(&dilation));
@@ -543,7 +611,7 @@ impl Renderer {
             // Knock out the foreground before tinting effects. Otherwise an
             // 80%-opaque fill over an 80%-opaque outline becomes 96% opaque.
             if shadow > 0.0 {
-                let mut effect = surface(w, h, CACHE_BYTES)?;
+                let mut effect = backend.allocate(w, h, CACHE_BYTES)?;
                 effect
                     .canvas()
                     .draw_image(&silhouette, (shadow, shadow), None);
@@ -557,7 +625,7 @@ impl Renderer {
                 );
             }
             if outline > 0.0 {
-                let mut effect = surface(w, h, CACHE_BYTES)?;
+                let mut effect = backend.allocate(w, h, CACHE_BYTES)?;
                 effect.canvas().draw_image(&silhouette, (0.0, 0.0), None);
                 effect.canvas().draw_image(&alpha, (0.0, 0.0), Some(&erase));
                 canvas.draw_image(
@@ -580,7 +648,12 @@ impl Renderer {
         Ok(sprite)
     }
 
-    fn image_sprite(&mut self, id: usize, profile: bool) -> Result<Sprite, String> {
+    fn image_sprite(
+        &mut self,
+        id: usize,
+        profile: bool,
+        backend: &mut SurfaceFactory<'_>,
+    ) -> Result<Sprite, String> {
         let key = self.image_sprite_ids[id];
         if let Some(sprite) = self.cache.get(key) {
             self.stats.image_cache_hits += 1;
@@ -601,7 +674,7 @@ impl Renderer {
             event.height * self.height as f32 / 1080.0,
         );
         let (w, h, bytes) = raster_bytes(size.0, size.1, CACHE_BYTES)?;
-        let mut output = surface(w, h, CACHE_BYTES)?;
+        let mut output = backend.allocate(w, h, CACHE_BYTES)?;
         // Keep the scheduler's footprint, but preserve the decoded artwork's
         // aspect ratio inside it (the previous FFmpeg chain used decrease+pad).
         let scale = (w as f32 / image.width() as f32).min(h as f32 / image.height() as f32);
@@ -630,10 +703,25 @@ impl Renderer {
     }
 
     fn compose(&mut self, time: f64, profile: bool) -> Result<(), String> {
+        self.compose_with_backend(
+            time,
+            profile,
+            Color::TRANSPARENT,
+            &mut SurfaceFactory::raster(),
+        )
+    }
+
+    fn compose_with_backend(
+        &mut self,
+        time: f64,
+        profile: bool,
+        background: Color,
+        backend: &mut SurfaceFactory<'_>,
+    ) -> Result<(), String> {
         if !time.is_finite() {
             return Err("Frame time must be finite".into());
         }
-        self.surface.canvas().clear(Color::TRANSPARENT);
+        self.surface.canvas().clear(background);
         self.active_text.clear();
         self.active_text.extend_from_slice(self.timeline.at(time));
         self.active_text.sort_by(|a, b| {
@@ -648,7 +736,7 @@ impl Renderer {
             if self.events[id].runs.is_empty() {
                 continue;
             }
-            let sprite = self.text_sprite(id, profile)?;
+            let sprite = self.text_sprite(id, profile, backend)?;
             let event = &self.events[id];
             let (ax, ay) = alignment(event.style.alignment);
             let (xscale, yscale) = (
@@ -711,7 +799,7 @@ impl Renderer {
             .extend_from_slice(self.image_timeline.at(time));
         for index in 0..self.active_images.len() {
             let id = self.active_images[index];
-            let sprite = self.image_sprite(id, profile)?;
+            let sprite = self.image_sprite(id, profile, backend)?;
             let event = &self.images[id];
             let f = ((time - event.start) / (event.end - event.start)).clamp(0.0, 1.0) as f32;
             let x = (event.from.0 + (event.to.0 - event.from.0) * f) * self.width as f32 / 1920.0;
@@ -819,6 +907,52 @@ fn raster_bytes(width: f32, height: f32, limit: usize) -> Result<(i32, i32, usiz
         ));
     }
     Ok((w, h, bytes))
+}
+
+struct SurfaceFactory<'a> {
+    #[cfg(feature = "vulkan")]
+    context: Option<&'a mut skia_safe::gpu::DirectContext>,
+    _lifetime: std::marker::PhantomData<&'a ()>,
+}
+
+impl<'a> SurfaceFactory<'a> {
+    fn raster() -> Self {
+        Self {
+            #[cfg(feature = "vulkan")]
+            context: None,
+            _lifetime: std::marker::PhantomData,
+        }
+    }
+
+    #[cfg(feature = "vulkan")]
+    fn vulkan(context: &'a mut skia_safe::gpu::DirectContext) -> Self {
+        Self {
+            context: Some(context),
+            _lifetime: std::marker::PhantomData,
+        }
+    }
+
+    fn allocate(&mut self, w: i32, h: i32, limit: usize) -> Result<Surface, String> {
+        #[cfg(feature = "vulkan")]
+        if let Some(context) = self.context.as_deref_mut() {
+            raster_bytes(w as f32, h as f32, limit)?;
+            let info = ImageInfo::new((w, h), ColorType::BGRA8888, AlphaType::Premul, None);
+            let mut surface = skia_safe::gpu::surfaces::render_target(
+                context,
+                skia_safe::gpu::Budgeted::Yes,
+                &info,
+                Some(0),
+                Some(skia_safe::gpu::SurfaceOrigin::TopLeft),
+                None,
+                Some(false),
+                Some(false),
+            )
+            .ok_or("Cannot allocate Skia Vulkan sprite surface")?;
+            surface.canvas().clear(Color::TRANSPARENT);
+            return Ok(surface);
+        }
+        surface(w, h, limit)
+    }
 }
 
 fn surface(w: i32, h: i32, limit: usize) -> Result<Surface, String> {

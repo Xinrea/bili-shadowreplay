@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[features]
+# Opt-in GPU export path; ordinary preview/burn callers keep their raster backend.
+vulkan = ["skia-safe/vulkan"]
+
 [dependencies]
 # 0.90 requires newer Windows MSVC symbols than our supported VS toolchain.
 skia-safe = { version = "=0.82.0", features = ["textlayout"] }

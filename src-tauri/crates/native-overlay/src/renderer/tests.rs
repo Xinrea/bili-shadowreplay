@@ -283,7 +283,9 @@ fn image_artwork_is_contained_and_centered_in_reserved_footprint() {
         }],
     };
     let mut r = Renderer::new(192, 108, input, vec![]).unwrap();
-    let sprite = r.image_sprite(0, false).unwrap();
+    let sprite = r
+        .image_sprite(0, false, &mut super::SurfaceFactory::raster())
+        .unwrap();
     assert_eq!(sprite.size, (32.0, 16.0));
     assert_eq!((sprite.image.width(), sprite.image.height()), (32, 16));
     assert_eq!(bbox(&r.frame(0.0).unwrap(), 192), Some((0, 4, 31, 11)));

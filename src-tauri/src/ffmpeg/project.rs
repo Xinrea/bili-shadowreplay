@@ -70,8 +70,8 @@ const EPSILON: f64 = 1e-6;
 const RENDER_STAGE: &str = "导出切片";
 /// Part of every segment's key: change it with what a segment's graph draws,
 /// so that segments rendered before are not used again.
-/// 5: native overlays use premultiplied BGRA/RGB composition and hardware NV12.
-const RENDER_VERSION: u32 = 5;
+/// 6: project segments can stream into the native GPU compositor/encoder.
+const RENDER_VERSION: u32 = 6;
 
 pub struct RenderClip {
     /// The same however the timeline is edited around the clip.
@@ -829,6 +829,7 @@ struct Render<'a> {
     directory: &'a Path,
     fps: f64,
     encoder: &'static str,
+    gpu_encoder: Option<&'static super::encoding::AvailableVideoEncoder>,
     /// What each input file is now, by path.
     files: HashMap<PathBuf, String>,
     /// A digest of each overlay's picture, by its index.
@@ -863,10 +864,23 @@ impl Render<'_> {
         );
         let _ = writeln!(
             key,
-            "native {} {}",
+            "native {} {} {}",
+            self.gpu_encoder.is_some(),
             job.generated_subtitle,
             ::native_overlay::RENDERER_VERSION
         );
+        if let Some(encoder) = self.gpu_encoder {
+            let _ = writeln!(
+                key,
+                "gpu_options {}",
+                serde_json::to_string(
+                    &job.render_settings
+                        .encoding
+                        .options_for(encoder, job.render_settings.priority)
+                )
+                .unwrap()
+            );
+        }
         for part in &segment.parts {
             let clip = &job.clips[part.clip];
             let _ = write!(
@@ -1046,7 +1060,7 @@ impl Render<'_> {
             }
         }
         let native = self.native_overlay(segment);
-        if native.is_some() {
+        if self.gpu_encoder.is_none() && native.is_some() {
             filter.push_str(&native_overlay_filter(
                 &current,
                 segment.parts.len() + overlays.len(),
@@ -1054,7 +1068,11 @@ impl Render<'_> {
             ));
             current = "native_overlaid".to_string();
         }
-        let format = hwaccel::output_format_filter(self.encoder);
+        let format = if self.gpu_encoder.is_some() {
+            "scale=out_color_matrix=bt709:out_range=tv,format=nv12"
+        } else {
+            hwaccel::output_format_filter(self.encoder)
+        };
         // Exactly as many frames as planned: `overlay` goes on as long as any
         // of its inputs does, and a file ending well before its clip has no
         // frames for the parts after its end. Then back to the segment's own
@@ -1111,18 +1129,22 @@ impl Render<'_> {
                 }
             }
         }
-        if let Some(spec) = &native {
-            add_overlay_input(&mut command, spec).await?;
+        if self.gpu_encoder.is_none() {
+            if let Some(spec) = &native {
+                add_overlay_input(&mut command, spec).await?;
+            }
         }
         command
             .arg(danmu::filter_complex_file_option().await)
             .arg(&filter_name)
             .args(["-map", "[outv]"]);
-        hwaccel::apply_x264_encoder_only(&mut command, self.encoder);
-        command.args(hwaccel::project_quality_args(
-            self.encoder,
-            &self.job.render_settings,
-        ));
+        if self.gpu_encoder.is_none() {
+            hwaccel::apply_x264_encoder_only(&mut command, self.encoder);
+            command.args(hwaccel::project_quality_args(
+                self.encoder,
+                &job.render_settings,
+            ));
+        }
         // Written under other names and renamed once complete, so that a
         // segment's files are there only when they are whole. One left
         // without the other, by a render stopped between the two renames,
@@ -1136,15 +1158,47 @@ impl Render<'_> {
             TempArtifact::new(self.directory.join(&partial_video)),
             TempArtifact::new(self.directory.join(&partial_sound)),
         ];
+        command.args(["-r", &fps.to_string()]);
+        if self.gpu_encoder.is_some() {
+            command.args([
+                "-c:v",
+                "rawvideo",
+                "-pix_fmt",
+                "nv12",
+                "-threads:v",
+                "1",
+                "-f",
+                "nut",
+                "pipe:1",
+            ]);
+        } else {
+            command.arg(&partial_video);
+        }
         command
-            .args(["-r", &fps.to_string()])
-            .arg(&partial_video)
             .args(["-map", "[outa]", "-c:a", "pcm_s16le"])
             .arg(&partial_sound);
         log::info!("Render project segment {index}: {command:?}");
         log::debug!("Project segment {index} filter graph:\n{filter}");
         let progress = ProgressMode::stage(RENDER_STAGE, ProgressTotal::Known(end - start));
-        if let Some(spec) = native {
+        if let Some(encoder) = self.gpu_encoder {
+            let spec = native.unwrap_or_else(|| OverlaySpec {
+                input: ::native_overlay::RenderInput::default(),
+                width: 1920,
+                height: 1080,
+                fps,
+                start,
+                duration: end - start,
+            });
+            super::native_gpu::encode_video(
+                Some(reporter),
+                super::native_gpu::VideoSource::Stream(command),
+                spec,
+                &self.directory.join(&partial_video),
+                &job.render_settings,
+                encoder,
+            )
+            .await?;
+        } else if let Some(spec) = native {
             run_overlay_command(
                 command,
                 spec,
@@ -1421,8 +1475,20 @@ async fn render_in_segments<R: ProgressReporterTrait>(
     job: &ProjectRender<'_>,
     limits: SegmentLimits,
 ) -> Result<RenderStats, String> {
-    let encoder = hwaccel::get_render_encoder(&job.render_settings).await;
-    render_with_encoder(reporter, job, limits, encoder).await
+    job.render_settings.validate()?;
+    let encoder = job
+        .render_settings
+        .encoding
+        .encoder(job.render_settings.codec, true)
+        .await?;
+    render_with_encoder(
+        reporter,
+        job,
+        limits,
+        &encoder.encoder,
+        encoder.is_native().then_some(encoder),
+    )
+    .await
 }
 
 async fn render_with_encoder<R: ProgressReporterTrait>(
@@ -1430,6 +1496,7 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
     job: &ProjectRender<'_>,
     limits: SegmentLimits,
     encoder: &'static str,
+    gpu_encoder: Option<&'static super::encoding::AvailableVideoEncoder>,
 ) -> Result<RenderStats, String> {
     job.render_settings.validate()?;
     if job.clips.is_empty() {
@@ -1552,6 +1619,7 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
         directory: &directory,
         fps,
         encoder,
+        gpu_encoder,
         files,
         pictures,
         subtitles,
@@ -2245,6 +2313,7 @@ mod tests {
             directory: Path::new("."),
             fps: 30.0,
             encoder: "libx264",
+            gpu_encoder: None,
             files: HashMap::new(),
             pictures: vec![None; job.overlays.len()],
             subtitles: Some(Subtitles {
@@ -2427,12 +2496,13 @@ mod tests {
                 codec: VideoCodec::H264,
                 priority: EncodingPriority::Quality,
                 bitrate_kbps: 10_000,
+                encoding: Default::default(),
             },
             output: &output,
             segment_cache: Some(&cache),
         };
         async fn render(project: &ProjectRender<'_>) -> RenderStats {
-            render_with_encoder(&NoopReporter, project, SEGMENT_LIMITS, "libx264")
+            render_with_encoder(&NoopReporter, project, SEGMENT_LIMITS, "libx264", None)
                 .await
                 .unwrap()
         }
@@ -2492,6 +2562,7 @@ mod tests {
             directory: Path::new("."),
             fps,
             encoder: "libx264",
+            gpu_encoder: None,
             files: HashMap::new(),
             pictures: vec![Some("picture".to_string()); job.overlays.len()],
             subtitles: Some(Subtitles {
@@ -3157,7 +3228,7 @@ mod tests {
             seconds: 0.5,
             parts: 16,
         };
-        let stats = render_with_encoder(&NoopReporter, &project, limits, "libx264")
+        let stats = render_with_encoder(&NoopReporter, &project, limits, "libx264", None)
             .await
             .unwrap();
         assert_eq!(stats.segments, 2);
@@ -3175,7 +3246,7 @@ mod tests {
         assert_eq!((metadata.width, metadata.height), (1920, 1080));
         assert!((metadata.duration - 1.0).abs() < 0.1);
         assert!(!metadata.audio_codec.is_empty());
-        let again = render_with_encoder(&NoopReporter, &project, limits, "libx264")
+        let again = render_with_encoder(&NoopReporter, &project, limits, "libx264", None)
             .await
             .unwrap();
         assert_eq!(again.reused, 2);
@@ -3215,7 +3286,7 @@ mod tests {
             output: &output,
             segment_cache: None,
         };
-        render_with_encoder(&NoopReporter, &project, SEGMENT_LIMITS, "libx264")
+        render_with_encoder(&NoopReporter, &project, SEGMENT_LIMITS, "libx264", None)
             .await
             .unwrap();
 
@@ -3769,6 +3840,7 @@ mod tests {
                         parts: 16,
                     },
                     "libx264",
+                    None,
                 )
                 .await
                 .unwrap();
@@ -3886,6 +3958,7 @@ mod tests {
                 },
                 SegmentLimits { seconds, parts: 16 },
                 encoder,
+                None,
             )
             .await
             .unwrap();

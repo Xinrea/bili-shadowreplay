@@ -1619,7 +1619,10 @@
     // Persist the complete encoding choice as one option.
     const renderSettings = exportSettings.codec !== exportBase.renderSettings.codec ||
         exportSettings.priority !== exportBase.renderSettings.priority ||
-        exportSettings.bitrate_kbps !== exportBase.renderSettings.bitrate_kbps
+        exportSettings.bitrate_kbps !== exportBase.renderSettings.bitrate_kbps ||
+        exportSettings.render_backend !== exportBase.renderSettings.render_backend ||
+        exportSettings.encoder !== exportBase.renderSettings.encoder ||
+        JSON.stringify(exportSettings.options) !== JSON.stringify(exportBase.renderSettings.options)
       ? $state.snapshot(exportSettings)
       : null;
     if (danmu !== null || renderSettings !== null) {
@@ -2301,7 +2304,7 @@
             <span></span>
           </span>
         </label>
-        <RenderSettingsFields bind:value={exportSettings} disabled={preparingExport} />
+        <RenderSettingsFields bind:value={exportSettings} nativeGpu disabled={preparingExport} />
         <p class="ui-hint">这些设置也用于此切片的投稿。</p>
       </div>
       <div class="ui-modal-footer">

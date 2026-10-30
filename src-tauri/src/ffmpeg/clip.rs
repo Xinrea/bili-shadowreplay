@@ -39,7 +39,7 @@ pub async fn transcode_with_settings<R: ProgressReporterTrait>(
     if copy_codecs {
         command.args(["-c:v", "copy", "-c:a", "copy"]);
     } else {
-        let video_encoder = hwaccel::material_encoder(settings).await;
+        let video_encoder = hwaccel::material_encoder(settings).await?;
         hwaccel::apply_x264_encoder_args(
             &mut command,
             video_encoder,

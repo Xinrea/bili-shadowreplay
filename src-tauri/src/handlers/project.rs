@@ -1097,8 +1097,10 @@ async fn upload_render(
     source: ExportSource<'_>,
     directory: &Path,
 ) -> Result<(PathBuf, Option<oneshot::Receiver<Result<(), String>>>), String> {
-    let encoder = hwaccel::get_render_encoder(&source.timeline.render_settings).await;
-    let hash = source.render_hash(encoder);
+    let settings = &source.timeline.render_settings;
+    settings.validate()?;
+    let encoder = settings.encoding.encoder(settings.codec, true).await?;
+    let hash = source.render_hash(&encoder.encoder, encoder.is_native().then_some(encoder));
     let target = directory.join(format!("{UPLOAD_RENDER_PREFIX}{hash}.mp4"));
     if target.is_file() {
         return Ok((target, None));
@@ -1230,9 +1232,14 @@ struct ExportSource<'a> {
 
 impl ExportSource<'_> {
     /// Identifies what rendering this source contains.
-    fn render_hash(&self, encoder: &str) -> String {
+    fn render_hash(
+        &self,
+        encoder: &str,
+        gpu_encoder: Option<&crate::ffmpeg::encoding::AvailableVideoEncoder>,
+    ) -> String {
         let mut extra = format!(
-            "encoder:{encoder}\nnative:{}:{}\n",
+            "encoder:{encoder}\nnative:{}:{}:{}\n",
+            gpu_encoder.is_some(),
             self.generated_subtitle,
             native_overlay::RENDERER_VERSION
         );
@@ -1240,13 +1247,16 @@ impl ExportSource<'_> {
         extra.push('\0');
         // Match segment caching: changes to effective encoder defaults (e.g.
         // GOP length) must also invalidate the complete video prepared for upload.
-        extra.push_str(
-            &serde_json::to_string(&hwaccel::project_quality_args(
-                encoder,
-                &self.timeline.render_settings,
-            ))
-            .unwrap(),
-        );
+        let settings = &self.timeline.render_settings;
+        extra.push_str(&match gpu_encoder {
+            Some(encoder) => {
+                serde_json::to_string(&settings.encoding.options_for(encoder, settings.priority))
+                    .unwrap()
+            }
+            None => {
+                serde_json::to_string(&hwaccel::project_quality_args(encoder, settings)).unwrap()
+            }
+        });
         extra.push('\0');
         extra.push_str(self.subtitle_ass.as_deref().unwrap_or_default());
         if self.timeline.danmu {
@@ -1899,6 +1909,7 @@ mod tests {
             codec: VideoCodec::H264,
             priority: EncodingPriority::Quality,
             bitrate_kbps: 12_000,
+            encoding: Default::default(),
         };
         // Another dialog and the editor save after this export dialog opened.
         edit_project_timeline(&db, project.id, |timeline| {
@@ -2021,6 +2032,7 @@ mod tests {
                 codec: VideoCodec::H264,
                 priority: EncodingPriority::Quality,
                 bitrate_kbps: 12_000,
+                encoding: Default::default(),
             };
             true
         })
@@ -2323,33 +2335,37 @@ mod tests {
             x,
             y: 0.0,
         };
-        let drawn = source(vec![image("data:image/png;base64,AAAA", 10.0)]).render_hash("libx265");
+        let drawn =
+            source(vec![image("data:image/png;base64,AAAA", 10.0)]).render_hash("libx265", None);
         assert_eq!(
             drawn,
-            source(vec![image("data:image/png;base64,AAAA", 10.0)]).render_hash("libx265")
+            source(vec![image("data:image/png;base64,AAAA", 10.0)]).render_hash("libx265", None)
         );
         assert_ne!(
             drawn,
-            source(vec![image("data:image/png;base64,AAAA", 10.0)]).render_hash("hevc_nvenc")
+            source(vec![image("data:image/png;base64,AAAA", 10.0)]).render_hash("hevc_nvenc", None)
         );
         // Drawn differently, as with another font, or placed elsewhere.
         assert_ne!(
             drawn,
-            source(vec![image("data:image/png;base64,AAAB", 10.0)]).render_hash("libx265")
+            source(vec![image("data:image/png;base64,AAAB", 10.0)]).render_hash("libx265", None)
         );
         assert_ne!(
             drawn,
-            source(vec![image("data:image/png;base64,AAAA", 11.0)]).render_hash("libx265")
+            source(vec![image("data:image/png;base64,AAAA", 11.0)]).render_hash("libx265", None)
         );
-        assert_ne!(drawn, source(Vec::new()).render_hash("libx265"));
+        assert_ne!(drawn, source(Vec::new()).render_hash("libx265", None));
         let plain = source(Vec::new());
         let mut extra = format!(
-            "encoder:libx265\nnative:false:{}\n",
+            "encoder:libx265\nnative:false:false:{}\n",
             native_overlay::RENDERER_VERSION,
         );
         extra.push_str(&serde_json::to_string(&timeline.render_settings).unwrap());
         extra.push('\0');
-        assert_ne!(plain.render_hash("libx265"), timeline.render_hash(&extra));
+        assert_ne!(
+            plain.render_hash("libx265", None),
+            timeline.render_hash(&extra)
+        );
         extra.push_str(
             &serde_json::to_string(&hwaccel::project_quality_args(
                 "libx265",
@@ -2358,7 +2374,10 @@ mod tests {
             .unwrap(),
         );
         extra.push('\0');
-        assert_eq!(plain.render_hash("libx265"), timeline.render_hash(&extra));
+        assert_eq!(
+            plain.render_hash("libx265", None),
+            timeline.render_hash(&extra)
+        );
     }
 
     #[test]

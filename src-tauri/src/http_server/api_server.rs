@@ -26,13 +26,14 @@ use crate::{
             import_audio_file, rename_audio_file,
         },
         config::{
-            get_config, get_llm_config, get_mcp_server_status, get_static_port, list_llm_models,
-            request_settings, update_auto_generate, update_clip_name_format,
-            update_danmu_ass_options, update_llm_config, update_mcp_server, update_notify,
-            update_openai_api_endpoint, update_openai_api_key, update_powerlive_hotwords,
-            update_powerlive_sentence_max_length, update_status_check_interval,
-            update_subtitle_generator_type, update_subtitle_setting, update_webhook_url,
-            update_whisper_language, update_whisper_model, update_whisper_prompt,
+            get_available_video_encoders, get_config, get_llm_config, get_mcp_server_status,
+            get_static_port, list_llm_models, request_settings, update_auto_generate,
+            update_clip_name_format, update_danmu_ass_options, update_llm_config,
+            update_mcp_server, update_notify, update_openai_api_endpoint, update_openai_api_key,
+            update_powerlive_hotwords, update_powerlive_sentence_max_length,
+            update_status_check_interval, update_subtitle_generator_type, update_subtitle_setting,
+            update_webhook_url, update_whisper_language, update_whisper_model,
+            update_whisper_prompt,
         },
         message::{delete_message, get_messages, read_message},
         project::{
@@ -1878,6 +1879,21 @@ async fn handler_update_danmu_ass_options(
     Ok(Json(ApiResponse::success(())))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AvailableVideoEncodersRequest {
+    native_gpu: Option<bool>,
+    priority: Option<crate::project::EncodingPriority>,
+}
+
+async fn handler_get_available_video_encoders(
+    Json(param): Json<AvailableVideoEncodersRequest>,
+) -> Result<Json<ApiResponse<Vec<crate::ffmpeg::encoding::AvailableVideoEncoder>>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        get_available_video_encoders(param.native_gpu, param.priority).await?,
+    )))
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BatchImportExternalVideosRequest {
@@ -2707,6 +2723,10 @@ pub async fn start_api_server(state: State) {
     app = app
         // Config commands
         .route("/api/get_config", post(handler_get_config))
+        .route(
+            "/api/get_available_video_encoders",
+            post(handler_get_available_video_encoders),
+        )
         .route(
             "/api/get_mcp_server_status",
             post(handler_get_mcp_server_status),

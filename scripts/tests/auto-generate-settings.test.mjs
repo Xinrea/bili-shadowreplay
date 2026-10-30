@@ -82,7 +82,10 @@ for (const [field, value] of [["codec", "h264"], ["priority", "quality"], ["bitr
 }
 
 test("disabling, re-enabling and changing danmaku preserve saved encoding settings", async () => {
-  const settings = { codec: "h264", priority: "quality", bitrate_kbps: 20000 };
+  const settings = {
+    codec: "h264", priority: "quality", bitrate_kbps: 20000,
+    render_backend: "cpu", encoder: "libx264", options: { preset: "slow", crf: "23" },
+  };
   const f = fixture({ enabled: true, encode_danmu: false, render_settings: settings });
   await f.state.get_config();
   for (const [enabled, danmu] of [[false, false], [true, false], [true, true]]) {

@@ -756,6 +756,7 @@ dependencies = [
  "fontdb",
  "futures",
  "futures-core",
+ "gpu-export",
  "hound",
  "keyring",
  "libc",
@@ -3032,6 +3033,16 @@ dependencies = [
  "glib-sys",
  "libc",
  "system-deps",
+]
+
+[[package]]
+name = "gpu-export"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "native-overlay",
+ "pkg-config",
+ "serde_json",
 ]
 
 [[package]]

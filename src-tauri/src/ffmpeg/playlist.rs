@@ -589,6 +589,7 @@ seg-3.mp4
                             EncodingPriority::Speed
                         },
                         bitrate_kbps: 4000,
+                        encoding: Default::default(),
                     };
                     let mut tracks = vec![None; count];
                     let entries = if burn {

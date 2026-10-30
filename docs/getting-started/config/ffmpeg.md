@@ -13,6 +13,10 @@ brew install ffmpeg
 
 如果没有安装 Homebrew，可以参考 [Homebrew 官网](https://brew.sh/) 进行安装。
 
+Apple Silicon macOS 的弹幕压制使用 Skia Metal、Metal 叠加和 VideoToolbox，需安装
+**FFmpeg 8.0 或更高版本的 Homebrew 共享库**。
+Intel macOS 使用 CPU 渲染和 FFmpeg 命令行，不需要这些开发 SDK。
+
 ## Linux
 
 在 Linux 上安装 FFmpeg 可以使用系统自带的包管理器进行安装，例如：

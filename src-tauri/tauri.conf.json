@@ -20,6 +20,9 @@
       "icons/icon.ico"
     ],
     "targets": "all",
+    "macOS": {
+      "minimumSystemVersion": "13.3"
+    },
     "createUpdaterArtifacts": true
   },
   "productName": "bili-shadowreplay",

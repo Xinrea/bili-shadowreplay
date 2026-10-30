@@ -1007,6 +1007,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::config::update_whisper_language,
         crate::handlers::config::update_webhook_url,
         crate::handlers::config::update_danmu_ass_options,
+        crate::handlers::config::get_available_video_encoders,
         crate::powerlive::get_powerlive_status,
         crate::powerlive::get_powerlive_account,
         crate::powerlive::begin_powerlive_login,
@@ -1147,6 +1148,14 @@ fn init_sentry_from_env() -> Option<sentry::ClientInitGuard> {
 
 #[cfg(feature = "gui")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(
+            feature = "vulkan-export",
+            any(target_os = "linux", target_os = "windows")
+        )
+    ))]
+    gpu_export::worker_entry();
     use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
     let _guard = init_sentry_from_env();
@@ -1292,6 +1301,14 @@ async fn shutdown_signal() {
 #[cfg(feature = "headless")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(
+            feature = "vulkan-export",
+            any(target_os = "linux", target_os = "windows")
+        )
+    ))]
+    gpu_export::worker_entry();
     let _guard = init_sentry_from_env();
     // get params from command line
     let args = Args::parse();

@@ -218,11 +218,16 @@ export interface AudioFile {
   created_at: string;
 }
 
+export type VideoRenderBackend = "cpu" | "metal" | "vulkan";
+
 export interface RenderSettings {
   codec: "h264" | "hevc";
   priority: "quality" | "speed";
   /** Target video bitrate in Kbps, independent of encoding priority. */
   bitrate_kbps: number;
+  render_backend: VideoRenderBackend | null;
+  encoder: string | null;
+  options: Record<string, string>;
 }
 
 export interface ProjectTimeline {
@@ -407,6 +412,22 @@ export function default_profile(): Profile {
     up_close_reply: false,
     web_os: 0,
   };
+}
+
+export interface VideoEncoderOption {
+  name: string;
+  label: string;
+  hint: string;
+  default: string;
+  choices: [string, string][];
+  range: [number, number] | null;
+}
+
+export interface AvailableVideoEncoder {
+  codec: "h264" | "hevc";
+  encoder: string;
+  render_backend: VideoRenderBackend;
+  options: VideoEncoderOption[];
 }
 
 export interface Config {

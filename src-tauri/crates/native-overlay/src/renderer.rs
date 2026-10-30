@@ -11,8 +11,8 @@ use skia_safe::{
         FontCollection, Paragraph, ParagraphBuilder, ParagraphStyle, TextAlign, TextDecoration,
         TextStyle, TypefaceFontProvider,
     },
-    AlphaType, BlendMode, Color, ColorType, Data, EncodedImageFormat, FontMgr, FontStyle, Image,
-    ImageInfo, Paint, Rect, Surface,
+    AlphaType, BlendMode, Canvas, Color, ColorType, Data, EncodedImageFormat, FontMgr, FontStyle,
+    Image, ImageInfo, Paint, Rect, Surface,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -44,6 +44,33 @@ impl FrameFormat {
                 (ColorType::BGRA8888, AlphaType::Premul, "premultiplied BGRA")
             }
         }
+    }
+}
+
+#[derive(Default)]
+struct SurfaceBackend {
+    #[cfg(any(feature = "metal", feature = "vulkan"))]
+    context: Option<skia_safe::gpu::DirectContext>,
+}
+
+impl SurfaceBackend {
+    fn surface(&mut self, w: i32, h: i32, limit: usize) -> Result<Surface, String> {
+        #[cfg(any(feature = "metal", feature = "vulkan"))]
+        if let Some(context) = self.context.as_mut() {
+            raster_bytes(w as f32, h as f32, limit)?;
+            return skia_safe::gpu::surfaces::render_target(
+                context,
+                skia_safe::gpu::Budgeted::Yes,
+                &ImageInfo::new_n32_premul((w, h), None),
+                None,
+                skia_safe::gpu::SurfaceOrigin::TopLeft,
+                None,
+                false,
+                false,
+            )
+            .ok_or_else(|| "Cannot allocate GPU Skia surface".into());
+        }
+        surface(w, h, limit)
     }
 }
 
@@ -260,7 +287,7 @@ pub struct RenderStats {
     pub image_cache_misses: u64,
 }
 
-/// CPU-only Skia compositor. Owns fonts, one output surface and a 64 MiB
+/// Skia compositor. Owns fonts, one output surface and a 64 MiB
 /// byte-accounted LRU, not a raster for every event in a movie.
 pub struct Renderer {
     width: u32,
@@ -279,6 +306,8 @@ pub struct Renderer {
     profiling: bool,
     stats: RenderStats,
     missing_glyphs: usize,
+    // Drop cached images and surfaces before their GPU context.
+    backend: SurfaceBackend,
 }
 
 impl Renderer {
@@ -344,7 +373,117 @@ impl Renderer {
             profiling: false,
             stats: RenderStats::default(),
             missing_glyphs: 0,
+            backend: SurfaceBackend::default(),
         })
+    }
+
+    /// Create an offscreen Metal renderer sharing the compositor's device/queue.
+    ///
+    /// # Safety
+    /// Handles must identify a Metal device, its command queue, and a matching
+    /// BGRA8Unorm render-target texture. The texture must outlive its Surface.
+    #[cfg(feature = "metal")]
+    pub unsafe fn new_metal(
+        width: u32,
+        height: u32,
+        input: RenderInput,
+        device: skia_safe::gpu::mtl::Handle,
+        queue: skia_safe::gpu::mtl::Handle,
+        texture: skia_safe::gpu::mtl::Handle,
+    ) -> Result<Self, String> {
+        use skia_safe::gpu::{direct_contexts, mtl};
+        let backend = mtl::BackendContext::new(device, queue);
+        let mut context = direct_contexts::make_metal(&backend, None)
+            .ok_or("Cannot create Skia Metal context")?;
+        context.set_resource_cache_limit(CACHE_BYTES);
+        let mut renderer = Self::new(width, height, input, Vec::new())?;
+        renderer.surface = metal_surface(&mut context, width, height, texture)?;
+        renderer.backend.context = Some(context);
+        Ok(renderer)
+    }
+
+    /// Render into the caller's texture and enqueue work without a CPU wait.
+    /// The caller consumes it on the same queue and retires the frame before reuse.
+    ///
+    /// # Safety
+    /// The handle must be a matching BGRA8Unorm texture, kept alive through GPU use.
+    #[cfg(feature = "metal")]
+    pub unsafe fn render_metal(
+        &mut self,
+        time: f64,
+        texture: skia_safe::gpu::mtl::Handle,
+    ) -> Result<(), String> {
+        let context = self
+            .backend
+            .context
+            .as_mut()
+            .ok_or("Not a Metal renderer")?;
+        self.surface = metal_surface(context, self.width, self.height, texture)?;
+        let mut target = self.surface.clone();
+        self.compose_profiled(time, target.canvas())?;
+        self.backend
+            .context
+            .as_mut()
+            .unwrap()
+            .flush_and_submit_surface(&mut self.surface, skia_safe::gpu::SyncCpu::No);
+        self.stats.frames += 1;
+        Ok(())
+    }
+
+    /// Share the export worker's Vulkan device and graphics queue.
+    ///
+    /// # Safety
+    /// The device, queue and image must remain valid until this renderer and
+    /// its submitted GPU work have finished. The caller serializes queue access.
+    #[cfg(feature = "vulkan")]
+    pub unsafe fn new_vulkan(
+        width: u32,
+        height: u32,
+        input: RenderInput,
+        backend: &skia_safe::gpu::vk::BackendContext,
+        image: &skia_safe::gpu::vk::ImageInfo,
+    ) -> Result<Self, String> {
+        let mut context = skia_safe::gpu::direct_contexts::make_vulkan(backend, None)
+            .ok_or("Cannot create Skia Vulkan context")?;
+        context.set_resource_cache_limit(CACHE_BYTES);
+        let mut renderer = Self::new(width, height, input, Vec::new())?;
+        renderer.surface = vulkan_surface(&mut context, width, height, image)?;
+        renderer.backend.context = Some(context);
+        Ok(renderer)
+    }
+
+    /// Draw into a caller-owned image and leave it in GENERAL layout. Work is
+    /// submitted on the shared queue without a CPU wait or pixel readback.
+    ///
+    /// # Safety
+    /// The image and its allocation must outlive GPU use. Its supplied layout
+    /// and queue family must describe the image's actual state.
+    #[cfg(feature = "vulkan")]
+    pub unsafe fn render_vulkan(
+        &mut self,
+        time: f64,
+        image: &skia_safe::gpu::vk::ImageInfo,
+    ) -> Result<(), String> {
+        use skia_safe::gpu::{vk, FlushInfo, SyncCpu};
+        let context = self.backend.context.as_mut().ok_or("Not a GPU renderer")?;
+        self.surface = vulkan_surface(context, self.width, self.height, image)?;
+        let mut target = self.surface.clone();
+        self.compose_profiled(time, target.canvas())?;
+        let context = self.backend.context.as_mut().unwrap();
+        let state = vk::mutable_texture_states::new_vulkan(
+            vk::ImageLayout::GENERAL,
+            image.current_queue_family,
+        );
+        context.flush_surface_with_texture_state(
+            &mut self.surface,
+            &FlushInfo::default(),
+            Some(&state),
+        );
+        if !context.submit(SyncCpu::No) {
+            return Err("Cannot submit Skia Vulkan work".into());
+        }
+        self.stats.frames += 1;
+        Ok(())
     }
 
     /// Count of unresolved glyphs encountered on cache misses. Skia paints
@@ -405,16 +544,8 @@ impl Renderer {
             ));
         }
         let profile = self.profiling;
-        let started = profile.then(Instant::now);
-        let preparation =
-            self.stats.text_layout + self.stats.text_raster + self.stats.image_prepare;
-        let result = self.compose(time, profile);
-        if let Some(started) = started {
-            let nested = self.stats.text_layout + self.stats.text_raster + self.stats.image_prepare
-                - preparation;
-            self.stats.composition += started.elapsed().saturating_sub(nested);
-        }
-        result?;
+        let mut target = self.surface.clone();
+        self.compose_profiled(time, target.canvas())?;
         let started = profile.then(Instant::now);
         let info = ImageInfo::new(
             (self.width as i32, self.height as i32),
@@ -435,9 +566,23 @@ impl Renderer {
         Ok(())
     }
 
+    fn compose_profiled(&mut self, time: f64, canvas: &Canvas) -> Result<(), String> {
+        let started = self.profiling.then(Instant::now);
+        let preparation =
+            self.stats.text_layout + self.stats.text_raster + self.stats.image_prepare;
+        self.compose(time, self.profiling, canvas)?;
+        if let Some(started) = started {
+            let nested = self.stats.text_layout + self.stats.text_raster + self.stats.image_prepare
+                - preparation;
+            self.stats.composition += started.elapsed().saturating_sub(nested);
+        }
+        Ok(())
+    }
+
     /// PNG from exactly the same compositor used by `frame`.
     pub fn png(&mut self, time: f64) -> Result<Vec<u8>, String> {
-        self.compose(time, false)?;
+        let mut target = self.surface.clone();
+        self.compose(time, false, target.canvas())?;
         self.surface
             .image_snapshot()
             .encode(None, EncodedImageFormat::PNG, None)
@@ -491,7 +636,7 @@ impl Renderer {
             MAX_TEXT_RASTER_BYTES,
         )?;
         let started = profile.then(Instant::now);
-        let mut fill = surface(w, h, CACHE_BYTES)?;
+        let mut fill = self.backend.surface(w, h, CACHE_BYTES)?;
         fill.canvas().translate((pad, pad)).scale((sx, sy));
         paragraph.paint(fill.canvas(), (0.0, 0.0));
         let fill = fill.image_snapshot();
@@ -505,11 +650,11 @@ impl Renderer {
             self.stats.text_layout += started.elapsed();
         }
         let started = profile.then(Instant::now);
-        let mut alpha = surface(w, h, CACHE_BYTES)?;
+        let mut alpha = self.backend.surface(w, h, CACHE_BYTES)?;
         alpha.canvas().translate((pad, pad)).scale((sx, sy));
         mask.paint(alpha.canvas(), (0.0, 0.0));
         let alpha = alpha.image_snapshot();
-        let mut styled = surface(w, h, CACHE_BYTES)?;
+        let mut styled = self.backend.surface(w, h, CACHE_BYTES)?;
         let canvas = styled.canvas();
         if style.border == 3 {
             let rect = Rect::from_xywh(
@@ -533,7 +678,7 @@ impl Renderer {
             if outline > 0.0 {
                 dilation.set_image_filter(image_filters::dilate((outline, outline), None, None));
             }
-            let mut silhouette = surface(w, h, CACHE_BYTES)?;
+            let mut silhouette = self.backend.surface(w, h, CACHE_BYTES)?;
             silhouette
                 .canvas()
                 .draw_image(&alpha, (0.0, 0.0), Some(&dilation));
@@ -543,7 +688,7 @@ impl Renderer {
             // Knock out the foreground before tinting effects. Otherwise an
             // 80%-opaque fill over an 80%-opaque outline becomes 96% opaque.
             if shadow > 0.0 {
-                let mut effect = surface(w, h, CACHE_BYTES)?;
+                let mut effect = self.backend.surface(w, h, CACHE_BYTES)?;
                 effect
                     .canvas()
                     .draw_image(&silhouette, (shadow, shadow), None);
@@ -557,7 +702,7 @@ impl Renderer {
                 );
             }
             if outline > 0.0 {
-                let mut effect = surface(w, h, CACHE_BYTES)?;
+                let mut effect = self.backend.surface(w, h, CACHE_BYTES)?;
                 effect.canvas().draw_image(&silhouette, (0.0, 0.0), None);
                 effect.canvas().draw_image(&alpha, (0.0, 0.0), Some(&erase));
                 canvas.draw_image(
@@ -601,7 +746,7 @@ impl Renderer {
             event.height * self.height as f32 / 1080.0,
         );
         let (w, h, bytes) = raster_bytes(size.0, size.1, CACHE_BYTES)?;
-        let mut output = surface(w, h, CACHE_BYTES)?;
+        let mut output = self.backend.surface(w, h, CACHE_BYTES)?;
         // Keep the scheduler's footprint, but preserve the decoded artwork's
         // aspect ratio inside it (the previous FFmpeg chain used decrease+pad).
         let scale = (w as f32 / image.width() as f32).min(h as f32 / image.height() as f32);
@@ -629,11 +774,11 @@ impl Renderer {
         Ok(sprite)
     }
 
-    fn compose(&mut self, time: f64, profile: bool) -> Result<(), String> {
+    fn compose(&mut self, time: f64, profile: bool, canvas: &Canvas) -> Result<(), String> {
         if !time.is_finite() {
             return Err("Frame time must be finite".into());
         }
-        self.surface.canvas().clear(Color::TRANSPARENT);
+        canvas.clear(Color::TRANSPARENT);
         self.active_text.clear();
         self.active_text.extend_from_slice(self.timeline.at(time));
         self.active_text.sort_by(|a, b| {
@@ -691,7 +836,6 @@ impl Renderer {
                 dy = stack(&mut rect, event.layer, event.style.alignment, &self.placed);
                 self.placed.push((event.layer, event.style.alignment, rect));
             }
-            let canvas = self.surface.canvas();
             canvas.save();
             canvas.translate((anchor.0, anchor.1 + dy));
             // ASS positive rotation is counterclockwise in screen coordinates.
@@ -718,9 +862,7 @@ impl Renderer {
             let y = (event.from.1 + (event.to.1 - event.from.1) * f) * self.height as f32 / 1080.0;
             let mut paint = Paint::default();
             paint.set_alpha_f(event.opacity);
-            self.surface
-                .canvas()
-                .draw_image(&sprite.image, (x, y), Some(&paint));
+            canvas.draw_image(&sprite.image, (x, y), Some(&paint));
         }
         Ok(())
     }
@@ -830,6 +972,47 @@ fn surface(w: i32, h: i32, limit: usize) -> Result<Surface, String> {
         surfaces::raster_n32_premul((w, h)).ok_or("Cannot allocate CPU Skia raster")?;
     surface.canvas().clear(Color::TRANSPARENT);
     Ok(surface)
+}
+
+#[cfg(feature = "metal")]
+unsafe fn metal_surface(
+    context: &mut skia_safe::gpu::DirectContext,
+    width: u32,
+    height: u32,
+    texture: skia_safe::gpu::mtl::Handle,
+) -> Result<Surface, String> {
+    use skia_safe::gpu::{backend_render_targets, mtl, surfaces, SurfaceOrigin};
+    let info = mtl::TextureInfo::new(texture);
+    let target = backend_render_targets::make_mtl((width as i32, height as i32), &info);
+    surfaces::wrap_backend_render_target(
+        context,
+        &target,
+        SurfaceOrigin::TopLeft,
+        ColorType::BGRA8888,
+        None,
+        None,
+    )
+    .ok_or_else(|| "Cannot wrap Metal Skia render target".into())
+}
+
+#[cfg(feature = "vulkan")]
+unsafe fn vulkan_surface(
+    context: &mut skia_safe::gpu::DirectContext,
+    width: u32,
+    height: u32,
+    image: &skia_safe::gpu::vk::ImageInfo,
+) -> Result<Surface, String> {
+    use skia_safe::gpu::{backend_render_targets, surfaces, SurfaceOrigin};
+    let target = backend_render_targets::make_vk((width as i32, height as i32), image);
+    surfaces::wrap_backend_render_target(
+        context,
+        &target,
+        SurfaceOrigin::TopLeft,
+        ColorType::RGBA8888,
+        None,
+        None,
+    )
+    .ok_or_else(|| "Cannot wrap Vulkan Skia render target".into())
 }
 
 fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, String> {

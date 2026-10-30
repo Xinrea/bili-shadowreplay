@@ -44,3 +44,6 @@ pub struct RenderInput {
 pub const RENDERER_VERSION: &str = "skia082-noto-e20cbc2-unicode16-v2";
 
 pub use renderer::{RenderStats, Renderer};
+
+#[cfg(feature = "vulkan")]
+pub use skia_safe::gpu::vk;

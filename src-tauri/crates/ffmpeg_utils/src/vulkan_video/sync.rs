@@ -358,7 +358,11 @@ impl VulkanSync {
             } else {
                 (src_access as u32) | 0x10000
             },
-            dst_access: 0x8000 | 0x10000,
+            dst_access: if new_layout == 2 {
+                0x80 | 0x100 // COLOR_ATTACHMENT_READ | COLOR_ATTACHMENT_WRITE
+            } else {
+                0x8000 | 0x10000 // MEMORY_READ | MEMORY_WRITE
+            },
             old_layout: old_layout as i32,
             new_layout: new_layout as i32,
             src_family: u32::MAX,

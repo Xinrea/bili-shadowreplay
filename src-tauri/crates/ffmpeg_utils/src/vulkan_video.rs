@@ -389,6 +389,7 @@ impl VulkanVideoSession {
         let device = VulkanDevice::new(&options.device_selector)?;
         let pool = FramePool::new(device.clone(), &options)?;
         let mut graph = build_graph(&device, &pool, &options)?;
+        prepare_nv12_encode_pool(&mut graph)?;
         let encoder = open_encoder(&mut graph, &device, &options)?;
         let parent = target
             .parent()
@@ -496,14 +497,17 @@ impl VulkanVideoSession {
             vk.sem[0],
             vk.sem_value[0],
             vk.layout[0] as u32,
-            1,
+            2,
             vk.access[0],
         )?;
-        vk.layout[0] = 1; // VK_IMAGE_LAYOUT_GENERAL
-        vk.access[0] = 0x8000 | 0x10000;
+        // Skia m133 infers HOST_WRITE access from GENERAL images. Supply a
+        // render-attachment layout to keep its inferred source access valid
+        // for graphics stages without introducing a host access or copy.
+        vk.layout[0] = 2; // VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+        vk.access[0] = 0x80 | 0x100; // COLOR_ATTACHMENT_READ | WRITE
         vk.sem_value[0] = next;
         self.device.0.sync.wait(vk.sem[0], next)?;
-        lease.image.layout = 1;
+        lease.image.layout = 2;
         lease.wait = started.elapsed();
         self.images.insert(image.image);
         self.stats.unique_rgb_images = self.images.len();
@@ -763,6 +767,37 @@ fn build_graph(
         .validate()
         .map_err(|e| format!("Configure Vulkan GPU graph: {e}"))?;
     Ok(graph)
+}
+
+fn prepare_nv12_encode_pool(graph: &mut filter::Graph) -> Result<(), String> {
+    let mut sink = graph.get("gpu_out").unwrap();
+    let frames = unsafe { ffi::av_buffersink_get_hw_frames_ctx(sink.as_mut_ptr()) };
+    if frames.is_null() {
+        return Err("Vulkan conversion did not produce a hardware pool".into());
+    }
+    let pool = unsafe { &*(*frames).data.cast::<ffi::AVHWFramesContext>() };
+    if pool.format != ffi::AVPixelFormat::AV_PIX_FMT_VULKAN
+        || pool.sw_format != ffi::AVPixelFormat::AV_PIX_FMT_NV12
+    {
+        return Err("Vulkan conversion must output GPU NV12 frames".into());
+    }
+    let vk = unsafe { &mut *pool.hwctx.cast::<ffi::AVVulkanFramesContext>() };
+    if vk.format[0] != 1_000_156_003 || vk.format[1] != 0 {
+        return Err("Vulkan PoC requires one G8_B8R8_2PLANE_420_UNORM image per NV12 frame".into());
+    }
+    if pool.initial_pool_size != 0 {
+        return Err("Cannot configure a Vulkan conversion pool with preallocated frames".into());
+    }
+    // Configure the public pool before its first AVFrame is allocated, as
+    // libplacebo does when adding COLOR_ATTACHMENT usage during graph config.
+    // This single-image pool allocates independent memory for each frame and
+    // does not alias VkImages. FFmpeg's default ALIAS flag is unnecessary here
+    // and is absent from the NVIDIA driver's VideoFormatProperties flags;
+    // retaining it triggers the profile-compatibility VUID 08206 at encode.
+    // Keep MUTABLE_FORMAT, EXTENDED_USAGE and VIDEO_PROFILE_INDEPENDENT flags,
+    // plus every usage bit needed to render NV12 planes and encode the image.
+    vk.img_flags &= !0x400; // VK_IMAGE_CREATE_ALIAS_BIT
+    Ok(())
 }
 
 fn open_encoder(

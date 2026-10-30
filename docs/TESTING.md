@@ -141,7 +141,10 @@ cooperatively; these bounds do not provide a hard per-job memory or time limit.
 
 Single-input media tests compare copied and encoded streams with the matching
 FFmpeg 6/9 CLI, including packet payloads, codec headers, timestamps, durations,
-key flags, side data and metadata. They cover input-side copy seeks, output-side
+key flags, side data and metadata. Their CLI oracle fixes simple and complex
+filter graphs to one thread, matching the native pipeline; encoded-byte parity
+does not assert equivalence with host-dependent automatic filter threading.
+They cover input-side copy seeks, output-side
 encoded seeks, negative timestamps, default subtitle selection and explicitly
 incompatible subtitle copies. Matroska's initially missing B-frame DTS is
 predicted before copying. Frame scheduling has 25 additional exact framehash

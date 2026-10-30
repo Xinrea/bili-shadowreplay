@@ -264,7 +264,7 @@ pub fn native_video_options(
         filter: filter.map(str::to_owned),
         ..Default::default()
     };
-    for pair in args.chunks_exact(2) {
+    for pair in args.as_chunks::<2>().0 {
         let (flag, value) = (pair[0].as_str(), pair[1].as_str());
         match flag {
             "-b:v" => options.bit_rate = Some(native_bit_rate(value)?),

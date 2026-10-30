@@ -415,6 +415,9 @@ fn has_cli() -> bool {
 fn cli(args: &[String], output: &Path) {
     let result = Command::new("ffmpeg")
         .args(["-v", "error", "-nostdin", "-y"])
+        // Native filter graphs use one thread. Keep the byte-for-byte oracle
+        // on the same configuration instead of host-dependent slice threading.
+        .args(["-filter_threads", "1", "-filter_complex_threads", "1"])
         .args(args)
         .arg(output)
         .output()

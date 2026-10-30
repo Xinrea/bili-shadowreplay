@@ -1,0 +1,14 @@
+[package]
+name = "vulkan-video-poc"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Exercise the real libraries without Tauri, speech runtimes or the application.
+[workspace]
+
+[dependencies]
+ffmpeg_utils = { path = "../../src-tauri/crates/ffmpeg_utils", features = ["vulkan-video"] }
+native-overlay = { path = "../../src-tauri/crates/native-overlay", features = ["vulkan"] }
+serde_json = "1"
+tempfile = "3.20"

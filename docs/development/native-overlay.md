@@ -31,6 +31,8 @@ node scripts/prepare-windows-skia.mjs --vulkan
 
 该选项选择官方 Skia 0.82 `textlayout-vulkan` 预编译包，校验下载 SHA-256、包内版本和 feature key 后执行相同的 ICU 符号处理。默认调用仍准备 `textlayout` CPU 包。它只准备链接依赖，Vulkan 设备与编码能力由运行时探测；源码构建时的 Skia feature 必须与所选压缩包一致。
 
+Windows 的 Skia GPU → FFmpeg Vulkan Video 独立验证入口位于仓库的 [`scripts/vulkan-video-poc`](https://github.com/Xinrea/bili-shadowreplay/blob/main/scripts/vulkan-video-poc/README.md)。它复用真实弹幕渲染器，在同一个 Vulkan 设备上完成绘制、NV12 转换和 H.264/HEVC 硬件编码，并提供 API 跟踪、输出视频与画面内容的独立校验；文档包含已验证结果和 FFmpeg SDK 尚存的退出清理问题。该 PoC 尚未接入正式导出路径。
+
 ## Linux：Ubuntu 24.04 起
 
 桌面发布环境为 **Ubuntu 24.04**，Ubuntu 22.04 不再是受支持的构建或运行环境。原因是：

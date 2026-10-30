@@ -1,0 +1,121 @@
+{
+  "movie_archive": {
+    "url": "https://download.blender.org/demo/movies/BBB/bbb_sunflower_1080p_60fps_normal.mp4.zip",
+    "sha256": "68c456673409f8df09b80d0afe29ecb38ef110551fa8a93c83e54a96ebdaec78",
+    "bytes": 355019001
+  },
+  "emoji": {
+    "emoji-00.png": {
+      "url": "https://raw.githubusercontent.com/jdecked/twemoji/v15.1.0/assets/72x72/1f600.png",
+      "sha256": "9cfc5ad34e89b6eebddcd5ec715c224a86c99ea5b9fad999407dee7e32f681b6",
+      "bytes": 806
+    },
+    "emoji-01.png": {
+      "url": "https://raw.githubusercontent.com/jdecked/twemoji/v15.1.0/assets/72x72/1f602.png",
+      "sha256": "c252a58367211c11d839155e50dc5e98551826c64b8d2e8d6267124c054ceae0",
+      "bytes": 1095
+    },
+    "emoji-02.png": {
+      "url": "https://raw.githubusercontent.com/jdecked/twemoji/v15.1.0/assets/72x72/1f60d.png",
+      "sha256": "ed402544b4e4f781f41f314388826889618fdb9972b28212dcdf91c76673ac0c",
+      "bytes": 978
+    },
+    "emoji-03.png": {
+      "url": "https://raw.githubusercontent.com/jdecked/twemoji/v15.1.0/assets/72x72/1f914.png",
+      "sha256": "5116f7d07677f06785887c0af23c189b541a306d6b792d605ffaf3ed9f0e912d",
+      "bytes": 1028
+    },
+    "emoji-04.png": {
+      "url": "https://raw.githubusercontent.com/jdecked/twemoji/v15.1.0/assets/72x72/1f973.png",
+      "sha256": "71fd857dc56ed5075127c33ccdae59ad5d01f1fdb60c594d96bb84cab16c305c",
+      "bytes": 1260
+    },
+    "emoji-05.png": {
+      "url": "https://raw.githubusercontent.com/jdecked/twemoji/v15.1.0/assets/72x72/1f62d.png",
+      "sha256": "c22c89c24607d04f39094af2216b611d1d033055b31afafbc6a185990982b844",
+      "bytes": 980
+    },
+    "emoji-06.png": {
+      "url": "https://raw.githubusercontent.com/jdecked/twemoji/v15.1.0/assets/72x72/1f44d.png",
+      "sha256": "42b43325b3edacba2a0e72b742bdc6fc5e4bc2ad38adca271fcc6d8353639887",
+      "bytes": 778
+    },
+    "emoji-07.png": {
+      "url": "https://raw.githubusercontent.com/jdecked/twemoji/v15.1.0/assets/72x72/1f525.png",
+      "sha256": "b0f4c358afcce0ddcde029e72ea2d6054eece0ce5a34c9a7e0c5761ff4f33a25",
+      "bytes": 928
+    },
+    "emoji-08.png": {
+      "url": "https://raw.githubusercontent.com/jdecked/twemoji/v15.1.0/assets/72x72/1f389.png",
+      "sha256": "7289a4aa98f9a81a1108f98abfcebd214dab96df64c8ea67ed6e83116a8e4ce8",
+      "bytes": 1376
+    },
+    "emoji-09.png": {
+      "url": "https://raw.githubusercontent.com/jdecked/twemoji/v15.1.0/assets/72x72/2764.png",
+      "sha256": "68da7c6dc7d9c0456174f2575abe8f8abd52cde7a4017700579519173a8a4a34",
+      "bytes": 498
+    },
+    "emoji-10.png": {
+      "url": "https://raw.githubusercontent.com/jdecked/twemoji/v15.1.0/assets/72x72/1f680.png",
+      "sha256": "a4d8b439357e38510505048dfc85c54c9cbb08c04ef4d9d4bacd03572a17c9a5",
+      "bytes": 1064
+    },
+    "emoji-11.png": {
+      "url": "https://raw.githubusercontent.com/jdecked/twemoji/v15.1.0/assets/72x72/1f431.png",
+      "sha256": "536beb584cb8e894615262dc5342dc13f18f7fe21f4657a936dc559b99031b4a",
+      "bytes": 1225
+    }
+  },
+  "emoji_license": {
+    "url": "https://raw.githubusercontent.com/jdecked/twemoji/v15.1.0/LICENSE-GRAPHICS",
+    "sha256": "8ae9438818c26e4873b91d8c6ad620526c011e27e125677f13031eda903f007c",
+    "bytes": 18524
+  },
+  "prepared_source": {
+    "sha256": "e99d957cabd2d7346b50c29d6ca50df6ae23fffca9fcff63ee27c7bb77407580",
+    "bytes": 194461081,
+    "clip_in_original_seconds": [
+      60,
+      360
+    ]
+  },
+  "warmup_source": {
+    "sha256": "e7ec32f16beae7fcbd22727f03b244ff169d25176b54f159e59fae12e4f4e32e",
+    "bytes": 3737990,
+    "frames": 600,
+    "seconds": 10
+  },
+  "scene_files": {
+    "emoji-03.png": "5116f7d07677f06785887c0af23c189b541a306d6b792d605ffaf3ed9f0e912d",
+    "danmaku.ass": "b8dc43cf564f292e17a05f8e209d5682cdda99eeeb5b177e3d96b6e61b147fd4",
+    "emoji-02.png": "ed402544b4e4f781f41f314388826889618fdb9972b28212dcdf91c76673ac0c",
+    "emoji-00.png": "9cfc5ad34e89b6eebddcd5ec715c224a86c99ea5b9fad999407dee7e32f681b6",
+    "emoji-01.png": "c252a58367211c11d839155e50dc5e98551826c64b8d2e8d6267124c054ceae0",
+    "emoji-11.png": "536beb584cb8e894615262dc5342dc13f18f7fe21f4657a936dc559b99031b4a",
+    "emoji-05.png": "c22c89c24607d04f39094af2216b611d1d033055b31afafbc6a185990982b844",
+    "emoji-04.png": "71fd857dc56ed5075127c33ccdae59ad5d01f1fdb60c594d96bb84cab16c305c",
+    "emoji-10.png": "a4d8b439357e38510505048dfc85c54c9cbb08c04ef4d9d4bacd03572a17c9a5",
+    "emoji-06.png": "42b43325b3edacba2a0e72b742bdc6fc5e4bc2ad38adca271fcc6d8353639887",
+    "emoji-07.png": "b0f4c358afcce0ddcde029e72ea2d6054eece0ce5a34c9a7e0c5761ff4f33a25",
+    "warmup.ass": "df7bde9f9831a05446597c69b67588747719ac32af3602a383368e2eb191a6db",
+    "warmup.json": "53f090b3948b2171d7e8a4ae0e1bb138ea297641fb9c076bf3f3898fd8a5663c",
+    "scenario.json": "c51f7f405fbe0b50d2165602c813ff5f11e4b5609919212e3682eaff214086f4",
+    "emoji-09.png": "68da7c6dc7d9c0456174f2575abe8f8abd52cde7a4017700579519173a8a4a34",
+    "emoji-08.png": "7289a4aa98f9a81a1108f98abfcebd214dab96df64c8ea67ed6e83116a8e4ce8"
+  },
+  "generation": {
+    "source_dimensions": [
+      1920,
+      1080
+    ],
+    "source_fps": 60,
+    "duration_seconds": 300,
+    "frames": 18000,
+    "text_events": 4800,
+    "image_events": 1200,
+    "rate_per_second": 20,
+    "rolling_seconds": 8,
+    "font": "Arial with same-platform system CJK fallback",
+    "generation_ffmpeg": "Homebrew ffmpeg-full 9.0.2; generated once on macOS and distributed byte-for-byte"
+  }
+}

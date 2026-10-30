@@ -1,0 +1,12 @@
+{
+  "revision": "730ebd23d57ae01d7ad30e49d944288c07dfbef4",
+  "imports": {
+    "src-tauri/src/ffmpeg/hwaccel.rs": "e612931b458b2dc8700a56f932c7de3d4ed31453466c7f3c8e368f4fb00e9094",
+    "src-tauri/src/ffmpeg/native_gpu.rs": "f149963466e476af5622b0727dc125b1ddfec62410794156d7dbe34c007d25e7",
+    "src-tauri/src/ffmpeg/native_overlay.rs": "74a884f2c08ddfc9b733f70be3167aeda794cd6e351675c0c805745c3ebc44ab",
+    "src-tauri/src/ffmpeg/runner.rs": "0ba67564617eec7e76c5de59431fada862a498b74a69fb9e85f7066cc4824b62",
+    "src-tauri/src/ffmpeg/danmu.rs": "0d4b6e9d837394ad92eb684ed6bd369f9761614a9fdd01664ab1d6f570d26280",
+    "src-tauri/src/project.rs": "9d6490e2307ef85ef091b1fa7cb2926423027f807e50f6fb97b59373bffd0e20"
+  },
+  "scope": "Unmodified production source imports. Only scene/profile data, an exact danmaku graph/plan skeleton, CLI/reporting and transparent reference output are standalone."
+}

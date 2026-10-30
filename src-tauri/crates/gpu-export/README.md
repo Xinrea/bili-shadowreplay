@@ -72,7 +72,8 @@ rendering and composition. The render backend and encoder are saved separately:
 CPU+VideoToolbox and Metal+VideoToolbox remain independent choices, and available
 CPU+hardware-encoder combinations bypass Metal/Vulkan rendering and composition.
 At least one usable software encoder is required.
-Their GOP and B-frame count also use the encoder's FFmpeg defaults. Neither is a UI setting.
+CPU+VideoToolbox also uses GOP 240; other CPU combinations use FFmpeg's GOP default.
+All CPU combinations keep the default B-frame count. Neither is a UI setting.
 Each encoder supplies its own UI controls, defaults and validation; switching
 encoders resets their specific options. The same validated options are passed
 to the FFmpeg command or the native worker. Software CRF uses `-1` for target

@@ -944,7 +944,14 @@ mod tests {
         let defaults = RenderSettings::default();
         assert_eq!(
             serde_json::to_value(&defaults).unwrap(),
-            json!({ "codec": "hevc", "priority": "speed", "bitrate_kbps": 10000 })
+            json!({
+                "codec": "hevc",
+                "priority": "speed",
+                "bitrate_kbps": 10000,
+                "render_backend": null,
+                "encoder": null,
+                "options": {}
+            })
         );
         assert_eq!(
             serde_json::from_str::<RenderSettings>("{}").unwrap(),

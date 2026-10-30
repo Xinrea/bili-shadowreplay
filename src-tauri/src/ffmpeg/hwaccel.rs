@@ -33,9 +33,9 @@ const V4L2M2M_ENCODER: &str = "h264_v4l2m2m";
 const VAAPI_DEVICE_DIR: &str = "/dev/dri";
 const VAAPI_RENDER_PREFIX: &str = "renderD";
 const VAAPI_FILTER_SUFFIX: &str = "format=nv12,hwupload";
-/// Maximum distance between keyframes, in frames (not seconds). Scene changes
-/// and new render segments may insert earlier keyframes; B-frame policy is unchanged.
-const OUTPUT_GOP_ARGS: [&str; 2] = ["-g", "120"];
+/// Maximum distance between VideoToolbox keyframes, in frames (not seconds).
+/// Scene changes and new render segments may insert earlier keyframes.
+const VIDEOTOOLBOX_GOP: &str = "240";
 
 // 缓存选中的编码器，避免重复检查
 static ENCODER_CACHE: OnceLock<String> = OnceLock::new();
@@ -111,8 +111,10 @@ pub fn apply_x264_quality_args(command: &mut tokio::process::Command, encoder: &
     apply_x264_quality_args_with_bitrate(command, encoder, None);
 }
 
-fn with_output_gop(mut args: Vec<String>) -> Vec<String> {
-    args.extend(OUTPUT_GOP_ARGS.map(str::to_owned));
+fn with_output_gop(encoder: &str, mut args: Vec<String>) -> Vec<String> {
+    if matches!(encoder, "h264_videotoolbox" | "hevc_videotoolbox") {
+        args.extend(["-g", VIDEOTOOLBOX_GOP].map(str::to_owned));
+    }
     args
 }
 
@@ -137,7 +139,7 @@ pub fn apply_x264_quality_args_with_bitrate(
 pub fn quality_args_with_bitrate(encoder: &str, bitrate: Option<NonZeroU32>) -> Vec<String> {
     let defaults = quality_args_for_encoder(encoder);
     let Some(kbps) = bitrate.map(|bitrate| u64::from(bitrate.get())) else {
-        return with_output_gop(defaults.iter().map(ToString::to_string).collect());
+        return with_output_gop(encoder, defaults.iter().map(ToString::to_string).collect());
     };
     let rate = |flag: &str| match flag {
         "-b:v" => Some(kbps),
@@ -163,7 +165,7 @@ pub fn quality_args_with_bitrate(encoder: &str, bitrate: Option<NonZeroU32>) -> 
             args.push(format!("{}k", rate(flag).unwrap_or(kbps)));
         }
     }
-    with_output_gop(args)
+    with_output_gop(encoder, args)
 }
 
 /// 返回指定 H.264 编码器应使用的质量参数。
@@ -175,7 +177,7 @@ pub fn quality_args_for_encoder(encoder: &str) -> &'static [&'static str] {
             "-preset", "p5", "-rc", "vbr", "-cq", "23", "-b:v", "8000k", "-maxrate", "10000k",
             "-bufsize", "16000k",
         ],
-        VIDEOTOOLBOX_ENCODER => &["-b:v", "8000k", "-g", "240"],
+        VIDEOTOOLBOX_ENCODER => &["-b:v", "8000k"],
         QSV_ENCODER => &[
             "-preset", "medium", "-b:v", "8000k", "-maxrate", "10000k", "-bufsize", "16000k",
         ],
@@ -212,7 +214,12 @@ pub fn project_quality_args(
         }
         "h264_videotoolbox" | "hevc_videotoolbox" => {
             // FFmpeg's name for VideoToolbox's PrioritizeEncodingSpeedOverQuality.
-            &["-prio_speed", if quality { "0" } else { "1" }]
+            &[
+                "-prio_speed",
+                if quality { "0" } else { "1" },
+                "-g",
+                VIDEOTOOLBOX_GOP,
+            ]
         }
         "h264_qsv" | "hevc_qsv" => &["-preset", if quality { "slow" } else { "veryfast" }],
         "h264_amf" | "hevc_amf" => &[
@@ -265,7 +272,7 @@ pub fn project_quality_args(
     if encoder.starts_with("hevc_") || encoder == "libx265" {
         args.extend(["-tag:v".to_string(), "hvc1".to_string()]);
     }
-    // GOP and B-frame overrides belong only to the native Metal worker.
+    // B-frame overrides belong only to the native Metal worker.
     args
 }
 
@@ -626,15 +633,12 @@ mod tests {
 
     #[test]
     fn no_bitrate_keeps_the_default_quality() {
-        for encoder in ALL_ENCODERS {
-            assert_eq!(
-                quality_args_with_bitrate(encoder, None),
-                quality_args_for_encoder(encoder)
-                    .iter()
-                    .copied()
-                    .chain(["-g", "120"])
-                    .collect::<Vec<_>>()
-            );
+        for encoder in ALL_ENCODERS.into_iter().chain(["hevc_videotoolbox"]) {
+            let mut expected = quality_args_for_encoder(encoder).to_vec();
+            if matches!(encoder, "h264_videotoolbox" | "hevc_videotoolbox") {
+                expected.extend(["-g", "240"]);
+            }
+            assert_eq!(quality_args_with_bitrate(encoder, None), expected);
         }
     }
 
@@ -642,10 +646,7 @@ mod tests {
     fn bitrate_replaces_constant_quality_for_libx264() {
         assert_eq!(
             quality_args_with_bitrate("libx264", NonZeroU32::new(12000)),
-            [
-                "-preset", "medium", "-b:v", "12000k", "-maxrate", "15000k", "-bufsize", "24000k",
-                "-g", "120"
-            ]
+            ["-preset", "medium", "-b:v", "12000k", "-maxrate", "15000k", "-bufsize", "24000k"]
         );
     }
 
@@ -655,12 +656,12 @@ mod tests {
             quality_args_with_bitrate("h264_nvenc", NonZeroU32::new(4000)),
             [
                 "-preset", "p5", "-rc", "vbr", "-b:v", "4000k", "-maxrate", "5000k", "-bufsize",
-                "8000k", "-g", "120"
+                "8000k"
             ]
         );
         assert_eq!(
             quality_args_with_bitrate("h264_v4l2m2m", NonZeroU32::new(4000)),
-            ["-b:v", "4000k", "-g", "120"]
+            ["-b:v", "4000k"]
         );
     }
 
@@ -682,7 +683,12 @@ mod tests {
                 );
                 assert_eq!(args.len() % 2, 0);
                 assert!(args.windows(2).any(|pair| pair == ["-b:v", "12000k"]));
-                assert!(!args.iter().any(|arg| arg == "-g"));
+                if matches!(encoder, "h264_videotoolbox" | "hevc_videotoolbox") {
+                    assert_eq!(args.iter().filter(|arg| *arg == "-g").count(), 1);
+                    assert!(args.windows(2).any(|pair| pair == ["-g", "240"]));
+                } else {
+                    assert!(!args.iter().any(|arg| arg == "-g"));
+                }
                 assert!(
                     !args.iter().any(|arg| {
                         ["-crf", "-cq", "-maxrate", "-bufsize", "-bf", "-b_ref_mode"]
@@ -695,12 +701,16 @@ mod tests {
     }
 
     #[test]
-    fn legacy_encoding_uses_the_same_gop_with_or_without_manual_bitrate() {
-        for encoder in ALL_ENCODERS {
+    fn legacy_encoding_only_sets_gop_for_videotoolbox() {
+        for encoder in ALL_ENCODERS.into_iter().chain(["hevc_videotoolbox"]) {
             for bitrate in [None, NonZeroU32::new(12000)] {
                 let args = quality_args_with_bitrate(encoder, bitrate);
-                assert_eq!(args.iter().filter(|arg| *arg == "-g").count(), 1);
-                assert!(args.windows(2).any(|pair| pair == ["-g", "120"]));
+                if matches!(encoder, "h264_videotoolbox" | "hevc_videotoolbox") {
+                    assert_eq!(args.iter().filter(|arg| *arg == "-g").count(), 1);
+                    assert!(args.windows(2).any(|pair| pair == ["-g", "240"]));
+                } else {
+                    assert!(!args.iter().any(|arg| arg == "-g"));
+                }
                 assert!(!args
                     .iter()
                     .any(|arg| ["-sc_threshold", "-keyint_min", "-bf"].contains(&arg.as_str())));
@@ -782,10 +792,9 @@ mod tests {
 
     #[test]
     fn test_quality_args_for_videotoolbox() {
-        assert_eq!(
-            quality_args_for_encoder("h264_videotoolbox"),
-            &["-b:v", "8000k", "-maxrate", "10000k", "-bufsize", "16000k"]
-        );
+        for encoder in ["h264_videotoolbox", "hevc_videotoolbox"] {
+            assert_eq!(quality_args_for_encoder(encoder), &["-b:v", "8000k"]);
+        }
     }
 
     #[test]

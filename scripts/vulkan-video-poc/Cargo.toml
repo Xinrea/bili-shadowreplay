@@ -3,6 +3,7 @@ name = "vulkan-video-poc"
 version = "0.1.0"
 edition = "2021"
 publish = false
+default-run = "vulkan-video-poc"
 
 [[bin]]
 name = "vulkan-benchmark"

@@ -216,3 +216,31 @@ scheduler defaults. Both paths use the same generated background and scene.
 There is no source-video decode, audio or project-cache work here: the measured
 ratio describes the render/composite/convert/encode subpipeline, not a whole
 project export or an equal-quality codec comparison.
+
+### Measured on 2026-10-30
+
+On the Windows Ryzen 9 5900X / RTX 5070 machine, using the defaults above and
+five trials per backend per scene, the completed-job medians were:
+
+| Synthetic arrivals | CPU Skia + NVENC | Skia Vulkan + Vulkan Video | Speed ratio | Time reduction |
+| --- | ---: | ---: | ---: | ---: |
+| 2 messages/sec | 16.934 s / 106.3 fps | 7.854 s / 229.2 fps | 2.156× | 53.62% |
+| 10 messages/sec | 21.495 s / 83.7 fps | 7.916 s / 227.4 fps | 2.715× | 63.17% |
+
+Each job encoded 1800 frames / 30 seconds. Every measured output passed the
+frame-count, timestamp and GOP checks. The five outputs in each scene/backend
+cohort had identical SHA-256 values; the sampled CPU/GPU scenes also passed the
+content sanity check. Observed B-frame counts were zero on both backends.
+
+The corresponding median VBR bitrates were 8.571/9.133 Mbps (CPU/Vulkan) for
+the 2/sec load and 10.490/9.673 Mbps for 10/sec. Both requested 10 Mbps; these
+are observed default-policy results, not quality-matched encodes. CPU raster
+surface readback took 0.75–0.89 s and native raw-frame allocation/copy took
+3.59–3.73 s per job. Those overlapping stages are not additive savings; the
+complete-job timings above establish the speed ratio.
+
+The [benchmark receipt](validation/windows-default-benchmark-2026-10-30.json)
+preserves all twenty trials, encoder settings, output metadata/hashes, stage
+timings, hardware, binary/source checks and interpretation limits. The full
+raw receipt/logs remain in the ignored `output/benchmark-default-20261030`
+directory and on the Windows host.

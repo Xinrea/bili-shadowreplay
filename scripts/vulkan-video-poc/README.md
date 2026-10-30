@@ -178,3 +178,41 @@ atomically replaced that same path with an independently decoded 640×480,
 committed receipt. The Windows source check also matched all 70 checked source,
 manifest, helper and validator files against the local copies; the receipt
 preserves the source-manifest digest.
+
+## Default-parameter performance comparison
+
+`vulkan-benchmark` compares the current CPU path with the shared-image Vulkan
+path using the project's HEVC / speed / 10000 Kbps / GOP 120 settings at
+1920×1080, 60 fps. The CPU path retains the production three recyclable BGRA
+buffers, one-frame channel, native frame copy, RGB overlay and NV12 conversion;
+rendering and encoding overlap. Its encoder is `hevc_nvenc` with `p1`/VBR and
+`hvc1`. The Vulkan path uses `hevc_vulkan`, VBR and the encoder's default quality
+level 0, with the existing PoC's B0 policy and default `hev1` tag. These are
+backend-specific speed policies, not equivalent quality presets.
+
+Run from an ordinary PowerShell with the SDK configured as above:
+
+```powershell
+$skia = node scripts/prepare-windows-skia.mjs --vulkan
+$env:SKIA_BINARIES_URL = ($skia | Where-Object { $_ -like 'SKIA_BINARIES_URL=*' }) -replace '^SKIA_BINARIES_URL=', ''
+$env:CARGO_TARGET_DIR = "$PWD\src-tauri\target\vulkan-poc"
+cargo build --release --locked --manifest-path scripts/vulkan-video-poc/Cargo.toml --bin vulkan-benchmark
+python scripts/vulkan-video-poc/benchmark.py `
+  --executable "$env:CARGO_TARGET_DIR\release\vulkan-benchmark.exe" `
+  --ffmpeg "$env:FFMPEG_DIR\bin\ffmpeg.exe" --ffprobe "$env:FFMPEG_DIR\bin\ffprobe.exe" `
+  --output src-tauri/target/vulkan-default-benchmark
+```
+
+The driver warms up both paths, alternates their order over five runs, and uses
+the median **complete job** time, including initialization, drain, muxing and
+resource destruction. API tracing and validation are disabled for timings.
+Post-run checks independently verify every output frame's timestamp, frame
+count and GOP, and compare decoded scene samples outside the measured interval.
+
+The two synthetic loads use the default danmaku style (font size 36 in 720p ASS
+coordinates, bold 微软雅黑, opacity 0.8), at 2 or 10 arrivals per second with
+eight-second flights. These rates describe test content, not application
+scheduler defaults. Both paths use the same generated background and scene.
+There is no source-video decode, audio or project-cache work here: the measured
+ratio describes the render/composite/convert/encode subpipeline, not a whole
+project export or an equal-quality codec comparison.

@@ -160,7 +160,7 @@ pub fn quality_args_with_bitrate(encoder: &str, bitrate: Option<NonZeroU32>) -> 
 /// 返回指定 H.264 编码器应使用的质量参数。
 pub fn quality_args_for_encoder(encoder: &str) -> &'static [&'static str] {
     match encoder {
-        "h264_vulkan" | "hevc_vulkan" => &["-rc_mode", "vbr", "-b:v", "8000k"],
+        "h264_vulkan" | "hevc_vulkan" => &["-rc_mode", "vbr", "-async_depth", "3", "-b:v", "8000k"],
         VAAPI_ENCODER => &["-b:v", "8000k", "-maxrate", "10000k", "-bufsize", "16000k"],
         NVENC_ENCODER => &[
             "-preset", "p5", "-rc", "vbr", "-cq", "23", "-b:v", "8000k", "-maxrate", "10000k",
@@ -198,7 +198,7 @@ pub fn project_quality_args(
     use crate::project::EncodingPriority;
     let quality = settings.priority == EncodingPriority::Quality;
     let options: &[&str] = match encoder {
-        "h264_vulkan" | "hevc_vulkan" => &["-rc_mode", "vbr"],
+        "h264_vulkan" | "hevc_vulkan" => &["-rc_mode", "vbr", "-async_depth", "3"],
         "h264_nvenc" | "hevc_nvenc" => {
             &["-preset", if quality { "p7" } else { "p1" }, "-rc", "vbr"]
         }
@@ -343,7 +343,7 @@ pub fn native_video_options(
             }
             "-tag:v" => options.tag = Some(value.to_owned()),
             "-preset" | "-crf" | "-cq" | "-rc" | "-rc_mode" | "-quality" | "-prio_speed"
-            | "-rate_control" | "-compression_level" => {
+            | "-rate_control" | "-compression_level" | "-async_depth" => {
                 options
                     .options
                     .insert(flag[1..].to_owned(), value.to_owned());
@@ -537,10 +537,21 @@ mod tests {
         assert!(options.frame_processor);
         assert_eq!(options.bit_rate, Some(10_000_000));
         assert_eq!(options.gop, Some(120));
+        assert_eq!(
+            options.options.get("async_depth").map(String::as_str),
+            Some("3")
+        );
         assert_eq!(options.tag.as_deref(), Some("hvc1"));
         assert_eq!(super::output_format_filter("hevc_vulkan"), "format=nv12");
         settings.priority = crate::project::EncodingPriority::Quality;
         assert!(super::native_video_options("hevc_vulkan", None, None, Some(&settings)).is_err());
+        for encoder in ["h264_vulkan", "hevc_vulkan"] {
+            let legacy = super::native_video_options(encoder, None, None, None).unwrap();
+            assert_eq!(
+                legacy.options.get("async_depth").map(String::as_str),
+                Some("3")
+            );
+        }
     }
 
     #[test]

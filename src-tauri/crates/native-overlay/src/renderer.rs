@@ -379,6 +379,7 @@ impl Renderer {
         background: Color,
         context: &mut skia_safe::gpu::DirectContext,
         target: Surface,
+        sync_cpu: skia_safe::gpu::SyncCpu,
     ) -> Result<(Surface, Duration, Duration), String> {
         let placeholder = std::mem::replace(&mut self.surface, target);
         let start = Instant::now();
@@ -396,10 +397,9 @@ impl Renderer {
             self.stats.composition += composition.saturating_sub(preparation);
         }
         let start = Instant::now();
-        // Initial PoC synchronizes completion on the CPU, not the pixels. This
-        // also makes failure cleanup safe after a partially drawn frame. A later
-        // queue-submit bridge can replace this wait with timeline semaphores.
-        context.flush_and_submit_surface(&mut self.surface, skia_safe::gpu::SyncCpu::Yes);
+        // The caller connects these writes to its media-frame timeline on the
+        // same queue and retains the image until all GPU consumers finish.
+        context.flush_and_submit_surface(&mut self.surface, sync_cpu);
         let submitted = start.elapsed();
         let target = std::mem::replace(&mut self.surface, placeholder);
         result?;

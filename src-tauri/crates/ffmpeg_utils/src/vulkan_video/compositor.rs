@@ -3,7 +3,7 @@
 //! image on the shared Vulkan device, and returned as hardware NV12 AVFrames.
 
 use super::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct VulkanCompositorStats {
@@ -14,10 +14,24 @@ pub struct VulkanCompositorStats {
     pub gpu_wait: Duration,
     pub upload: Duration,
     pub composition: Duration,
+    pub in_flight_peak: usize,
+    pub frame_slot_reuses: u64,
+    pub frame_reuse_wait: Duration,
+    pub frame_drain_wait: Duration,
 }
 
-/// A synchronous first implementation. The media worker creates this together
-/// with its borrowed Skia context, and retains both on that same worker thread.
+struct InFlightFrame {
+    pts: i64,
+    overlay: frame::Video,
+    base: Option<frame::Video>,
+    // The same AVVkFrame state is shared with the native encoder. Its most
+    // recent timeline includes the encoder's queued read before slot reuse.
+    output: Option<frame::Video>,
+}
+
+/// The media worker creates this together with its borrowed Skia context,
+/// and retains both on that same worker thread. Asynchronous mode bounds the
+/// retained frame transactions to three without exposing GPU pixels to the CPU.
 pub struct VulkanCompositor {
     // The graph must release its frame references before the pools/device.
     graph: filter::Graph,
@@ -32,6 +46,8 @@ pub struct VulkanCompositor {
     last_pts: Option<i64>,
     timings: BTreeMap<i64, i64>,
     flushed: bool,
+    mode: VulkanSubmissionMode,
+    in_flight: VecDeque<InFlightFrame>,
 }
 
 impl Drop for VulkanCompositor {
@@ -39,6 +55,10 @@ impl Drop for VulkanCompositor {
         // A failed renderer can leave a live lease outside this object. Its
         // pool keeps the device alive, and observes the same queue-lock flag.
         self.pool.wait_and_unlock_queue();
+        // This must precede dropping the graph and all pool references, also
+        // after cancellation or a renderer error following an async submit.
+        let _ = self.synchronize();
+        self.in_flight.clear();
     }
 }
 
@@ -48,12 +68,26 @@ impl VulkanCompositor {
         composite_video: bool,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Self, String> {
+        Self::new_with_mode(
+            options,
+            composite_video,
+            cancelled,
+            VulkanSubmissionMode::Synchronous,
+        )
+    }
+
+    pub fn new_with_mode(
+        options: VulkanVideoOptions,
+        composite_video: bool,
+        cancelled: Arc<AtomicBool>,
+        mode: VulkanSubmissionMode,
+    ) -> Result<Self, String> {
         options.validate()?;
         crate::metadata::initialize()?;
         if cancelled.load(Ordering::Acquire) {
             return Err("Vulkan composition cancelled".into());
         }
-        let device = VulkanDevice::new(&options.device_selector)?;
+        let device = VulkanDevice::new_with_mode(&options.device_selector, mode)?;
         let pool = FramePool::new(device.clone(), &options)?;
         let base_pool = if composite_video {
             let pool = FramePool::new_format(
@@ -98,6 +132,8 @@ impl VulkanCompositor {
             last_pts: None,
             timings: BTreeMap::new(),
             flushed: false,
+            mode,
+            in_flight: VecDeque::new(),
         };
         validate_base(
             &compositor.output_template()?,
@@ -105,6 +141,21 @@ impl VulkanCompositor {
             &compositor.device,
         )?;
         Ok(compositor)
+    }
+
+    pub fn submission_mode(&self) -> VulkanSubmissionMode {
+        self.mode
+    }
+
+    /// Wait for GPU work before destroying a renderer borrowing this device.
+    /// This also works after cancellation and does not flush/end the stream.
+    /// The owner must call it before dropping Skia's textures and GPU context;
+    /// the compositor alone cannot control an external renderer's drop order.
+    pub fn synchronize(&mut self) -> Result<(), String> {
+        // Preserve a live lease's graphics-queue lock. It can still be
+        // submitted after this wait; only terminal Drop releases that lock.
+        self.device.0.sync.wait_idle()?;
+        self.device.0.sync.drain()
     }
 
     pub fn device(&self) -> &VulkanDevice {
@@ -146,6 +197,16 @@ impl VulkanCompositor {
     pub fn acquire_frame(&mut self, pts: i64) -> Result<VulkanFrameLease, String> {
         self.check_cancelled()?;
         validate_pts(self.last_pts, pts, self.flushed)?;
+        if self.pool.active_lease.get() {
+            return Err(
+                "Submit or drop the active Vulkan frame lease before acquiring another".into(),
+            );
+        }
+        if self.mode == VulkanSubmissionMode::Asynchronous
+            && self.in_flight.len() == self.mode.max_in_flight()
+        {
+            self.retire_oldest(true)?;
+        }
         let mut lease = acquire_pool_frame(&self.pool, &self.options, pts)?;
         if self.base_pool.is_some() {
             // Skia's unmanaged premultiplied RGB values use the same SDR
@@ -161,8 +222,10 @@ impl VulkanCompositor {
     }
 
     /// # Safety
-    /// The renderer must have finished writing this lease and report its real
-    /// image state. It must not retain the borrowed image. With a video base,
+    /// The renderer must have submitted writes to this lease on the shared
+    /// graphics queue, report the submitted final image state, and retain no
+    /// borrowed image. Synchronous mode also accepts a completed submission.
+    /// With a video base,
     /// render onto transparent premultiplied RGBA, not an opaque background.
     pub unsafe fn submit_frame(
         &mut self,
@@ -186,6 +249,7 @@ impl VulkanCompositor {
         // upload on the shared device; transfer_data takes queue locks itself.
         let (overlay, wait) = complete_pool_frame(&self.pool, lease, state)?;
         self.stats.gpu_wait += wait;
+        let mut retained_base = None;
         if let Some(base) = base {
             let upload = Instant::now();
             let mut video = if base.format() == ffmpeg::format::Pixel::VULKAN {
@@ -214,8 +278,18 @@ impl VulkanCompositor {
             }
             self.stats.upload += upload.elapsed();
             self.feed("video_in", &video)?;
+            retained_base = Some(video);
         }
         self.feed("gpu_in", &overlay)?;
+        if self.mode == VulkanSubmissionMode::Asynchronous {
+            self.in_flight.push_back(InFlightFrame {
+                pts,
+                overlay,
+                base: retained_base,
+                output: None,
+            });
+            self.stats.in_flight_peak = self.stats.in_flight_peak.max(self.in_flight.len());
+        }
         self.last_pts = Some(pts);
         self.timings.insert(pts, duration);
         self.stats.submitted_frames += 1;
@@ -251,7 +325,74 @@ impl VulkanCompositor {
         if !self.timings.is_empty() {
             return Err("Vulkan compositor did not drain every submitted video frame".into());
         }
+        while !self.in_flight.is_empty() {
+            self.retire_oldest(false)?;
+        }
+        self.device.0.sync.drain()?;
         Ok(frames)
+    }
+
+    fn retire_oldest(&mut self, reusing_slot: bool) -> Result<(), String> {
+        let pending = self
+            .in_flight
+            .front()
+            .ok_or("No Vulkan frame slot to retire")?;
+        let output = pending
+            .output
+            .as_ref()
+            .ok_or("Vulkan compositor exceeded the three-frame input buffering limit")?;
+        let started = Instant::now();
+        self.wait_frame_uses(&pending.overlay)?;
+        if let Some(base) = &pending.base {
+            self.wait_frame_uses(base)?;
+        }
+        self.wait_frame_uses(output)?;
+        self.device.0.sync.collect_completed()?;
+        self.in_flight.pop_front();
+        if reusing_slot {
+            self.stats.frame_slot_reuses += 1;
+            self.stats.frame_reuse_wait += started.elapsed();
+        } else {
+            self.stats.frame_drain_wait += started.elapsed();
+        }
+        Ok(())
+    }
+
+    fn wait_frame_uses(&self, frame: &frame::Video) -> Result<(), String> {
+        let raw = unsafe { &*frame.as_ptr() };
+        if raw.hw_frames_ctx.is_null() {
+            return Err("In-flight Vulkan frame lost its hardware pool".into());
+        }
+        let pool = unsafe { (*raw.hw_frames_ctx).data.cast::<ffi::AVHWFramesContext>() };
+        let hw = unsafe { &*(*pool).hwctx.cast::<ffi::AVVulkanFramesContext>() };
+        let vk = raw.data[0].cast::<ffi::AVVkFrame>();
+        if vk.is_null() {
+            return Err("In-flight Vulkan frame lost its image state".into());
+        }
+        if let Some(lock) = hw.lock_frame {
+            unsafe { lock(pool, vk) };
+        }
+        // Capture the latest value, including libplacebo/encoder consumers,
+        // without retaining the frame lock across a host wait.
+        let signals: Vec<_> = unsafe {
+            (*vk)
+                .img
+                .iter()
+                .enumerate()
+                .filter(|(_, image)| **image != 0)
+                .map(|(index, _)| ((*vk).sem[index], (*vk).sem_value[index]))
+                .collect()
+        };
+        if let Some(unlock) = hw.unlock_frame {
+            unsafe { unlock(pool, vk) };
+        }
+        for (semaphore, value) in signals {
+            if semaphore == 0 {
+                return Err("In-flight Vulkan frame has no timeline semaphore".into());
+            }
+            self.device.0.sync.wait(semaphore, value)?;
+        }
+        Ok(())
     }
 
     fn check_cancelled(&self) -> Result<(), String> {
@@ -310,6 +451,14 @@ impl VulkanCompositor {
                             pts,
                             duration,
                         );
+                    }
+                    if self.mode == VulkanSubmissionMode::Asynchronous {
+                        let pending = self
+                            .in_flight
+                            .iter_mut()
+                            .find(|pending| pending.pts == pts)
+                            .ok_or("Vulkan output has no in-flight frame transaction")?;
+                        pending.output = Some(reference_video_frame(&frame)?);
                     }
                     self.stats.output_frames += 1;
                     frames.push(frame);

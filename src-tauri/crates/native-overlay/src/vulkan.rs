@@ -49,15 +49,15 @@ pub struct ExternalVulkanImage {
     pub sharing_mode: u32,
 }
 
-/// Layout and queue-family state after all Skia writes have completed.
+/// Layout and queue-family state after Skia has submitted all writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VulkanImageState {
     pub layout: u32,
     pub queue_family: u32,
 }
 
-/// CPU submission wall times; `submit_and_wait` includes an explicit GPU
-/// completion wait. The PoC avoids frame readback, not CPU synchronization.
+/// CPU submission wall times. `submit_and_wait` includes a GPU completion wait
+/// in synchronous mode, and measures submission alone in asynchronous mode.
 #[derive(Clone, Debug, Default)]
 pub struct VulkanRenderStats {
     pub frames: u64,
@@ -73,6 +73,7 @@ pub struct VulkanRenderer {
     renderer: Renderer,
     width: u32,
     height: u32,
+    async_submission: bool,
     stats: VulkanRenderStats,
     context: gpu::DirectContext,
 }
@@ -145,6 +146,7 @@ impl VulkanRenderer {
             renderer,
             width,
             height,
+            async_submission: false,
             stats: VulkanRenderStats::default(),
             context,
         })
@@ -152,6 +154,13 @@ impl VulkanRenderer {
 
     pub fn set_profiling(&mut self, enabled: bool) {
         self.renderer.set_profiling(enabled);
+    }
+
+    /// Submit without a CPU completion wait. The caller must retain each target
+    /// until its GPU consumers finish, and synchronize before dropping this
+    /// renderer. Queue order still connects all writes on the borrowed queue.
+    pub fn set_async_submission(&mut self, enabled: bool) {
+        self.async_submission = enabled;
     }
 
     pub fn stats(&self) -> VulkanRenderStats {
@@ -164,16 +173,20 @@ impl VulkanRenderer {
         self.renderer.missing_glyph_count()
     }
 
-    /// Draw into an externally owned RGBA8/BGRA8 image, wait for GPU completion and
-    /// return its new layout. `background_rgba` supplies the video base colour;
+    /// Draw into an externally owned RGBA8/BGRA8 image and return its submitted
+    /// layout. The default mode waits for GPU completion; asynchronous mode
+    /// only submits. `background_rgba` supplies the video base colour;
     /// use alpha 255 for a directly encodable opaque test scene.
     ///
     /// # Safety
     /// The image/memory must belong to the constructor's device, have the given
-    /// dimensions and usage, and remain alive through this call. The caller
-    /// must finish/wait previous consumers before reuse and prevent concurrent
-    /// image access. On error abort this frame/job rather than reusing an image
-    /// with its old state: some GPU drawing may already have been submitted.
+    /// dimensions and usage. It must remain alive until submitted GPU work
+    /// completes, including on error. The caller must order previous consumers
+    /// before this call and subsequent consumers after it on the same queue or
+    /// via GPU synchronization, prevent concurrent queue access, and wait before
+    /// recycling the image or dropping the renderer. On error abort this frame/job
+    /// rather than reusing an image with its old state: some GPU drawing may
+    /// already have been submitted.
     pub unsafe fn render_into(
         &mut self,
         time: f64,
@@ -241,10 +254,15 @@ impl VulkanRenderer {
             Color::from_argb(a, r, g, b),
             &mut self.context,
             target,
+            if self.async_submission {
+                gpu::SyncCpu::No
+            } else {
+                gpu::SyncCpu::Yes
+            },
         )?;
         // BackendTexture copies share Vulkan's mutable texture state. Read
-        // that state directly after the completion wait; a Surface FlushRead
-        // request here could otherwise enqueue new work after the wait.
+        // that state directly after submission; a Surface FlushRead request
+        // here could otherwise enqueue work after the caller's publish barrier.
         let current = gpu::backend_textures::get_vk_image_info(&backend)
             .ok_or("Skia Vulkan render target lost its image state")?;
         let state = VulkanImageState {

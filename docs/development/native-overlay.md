@@ -45,6 +45,8 @@ yarn tauri build --features vulkan-export
 
 现有原生解码和项目滤镜图负责剪辑、缩放、静态图层与时间轴，输出 NV12 视频底图；底图上传一次，Skia 在共享 Vulkan 设备上绘制预乘透明叠层，libplacebo 在 GPU 合成并输出 NV12 硬件帧，随后由原 `MediaPlan` 编码和封装。音频复制/混音、进度、取消、临时文件发布及资源 lease 继续使用现有实现，没有 rawvideo 管道或外部 FFmpeg 进程。
 
+应用后端允许最多三帧 GPU 工作在途。Skia 提交后通过同一图形队列和 `AVVkFrame` timeline 连接后续转换与编码，不再在每次绘制及桥接屏障后固定等待 CPU；复用帧槽、最终 drain、错误或取消时仍会等待 GPU，并持有帧和纹理直到消费者结束。编码器使用 `async_depth=3`。这消除了渲染帧回读，CPU 视频解码和底图上传仍然存在。
+
 速度优先导出先用一个小样本实际渲染、编码和解码检查蓝色底图与半透明红色叠层，成功后才选择 Vulkan。质量优先保留已有编码策略；明确不符合 SDR BT.709 范围的源在启动前选择 CPU 合成。执行中的错误不会静默重跑。CPU 与 Vulkan 分片使用不同缓存身份。macOS 暂不自动选择该后端。
 
 需要匹配的 FFmpeg 9 开发 SDK、`libplacebo`、Vulkan Video 编码器与驱动。FFmpeg 9.0.2 仍有已知的 Vulkan 编码器退出图片视图清理问题；源码回补及校验说明见 [`scripts/ffmpeg-sdk-patches`](../../scripts/ffmpeg-sdk-patches/README.md)。功能测试通过不等于旧 SDK 的 Vulkan validation 全量无错误。实际运行与验证记录见独立工具的 [README](../../scripts/vulkan-video-poc/README.md)。

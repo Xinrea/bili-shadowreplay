@@ -1,14 +1,38 @@
-//! Experimental, single-threaded Vulkan-renderer to Vulkan Video bridge.
+//! Single-threaded Vulkan-renderer to Vulkan Video bridge.
 //!
-//! Frames remain Vulkan images throughout. A borrowed renderer writes the RGB
-//! frame pool; libplacebo converts on the same device into NV12, and FFmpeg's
-//! Vulkan Video encoder consumes that hardware pool. No pixel mapping, upload,
-//! download or software-frame input is exposed by this module.
+//! A borrowed renderer writes the RGB frame pool; libplacebo composites on the
+//! same device into NV12, and FFmpeg's Vulkan Video encoder consumes that pool.
+//! The compositor can upload a CPU-decoded NV12 base once. Rendered/composited
+//! pixels remain GPU images and are never read back by this bridge.
 
 mod compositor;
 mod sync;
 
 pub use compositor::{VulkanCompositor, VulkanCompositorStats};
+
+/// CPU completion waits are retained as a validation baseline. Asynchronous
+/// mode permits up to three complete GPU frame transactions in flight.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VulkanSubmissionMode {
+    #[default]
+    Synchronous,
+    Asynchronous,
+}
+impl VulkanSubmissionMode {
+    pub fn max_in_flight(self) -> usize {
+        match self {
+            Self::Synchronous => 1,
+            Self::Asynchronous => 3,
+        }
+    }
+    fn command_slots(self) -> usize {
+        // One acquire and one publish barrier per in-flight rendered frame.
+        match self {
+            Self::Synchronous => 1,
+            Self::Asynchronous => 6,
+        }
+    }
+}
 
 use std::{
     cell::Cell,
@@ -141,6 +165,7 @@ impl Drop for BufferRef {
 struct DeviceInner {
     sync: sync::VulkanSync,
     info: VulkanDeviceInfo,
+    mode: VulkanSubmissionMode,
     raw: BufferRef,
 }
 impl DeviceInner {
@@ -164,6 +189,9 @@ impl Drop for DeviceInner {
 pub struct VulkanDevice(Rc<DeviceInner>);
 impl VulkanDevice {
     fn new(selector: &str) -> Result<Self, String> {
+        Self::new_with_mode(selector, VulkanSubmissionMode::Synchronous)
+    }
+    fn new_with_mode(selector: &str, mode: VulkanSubmissionMode) -> Result<Self, String> {
         let selector = CString::new(selector).map_err(|e| e.to_string())?;
         let mut raw = ptr::null_mut();
         let mut opts = ptr::null_mut();
@@ -200,7 +228,7 @@ impl VulkanDevice {
             .iter()
             .find(|q| q.flags & 1 != 0 && q.num > 0)
             .ok_or("FFmpeg Vulkan device did not enable a graphics queue")?;
-        let sync = unsafe { sync::VulkanSync::new(hw, family.idx as u32)? };
+        let sync = unsafe { sync::VulkanSync::new(hw, family.idx as u32, mode.command_slots())? };
         unsafe fn extensions(pointer: *const *const std::ffi::c_char, count: i32) -> Vec<String> {
             (0..count)
                 .map(|i| {
@@ -224,7 +252,12 @@ impl VulkanDevice {
             },
             max_api_version: (1 << 22) | (3 << 12),
         };
-        Ok(Self(Rc::new(DeviceInner { raw, info, sync })))
+        Ok(Self(Rc::new(DeviceInner {
+            raw,
+            info,
+            sync,
+            mode,
+        })))
     }
     pub fn info(&self) -> VulkanDeviceInfo {
         self.0.info.clone()
@@ -385,6 +418,7 @@ fn acquire_pool_frame(
     if pool.active_lease.get() {
         return Err("Submit or drop the active Vulkan frame lease before acquiring another".into());
     }
+    pool.device.0.sync.collect_completed()?;
     let mut frame = frame::Video::empty();
     unsafe {
         check(
@@ -431,23 +465,28 @@ fn acquire_pool_frame(
     let started = Instant::now();
     // A device-side semaphore wait plus a real image barrier establishes
     // visibility across FFmpeg's compute/transfer and Skia's graphics queue.
-    // The host wait only serializes command-buffer reuse in this first PoC.
+    // Asynchronous draws use this exact graphics queue, so queue order
+    // carries the dependency into Skia without a CPU completion wait.
+    let keep_alive = reference_video_frame(&lease.frame)?;
     let vk = lease.vk_frame();
-    let next = pool.device.0.sync.transition(
-        vk.img[0],
-        vk.sem[0],
-        vk.sem_value[0],
-        vk.layout[0] as u32,
-        2,
-        vk.access[0],
-    )?;
+    let next = pool.device.0.sync.transition(sync::ImageTransition {
+        image: vk.img[0],
+        semaphore: vk.sem[0],
+        value: vk.sem_value[0],
+        old_layout: vk.layout[0] as u32,
+        new_layout: 2,
+        src_access: vk.access[0],
+        keep_alive,
+    })?;
     // Skia m133 infers HOST_WRITE access from GENERAL images. Supply a
     // render-attachment layout to keep its inferred source access valid
     // for graphics stages without introducing a host access or copy.
     vk.layout[0] = 2; // VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
     vk.access[0] = 0x80 | 0x100; // COLOR_ATTACHMENT_READ | WRITE
     vk.sem_value[0] = next;
-    pool.device.0.sync.wait(vk.sem[0], next)?;
+    if pool.device.0.mode == VulkanSubmissionMode::Synchronous {
+        pool.device.0.sync.wait(vk.sem[0], next)?;
+    }
     lease.image.layout = 2;
     lease.wait = started.elapsed();
     Ok(lease)
@@ -467,20 +506,22 @@ fn complete_pool_frame(
     let mut gpu_wait = lease.wait;
     let fc = pool.context();
     let hw = unsafe { &*(*fc).hwctx.cast::<ffi::AVVulkanFramesContext>() };
+    let keep_alive = reference_video_frame(&lease.frame)?;
     let vk = lease.vk_frame();
     if let Some(lock) = hw.lock_frame {
         unsafe { lock(fc, vk) };
     }
     vk.layout[0] = state.layout as i32;
     vk.access[0] = 0x100 | 0x10000; // COLOR_ATTACHMENT_WRITE | MEMORY_WRITE
-    let signalled = pool.device.0.sync.transition(
-        vk.img[0],
-        vk.sem[0],
-        vk.sem_value[0],
-        state.layout,
-        1,
-        vk.access[0],
-    );
+    let signalled = pool.device.0.sync.transition(sync::ImageTransition {
+        image: vk.img[0],
+        semaphore: vk.sem[0],
+        value: vk.sem_value[0],
+        old_layout: state.layout,
+        new_layout: 1,
+        src_access: vk.access[0],
+        keep_alive,
+    });
     if let Ok(next) = signalled {
         vk.sem_value[0] = next;
         vk.layout[0] = 1;
@@ -492,8 +533,10 @@ fn complete_pool_frame(
     }
     let next = signalled?;
     let wait = Instant::now();
-    pool.device.0.sync.wait(semaphore, next)?;
-    gpu_wait += wait.elapsed();
+    if pool.device.0.mode == VulkanSubmissionMode::Synchronous {
+        pool.device.0.sync.wait(semaphore, next)?;
+        gpu_wait += wait.elapsed();
+    }
     lease.unlock_queue();
     Ok((reference_video_frame(&lease.frame)?, gpu_wait))
 }
@@ -533,6 +576,7 @@ impl Drop for VulkanVideoSession {
         // The lease retains the pool/device and later observes the same flag,
         // so it cannot unlock an already released queue a second time.
         self.pool.wait_and_unlock_queue();
+        let _ = self.device.0.sync.wait_idle();
     }
 }
 

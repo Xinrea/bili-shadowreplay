@@ -4,8 +4,9 @@
 //! keeps every call on the same Vulkan instance/device and avoids a second
 //! Vulkan loader or another graphics dependency in ordinary builds.
 
-use ffmpeg_next::ffi;
+use ffmpeg_next::{ffi, frame};
 use std::{
+    cell::RefCell,
     ffi::{c_void, CStr},
     mem, ptr,
 };
@@ -41,6 +42,33 @@ type CmdPipelineBarrier = unsafe extern "system" fn(
     *const ImageBarrier,
 );
 type QueueSubmit = unsafe extern "system" fn(Queue, u32, *const SubmitInfo, u64) -> i32;
+type CreateFence =
+    unsafe extern "system" fn(Device, *const FenceInfo, *const c_void, *mut u64) -> i32;
+type DestroyFence = unsafe extern "system" fn(Device, u64, *const c_void);
+type GetFenceStatus = unsafe extern "system" fn(Device, u64) -> i32;
+type WaitForFences = unsafe extern "system" fn(Device, u32, *const u64, u32, u64) -> i32;
+type ResetFences = unsafe extern "system" fn(Device, u32, *const u64) -> i32;
+
+#[repr(C)]
+struct FenceInfo {
+    s_type: i32,
+    p_next: *const c_void,
+    flags: u32,
+}
+
+struct CommandSlot {
+    pool: u64,
+    command: CommandBuffer,
+    fence: u64,
+    submitted: bool,
+    // Keep the image and its timeline semaphore alive until this submission
+    // finishes, including a job dropped before the filter consumes the frame.
+    keep_alive: Option<frame::Video>,
+}
+struct CommandRing {
+    slots: Vec<CommandSlot>,
+    next: usize,
+}
 
 #[repr(C)]
 struct QueueInfo {
@@ -124,14 +152,27 @@ struct ImageBarrier {
     range: ImageRange,
 }
 
+pub(super) struct ImageTransition {
+    pub image: u64,
+    pub semaphore: u64,
+    pub value: u64,
+    pub old_layout: u32,
+    pub new_layout: u32,
+    pub src_access: u64,
+    pub keep_alive: frame::Video,
+}
+
 pub(super) struct VulkanSync {
     device: Device,
     instance: ffi::VkInstance,
     instance_proc: ffi::PFN_vkGetInstanceProcAddr,
     device_proc: GetDeviceProc,
     queue: Queue,
-    pool: u64,
-    command: CommandBuffer,
+    ring: RefCell<CommandRing>,
+    destroy_fence: DestroyFence,
+    get_fence_status: GetFenceStatus,
+    wait_for_fences: WaitForFences,
+    reset_fences: ResetFences,
     wait_idle: DeviceWaitIdle,
     wait_semaphores: WaitSemaphores,
     destroy_pool: DestroyCommandPool,
@@ -146,6 +187,7 @@ impl VulkanSync {
     pub(super) unsafe fn new(
         context: &ffi::AVVulkanDeviceContext,
         family: u32,
+        command_slots: usize,
     ) -> Result<Self, String> {
         let resolve = context
             .get_proc_addr
@@ -209,6 +251,19 @@ impl VulkanSync {
             unsafe { function(get(c"vkCreateCommandPool"), "vkCreateCommandPool")? };
         let allocate: AllocateCommandBuffers =
             unsafe { function(get(c"vkAllocateCommandBuffers"), "vkAllocateCommandBuffers")? };
+        let create_fence: CreateFence =
+            unsafe { function(get(c"vkCreateFence"), "vkCreateFence")? };
+        let destroy_fence: DestroyFence =
+            unsafe { function(get(c"vkDestroyFence"), "vkDestroyFence")? };
+        let get_fence_status: GetFenceStatus =
+            unsafe { function(get(c"vkGetFenceStatus"), "vkGetFenceStatus")? };
+        let wait_for_fences: WaitForFences =
+            unsafe { function(get(c"vkWaitForFences"), "vkWaitForFences")? };
+        let reset_fences: ResetFences =
+            unsafe { function(get(c"vkResetFences"), "vkResetFences")? };
+        if command_slots == 0 || command_slots > 6 {
+            return Err("Vulkan command ring must contain one to six slots".into());
+        }
         let mut queue = ptr::null_mut();
         if context.queue_flags == 0 {
             let get_queue: GetDeviceQueue =
@@ -229,38 +284,20 @@ impl VulkanSync {
         if queue.is_null() {
             return Err("FFmpeg Vulkan graphics queue is null".into());
         }
-        let info = PoolInfo {
-            s_type: 39,
-            p_next: ptr::null(),
-            flags: 2,
-            family,
-        };
-        let mut pool = 0;
-        check(
-            unsafe { create_pool(context.act_dev, &info, ptr::null(), &mut pool) },
-            "Create Vulkan bridge command pool",
-        )?;
-        let info = AllocateInfo {
-            s_type: 40,
-            p_next: ptr::null(),
-            pool,
-            level: 0,
-            count: 1,
-        };
-        let mut command = ptr::null_mut();
-        let result = unsafe { allocate(context.act_dev, &info, &mut command) };
-        if result != 0 {
-            unsafe { destroy_pool(context.act_dev, pool, ptr::null()) };
-            check(result, "Allocate Vulkan bridge command buffer")?;
-        }
-        Ok(Self {
+        let mut result = Self {
             device: context.act_dev,
             instance: context.inst,
             instance_proc: context.get_proc_addr,
             device_proc,
             queue,
-            pool,
-            command,
+            ring: RefCell::new(CommandRing {
+                slots: Vec::new(),
+                next: 0,
+            }),
+            destroy_fence,
+            get_fence_status,
+            wait_for_fences,
+            reset_fences,
             wait_idle,
             wait_semaphores,
             destroy_pool,
@@ -269,7 +306,52 @@ impl VulkanSync {
             end,
             barrier,
             submit,
-        })
+        };
+        for _ in 0..command_slots {
+            let info = PoolInfo {
+                s_type: 39,
+                p_next: ptr::null(),
+                flags: 2,
+                family,
+            };
+            let mut pool = 0;
+            check(
+                unsafe { create_pool(context.act_dev, &info, ptr::null(), &mut pool) },
+                "Create Vulkan bridge command pool",
+            )?;
+            let info = AllocateInfo {
+                s_type: 40,
+                p_next: ptr::null(),
+                pool,
+                level: 0,
+                count: 1,
+            };
+            let mut command = ptr::null_mut();
+            let status = unsafe { allocate(context.act_dev, &info, &mut command) };
+            if status != 0 {
+                unsafe { destroy_pool(context.act_dev, pool, ptr::null()) };
+                check(status, "Allocate Vulkan bridge command buffer")?;
+            }
+            let info = FenceInfo {
+                s_type: 8,
+                p_next: ptr::null(),
+                flags: 0,
+            };
+            let mut fence = 0;
+            let status = unsafe { create_fence(context.act_dev, &info, ptr::null(), &mut fence) };
+            if status != 0 {
+                unsafe { destroy_pool(context.act_dev, pool, ptr::null()) };
+                check(status, "Create Vulkan bridge completion fence")?;
+            }
+            result.ring.get_mut().slots.push(CommandSlot {
+                pool,
+                command,
+                fence,
+                submitted: false,
+                keep_alive: None,
+            });
+        }
+        Ok(result)
     }
 
     pub(super) fn queue(&self) -> usize {
@@ -323,21 +405,40 @@ impl VulkanSync {
 
     /// Submit a real image memory barrier, waiting and signalling the frame's
     /// timeline. The caller holds the graphics-queue external-synchronization
-    /// lock and waits returned value before reusing this command buffer.
-    pub(super) fn transition(
-        &self,
-        image: u64,
-        semaphore: u64,
-        value: u64,
-        old_layout: u32,
-        new_layout: u32,
-        src_access: u64,
-    ) -> Result<u64, String> {
+    /// lock. A command slot is reset only after its own completion fence; GPU
+    /// image dependencies are carried by the public AVVkFrame timeline.
+    pub(super) fn transition(&self, transition: ImageTransition) -> Result<u64, String> {
+        let ImageTransition {
+            image,
+            semaphore,
+            value,
+            old_layout,
+            new_layout,
+            src_access,
+            keep_alive,
+        } = transition;
         let next = value
             .checked_add(1)
             .ok_or("Vulkan frame timeline exhausted")?;
+        let mut ring = self.ring.borrow_mut();
+        let index = ring.next;
+        let slot = &mut ring.slots[index];
+        if slot.submitted {
+            // This is backpressure only when a bounded slot is reused, not
+            // an unconditional host wait after every submission.
+            check(
+                unsafe { (self.wait_for_fences)(self.device, 1, &slot.fence, 1, 30_000_000_000) },
+                "Wait for reusable Vulkan command slot",
+            )?;
+            slot.submitted = false;
+            slot.keep_alive.take();
+        }
         check(
-            unsafe { (self.reset_pool)(self.device, self.pool, 0) },
+            unsafe { (self.reset_fences)(self.device, 1, &slot.fence) },
+            "Reset Vulkan command-slot fence",
+        )?;
+        check(
+            unsafe { (self.reset_pool)(self.device, slot.pool, 0) },
             "Reset Vulkan bridge command pool",
         )?;
         let begin = BeginInfo {
@@ -347,7 +448,7 @@ impl VulkanSync {
             inheritance: ptr::null(),
         };
         check(
-            unsafe { (self.begin)(self.command, &begin) },
+            unsafe { (self.begin)(slot.command, &begin) },
             "Begin Vulkan frame barrier",
         )?;
         let barrier = ImageBarrier {
@@ -378,7 +479,7 @@ impl VulkanSync {
         };
         unsafe {
             (self.barrier)(
-                self.command,
+                slot.command,
                 0x10000,
                 0x10000,
                 0,
@@ -391,7 +492,7 @@ impl VulkanSync {
             )
         };
         check(
-            unsafe { (self.end)(self.command) },
+            unsafe { (self.end)(slot.command) },
             "End Vulkan frame barrier",
         )?;
         let timeline = TimelineInfo {
@@ -410,20 +511,66 @@ impl VulkanSync {
             waits: &semaphore,
             wait_stages: &stages,
             command_count: 1,
-            commands: &self.command,
+            commands: &slot.command,
             signal_count: 1,
             signals: &semaphore,
         };
         check(
-            unsafe { (self.submit)(self.queue, 1, &submit, 0) },
+            unsafe { (self.submit)(self.queue, 1, &submit, slot.fence) },
             "Submit Vulkan frame barrier",
         )?;
+        slot.submitted = true;
+        slot.keep_alive = Some(keep_alive);
+        ring.next = (index + 1) % ring.slots.len();
         Ok(next)
+    }
+
+    /// Release completed submission references without waiting. This allows
+    /// the frame pool to reuse its bounded set of images before the next get.
+    pub(super) fn collect_completed(&self) -> Result<(), String> {
+        for slot in &mut self.ring.borrow_mut().slots {
+            if !slot.submitted {
+                continue;
+            }
+            match unsafe { (self.get_fence_status)(self.device, slot.fence) } {
+                0 => {
+                    slot.submitted = false;
+                    slot.keep_alive.take();
+                }
+                1 => (), // VK_NOT_READY
+                status => check(status, "Query Vulkan command-slot completion")?,
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn drain(&self) -> Result<(), String> {
+        for slot in &mut self.ring.borrow_mut().slots {
+            if !slot.submitted {
+                continue;
+            }
+            check(
+                unsafe { (self.wait_for_fences)(self.device, 1, &slot.fence, 1, 30_000_000_000) },
+                "Drain Vulkan command slot",
+            )?;
+            slot.submitted = false;
+            slot.keep_alive.take();
+        }
+        Ok(())
     }
 }
 impl Drop for VulkanSync {
     fn drop(&mut self) {
-        unsafe { (self.destroy_pool)(self.device, self.pool, ptr::null()) }
+        // Command buffers may still reference images after an async caller
+        // fails. Wait before destroying either pools, fences or keep-alives.
+        let _ = self.wait_idle();
+        for slot in &mut self.ring.get_mut().slots {
+            unsafe {
+                (self.destroy_pool)(self.device, slot.pool, ptr::null());
+                (self.destroy_fence)(self.device, slot.fence, ptr::null());
+            }
+            slot.keep_alive.take();
+        }
     }
 }
 fn check(value: i32, operation: &str) -> Result<(), String> {
@@ -439,6 +586,7 @@ mod tests {
     use super::*;
     #[test]
     fn vulkan_bridge_structures_match_the_64_bit_c_abi() {
+        assert_eq!(mem::size_of::<FenceInfo>(), 24);
         assert_eq!(mem::size_of::<QueueInfo>(), 32);
         assert_eq!(mem::size_of::<WaitInfo>(), 40);
         assert_eq!(mem::size_of::<PoolInfo>(), 24);

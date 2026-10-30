@@ -311,7 +311,7 @@ async fn cancelled_recording_closes_network_io_and_stops_writing_without_a_cli()
 }
 
 #[tokio::test]
-async fn live_idle_timeout_is_an_error_and_disabled_input_does_not_open() {
+async fn live_idle_timeout_preserves_the_complete_tail_before_error_and_append() {
     let directory = tempfile::tempdir().unwrap();
     record_to_hls(
         "http://127.0.0.1:1/not-opened",
@@ -323,6 +323,8 @@ async fn live_idle_timeout_is_an_error_and_disabled_input_does_not_open() {
     .await
     .unwrap();
     assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+    let reference = tempfile::tempdir().unwrap();
+    record(reference.path()).await;
     let (source, server) = stalled_source().await;
     let _server_guard = AbortOnDrop(server.abort_handle());
     let result = tokio::time::timeout(
@@ -337,6 +339,30 @@ async fn live_idle_timeout_is_an_error_and_disabled_input_does_not_open() {
     )
     .await
     .unwrap();
-    assert!(result.is_err());
+    let error = result.unwrap_err();
+    assert!(error.starts_with("读取录制数据失败:"), "{error}");
     closed(server).await;
+
+    let (text, segments, durations) = playlist(directory.path());
+    let (expected, reference_segments, reference_durations) = playlist(reference.path());
+    assert_eq!(text, expected, "read errors must publish the pending tail");
+    assert_eq!(durations, reference_durations);
+    assert_eq!(segments.len(), reference_segments.len());
+    for (actual, expected) in segments.iter().zip(&reference_segments) {
+        assert_eq!(packets(actual), packets(expected));
+    }
+    let original: Vec<_> = segments
+        .iter()
+        .map(|path| fs::read(path).unwrap())
+        .collect();
+    record(directory.path()).await;
+    let (_, appended, _) = playlist(directory.path());
+    assert_eq!(appended.len(), segments.len() + reference_segments.len());
+    assert_eq!(&appended[..segments.len()], segments.as_slice());
+    assert!(appended[segments.len()..]
+        .iter()
+        .all(|path| !segments.contains(path)));
+    for (path, bytes) in segments.iter().zip(original) {
+        assert_eq!(fs::read(path).unwrap(), bytes, "append overwrote a segment");
+    }
 }

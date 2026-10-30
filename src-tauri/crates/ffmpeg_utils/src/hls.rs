@@ -164,25 +164,25 @@ fn record_sync(
         .output
         .write_header_with(mux_options)
         .map_err(|error| format!("写入 HLS 文件头失败: {error}"))?;
-    loop {
+    let read_result = loop {
         if cancelled.load(Ordering::Acquire) {
             return Err("录制已取消".into());
         }
         if !enabled.load(Ordering::Acquire) {
-            break;
+            break Ok(());
         }
         let mut packet = Packet::empty();
         match packet.read(&mut input) {
             Ok(()) => (),
-            Err(ffmpeg::Error::Eof) => break,
+            Err(ffmpeg::Error::Eof) => break Ok(()),
             Err(_) if !enabled.load(Ordering::Acquire) && !cancelled.load(Ordering::Acquire) => {
-                break
+                break Ok(())
             }
             Err(ffmpeg::Error::Other { errno }) if errno == ffi::EAGAIN => {
                 std::thread::sleep(Duration::from_millis(5));
                 continue;
             }
-            Err(error) => return Err(format!("读取录制数据失败: {error}")),
+            Err(error) => break Err(format!("读取录制数据失败: {error}")),
         }
         let Some(route) = routes.get_mut(packet.stream()).and_then(Option::as_mut) else {
             continue;
@@ -216,16 +216,20 @@ fn record_sync(
         packet
             .write_interleaved(&mut output.output)
             .map_err(|error| format!("写入录制分片失败: {error}"))?;
-    }
+    };
     if cancelled.load(Ordering::Acquire) {
         return Err("录制已取消".into());
     }
-    output
+    // A read failure leaves the local muxer writable. Publish its pending tail
+    // before reporting that failure so a reconnect can append without reusing it.
+    let trailer_result = output
         .output
         .write_trailer()
-        .map_err(|error| format!("结束 HLS 录制失败: {error}"))?;
-    output.close()?;
-    Ok(())
+        .map_err(|error| format!("结束 HLS 录制失败: {error}"));
+    let close_result = output.close();
+    read_result?;
+    trailer_result?;
+    close_result
 }
 
 struct Route {

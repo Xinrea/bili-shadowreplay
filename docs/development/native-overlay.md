@@ -53,6 +53,8 @@ yarn tauri build
 
 Windows 的 Skia GPU → FFmpeg Vulkan Video 独立验证入口位于仓库的 [`scripts/vulkan-video-poc`](https://github.com/Xinrea/bili-shadowreplay/blob/main/scripts/vulkan-video-poc/README.md)。它与应用共享 Vulkan 合成器，保留生成底图的独立性能基线，并提供 API 跟踪、输出视频与画面内容的独立校验。正式导出回归记录见 [Windows 验证回执](../../scripts/vulkan-video-poc/validation/windows-production-export-2026-10-30.json)。
 
+Windows 默认构建验证见 [2026-10-31 回执](../../scripts/vulkan-video-poc/validation/windows-default-export-2026-10-31.json)，包含普通 GUI 编译与实际链接、headless 导出回归，以及默认 HEVC/H.264 后端的自动选择断言，全程无需额外 GPU feature。
+
 ## Linux：Ubuntu 24.04 起
 
 桌面发布环境为 **Ubuntu 24.04**，Ubuntu 22.04 不再是受支持的构建或运行环境。原因是：

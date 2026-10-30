@@ -1,0 +1,110 @@
+{
+  "recorded_on": "2026-10-31",
+  "scope": "Windows application GPU export is enabled by target dependencies in normal builds; no application GPU opt-in feature is required. Verified in an isolated checkout without changing the original Windows repository.",
+  "source": {
+    "implementation_commit": "5494ac16",
+    "frozen_sync_base_commit": "b17872d6",
+    "complete_sync_manifest_sha256": "27014a194601dd5f8704a0d732ff326f0da8f5687350baa95c57e8213eeed26d",
+    "verified_files": 980,
+    "critical_file_sha256": {
+      "src-tauri/Cargo.toml": "7a06e5d2676647ab3828678517d6bbf6b7ab38b6cd1d270c6ab29989590b4a47",
+      "src-tauri/src/ffmpeg/mod.rs": "0bf8bc5f981a78b36637fdd2dfc6edcc2857ebfdc4d28827e434057eedd114ac",
+      "src-tauri/src/ffmpeg/hwaccel.rs": "e612931b458b2dc8700a56f932c7de3d4ed31453466c7f3c8e368f4fb00e9094",
+      "src-tauri/src/ffmpeg/native_gpu.rs": "f149963466e476af5622b0727dc125b1ddfec62410794156d7dbe34c007d25e7",
+      "scripts/prepare-windows-skia.mjs": "3782e3daf518e776b83bb7b1e1fe2a4f5cd16832f27234cd1b007245d217dac5",
+      ".github/workflows/package.yml": "096c6b593d1dbe676cc11e3e0fdc4a7fe02d571b6fd8686072db438780197eb2",
+      ".github/workflows/main.yml": "20e74704777d7fad09d0b973252e481fc67ae80c23af5e8e95b30610b59f33c6"
+    },
+    "documentation_note": "Later native-overlay README clarification does not change the verified Rust, Cargo or build-script source."
+  },
+  "environment": {
+    "platform": "Windows x64",
+    "gpu": "NVIDIA GeForce RTX 5070",
+    "gpu_driver": "617.42",
+    "rust": "1.90.0",
+    "msvc": "14.42.34438.0",
+    "ffmpeg": "Gyan 9.0.2 full_build-shared",
+    "ffmpeg_sdk_archive_sha256": "4d2060a8b34a940aa47d785142055bb92a63053781e55f2ace4546edd519a8f5"
+  },
+  "application_feature_resolution": {
+    "gpu_opt_in_feature_present": false,
+    "normal_default_features": [
+      "gui",
+      "credential-encryption"
+    ],
+    "headless_command": "cargo tree --locked --manifest-path src-tauri/Cargo.toml --no-default-features --features headless -e features -i PACKAGE",
+    "normal_command": "cargo tree --locked --manifest-path src-tauri/Cargo.toml -e features -i PACKAGE",
+    "resolved_gpu_dependencies": {
+      "headless": {
+        "native-overlay": {
+          "gpu_feature": "vulkan",
+          "enabled": true,
+          "tree_stdout_sha256": "b2ef7b5422db40c893eb2c3ca80d629f6438e7bf42fc83056ad2348dadce90d0"
+        },
+        "ffmpeg_utils": {
+          "gpu_feature": "vulkan-video",
+          "enabled": true,
+          "tree_stdout_sha256": "c69a93bba5fa53de29c0b714609378bc8b4d9e75befd81d8cfb94fb157ae7dcb"
+        }
+      },
+      "default": {
+        "native-overlay": {
+          "gpu_feature": "vulkan",
+          "enabled": true,
+          "tree_stdout_sha256": "c8f1e06ce3b298eac9166a0b7001176accf7485f448af7af7dbc9096424ddd75"
+        },
+        "ffmpeg_utils": {
+          "gpu_feature": "vulkan-video",
+          "enabled": true,
+          "tree_stdout_sha256": "a25058d8cad6a2c8390b31a7aa4034970faa8a95fbeb9c58e959d5093dfe0cbd"
+        }
+      }
+    }
+  },
+  "skia_helper_default": {
+    "arguments": [],
+    "default_features": "textlayout-vulkan",
+    "key": "7ca7f6be2332d3c9f3ad-x86_64-pc-windows-msvc-textlayout-vulkan",
+    "official_archive_sha256": "2d483906db2c7ee55983605ea71a6ceecf64329c6e1586276b10e38870fd1fbc",
+    "reused_patched_archive_sha256": "b121082308cb1ca675e65f4ed6633f4307f63b4531090f5e3918c14c5dc979fc"
+  },
+  "headless_validation": {
+    "extra_gpu_feature_arguments": [],
+    "gpu_command": "cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --features headless native_gpu_ -- --ignored --nocapture --test-threads=1 --skip native_gpu_benchmark",
+    "gpu_passed": 5,
+    "gpu_failed": 0,
+    "gpu_test_elapsed_seconds": 19.71,
+    "automatic_encoder_selection_assertions": [
+      "Default HEVC Speed rendering selects hevc_vulkan",
+      "Default HEVC material overlay selects hevc_vulkan",
+      "Switching to H264 selects h264_vulkan"
+    ],
+    "cpu_command": "cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --features headless native_gpu_ -- --nocapture --test-threads=1",
+    "cpu_helpers_passed": 3,
+    "cpu_helpers_failed": 0,
+    "gpu_tests_and_benchmark_ignored_in_cpu_pass": 6,
+    "cpu_test_elapsed_seconds": 4.21
+  },
+  "normal_gui_validation": {
+    "check_command": "cargo check --locked --manifest-path src-tauri/Cargo.toml",
+    "check_exit_code": 0,
+    "build_command": "cargo build --locked --manifest-path src-tauri/Cargo.toml",
+    "build_exit_code": 0,
+    "extra_feature_or_linker_arguments": [],
+    "profile": "dev",
+    "binary": "bili-shadowreplay.exe",
+    "binary_bytes": 148823552,
+    "binary_sha256": "e007774626280fcd6ec5a1634964d33f0db1c076b47e49ecdedeb5bd2bc6d63e",
+    "cache_recovery": "Restored incomplete isolated dependency caches. An initial link.exe access violation disappeared on retry after deleting only generated application PDB files; the same ordinary cargo build linked successfully without toolchain, source or linker-flag changes."
+  },
+  "workspace_isolation": {
+    "original_windows_checkout_head": "22ca66c9d644f2cd5cbe53a01ba02d2ccfea5149",
+    "original_checkout_unchanged": true,
+    "preexisting_dirty_files_unchanged": 3
+  },
+  "historical_runtime_evidence": [
+    "windows-production-export-2026-10-30.json",
+    "windows-production-async-2026-10-30.json"
+  ],
+  "validation_scope": "This round validates default dependency selection, automatic encoder selection and compilation/linking. The earlier performance, Vulkan validation and API captures are retained in their historical receipts."
+}

@@ -97,6 +97,10 @@ native handle interface is independent of Windows external-memory handles:
 rendering, conversion and encoding share one Vulkan device. A future platform
 backend can use that interface after checking its device/codec support.
 
+The [Windows default-build receipt](validation/windows-default-export-2026-10-31.json)
+records successful ordinary GUI compilation/linking and headless production
+exports without an extra GPU feature, including automatic HEVC/H.264 selection.
+
 ## Run
 
 From the repository root in an ordinary, non-elevated PowerShell:

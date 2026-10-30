@@ -18,6 +18,13 @@ mod metadata;
 mod output;
 mod video_frame;
 
+#[cfg(all(feature = "vulkan-video", not(bsr_ffmpeg_9_0)))]
+compile_error!("The vulkan-video feature requires FFmpeg 9 or newer");
+#[cfg(all(feature = "vulkan-video", not(target_pointer_width = "64")))]
+compile_error!("The vulkan-video proof of concept requires a 64-bit target");
+#[cfg(all(feature = "vulkan-video", bsr_ffmpeg_9_0, target_pointer_width = "64"))]
+pub mod vulkan_video;
+
 pub use audio::{
     decode_audio, decode_audio_range, encode_flac_preview, encode_mp3, encode_opus_sample,
     encode_opus_upload, import_audio, AudioDecodeOptions, AudioDecodeResult, AudioRange, AudioSink,

@@ -32,7 +32,7 @@ pub enum VulkanProcAddress<'a> {
     Device { handle: usize, name: &'a CStr },
 }
 
-/// One BGRA8 image owned by the caller's media frame pool. Its dimensions are
+/// One RGBA8/BGRA8 image owned by the caller's media frame pool. Its dimensions are
 /// those given to [`VulkanRenderer::new`]. The optional memory description is
 /// diagnostic/borrowing information, never an ownership transfer to Skia.
 #[derive(Clone, Copy, Debug)]
@@ -42,6 +42,7 @@ pub struct ExternalVulkanImage {
     pub memory_offset: u64,
     pub memory_size: u64,
     pub layout: u32,
+    /// Actual VkImage format, not a format inferred from CPU pixel metadata.
     pub format: u32,
     pub usage: u32,
     pub queue_family: u32,
@@ -163,7 +164,7 @@ impl VulkanRenderer {
         self.renderer.missing_glyph_count()
     }
 
-    /// Draw into an externally owned BGRA8 image, wait for GPU completion and
+    /// Draw into an externally owned RGBA8/BGRA8 image, wait for GPU completion and
     /// return its new layout. `background_rgba` supplies the video base colour;
     /// use alpha 255 for a directly encodable opaque test scene.
     ///
@@ -182,7 +183,7 @@ impl VulkanRenderer {
         if !time.is_finite() || time < 0.0 {
             return Err("Vulkan render time must be finite and non-negative".into());
         }
-        validate_image(image)?;
+        let (format, color_type) = validate_image(image)?;
         let layout = image_layout(image.layout)?;
         let sharing = match image.sharing_mode {
             0 => vk::SharingMode::EXCLUSIVE,
@@ -207,7 +208,7 @@ impl VulkanRenderer {
                 allocation,
                 vk::ImageTiling::OPTIMAL,
                 layout,
-                vk::Format::B8G8R8A8_UNORM,
+                format,
                 1,
                 Some(image.queue_family),
                 None,
@@ -220,7 +221,7 @@ impl VulkanRenderer {
             gpu::backend_textures::make_vk(
                 (self.width as i32, self.height as i32),
                 &image_info,
-                "shared-media-bgra",
+                "shared-media-rgb",
             )
         };
         let target = gpu::surfaces::wrap_backend_texture(
@@ -228,7 +229,7 @@ impl VulkanRenderer {
             &backend,
             gpu::SurfaceOrigin::TopLeft,
             Some(0),
-            ColorType::BGRA8888,
+            color_type,
             None,
             None,
         )
@@ -308,21 +309,27 @@ fn validate_extension_procs(
     Ok(())
 }
 
-fn validate_image(image: &ExternalVulkanImage) -> Result<(), String> {
-    // VK_FORMAT_B8G8R8A8_UNORM; CPU readback formats cannot enter this API.
-    if image.image == 0 || image.format != 44 {
-        return Err("Skia Vulkan target must be a live BGRA8_UNORM VkImage".into());
+fn validate_image(image: &ExternalVulkanImage) -> Result<(vk::Format, ColorType), String> {
+    if image.image == 0 {
+        return Err("Skia Vulkan target must be a live VkImage".into());
     }
+    // Match the real VkImage format. Media software formats can use a different
+    // channel convention and are not reliable descriptions of GPU image bytes.
+    let color_format = match image.format {
+        37 => (vk::Format::R8G8B8A8_UNORM, ColorType::RGBA8888),
+        44 => (vk::Format::B8G8R8A8_UNORM, ColorType::BGRA8888),
+        _ => return Err("Skia Vulkan target must use RGBA8_UNORM or BGRA8_UNORM".into()),
+    };
     // Wrapping as a renderable texture requires both COLOR_ATTACHMENT and SAMPLED.
     if image.usage & (0x10 | 0x04) != (0x10 | 0x04) {
         return Err("Skia Vulkan image needs COLOR_ATTACHMENT and SAMPLED usage".into());
     }
     image_layout(image.layout)?;
-    Ok(())
+    Ok(color_format)
 }
 
 fn image_layout(layout: u32) -> Result<vk::ImageLayout, String> {
-    // Only layouts meaningful for the shared BGRA colour image are admitted;
+    // Only layouts meaningful for the shared RGB colour image are admitted;
     // avoid transmuting arbitrary extension values into a Rust Vulkan enum.
     match layout {
         0 => Ok(vk::ImageLayout::UNDEFINED),
@@ -331,7 +338,7 @@ fn image_layout(layout: u32) -> Result<vk::ImageLayout, String> {
         5 => Ok(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
         6 => Ok(vk::ImageLayout::TRANSFER_SRC_OPTIMAL),
         7 => Ok(vk::ImageLayout::TRANSFER_DST_OPTIMAL),
-        _ => Err("Unsupported shared BGRA Vulkan image layout".into()),
+        _ => Err("Unsupported shared RGB Vulkan image layout".into()),
     }
 }
 
@@ -418,8 +425,16 @@ mod tests {
             queue_family: 0,
             sharing_mode: 0,
         };
-        assert!(validate_image(&target).is_ok());
+        assert_eq!(
+            validate_image(&target).unwrap(),
+            (vk::Format::B8G8R8A8_UNORM, ColorType::BGRA8888)
+        );
         target.format = 37;
+        assert_eq!(
+            validate_image(&target).unwrap(),
+            (vk::Format::R8G8B8A8_UNORM, ColorType::RGBA8888)
+        );
+        target.format = 38;
         assert!(validate_image(&target).is_err());
         target.format = 44;
         target.usage = 0x04;

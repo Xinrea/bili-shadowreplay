@@ -22,6 +22,15 @@ yarn tauri dev
 - 升级 `skia-safe`/`skia-bindings` 或 `deno_core`（V8）后，需重新比对两边 ICU 的共有符号，更新脚本中的 key、SHA-256 和符号列表；脚本会在锁定版本不符或符号不存在时报错。
 - Release workflow 会在 Windows 任务中自动执行这一步。
 
+Windows Vulkan 构建需要同版本的 `textlayout-vulkan` 包，使用显式选项准备：
+
+```powershell
+node scripts/prepare-windows-skia.mjs --vulkan
+# 仍按输出设置 SKIA_BINARIES_URL；与 CPU 包可保存在同一个输出目录。
+```
+
+该选项选择官方 Skia 0.82 `textlayout-vulkan` 预编译包，校验下载 SHA-256、包内版本和 feature key 后执行相同的 ICU 符号处理。默认调用仍准备 `textlayout` CPU 包。它只准备链接依赖，Vulkan 设备与编码能力由运行时探测；源码构建时的 Skia feature 必须与所选压缩包一致。
+
 ## Linux：Ubuntu 24.04 起
 
 桌面发布环境为 **Ubuntu 24.04**，Ubuntu 22.04 不再是受支持的构建或运行环境。原因是：

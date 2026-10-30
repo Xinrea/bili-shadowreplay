@@ -13,15 +13,17 @@
 
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // Must match the skia-bindings version pinned through native-overlay.
 const SKIA_BINDINGS_VERSION = "0.82.0";
-const KEY = "7ca7f6be2332d3c9f3ad-x86_64-pc-windows-msvc-textlayout";
-const ARCHIVE = `skia-binaries-${KEY}.tar.gz`;
-const ARCHIVE_URL = `https://github.com/rust-skia/skia-binaries/releases/download/${SKIA_BINDINGS_VERSION}/${ARCHIVE}`;
-const ARCHIVE_SHA256 = "300dcfe6ed498b37b5f3c0ef4ac6b8f23e4f6cf5cd603cd28c3139ca7de29eaf";
+const KEY_PREFIX = "7ca7f6be2332d3c9f3ad-x86_64-pc-windows-msvc-";
+const ARCHIVES = {
+  textlayout: "300dcfe6ed498b37b5f3c0ef4ac6b8f23e4f6cf5cd603cd28c3139ca7de29eaf",
+  "textlayout-vulkan": "2d483906db2c7ee55983605ea71a6ceecf64329c6e1586276b10e38870fd1fbc",
+};
 
 // Every unversioned symbol that Skia's ICU and rusty_v8 137's ICU both define.
 const SHARED_ICU_SYMBOLS = [
@@ -37,7 +39,35 @@ const SHARED_ICU_SYMBOLS = [
 const PREFIX = "bsr_skia_";
 
 const root = resolve(import.meta.dirname, "..");
-const outputDir = resolve(process.argv[2] ?? join(root, "src-tauri", "target", "skia-binaries"));
+
+export function parseOptions(args) {
+  let features = "textlayout";
+  let directory;
+  for (const arg of args) {
+    if (arg === "--vulkan") features = "textlayout-vulkan";
+    else if (arg.startsWith("-")) throw new Error(`Unknown option: ${arg}`);
+    else if (directory !== undefined) throw new Error("Only one output directory may be provided");
+    else directory = arg;
+  }
+  const key = KEY_PREFIX + features;
+  const archive = `skia-binaries-${key}.tar.gz`;
+  return {
+    features,
+    key,
+    archive,
+    url: `https://github.com/rust-skia/skia-binaries/releases/download/${SKIA_BINDINGS_VERSION}/${archive}`,
+    sha256: ARCHIVES[features],
+    outputDir: resolve(directory ?? join(root, "src-tauri", "target", "skia-binaries")),
+  };
+}
+
+export function checkArchiveIdentity(directory, options) {
+  const key = readFileSync(join(directory, "key.txt"), "utf8").trim();
+  const tag = readFileSync(join(directory, "tag.txt"), "utf8").trim();
+  if (key !== options.key || tag !== SKIA_BINDINGS_VERSION) {
+    throw new Error(`Skia archive identifies ${tag}/${key}, expected ${SKIA_BINDINGS_VERSION}/${options.key}`);
+  }
+}
 
 function checkLockedVersion() {
   const lock = readFileSync(join(root, "src-tauri", "Cargo.lock"), "utf8");
@@ -45,7 +75,7 @@ function checkLockedVersion() {
   const locked = /name = "skia-bindings"\r?\nversion = "([^"]+)"/.exec(lock)?.[1];
   if (locked !== SKIA_BINDINGS_VERSION) {
     throw new Error(`Cargo.lock has skia-bindings ${locked}, but this script patches ${SKIA_BINDINGS_VERSION}. `
-      + "Update KEY, ARCHIVE_SHA256 and SHARED_ICU_SYMBOLS for the new version.");
+      + "Update ARCHIVES, KEY_PREFIX and SHARED_ICU_SYMBOLS for the new version.");
   }
 }
 
@@ -69,12 +99,12 @@ function findObjcopy() {
   }
 }
 
-async function download() {
-  const response = await fetch(ARCHIVE_URL);
-  if (!response.ok) throw new Error(`Downloading ${ARCHIVE_URL} failed: HTTP ${response.status}`);
+async function download(options) {
+  const response = await fetch(options.url);
+  if (!response.ok) throw new Error(`Downloading ${options.url} failed: HTTP ${response.status}`);
   const data = Buffer.from(await response.arrayBuffer());
   const sha256 = createHash("sha256").update(data).digest("hex");
-  if (sha256 !== ARCHIVE_SHA256) throw new Error(`${ARCHIVE} has SHA-256 ${sha256}, expected ${ARCHIVE_SHA256}`);
+  if (sha256 !== options.sha256) throw new Error(`${options.archive} has SHA-256 ${sha256}, expected ${options.sha256}`);
   return data;
 }
 
@@ -82,15 +112,19 @@ async function download() {
 const contains = (data, name) => data.includes(Buffer.from(`\0${name}\0`, "latin1"));
 
 async function main() {
+  const options = parseOptions(process.argv.slice(2));
+  const { outputDir, archive } = options;
   checkLockedVersion();
   const objcopy = findObjcopy();
-  const work = join(outputDir, "work");
+  // CPU and Vulkan archives can coexist in the same cache directory.
+  const work = join(outputDir, `work-${options.features}`);
   rmSync(work, { recursive: true, force: true });
   mkdirSync(work, { recursive: true });
 
-  writeFileSync(join(work, ARCHIVE), await download());
+  writeFileSync(join(work, archive), await download(options));
   // Relative paths only: Git for Windows' GNU tar reads `D:\...` as a remote host.
-  execFileSync("tar", ["-xzf", ARCHIVE], { cwd: work, stdio: "inherit" });
+  execFileSync("tar", ["-xzf", archive], { cwd: work, stdio: "inherit" });
+  checkArchiveIdentity(join(work, "skia-binaries"), options);
 
   const lib = join(work, "skia-binaries", "skunicode_icu.lib");
   const patched = `${lib}.patched`;
@@ -106,18 +140,18 @@ async function main() {
   if (unrenamed.length) throw new Error(`llvm-objcopy did not rename: ${unrenamed.join(", ")}`);
   renameSync(patched, lib);
 
-  rmSync(join(work, ARCHIVE));
-  execFileSync("tar", ["-czf", ARCHIVE, "skia-binaries"], { cwd: work, stdio: "inherit" });
-  renameSync(join(work, ARCHIVE), join(outputDir, ARCHIVE));
+  rmSync(join(work, archive));
+  execFileSync("tar", ["-czf", archive, "skia-binaries"], { cwd: work, stdio: "inherit" });
+  renameSync(join(work, archive), join(outputDir, archive));
   rmSync(work, { recursive: true, force: true });
 
   // skia-bindings strips `file://` and reads the rest as a path, so Windows
-  // paths go in as `file://D:/...`. It fills in `{key}`; a key other than KEY
+  // paths go in as `file://D:/...`. It fills in `{key}`; an unexpected key
   // finds no archive and falls back to building Skia, unpatched, from source.
   const url = `file://${outputDir.replaceAll("\\", "/")}/skia-binaries-{key}.tar.gz`;
   if (process.env.GITHUB_ENV) appendFileSync(process.env.GITHUB_ENV, `SKIA_BINARIES_URL=${url}\n`);
-  console.log(`Patched ${SHARED_ICU_SYMBOLS.length} ICU symbols in ${join(outputDir, ARCHIVE)}`);
+  console.log(`Patched ${SHARED_ICU_SYMBOLS.length} ICU symbols in ${join(outputDir, archive)}`);
   console.log(`SKIA_BINARIES_URL=${url}`);
 }
 
-await main();
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) await main();

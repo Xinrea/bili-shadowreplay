@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Prepare a Windows Skia archive whose bundled ICU cannot clash with V8's.
+// Prepare a Windows Skia archive whose ICU and STL symbols cannot clash with V8.
 //
 // skia-bindings' prebuilt Windows `skunicode_icu.lib` and rusty_v8 both embed
 // ICU 74. Skia's copy is built without ICU's version renaming, and a few
@@ -7,6 +7,8 @@
 // them. MSVC refuses the duplicate (`ulocimp_getParent`, LNK2005); the others
 // would bind Skia's ICU to V8's functions. Renaming them in Skia's library, at
 // their definitions and uses alike, keeps each ICU on its own code.
+// Skia's no-exception STL terminate implementation similarly needs its own name
+// when the Vulkan renderer pulls SkExecutor into an application linked with V8.
 //
 // The patched archive is served to skia-bindings through SKIA_BINARIES_URL.
 // See docs/development/native-overlay.md.
@@ -36,6 +38,7 @@ const SHARED_ICU_SYMBOLS = [
   "??1CollatorSpec@@QEAA@XZ",
   "?reg@CReg@@SAPEBXPEB_SPEBDPEAW4UErrorCode@@@Z",
 ];
+const SHARED_STL_SYMBOLS = ["?terminate@std@@YAXXZ"];
 const PREFIX = "bsr_skia_";
 
 const root = resolve(import.meta.dirname, "..");
@@ -75,7 +78,7 @@ function checkLockedVersion() {
   const locked = /name = "skia-bindings"\r?\nversion = "([^"]+)"/.exec(lock)?.[1];
   if (locked !== SKIA_BINDINGS_VERSION) {
     throw new Error(`Cargo.lock has skia-bindings ${locked}, but this script patches ${SKIA_BINDINGS_VERSION}. `
-      + "Update ARCHIVES, KEY_PREFIX and SHARED_ICU_SYMBOLS for the new version.");
+      + "Update ARCHIVES, KEY_PREFIX and the shared symbol lists for the new version.");
   }
 }
 
@@ -126,19 +129,24 @@ async function main() {
   execFileSync("tar", ["-xzf", archive], { cwd: work, stdio: "inherit" });
   checkArchiveIdentity(join(work, "skia-binaries"), options);
 
-  const lib = join(work, "skia-binaries", "skunicode_icu.lib");
-  const patched = `${lib}.patched`;
-  const missing = SHARED_ICU_SYMBOLS.filter((name) => !contains(readFileSync(lib), name));
-  if (missing.length) throw new Error(`skunicode_icu.lib no longer defines: ${missing.join(", ")}`);
-  execFileSync(objcopy, [
-    ...SHARED_ICU_SYMBOLS.map((name) => `--redefine-sym=${name}=${PREFIX}${name}`),
-    lib,
-    patched,
-  ], { stdio: "inherit" });
-  const result = readFileSync(patched);
-  const unrenamed = SHARED_ICU_SYMBOLS.filter((name) => contains(result, name) || !contains(result, PREFIX + name));
-  if (unrenamed.length) throw new Error(`llvm-objcopy did not rename: ${unrenamed.join(", ")}`);
-  renameSync(patched, lib);
+  for (const [library, symbols] of [
+    ["skunicode_icu.lib", SHARED_ICU_SYMBOLS],
+    ["skia.lib", SHARED_STL_SYMBOLS],
+  ]) {
+    const lib = join(work, "skia-binaries", library);
+    const patched = `${lib}.patched`;
+    const missing = symbols.filter((name) => !contains(readFileSync(lib), name));
+    if (missing.length) throw new Error(`${library} no longer defines: ${missing.join(", ")}`);
+    execFileSync(objcopy, [
+      ...symbols.map((name) => `--redefine-sym=${name}=${PREFIX}${name}`),
+      lib,
+      patched,
+    ], { stdio: "inherit" });
+    const result = readFileSync(patched);
+    const unrenamed = symbols.filter((name) => contains(result, name) || !contains(result, PREFIX + name));
+    if (unrenamed.length) throw new Error(`llvm-objcopy did not rename: ${unrenamed.join(", ")}`);
+    renameSync(patched, lib);
+  }
 
   rmSync(join(work, archive));
   execFileSync("tar", ["-czf", archive, "skia-binaries"], { cwd: work, stdio: "inherit" });
@@ -150,7 +158,7 @@ async function main() {
   // finds no archive and falls back to building Skia, unpatched, from source.
   const url = `file://${outputDir.replaceAll("\\", "/")}/skia-binaries-{key}.tar.gz`;
   if (process.env.GITHUB_ENV) appendFileSync(process.env.GITHUB_ENV, `SKIA_BINARIES_URL=${url}\n`);
-  console.log(`Patched ${SHARED_ICU_SYMBOLS.length} ICU symbols in ${join(outputDir, archive)}`);
+  console.log(`Patched ${SHARED_ICU_SYMBOLS.length} ICU and ${SHARED_STL_SYMBOLS.length} STL symbols in ${join(outputDir, archive)}`);
   console.log(`SKIA_BINARIES_URL=${url}`);
 }
 

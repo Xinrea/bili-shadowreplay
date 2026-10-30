@@ -6,6 +6,8 @@
 
 上游 Windows 预编译包的 `skunicode_icu.lib` 与 V8（`deno_core` 依赖）都内置了 ICU 74。Skia 的 ICU 关闭了版本化重命名，而 `ulocimp_getParent` 等少数 ICU 内部符号在 V8 的 ICU 中同样没有版本后缀，两边定义同名符号。MSVC 链接时会报 `LNK2005 ulocimp_getParent already defined`，未报错的同名符号也可能让 Skia 的 ICU 调用到 V8 的实现。
 
+Vulkan 渲染还会从 `skia.lib` 拉入 `SkExecutor`，其中无异常 STL 的 `std::terminate()` 与 V8 的实现同名，完整应用会出现 `LNK2005`。准备脚本同样隔离这个符号的定义和引用，保留各库自己的实现。独立 Vulkan PoC 没有链接 V8，无法替代这项完整应用链接验证。
+
 `scripts/prepare-windows-skia.mjs` 下载同版本、同目标、同 feature 的官方压缩包并校验 SHA-256，用 `llvm-objcopy --redefine-sym` 把这些共有符号在 Skia 库中的定义和引用统一加上 `bsr_skia_` 前缀，再重新打包，最后输出 `SKIA_BINARIES_URL`。构建前在 **Windows 构建终端**中运行：
 
 ```powershell

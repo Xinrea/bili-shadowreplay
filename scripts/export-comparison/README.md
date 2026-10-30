@@ -1,5 +1,10 @@
 # Five-minute production export comparison
 
+Measured results and caveats: [2026-10-31 report](REPORT.md). PR459's median
+throughput was 4.522× current on the M2 Max and 1.299× current on the Windows
+5900X/RTX 5070 host in this scenario; the report includes default-encoder
+differences and complete per-run validation receipts.
+
 This compares current commit `730ebd23` with PR
 [#459](https://github.com/Xinrea/bili-shadowreplay/pull/459), pinned to
 `c73c7aaff9b9dd9abb561c90a48f19b2d6374112`. Both use release builds and their

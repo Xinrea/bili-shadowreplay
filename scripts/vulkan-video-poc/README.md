@@ -26,6 +26,59 @@ and conversion/encoding can perform internal GPU copies. The first PoC waits on
 GPU completion on the CPU to establish correctness; it is not an asynchronous
 pipeline or a claim about opaque driver internals.
 
+The optional application backend now uses a bounded three-frame asynchronous
+submission path; the standalone harness above retains synchronous submission
+as its baseline. The application uploads CPU-decoded NV12 video once and
+composites the transparent Skia scene on the GPU before encoding through the
+same native MediaPlan. Slot reuse and final drain still provide backpressure;
+this does not imply hardware source decoding or the absence of internal waits.
+
+To exercise the actual application export functions with the prepared SDK and
+Skia package, run from the repository root:
+
+```powershell
+# Correctness: real video, alpha, audio, project cache and cancellation.
+cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --features headless,vulkan-export native_gpu_ -- --ignored --nocapture --test-threads=1 --skip native_gpu_benchmark
+# Timing: no Vulkan validation/API-dump layers; warmup plus three alternating pairs.
+cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --features headless,vulkan-export native_gpu_benchmark -- --ignored --nocapture --test-threads=1
+```
+
+The second test compares synchronous and asynchronous composition through the
+same native MediaPlan using a moving-video fixture normalized to 1920×1080, 60 fps,
+10 Mbps, GOP 120 and encoder `async_depth=3`. Both modes copy the same audio.
+Timing includes device/renderer construction, decode, composition, encode,
+drain and atomic publication. Full frame grids, decoded audio and temporal
+image samples are checked outside each timed interval. API-dump runs use stdout
+begin/end markers for attribution; their timings are diagnostic only.
+The retained `gpu_wait` statistic also includes acquire-barrier CPU submission
+time, so a nonzero value in asynchronous mode is not evidence of a per-frame
+host completion wait. Frame-slot reuse and final-drain times are separate.
+
+The 2026-10-30 Windows application comparison on the RTX 5070 produced these
+medians over three alternating pairs, after warming both modes:
+
+| Codec | Synchronous | Three-frame asynchronous | Speed ratio |
+| --- | ---: | ---: | ---: |
+| H.264 Vulkan | 2646.940 ms | 2637.082 ms | 1.0037× |
+| HEVC Vulkan | 2827.522 ms | 2733.826 ms | 1.0343× |
+
+The measurement uses the debug test binary. This is a short, CPU-decoded
+64×48/25 fps moving-video fixture normalized by the actual export graph to
+1080p60, with a short subtitle. It checks complete
+export behavior and bounded frame overlap, not representative full-HD source
+decode cost or dense danmaku. The small differences are observations from this
+run, not a general speed guarantee. Both modes use the same Vulkan encoder and
+`async_depth=3`; this table does not compare against CPU composition or NVENC.
+Full parameters and validation evidence are in the
+[application asynchronous receipt](validation/windows-production-async-2026-10-30.json).
+
+All five Windows export regressions passed. The asynchronous path reached three
+in-flight frames and reused three RGB images, with no recorded image-to-host
+copies in either the full regression capture or the sixteen per-mode exports.
+Core/synchronization validation reported only the existing FFmpeg 9.0.2 encoder
+image-view cleanup issue (`05137`); there were no other VUIDs or sync hazards.
+That unresolved SDK issue still prevents calling the validation run clean.
+
 ## Prerequisites
 
 - Windows x64, a Vulkan Video capable GPU and current vendor driver.

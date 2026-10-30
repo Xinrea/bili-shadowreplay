@@ -17,7 +17,7 @@ Windows 下分为两个版本，分别是 `cpu` 和 `cuda` 版本。区别在于
 
 默认运行为 `cpu` 版本，使用 `yarn tauri dev --features cuda` 命令运行 `cuda` 版本。
 
-首次构建前须运行 `node scripts/prepare-windows-skia.mjs` 并按输出设置 `SKIA_BINARIES_URL`，以避免 Skia 与 V8 内置 ICU 的链接冲突，详见 [原生弹幕渲染构建](../docs/development/native-overlay.md#windows处理-skia-内置-icu-的符号冲突)。
+首次构建前须运行 `node scripts/prepare-windows-skia.mjs` 并按输出设置 `SKIA_BINARIES_URL`，以避免 Skia 与 V8 内置符号的链接冲突。Windows 应用默认包含 Vulkan 导出后端，脚本默认准备匹配的 Vulkan 包；之前使用 CPU 包的环境须重新运行脚本，无需额外 Cargo feature。详见 [原生弹幕渲染构建](../docs/development/native-overlay.md#windows处理-skia-内置-icu-的符号冲突)。
 
 在运行前，须要安装以下依赖：
 

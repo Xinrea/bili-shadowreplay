@@ -24,30 +24,30 @@ yarn tauri dev
 - 升级 `skia-safe`/`skia-bindings` 或 `deno_core`（V8）后，需重新比对两边 ICU 的共有符号，更新脚本中的 key、SHA-256 和符号列表；脚本会在锁定版本不符或符号不存在时报错。
 - Release workflow 会在 Windows 任务中自动执行这一步。
 
-Windows Vulkan 构建需要同版本的 `textlayout-vulkan` 包，使用显式选项准备：
+Windows 应用默认构建 Vulkan 后端，准备脚本默认下载同版本的 `textlayout-vulkan` 包：
 
 ```powershell
-node scripts/prepare-windows-skia.mjs --vulkan
-# 仍按输出设置 SKIA_BINARIES_URL；与 CPU 包可保存在同一个输出目录。
+node scripts/prepare-windows-skia.mjs
+# 按输出设置 SKIA_BINARIES_URL；升级前已准备 CPU 包的环境须重新运行。
 ```
 
-该选项选择官方 Skia 0.82 `textlayout-vulkan` 预编译包，校验下载 SHA-256、包内版本和 feature key 后执行相同的 ICU 符号处理。默认调用仍准备 `textlayout` CPU 包。它只准备链接依赖，Vulkan 设备与编码能力由运行时探测；源码构建时的 Skia feature 必须与所选压缩包一致。
+脚本校验官方包的 SHA-256、包内版本和 feature key 后隔离 ICU/STL 符号。`--vulkan` 保留兼容；`--cpu` 仅用于单独构建没有开启 Vulkan 的 crate，不能用于普通 Windows 应用。CPU 与 Vulkan 包可保存在同一输出目录。脚本只准备链接依赖，Vulkan 设备与编码能力由运行时探测；源码构建时的 Skia feature 必须与所选压缩包一致。
 
 ## Windows：真实视频 GPU 导出
 
-使用 `vulkan-export` Cargo feature 构建应用，将 GPU 合成接到正式弹幕压制、项目导出和投稿的原生 `MediaPlan` 中：
+Windows 的普通桌面和 headless 构建都默认包含 GPU 合成后端，并接到正式弹幕压制、项目导出和投稿的原生 `MediaPlan` 中，无需额外的 Cargo feature：
 
 ```powershell
-$prepared = node scripts/prepare-windows-skia.mjs --vulkan
+$prepared = node scripts/prepare-windows-skia.mjs
 $env:SKIA_BINARIES_URL = ($prepared | Where-Object { $_ -like 'SKIA_BINARIES_URL=*' }) -replace '^SKIA_BINARIES_URL=', ''
-yarn tauri build --features vulkan-export
+yarn tauri build
 ```
 
 现有原生解码和项目滤镜图负责剪辑、缩放、静态图层与时间轴，输出 NV12 视频底图；底图上传一次，Skia 在共享 Vulkan 设备上绘制预乘透明叠层，libplacebo 在 GPU 合成并输出 NV12 硬件帧，随后由原 `MediaPlan` 编码和封装。音频复制/混音、进度、取消、临时文件发布及资源 lease 继续使用现有实现，没有 rawvideo 管道或外部 FFmpeg 进程。
 
 应用后端允许最多三帧 GPU 工作在途。Skia 提交后通过同一图形队列和 `AVVkFrame` timeline 连接后续转换与编码，不再在每次绘制及桥接屏障后固定等待 CPU；复用帧槽、最终 drain、错误或取消时仍会等待 GPU，并持有帧和纹理直到消费者结束。编码器使用 `async_depth=3`。这消除了渲染帧回读，CPU 视频解码和底图上传仍然存在。
 
-速度优先导出先用一个小样本实际渲染、编码和解码检查蓝色底图与半透明红色叠层，成功后才选择 Vulkan。质量优先保留已有编码策略；明确不符合 SDR BT.709 范围的源在启动前选择 CPU 合成。执行中的错误不会静默重跑。CPU 与 Vulkan 分片使用不同缓存身份。macOS 暂不自动选择该后端。
+默认的速度优先导出先用一个小样本实际渲染、编码和解码检查蓝色底图与半透明红色叠层，成功后自动选择 Vulkan；设备或编码器不支持时在启动前选择现有 CPU 合成路径。质量优先保留已有编码策略；明确不符合 SDR BT.709 范围的源在启动前选择 CPU 合成。执行中的错误不会静默重跑。CPU 与 Vulkan 分片使用不同缓存身份。当前默认接入范围为 Windows，macOS Metal 仍暂缓，Linux/macOS 继续使用各自已有路径。
 
 需要匹配的 FFmpeg 9 开发 SDK、`libplacebo`、Vulkan Video 编码器与驱动。FFmpeg 9.0.2 仍有已知的 Vulkan 编码器退出图片视图清理问题；源码回补及校验说明见 [`scripts/ffmpeg-sdk-patches`](../../scripts/ffmpeg-sdk-patches/README.md)。功能测试通过不等于旧 SDK 的 Vulkan validation 全量无错误。实际运行与验证记录见独立工具的 [README](../../scripts/vulkan-video-poc/README.md)。
 

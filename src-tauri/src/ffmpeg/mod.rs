@@ -7,7 +7,7 @@ mod danmu;
 pub mod general;
 pub mod hwaccel;
 pub mod metadata;
-#[cfg(feature = "vulkan-export")]
+#[cfg(target_os = "windows")]
 mod native_gpu;
 pub mod native_overlay;
 pub mod playlist;

@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [features]
-# Opt-in GPU export path; ordinary preview/burn callers keep their raster backend.
+# GPU export backend; the Windows application enables it through target dependencies.
 vulkan = ["skia-safe/vulkan"]
 
 [dependencies]

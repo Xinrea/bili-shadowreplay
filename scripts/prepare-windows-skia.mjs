@@ -44,11 +44,15 @@ const PREFIX = "bsr_skia_";
 const root = resolve(import.meta.dirname, "..");
 
 export function parseOptions(args) {
-  let features = "textlayout";
+  let features = "textlayout-vulkan";
+  let featureOption;
   let directory;
   for (const arg of args) {
-    if (arg === "--vulkan") features = "textlayout-vulkan";
-    else if (arg.startsWith("-")) throw new Error(`Unknown option: ${arg}`);
+    if (arg === "--vulkan" || arg === "--cpu") {
+      if (featureOption && featureOption !== arg) throw new Error("--cpu and --vulkan cannot be combined");
+      featureOption = arg;
+      features = arg === "--cpu" ? "textlayout" : "textlayout-vulkan";
+    } else if (arg.startsWith("-")) throw new Error(`Unknown option: ${arg}`);
     else if (directory !== undefined) throw new Error("Only one output directory may be provided");
     else directory = arg;
   }

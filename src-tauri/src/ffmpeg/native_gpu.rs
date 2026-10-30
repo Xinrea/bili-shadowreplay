@@ -249,7 +249,7 @@ impl Drop for VulkanOverlayProcessor {
 
 /// Probe the complete renderer/compositor/encoder route before selecting it.
 /// Failures are cached per codec and leave the existing CPU selection available.
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 pub(super) async fn probe_encoder(encoder: &'static str) -> bool {
     static H264: tokio::sync::OnceCell<bool> = tokio::sync::OnceCell::const_new();
     static HEVC: tokio::sync::OnceCell<bool> = tokio::sync::OnceCell::const_new();
@@ -274,12 +274,12 @@ pub(super) async fn probe_encoder(encoder: &'static str) -> bool {
         .await
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(target_os = "windows")]
 async fn probe(encoder: &str) -> Result<(), String> {
     probe_with_mode(encoder, VulkanSubmissionMode::Asynchronous).await
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(target_os = "windows")]
 async fn probe_with_mode(encoder: &str, mode: VulkanSubmissionMode) -> Result<(), String> {
     let directory = Arc::new(tempfile::tempdir().map_err(|error| error.to_string())?);
     let output = directory.path().join("probe.mp4");
@@ -320,7 +320,7 @@ async fn probe_with_mode(encoder: &str, mode: VulkanSubmissionMode) -> Result<()
         .map_err(|error| format!("Vulkan probe output verification failed: {error}"))?
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(target_os = "windows")]
 fn probe_plan(encoder: &str, output: &std::path::Path) -> Result<MediaPlan, String> {
     use ffmpeg_utils::{
         ColorSource, FilterGraphPlan, FrameRatePolicy, GraphInput, GraphOutput, MediaInput,
@@ -364,7 +364,7 @@ fn probe_plan(encoder: &str, output: &std::path::Path) -> Result<MediaPlan, Stri
     })
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(target_os = "windows")]
 fn probe_scene(directory: &std::path::Path) -> Result<native_overlay::RenderInput, String> {
     // Generated 1x1 opaque-red RGBA PNG: IHDR, zlib-compressed scanline, IEND.
     const RED_PNG: &[u8] = &[
@@ -391,7 +391,7 @@ fn probe_scene(directory: &std::path::Path) -> Result<native_overlay::RenderInpu
     })
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(target_os = "windows")]
 async fn validate_probe_output(
     file: &std::path::Path,
     directory: &std::path::Path,
@@ -423,7 +423,7 @@ async fn validate_probe_output(
     Ok(())
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
+#[cfg(target_os = "windows")]
 fn validate_probe_pixels(pixels: &[u8]) -> Result<(), String> {
     if pixels.len() != 64 * 48 * 4 {
         return Err("Vulkan probe decoded an unexpected frame size".into());
@@ -569,6 +569,20 @@ mod tests {
                 .unwrap();
         }
         let mut settings = crate::project::RenderSettings::default();
+        assert_eq!(
+            super::super::hwaccel::get_render_encoder(&settings).await,
+            "hevc_vulkan",
+            "the default Windows export must select the probed GPU backend"
+        );
+        assert_eq!(
+            super::super::hwaccel::material_overlay_encoder(Some(&settings)).await,
+            "hevc_vulkan"
+        );
+        settings.codec = crate::project::VideoCodec::H264;
+        assert_eq!(
+            super::super::hwaccel::get_render_encoder(&settings).await,
+            "h264_vulkan"
+        );
         let ordinary = super::super::hwaccel::material_encoder(Some(&settings)).await;
         assert!(!super::super::hwaccel::is_vulkan_encoder(ordinary));
         settings.priority = crate::project::EncodingPriority::Quality;

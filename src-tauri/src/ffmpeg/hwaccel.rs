@@ -238,7 +238,7 @@ pub async fn get_render_encoder(settings: &crate::project::RenderSettings) -> &'
     let index = usize::from(hevc) * 2 + usize::from(settings.priority == EncodingPriority::Quality);
     CACHES[index]
         .get_or_init(|| async {
-            #[cfg(all(feature = "vulkan-export", not(target_os = "macos")))]
+            #[cfg(target_os = "windows")]
             {
                 if settings.priority == EncodingPriority::Speed {
                     let candidate = if hevc { "hevc_vulkan" } else { "h264_vulkan" };

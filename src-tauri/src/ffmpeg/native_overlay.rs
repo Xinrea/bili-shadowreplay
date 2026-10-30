@@ -124,7 +124,7 @@ pub async fn run_overlay_plan<R: ProgressReporterTrait>(
     reporter: Option<&R>,
 ) -> Result<MediaJobResult, String> {
     spec.layout()?;
-    #[cfg(feature = "vulkan-export")]
+    #[cfg(target_os = "windows")]
     if super::native_gpu::uses_vulkan(&plan) {
         return super::native_gpu::run_overlay_plan(plan, spec, progress, context, reporter).await;
     }

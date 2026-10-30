@@ -93,9 +93,10 @@ jobs:
           # llvm-objcopy patches the Windows Skia archive below.
           components: ${{ runner.os == 'Windows' && 'llvm-tools' || '' }}
 
-      - name: Prepare Skia without V8 ICU symbol clashes (Windows only)
+      - name: Prepare Vulkan Skia without V8 ICU/STL symbol clashes (Windows only)
         if: runner.os == 'Windows'
-        # Sets SKIA_BINARIES_URL; see docs/development/native-overlay.md.
+        # Windows exports use Vulkan in both CPU and CUDA app variants.
+        # The helper defaults to Vulkan and sets SKIA_BINARIES_URL.
         run: node scripts/prepare-windows-skia.mjs "${{ runner.temp }}/skia-binaries"
 
       - name: Cache Rust dependencies

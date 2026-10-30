@@ -544,7 +544,7 @@ mod tests {
         assert_danmu_export(None).await;
     }
 
-    #[cfg(feature = "vulkan-export")]
+    #[cfg(target_os = "windows")]
     #[tokio::test]
     #[ignore = "Requires a Vulkan Video GPU and the FFmpeg 9 SDK"]
     async fn native_gpu_danmu_export_keeps_real_video_audio_alpha_and_previous_output() {

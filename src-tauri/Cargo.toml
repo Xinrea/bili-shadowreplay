@@ -75,6 +75,10 @@ rig-core = { version = "0.40.0", default-features = false, features = ["derive",
 ffmpeg_utils = { path = "crates/ffmpeg_utils", features = ["cli-test-oracles"] }
 
 [target.'cfg(windows)'.dependencies]
+# The normal Windows application includes GPU composition. Runtime probes
+# choose a supported device/codec before falling back to the CPU renderer.
+ffmpeg_utils = { path = "crates/ffmpeg_utils", features = ["vulkan-video"] }
+native-overlay = { path = "crates/native-overlay", features = ["vulkan"] }
 sherpa-onnx = { version = "1.13.4", default-features = false, features = ["shared"] }
 
 [target.'cfg(not(windows))'.dependencies]
@@ -89,8 +93,6 @@ libc = "0.2"
 custom-protocol = ["tauri/custom-protocol"]
 cuda = ["whisper-cpp-rs/cuda"]
 headless = []
-# Optional native GPU export. Device/codec support is probed before selecting it.
-vulkan-export = ["native-overlay/vulkan", "ffmpeg_utils/vulkan-video"]
 default = ["gui", "credential-encryption"]
 credential-encryption = ["dep:keyring", "dep:ring"]
 gui = [

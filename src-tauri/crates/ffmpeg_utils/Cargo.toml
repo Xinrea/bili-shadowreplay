@@ -10,7 +10,7 @@ path = "src/lib.rs"
 [features]
 # External executable oracles only; production media paths use linked libraries.
 cli-test-oracles = ["tokio/process"]
-# Experimental GPU-frame bridge; requires FFmpeg 9 with Vulkan and libplacebo.
+# GPU-frame bridge; requires FFmpeg 9 with Vulkan and libplacebo.
 vulkan-video = []
 
 [dependencies]

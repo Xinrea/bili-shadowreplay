@@ -212,6 +212,9 @@ shared SDK**. Run setup and Cargo in the same shell: `ffmpeg_setup.ps1` sets
 The recorded run used Rust 1.90.0 and Node 22.16.0.
 The Skia preparation script prints its URL; explicitly set
 `SKIA_BINARIES_URL` to that value, preserving the `{key}` placeholder.
+Windows application builds include the Vulkan backend by default, including
+headless builds; the preparation script now selects the Vulkan archive without
+an extra option. Re-run it if the environment previously prepared a CPU archive.
 
 From the repository root:
 
@@ -221,8 +224,11 @@ rustup component add llvm-tools
 $skia = node scripts/prepare-windows-skia.mjs
 $env:SKIA_BINARIES_URL = ($skia | Where-Object { $_ -like 'SKIA_BINARIES_URL=*' }) -replace '^SKIA_BINARIES_URL=', ''
 cargo test --manifest-path src-tauri/Cargo.toml -p ffmpeg_utils --locked --lib
-cargo test --manifest-path src-tauri/Cargo.toml -p bili-shadowreplay --locked ffmpeg:: -- --include-ignored --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml -p bili-shadowreplay --locked ffmpeg:: -- --include-ignored --test-threads=1 --skip native_gpu_
 cargo test --manifest-path src-tauri/Cargo.toml -p recorder --locked
+
+# On a Vulkan Video-capable device: actual production GPU exports, no feature opt-in.
+cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features headless native_gpu_ -- --ignored --nocapture --test-threads=1 --skip native_gpu_benchmark
 
 # Targeted GOP check: both CLI and native plans must retain 301 frames and GOP <=120.
 cargo test --manifest-path src-tauri/Cargo.toml -p bili-shadowreplay --locked encoded_keyframe_gaps_respect_the_120_frame_gop -- --include-ignored

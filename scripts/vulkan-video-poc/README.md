@@ -2,7 +2,7 @@
 
 This standalone harness exercises the real overlay scene compositor and linked
 FFmpeg libraries without starting Tauri or the speech runtimes. The application
-also exposes an opt-in `vulkan-export` backend through the existing native
+includes the Vulkan backend by default on Windows through the existing native
 MediaPlan for real-video danmaku, project exports and uploads; see
 [native-overlay.md](../../docs/development/native-overlay.md). The standalone
 generated-background benchmark remains a separate subpipeline measurement.
@@ -26,7 +26,7 @@ and conversion/encoding can perform internal GPU copies. The first PoC waits on
 GPU completion on the CPU to establish correctness; it is not an asynchronous
 pipeline or a claim about opaque driver internals.
 
-The optional application backend now uses a bounded three-frame asynchronous
+The default Windows application backend uses a bounded three-frame asynchronous
 submission path; the standalone harness above retains synchronous submission
 as its baseline. The application uploads CPU-decoded NV12 video once and
 composites the transparent Skia scene on the GPU before encoding through the
@@ -38,9 +38,9 @@ Skia package, run from the repository root:
 
 ```powershell
 # Correctness: real video, alpha, audio, project cache and cancellation.
-cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --features headless,vulkan-export native_gpu_ -- --ignored --nocapture --test-threads=1 --skip native_gpu_benchmark
+cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --features headless native_gpu_ -- --ignored --nocapture --test-threads=1 --skip native_gpu_benchmark
 # Timing: no Vulkan validation/API-dump layers; warmup plus three alternating pairs.
-cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --features headless,vulkan-export native_gpu_benchmark -- --ignored --nocapture --test-threads=1
+cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --features headless native_gpu_benchmark -- --ignored --nocapture --test-threads=1
 ```
 
 The second test compares synchronous and asynchronous composition through the
@@ -89,8 +89,10 @@ That unresolved SDK issue still prevents calling the validation run clean.
 - The `prepare-windows-skia.mjs --vulkan` helper prepares the pinned official
   Skia 0.82 textlayout/Vulkan archive and applies the project's ICU symbol fix.
 
-The feature boundaries are `native-overlay/vulkan` and
-`ffmpeg_utils/vulkan-video`. Other builds retain their existing backend. The
+Windows application target dependencies enable `native-overlay/vulkan` and
+`ffmpeg_utils/vulkan-video` automatically, for desktop and headless builds. The
+application has no `vulkan-export` opt-in feature. Other platforms retain their
+existing backend. The
 native handle interface is independent of Windows external-memory handles:
 rendering, conversion and encoding share one Vulkan device. A future platform
 backend can use that interface after checking its device/codec support.

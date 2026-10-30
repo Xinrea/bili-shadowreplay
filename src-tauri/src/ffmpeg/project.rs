@@ -2624,7 +2624,7 @@ mod tests {
         assert_generated_segments("libx264").await;
     }
 
-    #[cfg(feature = "vulkan-export")]
+    #[cfg(target_os = "windows")]
     #[tokio::test]
     #[ignore = "Requires a Vulkan Video GPU and the FFmpeg 9 SDK"]
     async fn native_gpu_project_segments_keep_audio_cache_and_previous_export() {
@@ -2730,7 +2730,7 @@ mod tests {
         assert_cancelled_native_project("libx264").await;
     }
 
-    #[cfg(feature = "vulkan-export")]
+    #[cfg(target_os = "windows")]
     #[tokio::test]
     #[ignore = "Requires a Vulkan Video GPU and the FFmpeg 9 SDK"]
     async fn native_gpu_project_cancellation_keeps_previous_export_and_releases_assets() {

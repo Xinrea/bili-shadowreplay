@@ -1,5 +1,7 @@
 # MoltenVK → VideoToolbox：共享 GPU 导出链路
 
+本文保留最初的适配器验证记录。合成层现已改用共享 Vulkan compute；最新 macOS 颜色、回读审计和性能结果见 [compute 报告](../export-comparison/REPORT-macos-compute.md)。本文的 Windows 回执没有覆盖这次 shader 替换。
+
 2026-10-31，本机 Apple M2 Max / macOS 27.0.1 与 Windows RTX 5070 验证机验证。
 Windows 保留 Vulkan Video，macOS 使用 MoltenVK 1.4.2 + FFmpeg 9.0.2 VideoToolbox。
 普通构建默认包含 GPU 后端；默认速度优先配置经完整能力探测后自动选择，无需额外 feature。

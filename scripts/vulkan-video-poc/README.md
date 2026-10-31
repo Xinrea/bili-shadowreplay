@@ -21,7 +21,7 @@ ASS / images / fonts
 Skia Ganesh Vulkan (including cached text/effect sprite surfaces)
         ↓ borrowed VkImage, same VkDevice / graphics queue
 FFmpeg AVHWFramesContext RGB pool
-        ↓ libplacebo GPU colour conversion
+        ↓ shared Vulkan compute NV12 colour conversion
 NV12 Vulkan frames
         ↓ h264_vulkan / hevc_vulkan
 compressed AVPackets → MP4
@@ -91,19 +91,18 @@ That unresolved SDK issue still prevents calling the validation run clean.
 
 - Windows x64, a Vulkan Video capable GPU and current vendor driver.
 - The project's FFmpeg 9 SDK, including headers, import libraries, runtime DLLs,
-  `libplacebo`, and `h264_vulkan` / `hevc_vulkan` support.
+  Vulkan, and `h264_vulkan` / `hevc_vulkan` support. The shared graphics queue
+  must support compute and `shaderStorageImageWriteWithoutFormat`.
 - Vulkan SDK with `VK_LAYER_LUNARG_api_dump`, Python 3.9+, Node 22+, Rust,
   MSVC and LLVM. The recorded build used Node 22.16.0 and Rust 1.90.0.
 - The `prepare-windows-skia.mjs --vulkan` helper prepares the pinned official
   Skia 0.82 textlayout/Vulkan archive and applies the project's ICU symbol fix.
 
-Windows application target dependencies enable `native-overlay/vulkan` and
-`ffmpeg_utils/vulkan-video` automatically, for desktop and headless builds. The
-application has no `vulkan-export` opt-in feature. Other platforms retain their
-existing backend. The
-native handle interface is independent of Windows external-memory handles:
-rendering, conversion and encoding share one Vulkan device. A future platform
-backend can use that interface after checking its device/codec support.
+Windows and macOS application target dependencies enable `native-overlay/vulkan`
+and `ffmpeg_utils/vulkan-video` automatically, for desktop and headless builds.
+The application has no `vulkan-export` opt-in feature; Linux retains its existing
+backend. Rendering and composition share one Vulkan device. Windows encoding
+consumes those frames directly; macOS uses the GPU-only VideoToolbox adapter.
 
 The [Windows default-build receipt](validation/windows-default-export-2026-10-31.json)
 records successful ordinary GUI compilation/linking and headless production
@@ -151,7 +150,7 @@ Skia borrows their native handles, queries functions with the requested instance
 or device (including null-instance global queries), and never frees the images.
 Only one frame lease may be active. The bridge waits/transitions before Skia
 writes, publishes its final image layout/access state, and synchronizes before
-passing the frame to the GPU filter and encoder. Skia is destroyed before the
+passing the frame to the GPU compositor and encoder. Skia is destroyed before the
 session/device; failures do not publish the temporary MP4 over an existing file.
 
 The RGB image's actual Vulkan format determines Skia's channel mapping:
@@ -162,19 +161,25 @@ Before rendering, the bridge performs a real GPU transition into
 host-write access. After Skia completes, it transitions back to `GENERAL` for
 the GPU converter.
 
-The initial same-size `scale_vulkan` conversion failed with this SDK. The PoC
-uses `libplacebo`, attaching the shared hardware device **before** initializing
-the filter. Automatic software converters are disabled, and the output pool is
-checked to belong to the same `VkDevice` before opening the encoder.
+The original PoC used libplacebo after a same-size `scale_vulkan` experiment
+failed. Both the standalone session and production now use the shared embedded
+[Vulkan compute shader](../vulkan-compute-validation/README.md). It produces
+NV12 directly on the same device; no filter graph or software converter is
+inserted. The output pool is checked before opening the encoder.
 
 For the single-image, two-plane NV12 output pool, the bridge removes the unused
 `ALIAS` image flag before allocating the first frame. The tested driver's video
 profile allows `MUTABLE_FORMAT` and `EXTENDED_USAGE`, but not `ALIAS`.
 `VIDEO_PROFILE_INDEPENDENT` and all rendering/encoding usage bits remain in
-place. Multi-image or preallocated pools are rejected rather than modified.
-This changes image creation flags without adding an image copy.
+place. Pools remain dynamic until the adapter finishes configuration, before
+allocating the first image. MoltenVK deliberately uses the separate R8/RG8
+layout instead. Clearing the unused flag does not add an image copy.
 
 ## Verification record
+
+The Windows receipts below predate the compute replacement. The new shared
+compute path has [macOS validation and a full-load comparison](../export-comparison/REPORT-macos-compute.md);
+Windows device execution was not repeated in this macOS pass.
 
 The [2026-10-30 receipt](validation/windows-rtx5070-2026-10-30.json) records the
 final runs on an NVIDIA GeForce RTX 5070, driver `32.0.16.1742`, using Gyan's

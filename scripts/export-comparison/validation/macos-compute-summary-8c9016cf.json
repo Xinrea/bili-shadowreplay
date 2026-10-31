@@ -1,0 +1,73 @@
+{
+  "source": "macos-compute-8c9016cf.json",
+  "timing_status": "complete; every output validated",
+  "controls": {
+    "current": {
+      "wall_seconds": [
+        33.849840541835874,
+        34.3054292909801,
+        34.33736287523061
+      ],
+      "median_wall_seconds": 34.3054292909801,
+      "range_seconds": 0.48752233339473605,
+      "throughput_fps": 524.6982874729023,
+      "cpu_seconds": [
+        71.08,
+        71.68,
+        69.94
+      ],
+      "rss_mib": [
+        248.84375,
+        247.71875,
+        250.4375
+      ],
+      "gpu_device_utilization_run_medians": [
+        51.0,
+        51,
+        45
+      ]
+    },
+    "pr459": {
+      "wall_seconds": [
+        38.33725599991158,
+        38.42712437501177,
+        38.102072041947395
+      ],
+      "median_wall_seconds": 38.33725599991158,
+      "range_seconds": 0.3250523330643773,
+      "throughput_fps": 469.51717149609027,
+      "cpu_seconds": [
+        111.35000000000001,
+        112.66,
+        109.75
+      ],
+      "rss_mib": [
+        310.3125,
+        310.4375,
+        312.03125
+      ],
+      "gpu_device_utilization_run_medians": [
+        36,
+        47,
+        31.0
+      ]
+    }
+  },
+  "limits": [
+    "three control repeats; one stage-diagnostic repeat",
+    "each implementation retains its own default GOP/B-frame policy",
+    "GPU telemetry is system-wide, not per-process or VideoToolbox engine utilization",
+    "stage wall includes host blocking; CPU covers only the calling thread",
+    "box chroma filtering is not pixel-identical to libplacebo"
+  ],
+  "wall_reduction_percent": 10.516732624110537,
+  "throughput_increase_percent": 11.752736497576954,
+  "validation": {
+    "jobs": 10,
+    "full_videos": 8,
+    "warmups": 2,
+    "decoded_frames": 145200,
+    "audio_packet_payloads_identical": true,
+    "sampled_scene_times_per_full_video": 8
+  }
+}

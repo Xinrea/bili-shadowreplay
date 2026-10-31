@@ -43,13 +43,13 @@ $env:SKIA_BINARIES_URL = ($prepared | Where-Object { $_ -like 'SKIA_BINARIES_URL
 yarn tauri build
 ```
 
-现有原生解码和项目滤镜图负责剪辑、缩放、静态图层与时间轴，输出 NV12 视频底图；底图上传一次，Skia 在共享 Vulkan 设备上绘制预乘透明叠层，libplacebo 在 GPU 合成并输出 NV12 硬件帧，随后由原 `MediaPlan` 编码和封装。音频复制/混音、进度、取消、临时文件发布及资源 lease 继续使用现有实现，没有 rawvideo 管道或外部 FFmpeg 进程。
+现有原生解码和项目滤镜图负责剪辑、缩放、静态图层与时间轴，输出 NV12 视频底图；底图上传一次，Skia 在共享 Vulkan 设备上绘制预乘透明叠层，专用 Vulkan compute shader 在 GPU 合成并输出 NV12 硬件帧，随后由原 `MediaPlan` 编码和封装。音频复制/混音、进度、取消、临时文件发布及资源 lease 继续使用现有实现，没有 rawvideo 管道或外部 FFmpeg 进程。
 
 应用后端允许最多三帧 GPU 工作在途。Skia 提交后通过同一图形队列和 `AVVkFrame` timeline 连接后续转换与编码，不再在每次绘制及桥接屏障后固定等待 CPU；复用帧槽、最终 drain、错误或取消时仍会等待 GPU，并持有帧和纹理直到消费者结束。编码器使用 `async_depth=3`。这消除了渲染帧回读，CPU 视频解码和底图上传仍然存在。
 
 默认的速度优先导出先用一个小样本实际渲染、编码和解码检查蓝色底图与半透明红色叠层，成功后自动选择 Vulkan；设备或编码器不支持时在启动前选择现有 CPU 合成路径。质量优先保留已有编码策略；明确不符合 SDR BT.709 范围的源在启动前选择 CPU 合成。执行中的错误不会静默重跑。CPU 与 Vulkan 分片使用不同缓存身份。Windows 与 macOS 默认包含 Vulkan 渲染后端；macOS 通过下述 VideoToolbox 适配器编码，Linux 保留已有路径。
 
-需要匹配的 FFmpeg 9 开发 SDK、`libplacebo`、Vulkan Video 编码器与驱动。FFmpeg 9.0.2 仍有已知的 Vulkan 编码器退出图片视图清理问题；源码回补及校验说明见 [`scripts/ffmpeg-sdk-patches`](../../scripts/ffmpeg-sdk-patches/README.md)。功能测试通过不等于旧 SDK 的 Vulkan validation 全量无错误。实际运行与验证记录见独立工具的 [README](../../scripts/vulkan-video-poc/README.md)。
+需要匹配的 FFmpeg 9 开发 SDK、Vulkan Video 编码器与驱动。FFmpeg 9.0.2 仍有已知的 Vulkan 编码器退出图片视图清理问题；源码回补及校验说明见 [`scripts/ffmpeg-sdk-patches`](../../scripts/ffmpeg-sdk-patches/README.md)。功能测试通过不等于旧 SDK 的 Vulkan validation 全量无错误。实际运行与验证记录见独立工具的 [README](../../scripts/vulkan-video-poc/README.md)。
 
 Windows 的 Skia GPU → FFmpeg Vulkan Video 独立验证入口位于仓库的 [`scripts/vulkan-video-poc`](https://github.com/Xinrea/bili-shadowreplay/blob/main/scripts/vulkan-video-poc/README.md)。它与应用共享 Vulkan 合成器，保留生成底图的独立性能基线，并提供 API 跟踪、输出视频与画面内容的独立校验。正式导出回归记录见 [Windows 验证回执](../../scripts/vulkan-video-poc/validation/windows-production-export-2026-10-30.json)。
 
@@ -57,10 +57,10 @@ Windows 默认构建验证见 [2026-10-31 回执](../../scripts/vulkan-video-poc
 
 ## macOS：MoltenVK 渲染与 VideoToolbox 编码
 
-macOS 与 Windows 共享 `MediaPlan`、Skia Vulkan 场景绘制、libplacebo 合成和 NV12 转换，以及原生解码、时间轴、音频、分段缓存、取消和封装逻辑。`RenderPipeline` 显式选择渲染后端与编码器；编码器名称不再决定渲染方式，同样使用 VideoToolbox 的 CPU/GPU 导出具有不同缓存身份。
+macOS 与 Windows 共享 `MediaPlan`、Skia Vulkan 场景绘制、专用 Vulkan compute 合成和 NV12 转换，以及原生解码、时间轴、音频、分段缓存、取消和封装逻辑。`RenderPipeline` 显式选择渲染后端与编码器；编码器名称不再决定渲染方式，同样使用 VideoToolbox 的 CPU/GPU 导出具有不同缓存身份。
 
 ```text
-MediaPlan 解码/滤镜 → NV12 底图上传 → Skia Vulkan + libplacebo GPU 合成
+MediaPlan 解码/滤镜 → NV12 底图上传 → Skia Vulkan + Vulkan compute 合成
                                       ├─ Windows: AVVkFrame → Vulkan Video
                                       └─ macOS: MoltenVK R8/RG8 → Metal blit
                                                 → IOSurface/CVPixelBuffer → VideoToolbox
@@ -82,9 +82,11 @@ yarn tauri dev
 
 Skia 默认构建 `textlayout-vulkan`，无需新增 Cargo feature 开关。普通构建仍保留能力探测后的 CPU 回退；不支持 SDR BT.709 的输入和质量优先策略维持已有行为。
 
-发布 hook 将 MoltenVK 复制为 `Contents/Frameworks/libvulkan.dylib`，统一重定位 libplacebo 的 Vulkan 依赖，并使用适合 FFmpeg `dlopen` 的 install-name。应用从包内绝对路径加载，所有 dylib 继续执行架构、最低系统版本与签名检查。安装后的应用无需 Vulkan SDK、ICD 文件或环境变量。`BSR_MOLTENVK_LIBRARY` 仅指定构建时的库；`BSR_VULKAN_LIBRARY` 是未打包验证工具的加载覆盖，必须指向绝对路径 `libvulkan.dylib`，可用于 Vulkan loader/API capture，打包应用优先使用自己的库。
+发布 hook 将 MoltenVK 复制为 `Contents/Frameworks/libvulkan.dylib`，统一重定位 SDK 内 Vulkan 动态依赖（完整 FFmpeg SDK 若包含 libplacebo，也会处理它的依赖；合成器不再调用该滤镜），并使用适合 FFmpeg `dlopen` 的 install-name。应用从包内绝对路径加载，所有 dylib 继续执行架构、最低系统版本与签名检查。安装后的应用无需 Vulkan SDK、ICD 文件或环境变量。`BSR_MOLTENVK_LIBRARY` 仅指定构建时的库；`BSR_VULKAN_LIBRARY` 是未打包验证工具的加载覆盖，必须指向绝对路径 `libvulkan.dylib`，可用于 Vulkan loader/API capture，打包应用优先使用自己的库。
 
 验证与已知 SDK 限制见 [跨平台 GPU 导出验证](../../scripts/vulkan-video-poc/MACOS_VIDEOTOOLBOX.md)。
+
+最新的共享 compute shader 使用 BT.709 预乘透明度和 2×2 色度采样，源码与嵌入式 SPIR-V 一起维护，不需要运行时 GLSL 编译器。颜色、透明度、CPU 帧回读审计与五分钟 #459 对照见 [macOS compute 报告](../../scripts/export-comparison/REPORT-macos-compute.md)。上面的 Windows 回执是此前 libplacebo 实现的验证；新 compute 路径本轮只在 macOS 执行设备验证。
 
 ## Linux：Ubuntu 24.04 起
 

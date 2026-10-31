@@ -8,8 +8,8 @@ use std::sync::{atomic::AtomicBool, Arc};
 
 use ffmpeg_utils::{
     vulkan_video::{
-        HardwareEncoderFrames, VulkanCompositor, VulkanImageState, VulkanRenderOptions,
-        VulkanSubmissionMode,
+        EncoderFrameHandoff, HardwareEncoderFrames, VulkanCompositor, VulkanImageState,
+        VulkanRenderOptions, VulkanSubmissionMode,
     },
     MediaBindings, MediaPlan, MediaResourceLease, StreamMode, VideoEncodeOptions, VideoFrame,
     VideoFrameInfo, VideoFrameProcessor,
@@ -37,6 +37,15 @@ fn bind_overlay_with_mode(
     spec: OverlaySpec,
     mode: VulkanSubmissionMode,
 ) -> Result<MediaBindings, String> {
+    bind_overlay_with_handoff(plan, spec, mode, EncoderFrameHandoff::default())
+}
+
+fn bind_overlay_with_handoff(
+    plan: &mut MediaPlan,
+    spec: OverlaySpec,
+    mode: VulkanSubmissionMode,
+    handoff: EncoderFrameHandoff,
+) -> Result<MediaBindings, String> {
     let mut matching =
         plan.routes
             .iter()
@@ -60,8 +69,10 @@ fn bind_overlay_with_mode(
         video_processors: vec![(
             index,
             Box::new(move |info, cancelled| {
-                VulkanOverlayProcessor::new(info, spec, options, resources, cancelled, mode)
-                    .map(|processor| Box::new(processor) as Box<dyn VideoFrameProcessor>)
+                VulkanOverlayProcessor::new(
+                    info, spec, options, resources, cancelled, mode, handoff,
+                )
+                .map(|processor| Box::new(processor) as Box<dyn VideoFrameProcessor>)
             }),
         )],
         ..Default::default()
@@ -93,6 +104,28 @@ pub(crate) async fn run_overlay_plan_measured<R: ProgressReporterTrait>(
         bindings,
         ProgressMode::None,
         "Measured GPU export",
+        reporter,
+    )
+    .await
+}
+
+/// Per-job handoff baseline for controlled validation; production uses the
+/// asynchronous default. Skia/Vulkan submission remains asynchronous in both.
+pub(crate) async fn run_overlay_plan_with_handoff<R: ProgressReporterTrait>(
+    mut plan: MediaPlan,
+    spec: OverlaySpec,
+    handoff: EncoderFrameHandoff,
+    profiler: Option<perf::MediaProfiler>,
+    reporter: Option<&R>,
+) -> Result<ffmpeg_utils::MediaJobResult, String> {
+    let mut bindings =
+        bind_overlay_with_handoff(&mut plan, spec, VulkanSubmissionMode::Asynchronous, handoff)?;
+    bindings.profiler = profiler;
+    run_native_media_with_sources(
+        plan,
+        bindings,
+        ProgressMode::None,
+        "GPU encoder handoff comparison",
         reporter,
     )
     .await
@@ -136,6 +169,7 @@ impl VulkanOverlayProcessor {
         resources: Vec<MediaResourceLease>,
         cancelled: Arc<AtomicBool>,
         mode: VulkanSubmissionMode,
+        handoff: EncoderFrameHandoff,
     ) -> Result<Self, String> {
         if info.width != spec.width || info.height != spec.height {
             return Err("GPU video and overlay dimensions differ".into());
@@ -162,7 +196,8 @@ impl VulkanOverlayProcessor {
             cancelled,
             mode,
         )?;
-        let encoder_frames = HardwareEncoderFrames::new(&mut compositor, &options.encoder)?;
+        let encoder_frames =
+            HardwareEncoderFrames::new_with_handoff(&mut compositor, &options.encoder, handoff)?;
         let device = compositor.device();
         let handles = device.info();
         let native = NativeVulkanDevice {
@@ -267,14 +302,16 @@ impl VideoFrameProcessor for VulkanOverlayProcessor {
             )
         }?;
         perf::measure("encoder_frame_bridge", || {
-            self.encoder_frames.convert(frames)
+            self.encoder_frames.process(frames)
         })
     }
 
     fn flush(&mut self) -> Result<Vec<VideoFrame>, String> {
         let frames = self.compositor.flush()?;
         perf::measure("encoder_frame_bridge", || {
-            self.encoder_frames.convert(frames)
+            let mut ready = self.encoder_frames.process(frames)?;
+            ready.extend(self.encoder_frames.flush()?);
+            Ok(ready)
         })
     }
 }
@@ -673,6 +710,181 @@ mod tests {
         settings.priority = crate::project::EncodingPriority::Quality;
         let quality = super::super::hwaccel::get_render_pipeline(&settings).await;
         assert!(!quality.uses_gpu());
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires a GPU render/encode backend and FFmpeg 9 SDK"]
+    async fn native_gpu_handoff_drains_short_tails_in_order_for_both_codecs() {
+        use super::EncoderFrameHandoff::{Asynchronous, Blocking};
+        for encoder in ENCODERS {
+            for count in [1, 2, 3, 7] {
+                let directory = tempfile::tempdir().unwrap();
+                let mut grids = Vec::new();
+                for handoff in [Blocking, Asynchronous] {
+                    let output = directory.path().join(format!("{handoff:?}.mp4"));
+                    let mut plan = super::probe_plan(encoder, &output).unwrap();
+                    let duration = count as f64 / 30.0;
+                    plan.inputs[0].duration = Some(duration);
+                    let profiler = ffmpeg_utils::profiling::MediaProfiler::default();
+                    let result = super::run_overlay_plan_with_handoff(
+                        plan,
+                        super::OverlaySpec {
+                            input: super::probe_scene(directory.path()).unwrap(),
+                            width: 320,
+                            height: 240,
+                            fps: 30.0,
+                            start: 0.0,
+                            duration,
+                        },
+                        handoff,
+                        Some(profiler.clone()),
+                        None::<&Silent>,
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(result.video_frames, count);
+                    let grid = decoded_frame_grid(&output, directory.path()).await;
+                    assert_eq!(grid.0.len(), count as usize);
+                    grids.push(grid.0);
+                    if count >= 3 {
+                        super::validate_probe_output(&output, directory.path())
+                            .await
+                            .unwrap();
+                    }
+                    #[cfg(target_os = "macos")]
+                    {
+                        let report = profiler.report();
+                        let counters = &report.metadata["vt_bridge_counters"];
+                        assert!(
+                            counters.starts_with(&format!("submitted={count}, completed={count},"))
+                        );
+                        assert!(counters.ends_with("pending_at_drop=0"));
+                        let peak: usize = counters
+                            .split("pending_peak=")
+                            .nth(1)
+                            .unwrap()
+                            .split(',')
+                            .next()
+                            .unwrap()
+                            .parse()
+                            .unwrap();
+                        assert!((1..=3).contains(&peak));
+                        assert_eq!(report.metadata["encoder_handoff"], format!("{handoff:?}"));
+                        assert_eq!(report.spans["vt_metal_submit"].calls, count);
+                    }
+                }
+                assert_eq!(
+                    grids[0], grids[1],
+                    "{encoder}, {count} frames: handoff must preserve every PTS/duration"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires a GPU render/encode backend and FFmpeg 9 SDK"]
+    async fn native_gpu_handoff_failure_and_cancellation_preserve_existing_output() {
+        use ffmpeg_utils::{VideoFrame, VideoFrameInfo, VideoFrameProcessor};
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        struct Interrupted {
+            inner: super::VulkanOverlayProcessor,
+            cancelled: Arc<AtomicBool>,
+            cancel: bool,
+            seen: usize,
+        }
+        impl VideoFrameProcessor for Interrupted {
+            fn output_template(&self) -> Result<VideoFrame, String> {
+                self.inner.output_template()
+            }
+            fn process(&mut self, frame: VideoFrame) -> Result<Vec<VideoFrame>, String> {
+                let ready = self.inner.process(frame)?;
+                self.seen += 1;
+                // libplacebo buffers the initial base frame. Reach actual
+                // encoder handoffs before interrupting a live export.
+                if self.seen < 4 {
+                    return Ok(ready);
+                }
+                if self.cancel {
+                    self.cancelled.store(true, Ordering::Release);
+                    Err("test GPU handoff cancellation".into())
+                } else {
+                    Err("test GPU handoff failure".into())
+                }
+            }
+            fn flush(&mut self) -> Result<Vec<VideoFrame>, String> {
+                self.inner.flush()
+            }
+        }
+        for cancel in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let output = directory.path().join("existing.mp4");
+            std::fs::write(&output, b"preserve existing output").unwrap();
+            let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("crates/ffmpeg_utils/src/hls/fixtures/live.flv");
+            let plan = moving_plan(&source, &output, ENCODERS[1]);
+            let options = match &plan.routes[0].mode {
+                StreamMode::Video(options) => options.clone(),
+                _ => unreachable!(),
+            };
+            let resources = plan.resources.clone();
+            let profiler = ffmpeg_utils::profiling::MediaProfiler::default();
+            let bindings = ffmpeg_utils::MediaBindings {
+                video_processors: vec![(
+                    0,
+                    Box::new(move |info: VideoFrameInfo, cancelled: Arc<AtomicBool>| {
+                        let inner = super::VulkanOverlayProcessor::new(
+                            info,
+                            moving_spec(6.0),
+                            options,
+                            resources,
+                            cancelled.clone(),
+                            super::VulkanSubmissionMode::Asynchronous,
+                            super::EncoderFrameHandoff::Asynchronous,
+                        )?;
+                        Ok(Box::new(Interrupted {
+                            inner,
+                            cancelled,
+                            cancel,
+                            seen: 0,
+                        }) as Box<dyn VideoFrameProcessor>)
+                    }),
+                )],
+                profiler: Some(profiler.clone()),
+                ..Default::default()
+            };
+            let error = ffmpeg_utils::execute_with_sources(plan, bindings, None)
+                .await
+                .unwrap_err();
+            assert!(
+                error.message.contains("test GPU handoff") || error.message.contains("取消"),
+                "{error}"
+            );
+            assert_eq!(std::fs::read(&output).unwrap(), b"preserve existing output");
+            assert_eq!(
+                std::fs::read_dir(directory.path()).unwrap().count(),
+                1,
+                "remove all staging files"
+            );
+            #[cfg(target_os = "macos")]
+            {
+                let report = profiler.report();
+                let counters = &report.metadata["vt_bridge_counters"];
+                let submitted: u64 = counters
+                    .split("submitted=")
+                    .nth(1)
+                    .unwrap()
+                    .split(',')
+                    .next()
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                assert!(submitted > 0, "interrupt after a real handoff: {counters}");
+                eprintln!("interrupted_handoff cancel={cancel} {counters}");
+            }
+        }
     }
 
     #[tokio::test]

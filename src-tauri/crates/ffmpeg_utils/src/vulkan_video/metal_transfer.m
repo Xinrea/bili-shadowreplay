@@ -7,15 +7,41 @@ static double bsr_profile_now(void) {
     return (double)clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9;
 }
 
-// This bridge only copies between GPU textures. Pixel buffer base addresses
-// are never locked or mapped, including on failure.
+// Pixel buffer base addresses are never locked or mapped, including on failure.
 @interface BSRMetalTransfer : NSObject
 @property(nonatomic, strong) id<MTLCommandQueue> queue;
 @property(nonatomic, assign) CVMetalTextureCacheRef cache;
 @end
 @implementation BSRMetalTransfer
+- (void)dealloc { if (_cache) CFRelease(_cache); }
+@end
+
+// Rust owns both AVFrames until this ticket is destroyed. Retain the CoreVideo
+// views and command independently so cancellation cannot release GPU resources
+// while the command still uses them. All entry points run on the media worker.
+@interface BSRMetalCopy : NSObject
+@property(nonatomic, strong) BSRMetalTransfer *transfer;
+@property(nonatomic, strong) id<MTLCommandBuffer> command;
+@property(nonatomic, assign) CVMetalTextureRef luma;
+@property(nonatomic, assign) CVMetalTextureRef chroma;
+@property(nonatomic) BOOL committed;
+@property(nonatomic) double prepareSeconds;
+@property(nonatomic) double viewsSeconds;
+@property(nonatomic) double commitSeconds;
+- (void)releaseViews;
+@end
+@implementation BSRMetalCopy
+- (void)releaseViews {
+    BOOL hadViews = _luma || _chroma;
+    if (_luma) { CFRelease(_luma); _luma = NULL; }
+    if (_chroma) { CFRelease(_chroma); _chroma = NULL; }
+    if (hadViews) CVMetalTextureCacheFlush(_transfer.cache, 0);
+}
 - (void)dealloc {
-    if (_cache) CFRelease(_cache);
+    if (_committed && _command.status < MTLCommandBufferStatusCompleted) {
+        [_command waitUntilCompleted];
+    }
+    [self releaseViews];
 }
 @end
 
@@ -39,26 +65,25 @@ void bsr_metal_transfer_destroy(void *context) {
     if (context) { (void)CFBridgingRelease(context); }
 }
 
-int bsr_metal_transfer_copy(void *context, void *luma, void *chroma,
-                            void *pixel_buffer, char *error, size_t capacity, double *timings) {
+void *bsr_metal_transfer_submit(void *context, void *luma, void *chroma,
+                               void *pixel_buffer, char *error, size_t capacity, int profile) {
     @autoreleasepool {
         BSRMetalTransfer *transfer = (__bridge BSRMetalTransfer *)context;
         CVPixelBufferRef pixel = (CVPixelBufferRef)pixel_buffer;
         id<MTLTexture> sources[2] = {(__bridge id<MTLTexture>)luma,
                                     (__bridge id<MTLTexture>)chroma};
-        CVMetalTextureRef planes[2] = {NULL, NULL};
         if (!CVPixelBufferGetIOSurface(pixel) || CVPixelBufferGetPlaneCount(pixel) != 2) {
             snprintf(error, capacity, "VideoToolbox output requires a two-plane IOSurface");
-            return -1;
+            return NULL;
         }
-        int result = -1;
-        double started = timings ? bsr_profile_now() : 0;
-        double mark = started;
-        id<MTLCommandBuffer> command = [transfer.queue commandBuffer];
-        id<MTLBlitCommandEncoder> blit = [command blitCommandEncoder];
+        double started = profile ? bsr_profile_now() : 0;
+        BSRMetalCopy *copy = [BSRMetalCopy new];
+        copy.transfer = transfer;
+        copy.command = [transfer.queue commandBuffer];
+        id<MTLBlitCommandEncoder> blit = [copy.command blitCommandEncoder];
         if (!blit) {
             snprintf(error, capacity, "Create Metal blit encoder");
-            return -1;
+            return NULL;
         }
         for (size_t plane = 0; plane < 2; ++plane) {
             size_t width = CVPixelBufferGetWidthOfPlane(pixel, plane);
@@ -68,16 +93,20 @@ int bsr_metal_transfer_copy(void *context, void *luma, void *chroma,
                 sources[plane].width != width || sources[plane].height != height ||
                 sources[plane].pixelFormat != format) {
                 snprintf(error, capacity, "MoltenVK plane %zu has incompatible device/size/format", plane);
-                goto cleanup;
+                [blit endEncoding];
+                return NULL;
             }
-            double view_start = timings ? bsr_profile_now() : 0;
+            double view_start = profile ? bsr_profile_now() : 0;
+            CVMetalTextureRef view = NULL;
             CVReturn status = CVMetalTextureCacheCreateTextureFromImage(
-                NULL, transfer.cache, pixel, NULL, format, width, height, plane, &planes[plane]);
-            id<MTLTexture> target = planes[plane] ? CVMetalTextureGetTexture(planes[plane]) : nil;
-            if (timings) timings[1] += bsr_profile_now() - view_start;
+                NULL, transfer.cache, pixel, NULL, format, width, height, plane, &view);
+            if (plane == 0) copy.luma = view; else copy.chroma = view;
+            id<MTLTexture> target = view ? CVMetalTextureGetTexture(view) : nil;
+            if (profile) copy.viewsSeconds += bsr_profile_now() - view_start;
             if (status != kCVReturnSuccess || !target) {
                 snprintf(error, capacity, "Create IOSurface Metal plane %zu (%d)", plane, status);
-                goto cleanup;
+                [blit endEncoding];
+                return NULL;
             }
             [blit copyFromTexture:sources[plane] sourceSlice:0 sourceLevel:0
                     sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(width, height, 1)
@@ -85,30 +114,45 @@ int bsr_metal_transfer_copy(void *context, void *luma, void *chroma,
                destinationOrigin:MTLOriginMake(0, 0, 0)];
         }
         [blit endEncoding];
-        blit = nil;
-        if (timings) { mark = bsr_profile_now(); timings[0] = mark - started; }
-        [command commit];
-        if (timings) { double now = bsr_profile_now(); timings[2] = now - mark; mark = now; }
-        // Completion wait only: no GPU pixels cross into CPU memory. Keep
-        // source AVFrame and both CVMetalTextures alive until the copy ends.
-        [command waitUntilCompleted];
+        double mark = profile ? bsr_profile_now() : 0;
+        if (profile) copy.prepareSeconds = mark - started;
+        [copy.command commit];
+        copy.committed = YES;
+        if (profile) copy.commitSeconds = bsr_profile_now() - mark;
+        return (__bridge_retained void *)copy;
+    }
+}
+
+// 1 = pending, 0 = completed, -1 = GPU error. No spin loop. The caller waits
+// only for queue backpressure/EOF; ordinary progress checks status once.
+int bsr_metal_copy_finish(void *ticket, int wait, char *error, size_t capacity, double *timings) {
+    @autoreleasepool {
+        BSRMetalCopy *copy = (__bridge BSRMetalCopy *)ticket;
+        if (!wait && copy.command.status < MTLCommandBufferStatusCompleted) return 1;
+        double mark = timings ? bsr_profile_now() : 0;
+        if (wait) [copy.command waitUntilCompleted];
         if (timings) {
-            timings[3] = bsr_profile_now() - mark;
-            // Device timestamp interval, not host wait time. No extra wait added.
-            double begin = command.GPUStartTime, end = command.GPUEndTime;
+            timings[0] = copy.prepareSeconds;
+            timings[1] = copy.viewsSeconds;
+            timings[2] = copy.commitSeconds;
+            timings[3] = wait ? bsr_profile_now() - mark : 0;
+            double begin = copy.command.GPUStartTime, end = copy.command.GPUEndTime;
             if (begin > 0 && end >= begin) timings[5] = end - begin;
         }
-        if (command.status != MTLCommandBufferStatusCompleted) {
-            snprintf(error, capacity, "Metal copy failed: %s", command.error.description.UTF8String);
-            goto cleanup;
+        int result = 0;
+        if (copy.command.status != MTLCommandBufferStatusCompleted) {
+            snprintf(error, capacity, "Metal copy failed: %s", copy.command.error.description.UTF8String);
+            result = -1;
         }
-        result = 0;
-    cleanup:
-        if (timings) mark = bsr_profile_now();
-        if (blit) [blit endEncoding];
-        for (size_t plane = 0; plane < 2; ++plane) if (planes[plane]) CFRelease(planes[plane]);
-        CVMetalTextureCacheFlush(transfer.cache, 0);
+        mark = timings ? bsr_profile_now() : 0;
+        [copy releaseViews];
         if (timings) timings[4] = bsr_profile_now() - mark;
         return result;
+    }
+}
+
+void bsr_metal_copy_destroy(void *ticket) {
+    @autoreleasepool {
+        if (ticket) { (void)CFBridgingRelease(ticket); }
     }
 }

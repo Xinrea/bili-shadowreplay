@@ -387,6 +387,16 @@ impl VulkanSync {
         )
     }
     pub(super) fn wait(&self, semaphore: u64, value: u64) -> Result<(), String> {
+        self.wait_timeline(semaphore, value, 30_000_000_000)
+            .and_then(|ready| if ready { Ok(()) } else { Err("Wait for Vulkan frame timeline timed out".into()) })
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn is_ready(&self, semaphore: u64, value: u64) -> Result<bool, String> {
+        self.wait_timeline(semaphore, value, 0)
+    }
+
+    fn wait_timeline(&self, semaphore: u64, value: u64, timeout: u64) -> Result<bool, String> {
         let info = WaitInfo {
             s_type: 1_000_207_004,
             p_next: ptr::null(),
@@ -397,10 +407,12 @@ impl VulkanSync {
         };
         // A bounded wait turns a lost/stalled GPU into a failed PoC instead of
         // silently publishing incomplete frames. No host pixel data is read.
-        check(
-            unsafe { (self.wait_semaphores)(self.device, &info, 30_000_000_000) },
-            "Wait for Vulkan frame timeline",
-        )
+        let status = unsafe { (self.wait_semaphores)(self.device, &info, timeout) };
+        if status == 2 { // VK_TIMEOUT, including a nonblocking readiness query.
+            return Ok(false);
+        }
+        check(status, "Wait for Vulkan frame timeline")?;
+        Ok(true)
     }
 
     /// Submit a real image memory barrier, waiting and signalling the frame's

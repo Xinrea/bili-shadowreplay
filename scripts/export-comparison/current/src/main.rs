@@ -162,6 +162,7 @@ async fn run(
     require_gpu: bool,
     measure_stages: bool,
     decoder_threads: Option<usize>,
+    blocking_handoff: bool,
 ) -> Result<Value, String> {
     let wall = Instant::now();
     let scenario_path = scenario_path.canonicalize().map_err(|e| e.to_string())?;
@@ -222,7 +223,19 @@ async fn run(
         start: number(&scenario, "start")?,
         duration,
     };
-    let result = if let Some(profiler) = &profiler {
+    let result = if blocking_handoff {
+        if !pipeline.uses_gpu() {
+            return Err("Handoff comparison requires the GPU graph".into());
+        }
+        ffmpeg::native_gpu::run_overlay_plan_with_handoff(
+            media,
+            spec,
+            ffmpeg_utils::vulkan_video::EncoderFrameHandoff::Blocking,
+            profiler.clone(),
+            None::<&stubs::Silent>,
+        )
+        .await?
+    } else if let Some(profiler) = &profiler {
         if !pipeline.uses_gpu() {
             return Err("Stage profiling requires the GPU graph".into());
         }
@@ -260,6 +273,7 @@ async fn run(
         "source": source, "output": output, "platform": std::env::consts::OS,
         "linked_ffmpeg_version": ffmpeg_utils::linked_ffmpeg_version(),
         "stage_profile": profiler.map(|p| p.report()), "decoder_threads_override": decoder_threads,
+        "blocking_handoff": blocking_handoff,
         "profile": profile, "filter_graph": graph, "width": 1920, "height": 1080,
         "fps": fps, "duration_seconds": duration, "frames": result.video_frames,
         "audio_mode": "copy", "source_audio_codec": metadata.audio_codec,
@@ -327,10 +341,18 @@ async fn main() {
     let mut require_gpu = false;
     let mut measure_stages = false;
     let mut decoder_threads = None;
+    let mut blocking_handoff = false;
     let mut time = None;
     let mut args = std::env::args_os().skip(1);
     let result = (|| -> Result<(), String> {
         while let Some(arg) = args.next() {
+            if arg == "--blocking-handoff" {
+                if blocking_handoff {
+                    return Err("Duplicate handoff option".into());
+                }
+                blocking_handoff = true;
+                continue;
+            }
             if arg == "--decoder-threads" {
                 if decoder_threads.is_some() {
                     return Err("Duplicate decoder thread option".into());
@@ -381,7 +403,7 @@ async fn main() {
                 Some("--output") => &mut output,
                 _ => {
                     return Err(
-                        "Usage: current-export-comparison [--require-gpu] [--measure-stages] [--decoder-threads N] [--render-reference --time SECONDS] --scenario PATH --output PATH".into(),
+                        "Usage: current-export-comparison [--require-gpu] [--measure-stages] [--decoder-threads N] [--blocking-handoff] [--render-reference --time SECONDS] --scenario PATH --output PATH".into(),
                     )
                 }
             };
@@ -404,6 +426,7 @@ async fn main() {
                     require_gpu,
                     measure_stages,
                     decoder_threads,
+                    blocking_handoff,
                 )
                 .await
             }

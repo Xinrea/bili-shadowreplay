@@ -152,6 +152,11 @@ impl VulkanCompositor {
         self.mode
     }
 
+    #[cfg(target_os = "macos")]
+    pub(super) fn cancellation(&self) -> Arc<AtomicBool> {
+        self.cancelled.clone()
+    }
+
     /// Wait for GPU work before destroying a renderer borrowing this device.
     /// This also works after cancellation and does not flush/end the stream.
     /// The owner must call it before dropping Skia's textures and GPU context;

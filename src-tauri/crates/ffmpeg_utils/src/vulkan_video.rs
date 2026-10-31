@@ -17,6 +17,15 @@ pub use videotoolbox::VideoToolboxFrameBridge;
 
 pub use compositor::{VulkanCompositor, VulkanCompositorStats};
 
+/// Independent of Skia/Vulkan submission mode. Blocking is retained for
+/// controlled comparisons; production overlaps the encoder handoff by default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EncoderFrameHandoff {
+    Blocking,
+    #[default]
+    Asynchronous,
+}
+
 /// Platform-specific frame handoff, independent of scene drawing and MediaPlan
 /// scheduling. Unsupported combinations fail before the first output frame.
 pub enum HardwareEncoderFrames {
@@ -27,11 +36,22 @@ pub enum HardwareEncoderFrames {
 
 impl HardwareEncoderFrames {
     pub fn new(compositor: &mut VulkanCompositor, encoder: &str) -> Result<Self, String> {
+        Self::new_with_handoff(compositor, encoder, EncoderFrameHandoff::default())
+    }
+
+    pub fn new_with_handoff(
+        compositor: &mut VulkanCompositor, encoder: &str, handoff: EncoderFrameHandoff,
+    ) -> Result<Self, String> {
+        // Vulkan Video consumes frames and their timeline dependencies directly.
+        let _ = handoff;
         match encoder {
-            "h264_vulkan" | "hevc_vulkan" => Ok(Self::Vulkan(compositor.output_template()?)),
+            "h264_vulkan" | "hevc_vulkan" => {
+                crate::profiling::annotate("encoder_handoff", || "VulkanTimeline".into());
+                Ok(Self::Vulkan(compositor.output_template()?))
+            }
             #[cfg(target_os = "macos")]
             "h264_videotoolbox" | "hevc_videotoolbox" => {
-                VideoToolboxFrameBridge::new(compositor).map(Self::VideoToolbox)
+                VideoToolboxFrameBridge::new_with_handoff(compositor, handoff).map(Self::VideoToolbox)
             }
             _ => Err(format!("No GPU frame adapter for {encoder}")),
         }
@@ -62,14 +82,22 @@ impl HardwareEncoderFrames {
         }
     }
 
-    pub fn convert(&mut self, frames: Vec<frame::Video>) -> Result<Vec<frame::Video>, String> {
+    /// Submit hardware frames and return only completed encoder inputs, in order.
+    /// VideoToolbox retains at most three frames; Vulkan passes through directly.
+    pub fn process(&mut self, frames: Vec<frame::Video>) -> Result<Vec<frame::Video>, String> {
         match self {
             Self::Vulkan(_) => Ok(frames),
             #[cfg(target_os = "macos")]
-            Self::VideoToolbox(bridge) => frames
-                .into_iter()
-                .map(|frame| bridge.convert(frame))
-                .collect(),
+            Self::VideoToolbox(bridge) => bridge.process(frames),
+        }
+    }
+
+    /// Drain every pending handoff before sending EOF to the encoder.
+    pub fn flush(&mut self) -> Result<Vec<frame::Video>, String> {
+        match self {
+            Self::Vulkan(_) => Ok(Vec::new()),
+            #[cfg(target_os = "macos")]
+            Self::VideoToolbox(bridge) => bridge.flush(),
         }
     }
 }

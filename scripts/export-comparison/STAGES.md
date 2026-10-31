@@ -34,8 +34,8 @@ python3 scripts/export-comparison/stages.py \
   span partition**. Skia scene time includes text/image preparation. Skia flush
   includes CPU submission and any blocking within the driver. Metal preparation
   includes creation of texture views; its wait interval overlaps device work.
-- `metal_blit_gpu`: Metal `GPUStartTime` to `GPUEndTime`, read only after the
-  bridge's existing completion wait. It adds no extra synchronization. Missing
+- `metal_blit_gpu`: Metal `GPUStartTime` to `GPUEndTime`, read only after command
+  completion, detected by polling or the bridge's required wait. It adds no extra synchronization. Missing
   or invalid device timestamps are omitted (check the observation count).
 - Skia Vulkan, libplacebo, upload and hardware encoder **GPU execution time is
   unavailable** in this instrumentation. The bound Skia `FlushInfo` API does not
@@ -47,6 +47,11 @@ python3 scripts/export-comparison/stages.py \
   it can reflect earlier upload/Skia/composition work and queue scheduling, not
   exclusively libplacebo shader execution. `frame_slot_wait` is retirement of
   a bounded in-flight slot and can include encoding backpressure.
+- The asynchronous VideoToolbox handoff separates nonblocking `vt_vulkan_poll`,
+  `vt_metal_submit` and `vt_metal_poll` from blocking `vt_vulkan_wait` and
+  `vt_metal_wait`. A missing wait span means that wait did not occur in the
+  measured session. See [HANDOFF.md](HANDOFF.md) and the
+  [handoff benchmark](REPORT-handoff.md).
 - p50/p95 are per-call histogram **upper bounds**, with eight bins per power of
   two; they are not exact percentiles or per-frame end-to-end latency. Storage
   stays bounded for long recordings. Counts include unsuccessful API attempts

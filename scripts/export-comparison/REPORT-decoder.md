@@ -84,3 +84,5 @@ macOS 使用 `/usr/bin/time -l`，以下为三次未开启阶段计时运行的�
 复现入口：[DECODER.md](DECODER.md)。计时口径：[STAGES.md](STAGES.md)。优化前的阶段调查：[REPORT-stages.md](REPORT-stages.md)。
 
 原始回执：[macOS](validation/macos-decoder-bb178953.json)、[Windows](validation/windows-decoder-bb178953.json)；[源码哈希、硬件、SDK、校验与聚合数据](validation/decoder-source-bb178953.json)。
+
+后续已完成 [macOS 异步编码帧交接及双平台验证](REPORT-handoff.md)。该报告在两组均使用自动解码线程的条件下单独测量交接优化，不合并两轮收益。

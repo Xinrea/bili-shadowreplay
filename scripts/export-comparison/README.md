@@ -1,11 +1,10 @@
 # Five-minute production export comparison
 
-Measured results and caveats: [2026-10-31 report](REPORT.md). PR459's median
-throughput was 4.522× current on the M2 Max and 1.299× current on the Windows
-5900X/RTX 5070 host in this scenario; the report includes default-encoder
-differences and complete per-run validation receipts.
+Measured results and caveats: [shared GPU pipeline comparison](REPORT-shared-gpu.md).
+The [earlier CPU-on-macOS comparison](REPORT.md) is preserved as historical
+data, with its original source revisions and validation receipts.
 
-This compares current commit `730ebd23` with PR
+The shared GPU comparison uses current commit `94b0a322` and PR
 [#459](https://github.com/Xinrea/bili-shadowreplay/pull/459), pinned to
 `c73c7aaff9b9dd9abb561c90a48f19b2d6374112`. Both use release builds and their
 actual production render/decode/encode/mux implementations. A small runner
@@ -69,11 +68,16 @@ export BSR_FFMPEG_PREFIXES=/opt/homebrew/opt/ffmpeg-full
 export BSR_FFMPEG_LIBRARY_DIR=/opt/homebrew/opt/ffmpeg-full/lib
 ```
 
-Current macOS uses its existing CPU Skia/VideoToolbox path. PR459 uses its
-actual Metal/VideoToolbox path; the comparison does not add Metal to current.
-Use separate macOS targets for the CPU and Metal Skia archives. The PR worker
+Current macOS uses Skia Vulkan/MoltenVK and its VideoToolbox hardware-frame
+bridge. PR459 uses its actual Metal/VideoToolbox path. Use separate macOS
+targets for the Vulkan and Metal Skia archives. The PR worker
 source is extracted unchanged from its pinned commit; the five-line wrapper
 only invokes its exported `worker_entry()`.
+Bundle the current runner with the project's macOS bundling script and MoltenVK
+as described in [the adapter validation](../vulkan-video-poc/MACOS_VIDEOTOOLBOX.md).
+The comparison strips Vulkan driver/debug environment overrides, so an SDK
+loader selected only through `VK_DRIVER_FILES` is not a suitable way to pin
+MoltenVK for this test. The packaged runner selects its own MoltenVK runtime.
 
 ## Measure
 
@@ -85,7 +89,8 @@ python3 scripts/export-comparison/run.py \
   --warmup scripts/export-comparison/assets/warmup.json \
   --output scripts/export-comparison/output/NEW-RUN \
   --ffmpeg /path/to/ffmpeg --ffprobe /path/to/ffprobe \
-  --platform macos --pairs 3
+  --platform macos --pairs 3 \
+  --current-revision "$(git rev-parse HEAD)" --require-current-gpu
 ```
 
 Use `--platform windows` for Windows and set `BSR_FFMPEG_LIBRARY_DIR` to that
@@ -94,6 +99,10 @@ API capture, profiler, or other GPU work. The driver strips profiling variables
 and uses a lock to prevent concurrent benchmark drivers. Both versions receive
 a separate exact 600-frame warmup, then three alternating pairs: current/PR,
 PR/current, current/PR. Reuse the same generated input bytes on both machines.
+`--current-revision` must identify the producer sources actually built, and
+`--require-current-gpu` rejects a CPU fallback. The receipts record source
+revisions, binary hashes, measurement-script hashes and the actual encoder and
+renderer profile; `record.py` no longer substitutes historical revision IDs.
 
 The primary metric is process wall time through successful exit, including
 startup and final media close. Version-specific internal timings remain

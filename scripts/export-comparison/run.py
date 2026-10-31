@@ -72,6 +72,8 @@ def invoke(args, implementation, scenario, label, directory, environment):
     resource = directory / f"{label}-{implementation}.time"
     if implementation == "current":
         command = [str(args.current), "--scenario", str(scenario), "--output", str(output)]
+        if args.require_current_gpu:
+            command.append("--require-gpu")
     else:
         job_path = directory / f"{label}-pr459-job.json"
         write_json(job_path, build_job(scenario, output, args.platform))
@@ -102,6 +104,10 @@ def metadata(args, environment, removed):
                  "logical_cpus": os.cpu_count(), "python": sys.version},
         "primary_timing": "External process wall through successful exit, including startup, decode, render, encode, mux and close",
         "serial_gpu_jobs": True, "pairs": args.pairs, "removed_environment_names": removed,
+        "revisions": {"current": args.current_revision, "pr459": args.pr459_revision},
+        "require_current_gpu": args.require_current_gpu,
+        "method_sha256": {name: verify.sha256(Path(__file__).with_name(name))
+                          for name in ("run.py", "verify.py", "pr459_job.py")},
         "binaries": {name: {"path": str(path), "sha256": verify.sha256(path)}
                      for name, path in [("current", args.current), ("pr459", args.pr459)]},
         "scenarios": {name: {"path": str(path), "sha256": verify.sha256(path)}
@@ -152,6 +158,11 @@ def main():
         parser.add_argument(f"--{name}", type=Path, required=True)
     parser.add_argument("--platform", choices=("macos", "windows"), required=True)
     parser.add_argument("--pairs", type=int, default=3)
+    parser.add_argument("--current-revision", required=True,
+                        help="Exact source commit used to build the current runner")
+    parser.add_argument("--pr459-revision", default="c73c7aaff9b9dd9abb561c90a48f19b2d6374112")
+    parser.add_argument("--require-current-gpu", action="store_true",
+                        help="Reject CPU fallback in the current exporter")
     args = parser.parse_args()
     if args.pairs < 1:
         parser.error("--pairs must be positive")
@@ -207,6 +218,10 @@ def main():
             write_json(receipt_path, receipt)
             if result["exit_code"]:
                 raise RuntimeError(f"{label}/{implementation} failed; see {result['stderr']}")
+            if implementation == "current" and args.require_current_gpu:
+                profile = (result["diagnostics"] or {}).get("profile", {})
+                if profile.get("frame_processor") is not True:
+                    raise RuntimeError("Current runner did not report GPU frame processing")
             result["validation"] = verify.verify_output(
                 result["output"], scenario, references[name], args.ffmpeg, args.ffprobe,
                 args.output / f"verify-{label}-{implementation}", environment,

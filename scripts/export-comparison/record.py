@@ -94,10 +94,11 @@ def receipt(path, platform):
                 host["ram_bytes"] = values["ram_bytes"]
                 break
     return {
-        "recorded_on": "2026-10-31", "platform": platform,
-        "current_revision": "730ebd23d57ae01d7ad30e49d944288c07dfbef4",
-        "pr459_revision": "c73c7aaff9b9dd9abb561c90a48f19b2d6374112",
-        "method_commit": "358d402e", "raw_receipt_sha256": sha256(path),
+        "recorded_on": raw["finished_at"][:10], "platform": platform,
+        "current_revision": meta["revisions"]["current"],
+        "pr459_revision": meta["revisions"]["pr459"],
+        "method_sha256": meta["method_sha256"], "raw_receipt_sha256": sha256(path),
+        "require_current_gpu": meta["require_current_gpu"],
         "scope": "Release, complete single-video danmaku export; process start through successful close/exit. Prepared input and scene, UI, download and verification are outside timing.",
         "host": host,
         "fixture": {"source_sha256": raw["references"]["full"]["source_sha256"],
@@ -115,7 +116,7 @@ def receipt(path, platform):
         "pair_sample_differences": raw["pair_samples"],
         "limitations": [
             "Default encoder GOP/B-frame/async-depth policies differ; these results are not an equal-encoding-quality comparison.",
-            "macOS current uses CPU Skia; PR459 uses Metal. Windows uses Vulkan on both sides.",
+            "Actual current renderer and encoder are recorded in each run's profile; PR459 uses Metal/VideoToolbox on macOS and Vulkan/Vulkan Video on Windows.",
             "Hosts have different hardware; compare versions within each host.",
             "No API capture or Vulkan validation during timing; prior runtime diagnostics are separate.",
         ],

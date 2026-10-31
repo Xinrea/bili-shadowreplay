@@ -65,7 +65,27 @@ def instrument(root, without_cpu_activity=False):
             end += 1
         p = p[:start] + signature + '\n        (void)logicalCPUs; // Isolated benchmark ablation.\n    }' + p[end:]
     (native / 'metal.mm').write_text(p)
-    result = {'base': manifest, 'without_cpu_activity': without_cpu_activity, 'instrumented_files': {str(f.relative_to(root)): sha(f) for f in (native / 'pipeline.h', native / 'metal.mm', native / 'pr459_profile.hpp')}, 'instrumentation_sha256': sha(Path(__file__))}
+    # Vulkan instrumentation adds host scopes only: no queue, fence, timeline,
+    # quality or frame-lifetime changes, and no synthetic GPU timestamps.
+    p = (native / 'vulkan.cpp').read_text()
+    for signature, stage in [('void retire(Slot& slot)', 'frame_slot_wait'),
+                             ('Frame allocate(AVBufferRef* poolRef)', 'frame_allocate'),
+                             ('void submit(size_t index, AVFrame* cpu, double time)', 'process_frame')]:
+        p = replace(p, signature + ' {', signature + ' {\n        prprof::Scope scope("' + stage + '");')
+    calls = {
+        'av_hwframe_transfer_data(slot.source.get(), cpu, 0)': 'nv12_upload',
+        'bsr_skia_vulkan_draw(renderer, time, &image)': 'skia_render',
+        'vk.WaitForFences(context->act_dev, 1, &slot.fence, VK_TRUE, UINT64_MAX)': 'gpu_completion_wait',
+        'g.context->lock_queue(g.deviceContext, g.family, 0)': 'queue_lock',
+    }
+    for call, stage in calls.items():
+        p = replace(p, call, 'prprof::measure("' + stage + '", [&] { return ' + call + '; })')
+    p = replace(p, '        overlay->layout[0] = VK_IMAGE_LAYOUT_GENERAL;',
+                '        prprof::Scope composite("composite_submit");\n        overlay->layout[0] = VK_IMAGE_LAYOUT_GENERAL;')
+    p = replace(p, 'Frame take(size_t index) { return std::move(slots[index].output); }',
+                'Frame take(size_t index) { prprof::Scope scope("frame_handoff"); return std::move(slots[index].output); }')
+    (native / 'vulkan.cpp').write_text(p)
+    result = {'base': manifest, 'without_cpu_activity': without_cpu_activity, 'instrumented_files': {str(f.relative_to(root)): sha(f) for f in (native / 'pipeline.h', native / 'metal.mm', native / 'vulkan.cpp', native / 'pr459_profile.hpp')}, 'instrumentation_sha256': sha(Path(__file__))}
     (root / 'instrumentation.json').write_text(json.dumps(result, indent=2) + '\n')
 
 

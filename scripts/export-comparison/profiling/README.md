@@ -1,4 +1,4 @@
-# macOS cross-implementation stage measurements
+# Cross-platform stage measurements
 
 `../compare_stages.py` runs the same 300-second 1080p60 fixture (16 text + 4 PNG
 events/second), using production defaults and serial GPU jobs. It alternates
@@ -58,3 +58,30 @@ Build/package current with the procedure in `../HANDOFF.md`. Keep an unmodified
 binary for each implementation as well. Clock instrumentation has nonzero cost;
 compare controls before interpreting small differences. Thermal state and load
 are context, not proof of DVFS, GPU frequency or a scheduler cause.
+
+## Windows Vulkan measurements
+
+`instrument_pr459.py` also instruments the pinned Vulkan backend: decoded NV12
+upload, Skia drawing, compute command preparation/submission, queue locking,
+frame-slot retirement and fence waits. It changes no Vulkan calls, queue depth,
+encoding parameters or synchronization. The collector uses `GetThreadTimes` on
+Windows and records `platform: windows`. Vulkan stages are host API intervals
+including blocked time; there are no synthetic GPU timestamps. Calling-thread
+CPU timing is available for PR459; the current MediaProfiler still reports null
+CPU time on Windows, so compare wall partitions and do not invent CPU parity.
+
+The same `compare_stages.py` accepts `--platform windows`, explicit `--ffmpeg`,
+`--ffprobe`, `--scenario` and `--warmup`. `--telemetry` is optional. Run
+`--controls 3 --pairs 3` to alternate both implementations in three unprofiled
+pairs and three separate profiled pairs. Unprofiled controls determine the main
+throughput result; measured runs determine stage attribution and observer cost.
+With default immediate validation, each output is fully decoded and content/
+audio checked, hashed, then removed before the next job. This bounds disk usage.
+Pass `--pr459-control` with the original uninstrumented binary: it receives its
+own warmup and supplies the unprofiled controls, while `--pr459` supplies stage
+diagnostics. Optional `--nvidia-smi` captures device-wide utilization, encode/
+decode utilization, temperature, clocks and power once per second on all jobs.
+These counters are context, not per-process GPU execution time.
+Both exporters retain their own production defaults (including GOP/B frames and
+rate-control policies); this measures default export experience, not equal
+quality or identical encoder settings.

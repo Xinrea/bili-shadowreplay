@@ -90,3 +90,18 @@ libplacebo 与 Skia 的宿主工作占 worker CPU 的大部分；这不表示像
 python3 scripts/export-comparison/profiling/check_normalization.py \
   --ffmpeg /opt/homebrew/opt/ffmpeg-full/bin/ffmpeg --output /tmp/normalization.json
 ```
+
+## GPU 等待的定向实验（均未保留）
+
+两组均在已合并 CPU 预处理的基础上单独比较，未混入 QoS 提升。
+
+| 变更 | 同批基线 | 候选方案 | 观察 |
+| --- | ---: | ---: | --- |
+| 在途帧 3 → 6，命令槽 6 → 12 | 40.515 s | 40.936 s | overlay 槽等待 2.587 → 0.027 s；libplacebo 墙钟 17.208 → 19.642 s，其 CPU 仍约 16.8–16.9 s |
+| 两输入先合成 RGBA8，另一个 libplacebo 最后转 NV12 | 40.558 s | 48.425 s | libplacebo CPU 16.854 → 12.156 s，但 output 槽等待 0.398 → 17.080 s |
+
+第一组主要移动了阻塞位置；第二组减少宿主工作，却恶化了 GPU 输出等待。两组当前 GPU utilization 中位数均约 99%。因此不能根据单个 CPU span 变小就宣布导出更快，也没有理由扩大默认队列或保留额外 RGBA 图。两组均撤回，生产保持 3 帧、有界异步交接和原 GPU 合成算法。RGBA8 实验还会改变中间量化，不能视作像素等价优化。
+
+FFmpeg 的多输入 libplacebo 对每个输入分别调用 renderer，再混到目标平面；libplacebo 的 NV12 多平面输出依赖中间 FBO。[FFmpeg 9 源码](https://github.com/FFmpeg/FFmpeg/blob/n9.0/libavfilter/vf_libplacebo.c)、[libplacebo 7.360.1 源码](https://github.com/haasn/libplacebo/blob/v7.360.1/src/renderer.c)。剩余重点是减少这条通用合成路径的 GPU pass／纹理流量和驱动提交开销；简单增加队列、拆成两个通用滤镜都未达到目的。专用 Vulkan 合成应作为后续独立改动，先验证色度采样、预乘透明度与颜色边界，不能仅替换成较低质量采样器来报加速。
+
+证据：[在途帧实验](validation/macos-depth6-fixed-ablation.json)、[RGBA 图实验](validation/macos-rgba-ablation.json)。共 8 个产物全部通过完整帧／PTS／音频校验和文字／表情采样。首次 6 帧预热被旧的 6 命令槽上限拒绝，修正实验上限后重跑，失败预热不计入对照。`profiling/rejected-*-experiment.json` 保存 base 与可提取的 patch 字符串，仅用于重现，未应用于产品。

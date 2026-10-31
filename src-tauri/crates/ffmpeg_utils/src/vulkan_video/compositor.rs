@@ -126,10 +126,6 @@ impl VulkanCompositor {
         Ok(compositor)
     }
 
-    pub(super) fn overlay_pool(&self) -> Rc<FramePool> {
-        self.pool.clone()
-    }
-
     pub fn submission_mode(&self) -> VulkanSubmissionMode {
         self.mode
     }
@@ -179,8 +175,7 @@ impl VulkanCompositor {
     }
 
     /// PTS uses the encoder's inverse-frame-rate time base. Gaps and a delayed
-    /// first frame are preserved; the standalone PoC retains its stricter
-    /// consecutive-frame contract in VulkanVideoSession.
+    /// first frame are preserved; subsequent timestamps must increase.
     pub fn acquire_frame(&mut self, pts: i64) -> Result<VulkanFrameLease, String> {
         self.check_cancelled()?;
         validate_pts(self.last_pts, pts, self.flushed)?;

@@ -131,7 +131,6 @@ use std::{
     cell::Cell,
     collections::BTreeSet,
     ffi::{c_void, CStr, CString},
-    path::{Path, PathBuf},
     ptr,
     rc::Rc,
     sync::{
@@ -141,10 +140,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ffmpeg_next::{self as ffmpeg, codec, ffi, frame, Packet, Rational};
-use tempfile::NamedTempFile;
-
-use crate::output::NativeOutput;
+use ffmpeg_next::{self as ffmpeg, ffi, frame, Rational};
 
 #[derive(Clone, Debug)]
 pub struct VulkanRenderOptions {
@@ -191,67 +187,6 @@ impl VulkanRenderOptions {
     }
 }
 
-/// Encoding settings belong to the standalone Vulkan Video producer, not the
-/// shared renderer/compositor. Production MediaPlan owns its encoder settings.
-#[derive(Clone, Debug)]
-pub struct VulkanVideoOptions {
-    pub width: u32,
-    pub height: u32,
-    pub fps_num: u32,
-    pub fps_den: u32,
-    pub encoder: String,
-    pub device_selector: String,
-    pub bit_rate: u64,
-    pub gop: u32,
-}
-
-impl Default for VulkanVideoOptions {
-    fn default() -> Self {
-        let render = VulkanRenderOptions::default();
-        Self {
-            width: render.width,
-            height: render.height,
-            fps_num: render.fps_num,
-            fps_den: render.fps_den,
-            device_selector: render.device_selector,
-            encoder: "h264_vulkan".into(),
-            bit_rate: 8_000_000,
-            gop: 120,
-        }
-    }
-}
-
-impl VulkanVideoOptions {
-    pub fn render_options(&self) -> VulkanRenderOptions {
-        VulkanRenderOptions {
-            width: self.width,
-            height: self.height,
-            fps_num: self.fps_num,
-            fps_den: self.fps_den,
-            device_selector: self.device_selector.clone(),
-        }
-    }
-
-    pub fn validate(&self) -> Result<(), String> {
-        self.render_options().validate()?;
-        if self.bit_rate == 0
-            || self.bit_rate > i64::MAX as u64
-            || self.gop == 0
-            || self.gop > i32::MAX as u32
-        {
-            return Err("Invalid Vulkan video bitrate or GOP".into());
-        }
-        if !matches!(self.encoder.as_str(), "h264_vulkan" | "hevc_vulkan") {
-            return Err("Vulkan PoC requires h264_vulkan or hevc_vulkan".into());
-        }
-        Ok(())
-    }
-
-    fn rate(&self) -> Rational {
-        Rational(self.fps_num as i32, self.fps_den as i32)
-    }
-}
-
 /// Borrowed native handles. Keep the originating VulkanDevice clone alive for
 /// the entire lifetime of a renderer constructed from these values.
 #[derive(Clone, Debug)]
@@ -283,17 +218,6 @@ pub struct VulkanImageInfo {
 pub struct VulkanImageState {
     pub layout: u32,
     pub queue_family: u32,
-}
-
-#[derive(Clone, Debug, Default, serde::Serialize)]
-pub struct VulkanVideoStats {
-    pub submitted_frames: u64,
-    pub encoded_packets: u64,
-    pub unique_rgb_images: usize,
-    /// Explicit host synchronization for this correctness-first PoC. These are
-    /// waits for GPU work, not pixel readback or memory-transfer measurements.
-    pub gpu_wait: Duration,
-    pub filter_and_encode: Duration,
 }
 
 struct BufferRef(*mut ffi::AVBufferRef);
@@ -572,7 +496,7 @@ impl Drop for VulkanFrameLease {
     fn drop(&mut self) {
         // A renderer error can occur after a submission. Do not recycle the
         // referenced image while its device may still be writing it. The
-        // shared flag also handles a session dropped before this lease.
+        // shared flag also handles a compositor dropped before this lease.
         self.pool.wait_and_unlock_queue();
         self.pool.active_lease.set(false);
     }
@@ -722,243 +646,6 @@ fn reference_video_frame(source: &frame::Video) -> Result<frame::Video, String> 
     Ok(frame)
 }
 
-pub struct VulkanVideoSession {
-    encoder: Option<codec::encoder::video::Encoder>,
-    compositor: VulkanCompositor,
-    output: NativeOutput,
-    temporary: Option<NamedTempFile>,
-    target: PathBuf,
-    pool: Rc<FramePool>,
-    device: VulkanDevice,
-    options: VulkanVideoOptions,
-    cancelled: Arc<AtomicBool>,
-    stats: VulkanVideoStats,
-    images: BTreeSet<u64>,
-}
-
-impl Drop for VulkanVideoSession {
-    fn drop(&mut self) {
-        // A caller can still own a lease when finish rejects it, or can drop
-        // a cancelled session first. Release the shared graphics lock before
-        // compositor destruction may wait for pending commands.
-        // The lease retains the pool/device and later observes the same flag,
-        // so it cannot unlock an already released queue a second time.
-        self.pool.wait_and_unlock_queue();
-        let _ = self.device.0.sync.wait_idle();
-    }
-}
-
-impl VulkanVideoSession {
-    pub fn new(target: &Path, options: VulkanVideoOptions) -> Result<Self, String> {
-        options.validate()?;
-        crate::metadata::initialize()?;
-        if target.is_dir() {
-            return Err("Vulkan output cannot replace a directory".into());
-        }
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let compositor = VulkanCompositor::new(options.render_options(), false, cancelled.clone())?;
-        let device = compositor.device().clone();
-        let pool = compositor.overlay_pool();
-        let encoder = open_encoder(&compositor.output_template()?, &device, &options)?;
-        let parent = target
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let temporary = tempfile::Builder::new()
-            .prefix(".vulkan-video-")
-            .suffix(".mp4")
-            .tempfile_in(parent)
-            .map_err(|e| e.to_string())?;
-        let mut output = NativeOutput::new(temporary.path(), "mp4", cancelled.clone())?;
-        let mut stream = output
-            .output
-            .add_stream(encoder.codec().ok_or("Vulkan codec unavailable")?)
-            .map_err(|e| e.to_string())?;
-        stream.set_parameters(&encoder);
-        stream.set_time_base(options.rate().invert());
-        stream.set_avg_frame_rate(options.rate());
-        output.output.write_header().map_err(|e| e.to_string())?;
-        Ok(Self {
-            encoder: Some(encoder),
-            compositor,
-            output,
-            temporary: Some(temporary),
-            target: target.to_owned(),
-            pool,
-            device,
-            options,
-            cancelled,
-            stats: VulkanVideoStats::default(),
-            images: BTreeSet::new(),
-        })
-    }
-    pub fn device(&self) -> &VulkanDevice {
-        &self.device
-    }
-    pub fn cancel_handle(&self) -> Arc<AtomicBool> {
-        self.cancelled.clone()
-    }
-    pub fn stats(&self) -> &VulkanVideoStats {
-        &self.stats
-    }
-
-    pub fn acquire_frame(&mut self, pts: i64) -> Result<VulkanFrameLease, String> {
-        self.check_cancelled()?;
-        if pts != self.stats.submitted_frames as i64 {
-            return Err("Vulkan frames must be supplied with consecutive frame-index PTS".into());
-        }
-        let lease = self.compositor.acquire_frame(pts)?;
-        self.images.insert(lease.image.image);
-        self.stats.unique_rgb_images = self.images.len();
-        Ok(lease)
-    }
-
-    /// # Safety
-    /// The borrowed renderer must have finished GPU writes to the acquired
-    /// image and must accurately report its final layout/queue family. It must
-    /// not retain or access that image after this call. The frame must come
-    /// from this session. The initial PoC uses a synchronous GPU flush.
-    pub unsafe fn submit_frame(
-        &mut self,
-        lease: VulkanFrameLease,
-        state: VulkanImageState,
-    ) -> Result<(), String> {
-        self.check_cancelled()?;
-        let started = Instant::now();
-        let frames = unsafe { self.compositor.submit_frame(lease, state, None)? };
-        self.stats.gpu_wait = self.compositor.stats().gpu_wait;
-        self.stats.submitted_frames += 1;
-        self.encode_frames(frames)?;
-        self.stats.filter_and_encode += started.elapsed();
-        self.check_cancelled()
-    }
-
-    pub fn finish(mut self) -> Result<VulkanVideoStats, String> {
-        self.check_cancelled()?;
-        if self.pool.active_lease.get() {
-            return Err("Cannot finish while a Vulkan frame lease is active".into());
-        }
-        if self.stats.submitted_frames == 0 {
-            return Err("Cannot publish an empty Vulkan video".into());
-        }
-        let frames = self.compositor.flush()?;
-        self.encode_frames(frames)?;
-        self.encoder
-            .as_mut()
-            .unwrap()
-            .send_eof()
-            .map_err(|e| e.to_string())?;
-        self.drain_packets()?;
-        self.output
-            .output
-            .write_trailer()
-            .map_err(|e| e.to_string())?;
-        self.output.close()?;
-        self.check_cancelled()?;
-        self.encoder.take();
-        self.compositor.synchronize()?;
-        self.temporary
-            .take()
-            .unwrap()
-            .persist(&self.target)
-            .map_err(|e| e.error.to_string())?;
-        Ok(self.stats.clone())
-    }
-    fn check_cancelled(&self) -> Result<(), String> {
-        if self.cancelled.load(Ordering::Acquire) {
-            Err("Vulkan video cancelled".into())
-        } else {
-            Ok(())
-        }
-    }
-    fn encode_frames(&mut self, frames: Vec<frame::Video>) -> Result<(), String> {
-        for frame in frames {
-            if frame.format() != ffmpeg::format::Pixel::VULKAN {
-                return Err("GPU compositor unexpectedly produced a CPU frame".into());
-            }
-            self.encoder.as_mut().unwrap().send_frame(&frame).map_err(|e| e.to_string())?;
-            self.drain_packets()?;
-        }
-        Ok(())
-    }
-    fn drain_packets(&mut self) -> Result<(), String> {
-        loop {
-            let mut packet = Packet::empty();
-            match self.encoder.as_mut().unwrap().receive_packet(&mut packet) {
-                Ok(()) => {
-                    packet.set_stream(0);
-                    packet.rescale_ts(
-                        self.options.rate().invert(),
-                        self.output.output.stream(0).unwrap().time_base(),
-                    );
-                    packet
-                        .write_interleaved(&mut self.output.output)
-                        .map_err(|e| e.to_string())?;
-                    self.stats.encoded_packets += 1;
-                }
-                Err(ffmpeg::Error::Eof) => return Ok(()),
-                Err(ffmpeg::Error::Other { errno }) if errno == ffi::EAGAIN => return Ok(()),
-                Err(error) => return Err(format!("Receive Vulkan video packet: {error}")),
-            }
-        }
-    }
-}
-
-fn open_encoder(
-    template: &frame::Video,
-    device: &VulkanDevice,
-    options: &VulkanVideoOptions,
-) -> Result<codec::encoder::video::Encoder, String> {
-    let frames = unsafe { (*template.as_ptr()).hw_frames_ctx };
-    if frames.is_null() {
-        return Err("Vulkan conversion did not produce a hardware pool".into());
-    }
-    let pool = unsafe { &*(*frames).data.cast::<ffi::AVHWFramesContext>() };
-    if pool.format != ffi::AVPixelFormat::AV_PIX_FMT_VULKAN
-        || pool.sw_format != ffi::AVPixelFormat::AV_PIX_FMT_NV12
-    {
-        return Err("Vulkan conversion must output GPU NV12 frames".into());
-    }
-    let output_device = unsafe { &*(*pool.device_ref).data.cast::<ffi::AVHWDeviceContext>() };
-    let output_vk = unsafe { &*output_device.hwctx.cast::<ffi::AVVulkanDeviceContext>() };
-    if output_vk.act_dev != device.0.hw().act_dev {
-        return Err("GPU conversion changed the Vulkan device".into());
-    }
-    let codec = ffmpeg::encoder::find_by_name(&options.encoder)
-        .ok_or_else(|| format!("Missing encoder {}", options.encoder))?;
-    let mut video = codec::Context::new_with_codec(codec)
-        .encoder()
-        .video()
-        .map_err(|e| e.to_string())?;
-    video.set_width(options.width);
-    video.set_height(options.height);
-    video.set_format(ffmpeg::format::Pixel::VULKAN);
-    video.set_time_base(options.rate().invert());
-    video.set_frame_rate(Some(options.rate()));
-    video.set_bit_rate(options.bit_rate as usize);
-    video.set_gop(options.gop);
-    video.set_max_b_frames(0);
-    video.set_flags(codec::flag::Flags::GLOBAL_HEADER);
-    unsafe {
-        let ctx = &mut *video.as_mut_ptr();
-        ctx.flags |= ffi::AV_CODEC_FLAG_FRAME_DURATION as i32;
-        ctx.hw_frames_ctx = ffi::av_buffer_ref(frames);
-        ctx.hw_device_ctx = ffi::av_buffer_ref(device.0.raw.0);
-        ctx.colorspace = ffi::AVColorSpace::AVCOL_SPC_BT709;
-        ctx.color_range = ffi::AVColorRange::AVCOL_RANGE_MPEG;
-        ctx.color_primaries = ffi::AVColorPrimaries::AVCOL_PRI_BT709;
-        ctx.color_trc = ffi::AVColorTransferCharacteristic::AVCOL_TRC_BT709;
-        if ctx.hw_frames_ctx.is_null() || ctx.hw_device_ctx.is_null() {
-            return Err("Retain Vulkan encoder pool/device".into());
-        }
-    }
-    let mut dictionary = ffmpeg::Dictionary::new();
-    dictionary.set("rc_mode", "vbr");
-    video
-        .open_as_with(codec, dictionary)
-        .map_err(|e| format!("Open Vulkan video encoder: {e}"))
-}
-
 fn check(result: i32, context: &str) -> Result<(), String> {
     if result < 0 {
         Err(format!(
@@ -1003,28 +690,32 @@ mod tests {
         }
     }
     #[test]
-    fn validates_contract_before_touching_a_device_or_output() {
-        let good = VulkanVideoOptions::default();
+    fn validates_contract_before_touching_a_device() {
+        let good = VulkanRenderOptions::default();
         good.validate().unwrap();
         for invalid in [
-            VulkanVideoOptions {
+            VulkanRenderOptions {
                 width: 0,
                 ..good.clone()
             },
-            VulkanVideoOptions {
+            VulkanRenderOptions {
                 width: 319,
                 ..good.clone()
             },
-            VulkanVideoOptions {
+            VulkanRenderOptions {
+                height: 8194,
+                ..good.clone()
+            },
+            VulkanRenderOptions {
                 fps_den: 0,
                 ..good.clone()
             },
-            VulkanVideoOptions {
-                bit_rate: 0,
+            VulkanRenderOptions {
+                fps_num: 241,
                 ..good.clone()
             },
-            VulkanVideoOptions {
-                encoder: "h264_nvenc".into(),
+            VulkanRenderOptions {
+                device_selector: "0\0".into(),
                 ..good.clone()
             },
         ] {
@@ -1033,85 +724,89 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires a Vulkan Video GPU and FFmpeg 9"]
-    fn vulkan_gpu_frame_lease_lifecycle_keeps_existing_output() {
-        let directory = tempfile::tempdir().unwrap();
-        let target = directory.path().join("existing.mp4");
-        let sentinel = b"existing output must survive every aborted GPU job";
-        std::fs::write(&target, sentinel).unwrap();
-        let options = VulkanVideoOptions {
+    #[ignore = "requires a Vulkan GPU and FFmpeg 9"]
+    fn vulkan_gpu_frame_lease_lifecycle_releases_queue_on_abort() {
+        let options = VulkanRenderOptions {
             width: 320,
             height: 240,
             fps_num: 30,
             fps_den: 1,
-            gop: 60,
-            ..VulkanVideoOptions::default()
+            ..VulkanRenderOptions::default()
         };
-        let assert_unpublished = || {
-            assert_eq!(std::fs::read(&target).unwrap(), sentinel);
-            let entries: Vec<_> = std::fs::read_dir(directory.path())
-                .unwrap()
-                .map(|entry| entry.unwrap().path())
-                .collect();
-            assert_eq!(entries, vec![target.clone()], "temporary output leaked");
+        let new_compositor = || {
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let compositor = VulkanCompositor::new_with_mode(
+                options.clone(),
+                false,
+                cancelled.clone(),
+                VulkanSubmissionMode::Asynchronous,
+            )
+            .unwrap();
+            (compositor, cancelled)
         };
 
         // A second safe acquire must reject immediately, before attempting to
         // lock the graphics queue already held by the outstanding lease.
-        let mut session = VulkanVideoSession::new(&target, options.clone()).unwrap();
-        let lease = session.acquire_frame(0).unwrap();
-        let error = session.acquire_frame(0).err().unwrap();
+        let (mut compositor, _) = new_compositor();
+        let lease = compositor.acquire_frame(0).unwrap();
+        let pool = lease.pool.clone();
+        let error = compositor.acquire_frame(0).err().unwrap();
         assert!(error.contains("active Vulkan frame lease"), "{error}");
         drop(lease);
-        drop(session);
-        assert_unpublished();
+        assert!(!pool.active_lease.get());
+        assert!(!pool.queue_locked.get());
+        drop(compositor);
 
-        // finish consumes the session, including the compositor, while the caller
-        // still owns a lease. Its Drop must unlock before compute teardown,
+        // A failed flush can leave the caller owning a lease. Dropping the
+        // compositor must unlock before compute teardown,
         // and the later lease Drop must not unlock the queue a second time.
-        let mut session = VulkanVideoSession::new(&target, options.clone()).unwrap();
-        let lease = session.acquire_frame(0).unwrap();
-        let error = session.finish().unwrap_err();
+        let (mut compositor, _) = new_compositor();
+        let lease = compositor.acquire_frame(0).unwrap();
+        let pool = lease.pool.clone();
+        let error = compositor.flush().err().unwrap();
         assert!(error.contains("frame lease is active"), "{error}");
+        drop(compositor);
+        assert!(!pool.queue_locked.get());
         drop(lease);
-        assert_unpublished();
+        assert!(!pool.active_lease.get());
 
-        // The same ownership order is legal when the session is dropped
+        // The same ownership order is legal when the compositor is dropped
         // directly. The surviving lease keeps its pool and device alive.
-        let mut session = VulkanVideoSession::new(&target, options.clone()).unwrap();
-        let lease = session.acquire_frame(0).unwrap();
-        drop(session);
+        let (mut compositor, _) = new_compositor();
+        let lease = compositor.acquire_frame(0).unwrap();
+        let pool = lease.pool.clone();
+        drop(compositor);
+        assert!(!pool.queue_locked.get());
         drop(lease);
-        assert_unpublished();
+        assert!(!pool.active_lease.get());
 
-        let mut session = VulkanVideoSession::new(&target, options.clone()).unwrap();
-        session.cancel_handle().store(true, Ordering::Release);
-        let error = session.acquire_frame(0).err().unwrap();
+        let (mut compositor, cancelled) = new_compositor();
+        cancelled.store(true, Ordering::Release);
+        let error = compositor.acquire_frame(0).err().unwrap();
         assert!(error.contains("cancelled"), "{error}");
-        drop(session);
-        assert_unpublished();
+        drop(compositor);
 
         // No unrendered image may enter the compositor: cancellation is checked at
         // the very start of submit, which consumes and drops the locked lease.
-        let mut session = VulkanVideoSession::new(&target, options).unwrap();
-        let lease = session.acquire_frame(0).unwrap();
+        let (mut compositor, cancelled) = new_compositor();
+        let lease = compositor.acquire_frame(0).unwrap();
+        let pool = lease.pool.clone();
         let image = lease.image();
-        session.cancel_handle().store(true, Ordering::Release);
+        cancelled.store(true, Ordering::Release);
         let error = unsafe {
-            session.submit_frame(
+            compositor.submit_frame(
                 lease,
                 VulkanImageState {
                     layout: image.layout,
                     queue_family: image.queue_family,
                 },
+                None,
             )
         }
-        .unwrap_err();
+        .err().unwrap();
         assert!(error.contains("cancelled"), "{error}");
-        assert_eq!(session.stats().submitted_frames, 0);
-        assert!(!session.pool.active_lease.get());
-        assert!(!session.pool.queue_locked.get());
-        drop(session);
-        assert_unpublished();
+        assert_eq!(compositor.stats().submitted_frames, 0);
+        assert!(!pool.active_lease.get());
+        assert!(!pool.queue_locked.get());
     }
 }

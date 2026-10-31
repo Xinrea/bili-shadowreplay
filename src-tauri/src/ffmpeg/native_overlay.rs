@@ -145,6 +145,7 @@ pub async fn run_overlay_plan<R: ProgressReporterTrait>(
     Ok(output)
 }
 
+#[cfg(test)]
 pub async fn run_overlay_plan_profiled<R: ProgressReporterTrait>(
     plan: MediaPlan,
     spec: OverlaySpec,

@@ -180,8 +180,8 @@ Its 39 tests (including the opt-in cases) cover exact frame/sample boundaries,
 cross-segment audio, overlays, ASS/SRT, cache reuse, cancellation, scratch cleanup
 and retaining an earlier export after failure. Raw-overlay, SRT and danmaku
 application tests also run with libraries alone. FFmpeg 6/9 alpha oracles compare
-every BGRA byte over three base colors; the benchmark smoke verifies 360 frames
-at 1080p60 using exactly three reusable producer buffers.
+every BGRA byte over three base colors; streaming tests verify reuse of the
+bounded producer buffers and preserve copied audio.
 
 Native FLV-to-HLS tests use a six-second checked-in audiovisual fixture. They
 compare the playlist, segment durations and every copied packet with the CLI,
@@ -209,7 +209,6 @@ Use an x64 MSVC developer PowerShell and the pinned Gyan **FFmpeg 9.0.2
 shared SDK**. Run setup and Cargo in the same shell: `ffmpeg_setup.ps1` sets
 `FFMPEG_DIR` and the SDK DLL/optional CLI search path for that process. It locates
 `LIBCLANG_PATH` when LLVM is available; otherwise set it to LLVM's `bin` directory.
-The recorded run used Rust 1.90.0 and Node 22.16.0.
 The Skia preparation script prints its URL; explicitly set
 `SKIA_BINARIES_URL` to that value, preserving the `{key}` placeholder.
 Windows application builds include the Vulkan backend by default, including
@@ -228,7 +227,7 @@ cargo test --manifest-path src-tauri/Cargo.toml -p bili-shadowreplay --locked ff
 cargo test --manifest-path src-tauri/Cargo.toml -p recorder --locked
 
 # On a Vulkan Video-capable device: actual production GPU exports, no feature opt-in.
-cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features headless native_gpu_ -- --ignored --nocapture --test-threads=1 --skip native_gpu_benchmark
+cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features headless native_gpu_ -- --ignored --nocapture --test-threads=1
 
 # Targeted GOP check: both CLI and native plans must retain 301 frames and GOP <=120.
 cargo test --manifest-path src-tauri/Cargo.toml -p bili-shadowreplay --locked encoded_keyframe_gaps_respect_the_120_frame_gop -- --include-ignored
@@ -238,25 +237,12 @@ The GOP test covers both priorities for software encoders and available
 NVENC/VideoToolbox encoders. Both paths require a first keyframe at zero, gaps
 and a final tail of at most 120 frames, and at least one exact 120-frame gap.
 Its 320x240 fixture matches the native probe's supported geometry.
-The validated Windows host produced keyframes `[0, 120, 240]` for H.264/HEVC
-NVENC at both priorities, in both CLI and native outputs.
-
-On **2026-10-30**, Windows validation with this SDK passed 132 core tests,
-184 application media tests built with GUI features (including opt-in cases),
-and 204 recorder unit plus 18 integration tests; five live-network recorder
-tests remained ignored. A separate directory containing the core test executable
-and matching DLLs also passed with SDK variables and SDK/CLI paths removed;
-optional CLI oracles skip when the executables are absent. This deployment
-check requires DLLs beside the executable, not just in a repository directory.
-
-A debug NSIS package was built and unpacked with 7-Zip: it contained no
-`ffmpeg.exe`, `ffprobe.exe` or `ffplay.exe`, and all 11 runtime DLL hashes matched
-their build/SDK sources. The compiled GUI-feature test executable also passed
-23 media smoke cases using only these unpacked DLLs and a `PATH` containing only
-Windows system directories, covering subtitles, overlays, clips, concat, progress and project
-render/cancellation. This verifies a **debug package**, not a signed release
-or an installer/interactive GUI end-to-end run; it does not claim that the full
-business GUI was launched.
+For deployment checks, place the core test executable beside the packaged SDK
+DLLs, then remove SDK variables and SDK/CLI directories from `PATH`. Native
+media tests must still pass; optional CLI oracles skip when executables are
+absent. Check that packaged DLLs match the build SDK and that the installer
+contains no FFmpeg CLI executables. Package tests do not replace an interactive
+GUI smoke test.
 
 ### Running All Tests (including integration)
 

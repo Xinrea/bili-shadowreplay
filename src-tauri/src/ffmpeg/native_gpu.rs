@@ -91,6 +91,7 @@ pub(super) async fn run_overlay_plan<R: ProgressReporterTrait>(
 }
 
 /// Same production binding, with an explicit collector isolated from capability probes.
+#[cfg(test)]
 pub(crate) async fn run_overlay_plan_measured<R: ProgressReporterTrait>(
     mut plan: MediaPlan,
     spec: OverlaySpec,
@@ -111,6 +112,7 @@ pub(crate) async fn run_overlay_plan_measured<R: ProgressReporterTrait>(
 
 /// Per-job handoff baseline for controlled validation; production uses the
 /// asynchronous default. Skia/Vulkan submission remains asynchronous in both.
+#[cfg(test)]
 pub(crate) async fn run_overlay_plan_with_handoff<R: ProgressReporterTrait>(
     mut plan: MediaPlan,
     spec: OverlaySpec,
@@ -127,25 +129,6 @@ pub(crate) async fn run_overlay_plan_with_handoff<R: ProgressReporterTrait>(
         ProgressMode::None,
         "GPU encoder handoff comparison",
         reporter,
-    )
-    .await
-}
-
-// An explicit per-job baseline keeps concurrent tests and capability probes
-// independent; production always uses the bounded asynchronous path above.
-#[cfg(test)]
-async fn run_overlay_plan_with_mode(
-    mut plan: MediaPlan,
-    spec: OverlaySpec,
-    mode: VulkanSubmissionMode,
-) -> Result<ffmpeg_utils::MediaJobResult, String> {
-    let bindings = bind_overlay_with_mode(&mut plan, spec, mode)?;
-    run_native_media_with_sources(
-        plan,
-        bindings,
-        ProgressMode::None,
-        "Vulkan submission comparison",
-        None::<&tests::Silent>,
     )
     .await
 }
@@ -579,12 +562,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     const ENCODERS: [&str; 2] = ["h264_videotoolbox", "hevc_videotoolbox"];
 
-    use std::{
-        collections::HashSet,
-        io::{self, Write},
-        path::Path,
-        time::Instant,
-    };
+    use std::{collections::HashSet, path::Path};
 
     use ffmpeg_utils::{
         FrameRatePolicy, MediaJobResult, MediaOutput, StreamMode, StreamRoute, StreamSelector,
@@ -886,186 +864,6 @@ mod tests {
                 eprintln!("interrupted_handoff cancel={cancel} {counters}");
             }
         }
-    }
-
-    #[tokio::test]
-    #[ignore = "Benchmarks real video on a GPU render/encode backend without validation layers"]
-    async fn native_gpu_benchmark_submission_modes_with_default_export_parameters() {
-        use super::VulkanSubmissionMode::{Asynchronous, Synchronous};
-
-        let directory = tempfile::tempdir().unwrap();
-        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("crates/ffmpeg_utils/src/hls/fixtures/live.flv");
-        assert!(ffmpeg_utils::video_supports_gpu_sdr(&source).await.unwrap());
-        let duration = super::super::danmu::probe_overlay_duration(&source, 6.0)
-            .await
-            .unwrap();
-        let reference = directory.path().join("reference.mp4");
-        let reference_result =
-            ffmpeg_utils::execute_media_plan(reference_plan(&source, &reference), None)
-                .await
-                .unwrap();
-        let reference_grid = decoded_frame_grid(&reference, directory.path()).await;
-        assert_eq!(reference_grid.0.len() as u64, reference_result.video_frames);
-        assert!(reference_grid.1 > 30);
-        let reference_audio = audio(&reference).await;
-        assert!(!reference_audio.is_empty());
-        let reference_probe = ffmpeg_utils::probe_media(&reference).await.unwrap();
-        let mut reference_samples = Vec::new();
-        for time in [1.2, 3.0, 5.8] {
-            reference_samples.push(sample(&reference, time, directory.path()).await);
-        }
-        let mut moving_pair = (0, 1, 0.0);
-        for left in 0..reference_samples.len() {
-            for right in left + 1..reference_samples.len() {
-                let delta = difference(&reference_samples[left], &reference_samples[right]);
-                if delta > moving_pair.2 {
-                    moving_pair = (left, right, delta);
-                }
-            }
-        }
-        assert!(moving_pair.2 > 2.0);
-
-        for encoder in ENCODERS {
-            let settings = crate::project::RenderSettings {
-                codec: if encoder.starts_with("h264_") {
-                    crate::project::VideoCodec::H264
-                } else {
-                    crate::project::VideoCodec::Hevc
-                },
-                ..Default::default()
-            };
-            let mut options =
-                super::super::hwaccel::native_video_options(encoder, None, None, Some(&settings))
-                    .unwrap();
-            assert_eq!(options.bit_rate, Some(10_000_000));
-            assert_eq!(options.gop, Some(120));
-            if super::super::hwaccel::is_vulkan_encoder(encoder) {
-                assert_eq!(options.options.get("async_depth").unwrap(), "3");
-            } else {
-                assert_eq!(options.options.get("prio_speed").unwrap(), "1");
-            }
-            options.frame_processor = true;
-            options.frame_rate = FrameRatePolicy::Constant { num: 60, den: 1 };
-            let plan = |output: &Path| {
-                let mut plan = moving_plan(&source, output, encoder);
-                plan.routes[0].mode = StreamMode::Video(options.clone());
-                plan
-            };
-
-            // Warm both complete paths before alternating their order. No
-            // validation, JPEG extraction or output comparison is timed.
-            for (position, mode) in [Synchronous, Asynchronous].into_iter().enumerate() {
-                let output = directory
-                    .path()
-                    .join(format!("{encoder}-{mode:?}-warm.mp4"));
-                let plan = plan(&output);
-                let spec = moving_spec(duration);
-                benchmark_marker("begin", encoder, "warmup", position, mode);
-                let result = super::run_overlay_plan_with_mode(plan, spec, mode)
-                    .await
-                    .unwrap();
-                benchmark_marker("end", encoder, "warmup", position, mode);
-                assert_eq!(result.video_frames, reference_result.video_frames);
-            }
-
-            let mut sync_seconds = Vec::new();
-            let mut async_seconds = Vec::new();
-            for pair in 0..3 {
-                let order = if pair % 2 == 0 {
-                    [Synchronous, Asynchronous]
-                } else {
-                    [Asynchronous, Synchronous]
-                };
-                let mut paired_samples: Vec<Vec<Vec<u8>>> = Vec::new();
-                for (position, mode) in order.into_iter().enumerate() {
-                    let output = directory
-                        .path()
-                        .join(format!("{encoder}-{pair}-{mode:?}.mp4"));
-                    let plan = plan(&output);
-                    let spec = moving_spec(duration);
-                    let pair_label = pair.to_string();
-                    benchmark_marker("begin", encoder, &pair_label, position, mode);
-                    let started = Instant::now();
-                    let result = super::run_overlay_plan_with_mode(plan, spec, mode)
-                        .await
-                        .unwrap();
-                    let seconds = started.elapsed().as_secs_f64();
-                    benchmark_marker("end", encoder, &pair_label, position, mode);
-                    match mode {
-                        Synchronous => sync_seconds.push(seconds),
-                        Asynchronous => async_seconds.push(seconds),
-                    }
-                    eprintln!(
-                        "native_gpu_benchmark encoder={encoder} pair={pair} order={position} mode={mode:?} width=1920 height=1080 fps=60 bitrate=10000000 gop=120 encoder_options={:?} frames={} wall_ms={:.3} encoded_fps={:.3}",
-                        options.options, result.video_frames, seconds * 1000.0, result.video_frames as f64 / seconds
-                    );
-
-                    assert_eq!(result.video_frames, reference_result.video_frames);
-                    let grid = decoded_frame_grid(&output, directory.path()).await;
-                    assert_eq!(grid.0, reference_grid.0);
-                    assert!(grid.1 > 30);
-                    assert_eq!(audio(&output).await, reference_audio);
-                    let actual_probe = ffmpeg_utils::probe_media(&output).await.unwrap();
-                    assert_eq!(actual_probe.audio, reference_probe.audio);
-                    assert!(
-                        (actual_probe.video_start_time.unwrap_or(0.0)
-                            - reference_probe.video_start_time.unwrap_or(0.0))
-                        .abs()
-                            < 1.0 / 60.0
-                    );
-                    let mut samples = Vec::new();
-                    for (index, time) in [1.2, 3.0, 5.8].into_iter().enumerate() {
-                        let pixels = sample(&output, time, directory.path()).await;
-                        let error = difference(&pixels, &reference_samples[index]);
-                        assert!(
-                            error < 8.0,
-                            "{encoder}/{mode:?} frame {time}: RGB error {error}"
-                        );
-                        samples.push(pixels);
-                    }
-                    let (left, right, _) = moving_pair;
-                    for (correct, wrong) in [(left, right), (right, left)] {
-                        assert!(
-                            difference(&samples[correct], &reference_samples[correct])
-                                < difference(&samples[correct], &reference_samples[wrong]) * 0.7,
-                            "{encoder}/{mode:?} must preserve the matching video time"
-                        );
-                    }
-                    paired_samples.push(samples);
-                }
-                for (sync, asynchronous) in paired_samples[0].iter().zip(&paired_samples[1]) {
-                    let error = difference(sync, asynchronous);
-                    assert!(
-                        error < 1.0,
-                        "{encoder} submission modes differ: RGB error {error}"
-                    );
-                }
-            }
-            sync_seconds.sort_by(f64::total_cmp);
-            async_seconds.sort_by(f64::total_cmp);
-            eprintln!(
-                "native_gpu_benchmark_summary encoder={encoder} pairs=3 synchronous_median_ms={:.3} asynchronous_median_ms={:.3} speedup={:.4}",
-                sync_seconds[1] * 1000.0,
-                async_seconds[1] * 1000.0,
-                sync_seconds[1] / async_seconds[1]
-            );
-        }
-    }
-
-    fn benchmark_marker(
-        phase: &str,
-        encoder: &str,
-        pair: &str,
-        order: usize,
-        mode: super::VulkanSubmissionMode,
-    ) {
-        // API-dump diagnostics share stdout with these boundaries, allowing
-        // global driver waits to be counted per mode outside benchmark timing.
-        println!(
-            "native_gpu_benchmark_{phase} encoder={encoder} pair={pair} order={order} mode={mode:?}"
-        );
-        io::stdout().flush().unwrap();
     }
 
     #[tokio::test]

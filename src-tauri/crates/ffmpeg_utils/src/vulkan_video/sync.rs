@@ -405,7 +405,7 @@ impl VulkanSync {
             semaphores: &semaphore,
             values: &value,
         };
-        // A bounded wait turns a lost/stalled GPU into a failed PoC instead of
+        // A bounded wait turns a lost/stalled GPU into a failed export instead of
         // silently publishing incomplete frames. No host pixel data is read.
         let status = unsafe { (self.wait_semaphores)(self.device, &info, timeout) };
         if status == 2 { // VK_TIMEOUT, including a nonblocking readiness query.

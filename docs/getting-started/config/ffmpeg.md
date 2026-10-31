@@ -98,11 +98,17 @@ CI 和 Docker builder 已安装这些开发包。Docker runtime 保持与 builde
 
 ### Windows
 
-在准备好 Rust、LLVM/Visual Studio 和 7-Zip 的 PowerShell 构建终端中运行：
+准备当前 stable Rust MSVC x64、Node/Yarn、Visual Studio C++ 桌面工作负载（含 Windows SDK、CMake）、64 位 LLVM/VS Clang 工具后，在普通终端运行：
 
 ```powershell
-./ffmpeg_setup.ps1
-cargo test --manifest-path src-tauri/Cargo.toml -p ffmpeg_utils
+yarn install --frozen-lockfile
+yarn tauri dev
 ```
 
-脚本下载并校验固定版本 Gyan FFmpeg 9.0.2 shared SDK，保留头文件和导入库到 `src-tauri/target/ffmpeg-sdk`，在当前终端设置 `FFMPEG_DIR` 和运行 DLL 搜索路径；GitHub Actions 中也会写入后续步骤环境。DLL 复制到现有 `windows-runtime` 资源目录随安装包发布；SDK 内的可执行文件仅供开发者可选的独立对照测试，不会复制到应用资源。不要用原来的 essentials 可执行文件压缩包替代 shared SDK。更换构建终端后需要重新运行脚本，或显式设置同一个 SDK 的 `FFMPEG_DIR`、`PATH` 和 `LIBCLANG_PATH`。
+`yarn tauri dev/build/bundle` 自动发现 Visual Studio、LLVM，调用 `ffmpeg_setup.ps1` 下载并校验固定版本 Gyan FFmpeg 9.0.2 shared SDK，并准备匹配的 Skia Vulkan 补丁包。启动器只为当前构建及应用子进程设置 SDK、DLL 和 libclang 路径，无需手工配置环境变量。
+
+SDK 解包使用 Windows 自带的 `tar`；缺少该工具的旧环境也可使用标准位置安装的 7-Zip，无需另外配置路径。
+
+SDK 的头文件、导入库和 DLL 保存在 `src-tauri/target/ffmpeg-sdk` 下按版本和源包校验值命名的目录中；后续启动验证文件校验值并复用，不重复下载或解包。SDK 更新或缓存损坏不会被当成有效依赖。DLL 复制到现有 `windows-runtime` 资源目录随安装包发布，保留 sherpa/CUDA 等其他运行库；未变化的 DLL 不重复覆盖。SDK 内的可执行文件仅供开发者可选的独立对照测试，不会复制到应用资源。
+
+自定义 SDK 可继续显式指定 `FFMPEG_DIR`；不要用仅含可执行文件的 essentials 压缩包替代 shared SDK。直接运行 Cargo 或已有 CI 脚本时，独立 `./ffmpeg_setup.ps1` 入口仍可使用，并继续配置当前 PowerShell/GitHub Actions 的环境。Skia 的独立准备方式见[原生渲染构建](../../development/native-overlay.md)。

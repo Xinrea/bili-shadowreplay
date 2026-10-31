@@ -8,27 +8,38 @@
 
 Vulkan 渲染还会从 `skia.lib` 拉入 `SkExecutor`，其中无异常 STL 的 `std::terminate()` 与 V8 的实现同名，完整应用会出现 `LNK2005`。准备脚本同样隔离这个符号的定义和引用，保留各库自己的实现；更新依赖后须验证完整应用链接。
 
-`scripts/prepare-windows-skia.mjs` 下载同版本、同目标、同 feature 的官方压缩包并校验 SHA-256，用 `llvm-objcopy --redefine-sym` 把这些共有符号在 Skia 库中的定义和引用统一加上 `bsr_skia_` 前缀，再重新打包，最后输出 `SKIA_BINARIES_URL`。构建前在 **Windows 构建终端**中运行：
+`yarn tauri dev/build/bundle` 自动调用 `scripts/prepare-windows-skia.mjs`：下载同版本、同目标、同 feature 的官方压缩包并校验 SHA-256，用 `llvm-objcopy --redefine-sym` 把这些共有符号在 Skia 库中的定义和引用统一加上 `bsr_skia_` 前缀，再重新打包。准备结果记录源包校验值、补丁版本和输出校验值；后续启动校验并复用缓存，不再下载或处理符号。
+
+安装当前 stable Rust MSVC x64、Node/Yarn、Visual Studio C++ 桌面工作负载（含 Windows SDK、CMake）、64 位 LLVM 或 VS C++ Clang 工具后，普通 PowerShell/CMD 终端即可运行：
 
 ```powershell
-rustup component add llvm-tools   # 或使用 PATH 中的 llvm-objcopy，也可设置 LLVM_OBJCOPY
-node scripts/prepare-windows-skia.mjs
-# 按脚本输出设置，例如：
-$env:SKIA_BINARIES_URL="file://D:/path/to/bili-shadowreplay/src-tauri/target/skia-binaries/skia-binaries-{key}.tar.gz"
+yarn install --frozen-lockfile
 yarn tauri dev
 ```
 
-- 未设置 `SKIA_BINARIES_URL` 时，`native-overlay` 的构建脚本会直接报错，避免等到最后链接才失败。
+启动器自动导入 Visual Studio 开发环境，发现 LLVM/libclang 的标准安装位置，准备 FFmpeg shared SDK、运行 DLL 和 Skia，并仅对子进程设置 `PATH`、`FFMPEG_DIR`、`LIBCLANG_PATH`、`SKIA_BINARIES_URL`。无需修改全局环境或使用 Developer PowerShell；显式指定的 SDK/Skia 路径仍保留。
+
+`ffmpeg-sys-next` 9 的未优化构建脚本在 Windows 默认栈上可能溢出，因此开发 profile 仅对该 FFI 依赖启用 `opt-level=1`；应用代码仍使用正常 debug 配置，无需设置全局栈或链接参数。
+
+直接调用 Cargo、绕过 `yarn tauri` 时，仍可使用独立准备脚本：
+
+```powershell
+./ffmpeg_setup.ps1
+node scripts/prepare-windows-skia.mjs
+# 将脚本输出的 SKIA_BINARIES_URL 配置到当前 Cargo 测试终端。
+```
+
+- 绕过启动器且未设置 `SKIA_BINARIES_URL` 时，`native-overlay` 的构建脚本会直接报错，避免等到最后链接才失败。
 - 地址必须是 `file://D:/...` 形式（0.82 直接去掉 `file://` 前缀读取路径），并保留 `{key}` 占位符，由 skia-bindings 填入。
 - 若压缩包的 key 与当前构建不一致（例如修改了 Skia feature），skia-bindings 会改为源码构建未处理的 Skia，最终仍会链接失败。
 - 升级 `skia-safe`/`skia-bindings` 或 `deno_core`（V8）后，需重新比对两边 ICU 的共有符号，更新脚本中的 key、SHA-256 和符号列表；脚本会在锁定版本不符或符号不存在时报错。
 - Release workflow 会在 Windows 任务中自动执行这一步。
 
-Windows 应用默认构建 Vulkan 后端，准备脚本默认下载同版本的 `textlayout-vulkan` 包：
+Windows 应用默认构建 Vulkan 后端，启动器默认准备同版本的 `textlayout-vulkan` 包。独立脚本也使用相同默认值：
 
 ```powershell
 node scripts/prepare-windows-skia.mjs
-# 按输出设置 SKIA_BINARIES_URL；升级前已准备 CPU 包的环境须重新运行。
+# 仅用于绕过启动器的独立 Cargo 工作流。
 ```
 
 脚本校验官方包的 SHA-256、包内版本和 feature key 后隔离 ICU/STL 符号。`--vulkan` 保留兼容；`--cpu` 仅用于单独构建没有开启 Vulkan 的 crate，不能用于普通 Windows 应用。CPU 与 Vulkan 包可保存在同一输出目录。脚本只准备链接依赖，Vulkan 设备与编码能力由运行时探测；源码构建时的 Skia feature 必须与所选压缩包一致。
@@ -38,8 +49,6 @@ node scripts/prepare-windows-skia.mjs
 Windows 的普通桌面和 headless 构建都默认包含 GPU 合成后端，并接到正式弹幕压制、项目导出和投稿的原生 `MediaPlan` 中，无需额外的 Cargo feature：
 
 ```powershell
-$prepared = node scripts/prepare-windows-skia.mjs
-$env:SKIA_BINARIES_URL = ($prepared | Where-Object { $_ -like 'SKIA_BINARIES_URL=*' }) -replace '^SKIA_BINARIES_URL=', ''
 yarn tauri build
 ```
 

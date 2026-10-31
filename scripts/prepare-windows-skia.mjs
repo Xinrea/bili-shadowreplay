@@ -15,7 +15,7 @@
 
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -41,7 +41,7 @@ const SHARED_ICU_SYMBOLS = [
 const SHARED_STL_SYMBOLS = ["?terminate@std@@YAXXZ"];
 const PREFIX = "bsr_skia_";
 
-const root = resolve(import.meta.dirname, "..");
+const root = fileURLToPath(new URL("..", import.meta.url));
 
 export function parseOptions(args) {
   let features = "textlayout-vulkan";
@@ -86,20 +86,20 @@ function checkLockedVersion() {
   }
 }
 
-function findObjcopy() {
+function findObjcopy(env) {
   const exe = process.platform === "win32" ? ".exe" : "";
-  const sysroot = execFileSync("rustc", ["--print", "sysroot"], { encoding: "utf8" }).trim();
-  const host = /^host: (.+)$/m.exec(execFileSync("rustc", ["-vV"], { encoding: "utf8" }))[1];
+  const sysroot = execFileSync("rustc", ["--print", "sysroot"], { env, encoding: "utf8" }).trim();
+  const host = /^host: (.+)$/m.exec(execFileSync("rustc", ["-vV"], { env, encoding: "utf8" }))[1];
   const bin = join(sysroot, "lib", "rustlib", host, "bin");
   const candidates = [
-    process.env.LLVM_OBJCOPY,
+    env.LLVM_OBJCOPY,
     join(bin, `llvm-objcopy${exe}`),
     join(bin, `rust-objcopy${exe}`),
   ].filter(Boolean);
   const found = candidates.find((path) => existsSync(path));
   if (found) return found;
   try {
-    execFileSync("llvm-objcopy", ["--version"], { stdio: "ignore" });
+    execFileSync("llvm-objcopy", ["--version"], { env, stdio: "ignore" });
     return "llvm-objcopy";
   } catch {
     throw new Error("llvm-objcopy not found. Run `rustup component add llvm-tools`, or set LLVM_OBJCOPY.");
@@ -107,7 +107,7 @@ function findObjcopy() {
 }
 
 async function download(options) {
-  const response = await fetch(options.url);
+  const response = await fetch(options.url, { signal: AbortSignal.timeout(180_000) });
   if (!response.ok) throw new Error(`Downloading ${options.url} failed: HTTP ${response.status}`);
   const data = Buffer.from(await response.arrayBuffer());
   const sha256 = createHash("sha256").update(data).digest("hex");
@@ -118,51 +118,71 @@ async function download(options) {
 // The names sit NUL-terminated in the archive index and the string tables.
 const contains = (data, name) => data.includes(Buffer.from(`\0${name}\0`, "latin1"));
 
-async function main() {
-  const options = parseOptions(process.argv.slice(2));
+const patchRevision = 1;
+const checksum = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
+
+export function cachedSkiaArchive(options) {
+  const archive = join(options.outputDir, options.archive);
+  const receipt = `${archive}.json`;
+  if (!existsSync(receipt)) return false;
+  const saved = JSON.parse(readFileSync(receipt, "utf8"));
+  if (saved.source !== options.sha256 || saved.patchRevision !== patchRevision) return false;
+  if (!existsSync(archive) || saved.sha256 !== checksum(archive)) {
+    throw new Error(`Invalid patched Skia cache; remove ${receipt} and retry`);
+  }
+  return true;
+}
+
+export async function prepareWindowsSkia(options = parseOptions([]), env = process.env) {
   const { outputDir, archive } = options;
   checkLockedVersion();
-  const objcopy = findObjcopy();
+  const url = `file://${outputDir.replaceAll("\\", "/")}/skia-binaries-{key}.tar.gz`;
+  if (cachedSkiaArchive(options)) return url;
+  const objcopy = findObjcopy(env);
   // CPU and Vulkan archives can coexist in the same cache directory.
-  const work = join(outputDir, `work-${options.features}`);
-  rmSync(work, { recursive: true, force: true });
-  mkdirSync(work, { recursive: true });
+  mkdirSync(outputDir, { recursive: true });
+  const work = mkdtempSync(join(outputDir, `.prepare-${options.features}-`));
+  console.log(`[native] Preparing Skia ${SKIA_BINDINGS_VERSION} ${options.features} (verified download and ICU/STL patch)`);
+  try {
+    writeFileSync(join(work, archive), await download(options));
+    // Relative paths only: Git for Windows' GNU tar reads `D:\...` as a remote host.
+    execFileSync("tar", ["-xzf", archive], { cwd: work, env, stdio: "inherit" });
+    checkArchiveIdentity(join(work, "skia-binaries"), options);
 
-  writeFileSync(join(work, archive), await download(options));
-  // Relative paths only: Git for Windows' GNU tar reads `D:\...` as a remote host.
-  execFileSync("tar", ["-xzf", archive], { cwd: work, stdio: "inherit" });
-  checkArchiveIdentity(join(work, "skia-binaries"), options);
+    for (const [library, symbols] of [
+      ["skunicode_icu.lib", SHARED_ICU_SYMBOLS],
+      ["skia.lib", SHARED_STL_SYMBOLS],
+    ]) {
+      const lib = join(work, "skia-binaries", library);
+      const patched = `${lib}.patched`;
+      const missing = symbols.filter((name) => !contains(readFileSync(lib), name));
+      if (missing.length) throw new Error(`${library} no longer defines: ${missing.join(", ")}`);
+      execFileSync(objcopy, [
+        ...symbols.map((name) => `--redefine-sym=${name}=${PREFIX}${name}`),
+        lib,
+        patched,
+      ], { env, stdio: "inherit" });
+      const result = readFileSync(patched);
+      const unrenamed = symbols.filter((name) => contains(result, name) || !contains(result, PREFIX + name));
+      if (unrenamed.length) throw new Error(`llvm-objcopy did not rename: ${unrenamed.join(", ")}`);
+      renameSync(patched, lib);
+    }
 
-  for (const [library, symbols] of [
-    ["skunicode_icu.lib", SHARED_ICU_SYMBOLS],
-    ["skia.lib", SHARED_STL_SYMBOLS],
-  ]) {
-    const lib = join(work, "skia-binaries", library);
-    const patched = `${lib}.patched`;
-    const missing = symbols.filter((name) => !contains(readFileSync(lib), name));
-    if (missing.length) throw new Error(`${library} no longer defines: ${missing.join(", ")}`);
-    execFileSync(objcopy, [
-      ...symbols.map((name) => `--redefine-sym=${name}=${PREFIX}${name}`),
-      lib,
-      patched,
-    ], { stdio: "inherit" });
-    const result = readFileSync(patched);
-    const unrenamed = symbols.filter((name) => contains(result, name) || !contains(result, PREFIX + name));
-    if (unrenamed.length) throw new Error(`llvm-objcopy did not rename: ${unrenamed.join(", ")}`);
-    renameSync(patched, lib);
-  }
+    rmSync(join(work, archive));
+    execFileSync("tar", ["-czf", archive, "skia-binaries"], { cwd: work, env, stdio: "inherit" });
+    const sha256 = checksum(join(work, archive));
+    renameSync(join(work, archive), join(outputDir, archive));
+    writeFileSync(join(outputDir, `${archive}.json`), JSON.stringify({ source: options.sha256, patchRevision, sha256 }));
+  } finally { rmSync(work, { recursive: true, force: true }); }
+  return url;
+}
 
-  rmSync(join(work, archive));
-  execFileSync("tar", ["-czf", archive, "skia-binaries"], { cwd: work, stdio: "inherit" });
-  renameSync(join(work, archive), join(outputDir, archive));
-  rmSync(work, { recursive: true, force: true });
-
+async function main() {
+  const url = await prepareWindowsSkia(parseOptions(process.argv.slice(2)));
   // skia-bindings strips `file://` and reads the rest as a path, so Windows
   // paths go in as `file://D:/...`. It fills in `{key}`; an unexpected key
   // finds no archive and falls back to building Skia, unpatched, from source.
-  const url = `file://${outputDir.replaceAll("\\", "/")}/skia-binaries-{key}.tar.gz`;
   if (process.env.GITHUB_ENV) appendFileSync(process.env.GITHUB_ENV, `SKIA_BINARIES_URL=${url}\n`);
-  console.log(`Patched ${SHARED_ICU_SYMBOLS.length} ICU and ${SHARED_STL_SYMBOLS.length} STL symbols in ${join(outputDir, archive)}`);
   console.log(`SKIA_BINARIES_URL=${url}`);
 }
 

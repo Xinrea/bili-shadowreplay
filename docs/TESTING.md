@@ -452,3 +452,7 @@ For test infrastructure questions, open an issue.
 ## macOS 开发启动运行库
 
 `node --test scripts/tests/macos-runtime.test.mjs` 覆盖 SDK 显式配置、下载校验失败、运行库签名和 FFmpeg 裸文件名加载、离线缓存复用及损坏缓存拒绝。动态库加载测试仅在 macOS 执行，其余测试无需网络。完整开发启动验证应清除手工 `FFMPEG_DIR`、`PKG_CONFIG_PATH`、`BSR_VULKAN_LIBRARY`、`BSR_MOLTENVK_LIBRARY` 和 `DYLD_*` 配置，通过 `yarn tauri dev` 确认自动准备，并执行 GPU 导出探测；不要用此前测试目录里的运行库代替首次准备流程。
+
+## Windows 开发启动依赖
+
+`node --test scripts/tests/windows-runtime.test.mjs scripts/tests/prepare-windows-skia.test.mjs` 覆盖 Windows 环境变量大小写、开发者环境解析、自定义 FFmpeg SDK、DLL 部署与重复启动、SDK 缺失文件拒绝、Skia 缓存版本及校验。PowerShell 集成测试仅在 Windows 运行，不联网。实机验证应在普通终端清除手动 `FFMPEG_DIR`、`SKIA_BINARIES_URL`、`LIBCLANG_PATH` 和 VS 开发环境，确认首次准备、缓存复用、`yarn tauri dev` 构建及原生 GPU 导出探测；使用独立应用数据，避免触碰现有录像和账号。

@@ -17,7 +17,7 @@ test("macOS SDK discovery preserves an explicit SDK and its pkg-config dependenc
     const env = { FFMPEG_DIR: directory, PKG_CONFIG_PATH: "/custom/dependency", PATH: "/tools" };
     const configured = ffmpegEnvironment(env);
     assert.equal(configured.FFMPEG_DIR, directory);
-    assert.equal(configured.PKG_CONFIG_PATH, `${directory}/lib/pkgconfig${path.delimiter}/custom/dependency`);
+    assert.equal(configured.PKG_CONFIG_PATH, `${path.join(directory, "lib/pkgconfig")}${path.delimiter}/custom/dependency`);
     assert.equal(configured.PATH, env.PATH);
     assert.equal(env.PKG_CONFIG_PATH, "/custom/dependency", "do not mutate the caller's environment");
     assert.throws(() => ffmpegEnvironment({ FFMPEG_DIR: path.join(directory, "missing") }), /FFMPEG_DIR does not contain/);

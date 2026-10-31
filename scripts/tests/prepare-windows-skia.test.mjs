@@ -3,8 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { createHash } from "node:crypto";
 
-import { checkArchiveIdentity, parseOptions } from "../prepare-windows-skia.mjs";
+import { cachedSkiaArchive, checkArchiveIdentity, parseOptions, prepareWindowsSkia } from "../prepare-windows-skia.mjs";
 
 test("prepares Vulkan by default and keeps the explicit Vulkan flag compatible", () => {
   const gpu = parseOptions([]);
@@ -65,4 +66,24 @@ test("checks embedded release identity as well as the feature key", () => {
   withIdentity(gpu.key, "0.82.0", (directory) => {
     assert.doesNotThrow(() => checkArchiveIdentity(directory, gpu));
   });
+});
+
+test("reuses only a verified patched Skia archive and rejects corruption without downloading", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bsr-skia-cache-"));
+  try {
+    const options = parseOptions([directory]);
+    const archive = path.join(directory, options.archive);
+    const receipt = `${archive}.json`;
+    fs.writeFileSync(archive, "patched fixture archive");
+    assert.equal(cachedSkiaArchive(options), false, "legacy archives without receipts must be prepared again");
+    const saved = { source: options.sha256, patchRevision: 1, sha256: createHash("sha256").update(fs.readFileSync(archive)).digest("hex") };
+    fs.writeFileSync(receipt, JSON.stringify(saved));
+    assert.equal(cachedSkiaArchive(options), true);
+    // No tools or network are needed when the cached output is verified.
+    assert.equal(await prepareWindowsSkia(options, { PATH: "" }), `file://${directory.replaceAll("\\", "/")}/skia-binaries-{key}.tar.gz`);
+    fs.appendFileSync(archive, "corrupted");
+    await assert.rejects(prepareWindowsSkia(options, { PATH: "" }), /Invalid patched Skia cache/);
+    fs.writeFileSync(receipt, JSON.stringify({ ...saved, patchRevision: 0 }));
+    assert.equal(cachedSkiaArchive(options), false, "changed patch code invalidates older cached output");
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });

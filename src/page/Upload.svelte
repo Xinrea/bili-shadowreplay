@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
+  import { trapFocus } from "../lib/focus-trap";
   import {
     Calendar,
     ExternalLink,
@@ -13,6 +15,7 @@
     Upload,
   } from "lucide-svelte";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
+  import BatchActionLayout from "../lib/components/BatchActionLayout.svelte";
   import DeleteConfirmActions from "../lib/components/DeleteConfirmActions.svelte";
   import UploadEditor from "../lib/components/upload/UploadEditor.svelte";
   import UploadSourceDialog from "../lib/components/upload/UploadSourceDialog.svelte";
@@ -61,7 +64,8 @@
   let search = $state("");
   let showSourceDialog = $state(false);
   let editingId: number | null = $state(null);
-  let uploadToDelete: UploadRow | null = $state(null);
+  const selectedUploads = new SvelteSet<number>();
+  let uploadsToDelete: UploadRow[] | null = $state(null);
 
   let editing = $derived(uploads.find((upload) => upload.id === editingId) ?? null);
   let accountNames = $derived(new Map(accounts.map((account) => [account.uid, account.name])));
@@ -79,6 +83,17 @@
           upload.source_title.toLowerCase().includes(keyword) ||
           upload.bvid.toLowerCase().includes(keyword)),
     );
+  });
+  let selectable = $derived(filtered.filter((upload) => !isUploadActive(upload)));
+  let selected = $derived(selectable.filter((upload) => selectedUploads.has(upload.id)));
+  let allSelected = $derived(selectable.length > 0 && selected.length === selectable.length);
+
+  $effect(() => {
+    // Drop hidden, deleted or newly active uploads from the selection.
+    const selectableIds = new Set(selectable.map((upload) => upload.id));
+    for (const id of selectedUploads) {
+      if (!selectableIds.has(id)) selectedUploads.delete(id);
+    }
   });
 
   async function toRow(upload: UploadItem): Promise<UploadRow> {
@@ -167,11 +182,49 @@
     }
   }
 
-  async function deleteUpload(upload: UploadRow) {
-    await invoke("delete_upload", { id: upload.id });
-    if (editingId === upload.id) editingId = null;
-    await stateRefresh.run();
-    uploadToDelete = null;
+  function toggleUploadSelection(upload: UploadRow) {
+    if (isUploadActive(upload)) return;
+    if (selectedUploads.has(upload.id)) selectedUploads.delete(upload.id);
+    else selectedUploads.add(upload.id);
+  }
+
+  function selectAllUploads() {
+    if (allSelected) selectedUploads.clear();
+    else selectable.forEach((upload) => selectedUploads.add(upload.id));
+  }
+
+  function confirmDelete(upload: UploadRow | null = null) {
+    const targets = (upload ? [upload] : selected).filter((item) => !isUploadActive(item));
+    if (targets.length > 0) uploadsToDelete = [...targets];
+  }
+
+  async function deleteUploads() {
+    const targets = [...(uploadsToDelete ?? [])];
+    if (targets.length === 0) return;
+    try {
+      for (const upload of targets) {
+        const current = uploads.find((item) => item.id === upload.id);
+        if (current && isUploadActive(current)) {
+          throw new Error(`「${current.title}」正在投稿，无法删除`);
+        }
+        try {
+          await invoke("delete_upload", { id: upload.id });
+        } catch (error) {
+          // A concurrent deletion or lost response can leave this target already gone.
+          // Verify against the server; a failed read must preserve the original error.
+          const remaining = await invoke<UploadItem[]>("get_uploads").catch(() => null);
+          if (!remaining || remaining.some((item) => item.id === upload.id)) throw error;
+        }
+        if (editingId === upload.id) editingId = null;
+        selectedUploads.delete(upload.id);
+        uploads = uploads.filter((item) => item.id !== upload.id);
+        // Preserve failed and unattempted targets for retry, even after a refresh.
+        uploadsToDelete = uploadsToDelete!.filter((item) => item.id !== upload.id);
+      }
+    } finally {
+      await stateRefresh.run();
+    }
+    uploadsToDelete = null;
   }
 </script>
 
@@ -193,7 +246,13 @@
   </button>
 </PageTitlebar>
 
-<div class="flex-1 overflow-auto bg-canvas p-5 custom-scrollbar-light">
+<BatchActionLayout count={selected.length} itemLabel="投稿" onclear={() => selectedUploads.clear()}>
+  {#snippet actions()}
+    <button class="ui-btn ui-btn-danger" onclick={() => confirmDelete()}>
+      <Trash2 class="h-3.5 w-3.5" />
+      <span>删除选中</span>
+    </button>
+  {/snippet}
   <div class="space-y-4">
     <div class="ui-card px-3 py-2.5">
       <div class="flex flex-wrap items-center justify-between gap-3">
@@ -239,6 +298,17 @@
           <table class="w-full table-fixed whitespace-nowrap">
             <thead>
               <tr class="border-b border-line bg-control/60">
+                <th class="w-12 px-4 py-2.5 text-left">
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    indeterminate={selected.length > 0 && !allSelected}
+                    disabled={selectable.length === 0}
+                    onchange={selectAllUploads}
+                    class="ui-checkbox"
+                    aria-label="全选当前筛选结果中可删除的投稿"
+                  />
+                </th>
                 <th class="w-[22rem] px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted">投稿</th>
                 <th class="w-44 px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted">状态</th>
                 <th class="w-32 px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted">账号</th>
@@ -249,7 +319,18 @@
             <tbody class="divide-y divide-line">
               {#each filtered as upload (upload.id)}
                 {@const editable = upload.status === "draft" || upload.status === "failed"}
-                <tr class="group transition-colors hover:bg-control-hover/50">
+                <tr class="group transition-colors hover:bg-control-hover/50 {selectedUploads.has(upload.id) ? 'bg-accent-soft/40' : ''}">
+                  <td class="w-12 px-4 py-2.5">
+                    <input
+                      type="checkbox"
+                      checked={selectedUploads.has(upload.id)}
+                      disabled={isUploadActive(upload)}
+                      onchange={() => toggleUploadSelection(upload)}
+                      class="ui-checkbox"
+                      aria-label={`选择投稿「${upload.title}」`}
+                      title={isUploadActive(upload) ? "投稿进行中，无法删除" : "选择投稿"}
+                    />
+                  </td>
                   <td class="px-4 py-2.5">
                     <button
                       class="flex w-full items-center gap-3 text-left"
@@ -339,7 +420,7 @@
                         class="action-button hover:bg-danger-soft disabled:pointer-events-none disabled:opacity-40"
                         title={isUploadActive(upload) ? "投稿进行中，无法删除" : "删除"}
                         disabled={isUploadActive(upload)}
-                        onclick={() => (uploadToDelete = upload)}
+                        onclick={() => confirmDelete(upload)}
                       >
                         <Trash2 class="h-3.5 w-3.5 text-danger-fg" />
                       </button>
@@ -353,7 +434,7 @@
       {/if}
     </div>
   </div>
-</div>
+</BatchActionLayout>
 
 {#if showSourceDialog}
   <UploadSourceDialog onPick={createDraft} onClose={() => (showSourceDialog = false)} />
@@ -370,22 +451,40 @@
   {/key}
 {/if}
 
-{#if uploadToDelete}
+{#if uploadsToDelete}
   <div class="ui-modal-backdrop">
-    <div class="ui-modal w-[400px] max-w-full">
+    <div
+      use:trapFocus
+      class="ui-modal w-[400px] max-w-full"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="upload-delete-title"
+      tabindex="-1"
+    >
       <div class="space-y-4 p-6">
         <div class="space-y-2 text-center">
-          <h3 class="text-[14px] font-semibold text-fg">确认删除</h3>
-          <p class="text-[12px] text-fg-muted">确定要删除投稿「{uploadToDelete.title}」吗？</p>
+          <h3 id="upload-delete-title" class="text-[14px] font-semibold text-fg">确认删除</h3>
+          <p class="text-[12px] text-fg-muted">
+            {#if uploadsToDelete.length === 1}
+              确定要删除投稿「{uploadsToDelete[0].title}」吗？
+            {:else}
+              确定要删除选中的 {uploadsToDelete.length} 条投稿记录吗？
+            {/if}
+          </p>
+          {#if uploadsToDelete.length > 1}
+            <ul class="max-h-32 overflow-auto rounded-[7px] bg-sunken px-3 py-2 text-left text-[12px] text-fg-secondary custom-scrollbar-light">
+              {#each uploadsToDelete as upload (upload.id)}
+                <li class="truncate" title={upload.title}>{upload.title}</li>
+              {/each}
+            </ul>
+          {/if}
           <p class="text-[11px] text-fg-muted">
-            {uploadToDelete.status === "posted"
-              ? "只删除这条投稿记录，已发布到 B 站的视频不受影响。"
-              : "草稿和自定义封面会一并删除，素材、切片和视频文件不受影响。"}
+            删除投稿记录和自定义封面，素材、切片、视频文件及已发布到 B 站的视频不受影响。
           </p>
         </div>
         <DeleteConfirmActions
-          oncancel={() => (uploadToDelete = null)}
-          onconfirm={() => deleteUpload(uploadToDelete!)}
+          oncancel={() => (uploadsToDelete = null)}
+          onconfirm={deleteUploads}
         />
       </div>
     </div>

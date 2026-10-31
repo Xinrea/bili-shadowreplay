@@ -5,6 +5,7 @@
   import { invoke, get_static_url } from "../lib/invoker";
   import type { ProjectItem } from "../lib/interface";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
+  import BatchActionLayout from "../lib/components/BatchActionLayout.svelte";
   import DeleteConfirmActions from "../lib/components/DeleteConfirmActions.svelte";
   import { onMount } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
@@ -213,7 +214,13 @@
   </button>
 </PageTitlebar>
 
-<div class="flex-1 overflow-auto bg-canvas p-5 custom-scrollbar-light">
+<BatchActionLayout count={selected.length} itemLabel="切片" onclear={() => selectedProjects.clear()}>
+  {#snippet actions()}
+    <button class="ui-btn ui-btn-danger" onclick={() => confirmDelete()}>
+      <Trash2 class="h-3.5 w-3.5" />
+      <span>删除选中</span>
+    </button>
+  {/snippet}
   <div class="space-y-4">
     <div class="ui-card px-3 py-2.5">
       <div class="flex flex-wrap items-center justify-between gap-3">
@@ -246,19 +253,6 @@
         </div>
       </div>
     </div>
-
-    {#if selected.length > 0}
-      <div class="ui-card flex items-center justify-between gap-3 px-4 py-2.5">
-        <span class="text-[12px] text-fg-secondary">已选择 {selected.length} 个切片</span>
-        <div class="flex items-center gap-2">
-          <button class="ui-btn" onclick={() => selectedProjects.clear()}>取消选择</button>
-          <button class="ui-btn ui-btn-danger" onclick={() => confirmDelete()}>
-            <Trash2 class="h-3.5 w-3.5" />
-            <span>删除选中</span>
-          </button>
-        </div>
-      </div>
-    {/if}
 
     <div class="ui-card overflow-hidden">
       {#if loading}
@@ -405,7 +399,7 @@
       {/if}
     </div>
   </div>
-</div>
+</BatchActionLayout>
 
 {#if projectsToDelete}
   <div class="ui-modal-backdrop">

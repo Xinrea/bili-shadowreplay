@@ -325,6 +325,7 @@ impl VideoEncoderStage {
             self.send_frame(&mut frame, packets)?;
         }
         self.frames = self.frames.checked_add(1).ok_or("视频帧计数溢出")?;
+        perf::video_checkpoint(self.frames);
         Ok(())
     }
     fn send_processed(

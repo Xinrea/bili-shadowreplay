@@ -355,11 +355,11 @@ impl VulkanCompositor {
             .as_ref()
             .ok_or("Vulkan compositor exceeded the three-frame input buffering limit")?;
         let started = Instant::now();
-        self.wait_frame_uses(&pending.overlay)?;
+        perf::measure("slot_overlay_wait", || self.wait_frame_uses(&pending.overlay))?;
         if let Some(base) = &pending.base {
-            self.wait_frame_uses(base)?;
+            perf::measure("slot_base_wait", || self.wait_frame_uses(base))?;
         }
-        self.wait_frame_uses(output)?;
+        perf::measure("slot_output_wait", || self.wait_frame_uses(output))?;
         self.device.0.sync.collect_completed()?;
         self.in_flight.pop_front();
         if reusing_slot {

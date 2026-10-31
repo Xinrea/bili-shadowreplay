@@ -36,6 +36,7 @@
   import GenerateWholeClipModal from "../lib/components/GenerateWholeClipModal.svelte";
   import ArchiveSummaryModal from "../lib/components/ArchiveSummaryModal.svelte";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
+  import BatchActionLayout from "../lib/components/BatchActionLayout.svelte";
   import DeleteConfirmActions from "../lib/components/DeleteConfirmActions.svelte";
   import type { RecorderInfo, RecorderList } from "src/lib/interface";
 
@@ -485,7 +486,19 @@
   </button>
 </PageTitlebar>
 
-<div class="flex-1 overflow-auto bg-canvas p-5 custom-scrollbar-light">
+<BatchActionLayout count={selectedArchives.size} itemLabel="录播" onclear={() => selectedArchives.clear()}>
+  {#snippet actions()}
+    <button
+      class="ui-btn ui-btn-danger"
+      onclick={() => {
+        showDeleteConfirm = true;
+        archiveToDelete = null;
+      }}
+    >
+      <Trash2 class="h-3.5 w-3.5" />
+      <span>删除选中</span>
+    </button>
+  {/snippet}
   <div class="space-y-4">
     <!-- 筛选和排序工具栏 -->
     <div class="ui-card space-y-3 p-3">
@@ -645,30 +658,6 @@
           </button>
         </div>
       </div>
-
-      <!-- 批量操作栏 -->
-      {#if selectedArchives.size > 0}
-        <div
-          class="flex items-center justify-between border-t border-line pt-3"
-        >
-          <div class="flex items-center gap-2">
-            <div class="h-2 w-2 rounded-full bg-warning"></div>
-            <span class="text-[12px] font-medium text-warning-fg">
-              已选择 {selectedArchives.size} 项
-            </span>
-          </div>
-          <button
-            class="ui-btn ui-btn-danger"
-            onclick={() => {
-              showDeleteConfirm = true;
-              archiveToDelete = null;
-            }}
-          >
-            <Trash2 class="h-3.5 w-3.5" />
-            <span>删除选中</span>
-          </button>
-        </div>
-      {/if}
     </div>
 
     <!-- Archive List -->
@@ -897,7 +886,7 @@
       {/if}
     </div>
   </div>
-</div>
+</BatchActionLayout>
 
 <!-- Delete Confirmation Modal -->
 {#if showDeleteConfirm}

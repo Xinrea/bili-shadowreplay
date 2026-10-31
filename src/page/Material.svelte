@@ -7,6 +7,7 @@
   import type { VideoItem } from "../lib/interface";
   import ImportVideoDialog from "../lib/components/ImportVideoDialog.svelte";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
+  import BatchActionLayout from "../lib/components/BatchActionLayout.svelte";
   import DeleteConfirmActions from "../lib/components/DeleteConfirmActions.svelte";
   import { onMount, onDestroy, tick } from "svelte";
   import {
@@ -502,7 +503,21 @@
   </button>
 </PageTitlebar>
 
-<div class="flex-1 overflow-auto bg-canvas p-5 custom-scrollbar-light">
+<BatchActionLayout count={selectedVideos.size} itemLabel="素材" onclear={() => selectedVideos.clear()}>
+  {#snippet actions()}
+    <button
+      class="ui-btn ui-btn-primary"
+      disabled={creatingProject}
+      onclick={() => createProject(videos.filter((video) => selectedVideos.has(video.id)))}
+    >
+      <Clapperboard class="h-3.5 w-3.5" />
+      <span>用所选素材新建切片</span>
+    </button>
+    <button class="ui-btn ui-btn-danger" onclick={() => confirmDelete(null)}>
+      <Trash2 class="h-3.5 w-3.5" />
+      <span>删除选中</span>
+    </button>
+  {/snippet}
   <div class="space-y-4">
     <!-- Filters -->
     <div class="ui-card px-3 py-2.5">
@@ -603,29 +618,6 @@
         </div>
       </div>
     </div>
-
-    <!-- Bulk Actions -->
-    {#if selectedVideos.size > 0}
-      <div class="ui-card flex items-center justify-between px-4 py-2.5">
-        <span class="text-[12px] text-fg-secondary">
-          已选择 {selectedVideos.size} 个素材
-        </span>
-        <div class="flex items-center gap-2">
-          <button
-            class="ui-btn ui-btn-primary"
-            disabled={creatingProject}
-            onclick={() => createProject(videos.filter((video) => selectedVideos.has(video.id)))}
-          >
-            <Clapperboard class="h-3.5 w-3.5" />
-            <span>用所选素材新建切片</span>
-          </button>
-          <button class="ui-btn ui-btn-danger" onclick={() => confirmDelete(null)}>
-            <Trash2 class="h-3.5 w-3.5" />
-            <span>删除选中</span>
-          </button>
-        </div>
-      </div>
-    {/if}
 
     <!-- Video List -->
     <div class="ui-card overflow-hidden">
@@ -922,7 +914,7 @@
       {/if}
     </div>
   </div>
-</div>
+</BatchActionLayout>
 
 <!-- Delete Confirmation Modal -->
 {#if showDeleteConfirm}

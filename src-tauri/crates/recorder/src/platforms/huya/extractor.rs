@@ -147,8 +147,7 @@ impl LiveStreamExtractor {
                 "value",
             ],
         )
-        .and_then(|v| v.as_array())
-        else {
+        .and_then(|v| v.as_array()) else {
             return Vec::new();
         };
 
@@ -183,8 +182,7 @@ impl LiveStreamExtractor {
             // The page rates each line per platform; probe the recommended
             // lines first. Entries without a rate keep their page order behind
             // rated ones.
-            let priority =
-                Self::i64_value_at(stream, &["iMobilePriorityRate"]).unwrap_or(i64::MIN);
+            let priority = Self::i64_value_at(stream, &["iMobilePriorityRate"]).unwrap_or(i64::MIN);
             candidates.push((candidate, priority));
         }
 
@@ -225,7 +223,10 @@ impl LiveStreamExtractor {
         let Some((base, query)) = url.split_once('?') else {
             return url.to_string();
         };
-        let Some(stream_name) = base.rsplit('/').next().and_then(|f| f.strip_suffix(".m3u8"))
+        let Some(stream_name) = base
+            .rsplit('/')
+            .next()
+            .and_then(|f| f.strip_suffix(".m3u8"))
         else {
             return url.to_string();
         };
@@ -566,9 +567,9 @@ mod tests {
         let PullUrl::Hls(url) = &stream_info.candidates[0] else {
             panic!("liveLineUrl fallback must be an HLS candidate");
         };
-        assert!(url.starts_with(
-            "https://hs.hls.huya.com/huyalive/123-123-456-789-10057-A-0-1.m3u8?"
-        ));
+        assert!(
+            url.starts_with("https://hs.hls.huya.com/huyalive/123-123-456-789-10057-A-0-1.m3u8?")
+        );
         assert!(!url.contains(".m3u8.m3u8"), "duplicated suffix: {url}");
         assert!(!url.contains("wsSecret=7abc7dec8809146f31f92046eb044e3b"));
         assert!(url.contains("u="), "recomputed signature missing: {url}");
@@ -577,7 +578,9 @@ mod tests {
     #[test]
     fn test_normalize_stream_url_only_rewrites_scheme() {
         assert_eq!(
-            LiveStreamExtractor::normalize_stream_url("//example.com/live.m3u8?next=http://callback"),
+            LiveStreamExtractor::normalize_stream_url(
+                "//example.com/live.m3u8?next=http://callback"
+            ),
             "https://example.com/live.m3u8?next=http://callback"
         );
         assert_eq!(
@@ -1815,11 +1818,8 @@ mod tests {
             hosts,
             vec!["hs.flv.huya.com", "tx.flv.huya.com", "al.flv.huya.com"]
         );
-        assert!(stream_info
-            .candidates
-            .iter()
-            .all(|candidate| !candidate
-                .url()
-                .contains("wsSecret=7abc7dec8809146f31f92046eb044e3b")));
+        assert!(stream_info.candidates.iter().all(|candidate| !candidate
+            .url()
+            .contains("wsSecret=7abc7dec8809146f31f92046eb044e3b")));
     }
 }

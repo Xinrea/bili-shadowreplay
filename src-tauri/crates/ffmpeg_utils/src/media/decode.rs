@@ -1,8 +1,8 @@
 //! Demand-fed decoders for complex graphs. Only requested inputs are read;
 //! pending frames from other streams of the same demuxer have a fixed bound.
-use crate::profiling as perf;
 use super::{audio_encoder::layout_name, util, video_clock::VideoClock, MediaInput};
 use crate::audio::{AudioClock, AudioFormat};
+use crate::profiling as perf;
 use ffmpeg_next::{self as ffmpeg, codec, ffi, filter, format, frame, media, Packet, Rational};
 use std::{collections::VecDeque, sync::atomic::AtomicBool};
 
@@ -172,10 +172,19 @@ impl GraphDecoder {
         let parameters = stream.parameters();
         let decoder = util::open_decoder(parameters, base, source)?;
         if perf::enabled() {
-            perf::annotate(&format!("decoder_{input}_{stream_index}", stream_index = stream.index()), || unsafe {
-                let context = &*decoder.as_ptr();
-                format!("thread_count={}, active_thread_type={}", context.thread_count, context.active_thread_type)
-            });
+            perf::annotate(
+                &format!(
+                    "decoder_{input}_{stream_index}",
+                    stream_index = stream.index()
+                ),
+                || unsafe {
+                    let context = &*decoder.as_ptr();
+                    format!(
+                        "thread_count={}, active_thread_type={}",
+                        context.thread_count, context.active_thread_type
+                    )
+                },
+            );
         }
         let mut rate = Rational(0, 1);
         let mut rotation = None;
@@ -322,10 +331,12 @@ impl GraphDecoder {
                 Decoder::Audio(..) => DecodedFrame::Audio(frame::Audio::empty()),
                 Decoder::Video(..) => DecodedFrame::Video(frame::Video::empty()),
             };
-            let result = perf::measure("decode_receive", || match (&mut self.decoder, &mut output) {
-                (Decoder::Audio(d, _), DecodedFrame::Audio(f)) => d.receive_frame(f),
-                (Decoder::Video(d, _), DecodedFrame::Video(f)) => d.receive_frame(f),
-                _ => unreachable!(),
+            let result = perf::measure("decode_receive", || {
+                match (&mut self.decoder, &mut output) {
+                    (Decoder::Audio(d, _), DecodedFrame::Audio(f)) => d.receive_frame(f),
+                    (Decoder::Video(d, _), DecodedFrame::Video(f)) => d.receive_frame(f),
+                    _ => unreachable!(),
+                }
             });
             match result {
                 Ok(()) => (),

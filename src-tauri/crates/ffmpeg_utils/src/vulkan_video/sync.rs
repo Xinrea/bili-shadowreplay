@@ -388,7 +388,13 @@ impl VulkanSync {
     }
     pub(super) fn wait(&self, semaphore: u64, value: u64) -> Result<(), String> {
         self.wait_timeline(semaphore, value, 30_000_000_000)
-            .and_then(|ready| if ready { Ok(()) } else { Err("Wait for Vulkan frame timeline timed out".into()) })
+            .and_then(|ready| {
+                if ready {
+                    Ok(())
+                } else {
+                    Err("Wait for Vulkan frame timeline timed out".into())
+                }
+            })
     }
 
     #[cfg(target_os = "macos")]
@@ -408,7 +414,8 @@ impl VulkanSync {
         // A bounded wait turns a lost/stalled GPU into a failed export instead of
         // silently publishing incomplete frames. No host pixel data is read.
         let status = unsafe { (self.wait_semaphores)(self.device, &info, timeout) };
-        if status == 2 { // VK_TIMEOUT, including a nonblocking readiness query.
+        if status == 2 {
+            // VK_TIMEOUT, including a nonblocking readiness query.
             return Ok(false);
         }
         check(status, "Wait for Vulkan frame timeline")?;

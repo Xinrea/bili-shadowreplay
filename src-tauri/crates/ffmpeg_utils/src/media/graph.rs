@@ -1,7 +1,6 @@
 //! Multi-input demand scheduler and shared complex filter graph. All native
 //! contexts and scratch leases live on one blocking worker; only packet/frame
 //! references cross the small bounded startup queues.
-use crate::profiling as perf;
 use super::{
     audio::AudioStage,
     audio_encoder::AudioEncoderStage,
@@ -13,6 +12,7 @@ use super::{
     video_encoder::VideoEncoderStage,
     *,
 };
+use crate::profiling as perf;
 use crate::{
     audio::{copy_chapters, input_metadata, remux::AudioPacketClock},
     metadata::run_media,
@@ -58,7 +58,9 @@ pub(super) async fn run(
         let _session = sources.profiler.as_ref().map(|profile| profile.start());
         crate::profiling::measure("worker", || {
             validate(&plan, &sources)?;
-            let job = crate::profiling::measure("setup", || Job::new(plan, sources, progress, cancelled))?;
+            let job = crate::profiling::measure("setup", || {
+                Job::new(plan, sources, progress, cancelled)
+            })?;
             job.run()
         })
     })
@@ -583,8 +585,10 @@ impl Output {
         }
         self.last[stream] = packet.dts();
         progress.packet(&packet, base);
-        perf::measure("mux_write", || packet.write_interleaved(&mut self.native.output))
-            .map_err(|e| util::error("写入多输入媒体包失败", e))
+        perf::measure("mux_write", || {
+            packet.write_interleaved(&mut self.native.output)
+        })
+        .map_err(|e| util::error("写入多输入媒体包失败", e))
     }
 }
 struct Binding {
@@ -1674,7 +1678,9 @@ impl Job {
     fn run(mut self) -> Result<Completed, String> {
         perf::measure("initialize_graph", || {
             self.headers()?;
-            if self.plan.filter_graph.is_some() { self.initialize_graph()?; }
+            if self.plan.filter_graph.is_some() {
+                self.initialize_graph()?;
+            }
             Ok::<_, String>(())
         })?;
         let mut round_robin = 0usize;

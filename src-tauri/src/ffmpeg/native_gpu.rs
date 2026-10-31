@@ -6,7 +6,10 @@
 use std::sync::{atomic::AtomicBool, Arc};
 
 use ffmpeg_utils::{
-    vulkan_video::{VulkanCompositor, VulkanImageState, VulkanRenderOptions, VulkanSubmissionMode},
+    vulkan_video::{
+        HardwareEncoderFrames, VulkanCompositor, VulkanImageState, VulkanRenderOptions,
+        VulkanSubmissionMode,
+    },
     MediaBindings, MediaPlan, MediaResourceLease, StreamMode, VideoEncodeOptions, VideoFrame,
     VideoFrameInfo, VideoFrameProcessor,
 };
@@ -19,9 +22,9 @@ use super::{
 use crate::progress::progress_reporter::ProgressReporterTrait;
 
 pub(super) fn uses_vulkan(plan: &MediaPlan) -> bool {
-    plan.routes.iter().any(|route| {
-        matches!(&route.mode, StreamMode::Video(options) if super::hwaccel::is_vulkan_encoder(&options.encoder))
-    })
+    plan.routes
+        .iter()
+        .any(|route| matches!(&route.mode, StreamMode::Video(options) if options.frame_processor))
 }
 
 fn bind_overlay(plan: &mut MediaPlan, spec: OverlaySpec) -> Result<MediaBindings, String> {
@@ -38,9 +41,7 @@ fn bind_overlay_with_mode(
             .iter()
             .enumerate()
             .filter_map(|(index, route)| match &route.mode {
-                StreamMode::Video(options)
-                    if super::hwaccel::is_vulkan_encoder(&options.encoder) =>
-                {
+                StreamMode::Video(options) if options.frame_processor => {
                     Some((index, options.clone()))
                 }
                 _ => None,
@@ -100,6 +101,7 @@ async fn run_overlay_plan_with_mode(
 // compositor owns their borrowed device, and all assets until both are closed.
 struct VulkanOverlayProcessor {
     renderer: VulkanRenderer,
+    encoder_frames: HardwareEncoderFrames,
     compositor: VulkanCompositor,
     timeline_start: f64,
     seconds_per_tick: f64,
@@ -110,7 +112,7 @@ impl VulkanOverlayProcessor {
     fn new(
         info: VideoFrameInfo,
         spec: OverlaySpec,
-        _options: VideoEncodeOptions,
+        options: VideoEncodeOptions,
         resources: Vec<MediaResourceLease>,
         cancelled: Arc<AtomicBool>,
         mode: VulkanSubmissionMode,
@@ -128,7 +130,7 @@ impl VulkanOverlayProcessor {
         {
             return Err("Invalid GPU video or overlay timeline".into());
         }
-        let compositor = VulkanCompositor::new_with_mode(
+        let mut compositor = VulkanCompositor::new_with_mode(
             VulkanRenderOptions {
                 width: info.width,
                 height: info.height,
@@ -140,6 +142,7 @@ impl VulkanOverlayProcessor {
             cancelled,
             mode,
         )?;
+        let encoder_frames = HardwareEncoderFrames::new(&mut compositor, &options.encoder)?;
         let device = compositor.device();
         let handles = device.info();
         let native = NativeVulkanDevice {
@@ -173,6 +176,7 @@ impl VulkanOverlayProcessor {
         renderer.set_profiling(log::log_enabled!(log::Level::Debug));
         Ok(Self {
             renderer,
+            encoder_frames,
             compositor,
             timeline_start: spec.start,
             seconds_per_tick: info.time_base.numerator() as f64
@@ -184,7 +188,7 @@ impl VulkanOverlayProcessor {
 
 impl VideoFrameProcessor for VulkanOverlayProcessor {
     fn output_template(&self) -> Result<VideoFrame, String> {
-        self.compositor.output_template()
+        self.encoder_frames.output_template()
     }
 
     fn process(&mut self, frame: VideoFrame) -> Result<Vec<VideoFrame>, String> {
@@ -204,7 +208,7 @@ impl VideoFrameProcessor for VulkanOverlayProcessor {
             sharing_mode: image.sharing_mode,
         };
         let state = unsafe { self.renderer.render_into(time, &target, [0, 0, 0, 0]) }?;
-        unsafe {
+        let frames = unsafe {
             self.compositor.submit_frame(
                 lease,
                 VulkanImageState {
@@ -213,11 +217,13 @@ impl VideoFrameProcessor for VulkanOverlayProcessor {
                 },
                 Some(&frame),
             )
-        }
+        }?;
+        self.encoder_frames.convert(frames)
     }
 
     fn flush(&mut self) -> Result<Vec<VideoFrame>, String> {
-        self.compositor.flush()
+        let frames = self.compositor.flush()?;
+        self.encoder_frames.convert(frames)
     }
 }
 
@@ -246,11 +252,11 @@ impl Drop for VulkanOverlayProcessor {
 
 /// Probe the complete renderer/compositor/encoder route before selecting it.
 /// Failures are cached per codec and leave the existing CPU selection available.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 pub(super) async fn probe_encoder(encoder: &'static str) -> bool {
     static H264: tokio::sync::OnceCell<bool> = tokio::sync::OnceCell::const_new();
     static HEVC: tokio::sync::OnceCell<bool> = tokio::sync::OnceCell::const_new();
-    let cache = if encoder == "hevc_vulkan" {
+    let cache = if encoder.starts_with("hevc_") {
         &HEVC
     } else {
         &H264
@@ -271,12 +277,12 @@ pub(super) async fn probe_encoder(encoder: &'static str) -> bool {
         .await
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 async fn probe(encoder: &str) -> Result<(), String> {
     probe_with_mode(encoder, VulkanSubmissionMode::Asynchronous).await
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 async fn probe_with_mode(encoder: &str, mode: VulkanSubmissionMode) -> Result<(), String> {
     let directory = Arc::new(tempfile::tempdir().map_err(|error| error.to_string())?);
     let output = directory.path().join("probe.mp4");
@@ -317,7 +323,7 @@ async fn probe_with_mode(encoder: &str, mode: VulkanSubmissionMode) -> Result<()
         .map_err(|error| format!("Vulkan probe output verification failed: {error}"))?
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn probe_plan(encoder: &str, output: &std::path::Path) -> Result<MediaPlan, String> {
     use ffmpeg_utils::{
         ColorSource, FilterGraphPlan, FrameRatePolicy, GraphInput, GraphOutput, MediaInput,
@@ -331,7 +337,16 @@ fn probe_plan(encoder: &str, output: &std::path::Path) -> Result<MediaPlan, Stri
         frame_rate_den: 1,
     });
     input.duration = Some(0.1);
-    let mut video = super::hwaccel::native_video_options(encoder, None, None, None)?;
+    let settings = crate::project::RenderSettings {
+        codec: if encoder.starts_with("hevc_") {
+            crate::project::VideoCodec::Hevc
+        } else {
+            crate::project::VideoCodec::H264
+        },
+        ..Default::default()
+    };
+    let mut video = super::hwaccel::native_video_options(encoder, None, None, Some(&settings))?;
+    video.frame_processor = true;
     video.frame_rate = FrameRatePolicy::Constant { num: 30, den: 1 };
     Ok(MediaPlan {
         inputs: vec![input],
@@ -361,7 +376,7 @@ fn probe_plan(encoder: &str, output: &std::path::Path) -> Result<MediaPlan, Stri
     })
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn probe_scene(directory: &std::path::Path) -> Result<native_overlay::RenderInput, String> {
     // Generated 1x1 opaque-red RGBA PNG: IHDR, zlib-compressed scanline, IEND.
     const RED_PNG: &[u8] = &[
@@ -388,7 +403,7 @@ fn probe_scene(directory: &std::path::Path) -> Result<native_overlay::RenderInpu
     })
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 async fn validate_probe_output(
     file: &std::path::Path,
     directory: &std::path::Path,
@@ -420,7 +435,7 @@ async fn validate_probe_output(
     Ok(())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn validate_probe_pixels(pixels: &[u8]) -> Result<(), String> {
     if pixels.len() != 64 * 48 * 4 {
         return Err("Vulkan probe decoded an unexpected frame size".into());
@@ -456,6 +471,11 @@ fn validate_probe_pixels(pixels: &[u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "windows")]
+    const ENCODERS: [&str; 2] = ["h264_vulkan", "hevc_vulkan"];
+    #[cfg(target_os = "macos")]
+    const ENCODERS: [&str; 2] = ["h264_videotoolbox", "hevc_videotoolbox"];
+
     use std::{
         collections::HashSet,
         io::{self, Write},
@@ -500,6 +520,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let output = directory.path().join("cpu-probe.mp4");
         let mut plan = super::probe_plan("libx264", &output).unwrap();
+        if let ffmpeg_utils::StreamMode::Video(options) = &mut plan.routes[0].mode {
+            options.frame_processor = false;
+        }
         let graph = plan.filter_graph.as_mut().unwrap();
         graph.spec = "[0:v]format=bgra[base];[base][1:v]overlay=shortest=1:format=rgb:alpha=premultiplied,scale=out_color_matrix=bt709:out_range=tv,format=nv12[outv]".into();
         graph.inputs.push(ffmpeg_utils::GraphInput {
@@ -557,9 +580,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires the Windows Vulkan Video device and FFmpeg 9 SDK"]
+    #[ignore = "Requires a GPU render/encode backend and FFmpeg 9 SDK"]
     async fn native_gpu_export_probes_both_codecs_with_the_media_plan() {
-        for encoder in ["h264_vulkan", "hevc_vulkan"] {
+        for encoder in ENCODERS {
             super::probe(encoder).await.unwrap();
             super::probe_with_mode(encoder, super::VulkanSubmissionMode::Synchronous)
                 .await
@@ -567,24 +590,24 @@ mod tests {
         }
         let mut settings = crate::project::RenderSettings::default();
         assert_eq!(
-            super::super::hwaccel::get_render_encoder(&settings).await,
-            "hevc_vulkan",
-            "the default Windows export must select the probed GPU backend"
+            super::super::hwaccel::get_render_pipeline(&settings).await,
+            super::super::hwaccel::RenderPipeline::gpu(ENCODERS[1]),
+            "the default export must select the probed GPU backend"
         );
         assert_eq!(
-            super::super::hwaccel::material_overlay_encoder(Some(&settings)).await,
-            "hevc_vulkan"
+            super::super::hwaccel::material_overlay_pipeline(Some(&settings)).await,
+            super::super::hwaccel::RenderPipeline::gpu(ENCODERS[1])
         );
         settings.codec = crate::project::VideoCodec::H264;
         assert_eq!(
-            super::super::hwaccel::get_render_encoder(&settings).await,
-            "h264_vulkan"
+            super::super::hwaccel::get_render_pipeline(&settings).await,
+            super::super::hwaccel::RenderPipeline::gpu(ENCODERS[0])
         );
         let ordinary = super::super::hwaccel::material_encoder(Some(&settings)).await;
         assert!(!super::super::hwaccel::is_vulkan_encoder(ordinary));
         settings.priority = crate::project::EncodingPriority::Quality;
-        let quality = super::super::hwaccel::get_render_encoder(&settings).await;
-        assert!(!super::super::hwaccel::is_vulkan_encoder(quality));
+        let quality = super::super::hwaccel::get_render_pipeline(&settings).await;
+        assert!(!quality.uses_gpu());
     }
 
     #[tokio::test]
@@ -625,9 +648,9 @@ mod tests {
         }
         assert!(moving_pair.2 > 2.0);
 
-        for encoder in ["h264_vulkan", "hevc_vulkan"] {
+        for encoder in ENCODERS {
             let settings = crate::project::RenderSettings {
-                codec: if encoder == "h264_vulkan" {
+                codec: if encoder.starts_with("h264_") {
                     crate::project::VideoCodec::H264
                 } else {
                     crate::project::VideoCodec::Hevc
@@ -646,6 +669,7 @@ mod tests {
                 assert_eq!(options.bit_rate, Some(10_000_000));
                 assert_eq!(options.gop, Some(120));
                 assert_eq!(options.options.get("async_depth").unwrap(), "3");
+                options.frame_processor = true;
                 options.frame_rate = FrameRatePolicy::Constant { num: 60, den: 1 };
                 plan.routes[0].mode = StreamMode::Video(options);
                 plan
@@ -826,7 +850,7 @@ mod tests {
             }
         }
         assert!(moving_pair.2 > 2.0, "source samples must show real motion");
-        for encoder in ["h264_vulkan", "hevc_vulkan"] {
+        for encoder in ENCODERS {
             let output = directory.path().join(format!("{encoder}.mp4"));
             let ass = super::super::subtitle_native::srt_to_ass(
                 "1\n00:00:00,000 --> 00:00:00,800\nGPU\n",
@@ -901,14 +925,27 @@ mod tests {
         }
     }
 
-    fn moving_plan(source: &Path, output: &Path, encoder: &str) -> ffmpeg_utils::MediaPlan {
+    fn moving_plan(source: &Path, output: &Path, encoder: &'static str) -> ffmpeg_utils::MediaPlan {
+        let settings = crate::project::RenderSettings {
+            codec: if encoder.starts_with("hevc_") {
+                crate::project::VideoCodec::Hevc
+            } else {
+                crate::project::VideoCodec::H264
+            },
+            ..Default::default()
+        };
         let mut options =
-            super::super::hwaccel::native_video_options(encoder, None, None, None).unwrap();
+            super::super::hwaccel::native_video_options(encoder, None, None, Some(&settings))
+                .unwrap();
+        options.frame_processor = true;
         options.frame_rate = FrameRatePolicy::Constant { num: 60, den: 1 };
         let mut plan = super::super::danmu::overlay_media_plan(
             source.to_path_buf(),
             output.to_path_buf(),
-            super::super::danmu::overlay_graph(60.0, encoder),
+            super::super::danmu::overlay_graph(
+                60.0,
+                super::super::hwaccel::RenderPipeline::gpu(encoder),
+            ),
             "outv",
             options,
         );

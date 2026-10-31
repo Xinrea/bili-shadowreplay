@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 #[path = "../../../../src-tauri/src/ffmpeg/hwaccel.rs"]
 pub mod hwaccel;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 #[path = "../../../../src-tauri/src/ffmpeg/native_gpu.rs"]
 pub mod native_gpu;
 #[path = "../../../../src-tauri/src/ffmpeg/native_overlay.rs"]

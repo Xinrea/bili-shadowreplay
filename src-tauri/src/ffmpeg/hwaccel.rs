@@ -72,13 +72,51 @@ pub(super) fn is_vulkan_encoder(encoder: &str) -> bool {
     matches!(encoder, "h264_vulkan" | "hevc_vulkan")
 }
 
-/// Part of segment identity: CPU RGB composition and GPU NV12 composition
-/// have distinct colour-conversion and frame ownership policies.
-pub(super) fn render_backend_identity(encoder: &str) -> &'static str {
-    if is_vulkan_encoder(encoder) {
-        "vulkan-nv12-overlay-v1"
-    } else {
-        "cpu-bgra-overlay-v1"
+/// Rendering and encoding are selected independently. A hardware encoder can
+/// consume either CPU-composited frames or frames supplied by a GPU adapter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenderBackend {
+    Cpu,
+    Vulkan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RenderPipeline {
+    pub encoder: &'static str,
+    pub renderer: RenderBackend,
+}
+impl RenderPipeline {
+    pub fn cpu(encoder: &'static str) -> Self {
+        Self {
+            encoder,
+            renderer: RenderBackend::Cpu,
+        }
+    }
+    pub fn gpu(encoder: &'static str) -> Self {
+        Self {
+            encoder,
+            renderer: RenderBackend::Vulkan,
+        }
+    }
+    pub fn uses_gpu(self) -> bool {
+        self.renderer == RenderBackend::Vulkan
+    }
+    pub fn cache_identity(self) -> &'static str {
+        if self.uses_gpu() {
+            "vulkan-nv12-overlay-v2"
+        } else {
+            "cpu-bgra-overlay-v1"
+        }
+    }
+    pub fn video_options(
+        self,
+        filter: Option<&str>,
+        bitrate: Option<NonZeroU32>,
+        settings: Option<&crate::project::RenderSettings>,
+    ) -> Result<ffmpeg_utils::VideoEncodeOptions, String> {
+        let mut options = native_video_options(self.encoder, filter, bitrate, settings)?;
+        options.frame_processor = self.uses_gpu();
+        Ok(options)
     }
 }
 
@@ -230,20 +268,23 @@ pub fn project_quality_args(
 /// Choose and probe an encoder for project/overlay exports, whose native plans
 /// can bind the Vulkan frame processor. Ordinary conversion callers use
 /// `material_encoder` and retain their existing composition path.
-pub async fn get_render_encoder(settings: &crate::project::RenderSettings) -> &'static str {
+pub async fn get_render_pipeline(settings: &crate::project::RenderSettings) -> RenderPipeline {
     use crate::project::{EncodingPriority, VideoCodec};
-    static CACHES: [tokio::sync::OnceCell<&'static str>; 4] =
+    static CACHES: [tokio::sync::OnceCell<RenderPipeline>; 4] =
         [const { tokio::sync::OnceCell::const_new() }; 4];
     let hevc = settings.codec == VideoCodec::Hevc;
     let index = usize::from(hevc) * 2 + usize::from(settings.priority == EncodingPriority::Quality);
-    CACHES[index]
+    *CACHES[index]
         .get_or_init(|| async {
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
             {
                 if settings.priority == EncodingPriority::Speed {
+                    #[cfg(target_os = "windows")]
                     let candidate = if hevc { "hevc_vulkan" } else { "h264_vulkan" };
+                    #[cfg(target_os = "macos")]
+                    let candidate = if hevc { "hevc_videotoolbox" } else { "h264_videotoolbox" };
                     if super::native_gpu::probe_encoder(candidate).await {
-                        return candidate;
+                        return RenderPipeline::gpu(candidate);
                     }
                 } else {
                     log::info!(
@@ -251,7 +292,7 @@ pub async fn get_render_encoder(settings: &crate::project::RenderSettings) -> &'
                     );
                 }
             }
-            get_cpu_render_encoder(settings).await
+            RenderPipeline::cpu(get_cpu_render_encoder(settings).await)
         })
         .await
 }
@@ -295,12 +336,12 @@ pub async fn material_encoder(settings: Option<&crate::project::RenderSettings>)
     }
 }
 
-pub(super) async fn material_overlay_encoder(
+pub(super) async fn material_overlay_pipeline(
     settings: Option<&crate::project::RenderSettings>,
-) -> &'static str {
+) -> RenderPipeline {
     match settings {
-        Some(settings) => get_render_encoder(settings).await,
-        None => get_x264_encoder().await,
+        Some(settings) => get_render_pipeline(settings).await,
+        None => RenderPipeline::cpu(get_x264_encoder().await),
     }
 }
 
@@ -325,7 +366,7 @@ pub fn native_video_options(
     let mut options = ffmpeg_utils::VideoEncodeOptions {
         encoder: encoder.to_owned(),
         filter: filter.map(str::to_owned),
-        frame_processor: is_vulkan_encoder(encoder),
+        frame_processor: false,
         ..Default::default()
     };
     for pair in args.as_chunks::<2>().0 {
@@ -532,8 +573,9 @@ mod tests {
     #[test]
     fn vulkan_speed_profile_preserves_export_limits_and_rejects_quality_downgrade() {
         let mut settings = crate::project::RenderSettings::default();
-        let options =
-            super::native_video_options("hevc_vulkan", None, None, Some(&settings)).unwrap();
+        let options = super::RenderPipeline::gpu("hevc_vulkan")
+            .video_options(None, None, Some(&settings))
+            .unwrap();
         assert!(options.frame_processor);
         assert_eq!(options.bit_rate, Some(10_000_000));
         assert_eq!(options.gop, Some(120));
@@ -552,6 +594,29 @@ mod tests {
                 Some("3")
             );
         }
+    }
+
+    #[test]
+    fn rendering_is_independent_of_the_encoder_and_changes_cache_identity() {
+        let cpu = super::RenderPipeline::cpu("hevc_videotoolbox");
+        let gpu = super::RenderPipeline::gpu("hevc_videotoolbox");
+        let settings = crate::project::RenderSettings::default();
+        assert!(
+            !cpu.video_options(None, None, Some(&settings))
+                .unwrap()
+                .frame_processor
+        );
+        assert!(
+            gpu.video_options(None, None, Some(&settings))
+                .unwrap()
+                .frame_processor
+        );
+        assert_ne!(cpu.cache_identity(), gpu.cache_identity());
+        assert!(
+            !super::native_video_options("hevc_vulkan", None, None, Some(&settings))
+                .unwrap()
+                .frame_processor
+        );
     }
 
     #[test]

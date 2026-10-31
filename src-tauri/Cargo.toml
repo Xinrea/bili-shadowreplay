@@ -85,6 +85,8 @@ sherpa-onnx = { version = "1.13.4", default-features = false, features = ["share
 sherpa-onnx = "1.13.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+ffmpeg_utils = { path = "crates/ffmpeg_utils", features = ["vulkan-video"] }
+native-overlay = { path = "crates/native-overlay", features = ["vulkan"] }
 libc = "0.2"
 
 [features]

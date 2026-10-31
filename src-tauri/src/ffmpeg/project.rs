@@ -863,7 +863,7 @@ struct Render<'a> {
     directory: &'a Path,
     resource: Option<ffmpeg_utils::MediaResourceLease>,
     fps: f64,
-    encoder: &'static str,
+    pipeline: hwaccel::RenderPipeline,
     /// What each input file is now, by path.
     files: HashMap<PathBuf, String>,
     /// A digest of each overlay's picture, by its index.
@@ -886,8 +886,8 @@ impl Render<'_> {
         let start = segment.start(fps);
         let mut key = format!(
             "{RENDER_VERSION} {fps} {} {}\n{} {}\n",
-            self.encoder,
-            hwaccel::project_quality_args(self.encoder, &job.render_settings).join(" "),
+            self.pipeline.encoder,
+            hwaccel::project_quality_args(self.pipeline.encoder, &job.render_settings).join(" "),
             segment.frames,
             segment.samples,
         );
@@ -901,7 +901,7 @@ impl Render<'_> {
             "native {} {} {}",
             job.generated_subtitle,
             ::native_overlay::RENDERER_VERSION,
-            hwaccel::render_backend_identity(self.encoder),
+            self.pipeline.cache_identity(),
         );
         for part in &segment.parts {
             let clip = &job.clips[part.clip];
@@ -1082,7 +1082,7 @@ impl Render<'_> {
             }
         }
         let native = self.native_overlay(segment);
-        let gpu = hwaccel::is_vulkan_encoder(self.encoder);
+        let gpu = self.pipeline.uses_gpu();
         if !gpu && native.is_some() {
             filter.push_str(&native_overlay_filter(
                 &current,
@@ -1094,7 +1094,7 @@ impl Render<'_> {
         let format = if gpu {
             "scale=out_color_matrix=bt709:out_range=tv,format=nv12"
         } else {
-            hwaccel::output_format_filter(self.encoder)
+            hwaccel::output_format_filter(self.pipeline.encoder)
         };
         // Exactly as many frames as planned: `overlay` goes on as long as any
         // of its inputs does, and a file ending well before its clip has no
@@ -1158,7 +1158,8 @@ impl Render<'_> {
             inputs.len() + usize::from(!gpu && native.is_some()),
         );
         let mut video_options =
-            hwaccel::native_video_options(self.encoder, None, None, Some(&job.render_settings))?;
+            self.pipeline
+                .video_options(None, None, Some(&job.render_settings))?;
         // The composition already ends with the selected format/hardware upload.
         video_options.filter = None;
         video_options.frame_rate = ffmpeg_utils::FrameRatePolicy::Constant {
@@ -1529,8 +1530,8 @@ pub async fn render_project_with_resources<R: ProgressReporterTrait>(
     job: ProjectRender<'_>,
     resources: Vec<ffmpeg_utils::MediaResourceLease>,
 ) -> Result<(), String> {
-    let encoder = hwaccel::get_render_encoder(&job.render_settings).await;
-    render_with_encoder_and_resources(reporter, &job, SEGMENT_LIMITS, encoder, resources).await?;
+    let pipeline = hwaccel::get_render_pipeline(&job.render_settings).await;
+    render_with_pipeline_and_resources(reporter, &job, SEGMENT_LIMITS, pipeline, resources).await?;
     Ok(())
 }
 
@@ -1547,8 +1548,8 @@ async fn render_in_segments<R: ProgressReporterTrait>(
     job: &ProjectRender<'_>,
     limits: SegmentLimits,
 ) -> Result<RenderStats, String> {
-    let encoder = hwaccel::get_render_encoder(&job.render_settings).await;
-    render_with_encoder(reporter, job, limits, encoder).await
+    let pipeline = hwaccel::get_render_pipeline(&job.render_settings).await;
+    render_with_pipeline_and_resources(reporter, job, limits, pipeline, Vec::new()).await
 }
 
 #[cfg(test)]
@@ -1558,22 +1559,22 @@ async fn render_with_encoder<R: ProgressReporterTrait>(
     limits: SegmentLimits,
     encoder: &'static str,
 ) -> Result<RenderStats, String> {
-    render_with_encoder_and_resources(reporter, job, limits, encoder, Vec::new()).await
+    let pipeline = hwaccel::RenderPipeline::cpu(encoder);
+    render_with_pipeline_and_resources(reporter, job, limits, pipeline, Vec::new()).await
 }
 
-async fn render_with_encoder_and_resources<R: ProgressReporterTrait>(
+async fn render_with_pipeline_and_resources<R: ProgressReporterTrait>(
     reporter: &R,
     job: &ProjectRender<'_>,
     limits: SegmentLimits,
-    encoder: &'static str,
+    mut pipeline: hwaccel::RenderPipeline,
     resources: Vec<ffmpeg_utils::MediaResourceLease>,
 ) -> Result<RenderStats, String> {
     job.render_settings.validate()?;
     if job.clips.is_empty() {
         return Err("时间轴上没有片段".to_string());
     }
-    let mut encoder = encoder;
-    if hwaccel::is_vulkan_encoder(encoder) {
+    if pipeline.uses_gpu() {
         let mut sources = std::collections::HashSet::new();
         sources.extend(
             job.clips
@@ -1597,7 +1598,9 @@ async fn render_with_encoder_and_resources<R: ProgressReporterTrait>(
                 log::info!(
                     "Project source colour metadata selects the existing CPU composition backend"
                 );
-                encoder = hwaccel::get_cpu_render_encoder(&job.render_settings).await;
+                pipeline = hwaccel::RenderPipeline::cpu(
+                    hwaccel::get_cpu_render_encoder(&job.render_settings).await,
+                );
                 break;
             }
         }
@@ -1725,7 +1728,7 @@ async fn render_with_encoder_and_resources<R: ProgressReporterTrait>(
         directory: &directory,
         resource: Some(workspace.clone()),
         fps,
-        encoder,
+        pipeline,
         files,
         pictures,
         subtitles,
@@ -2418,7 +2421,7 @@ mod tests {
             directory: Path::new("."),
             resource: None,
             fps: 30.0,
-            encoder: "libx264",
+            pipeline: hwaccel::RenderPipeline::cpu("libx264"),
             files: HashMap::new(),
             pictures: vec![None; job.overlays.len()],
             subtitles: Some(Subtitles {
@@ -2621,20 +2624,25 @@ mod tests {
 
     #[tokio::test]
     async fn native_generated_segments_keep_exact_pcm_cache_and_previous_export_without_cli() {
-        assert_generated_segments("libx264").await;
+        assert_generated_segments(hwaccel::RenderPipeline::cpu("libx264")).await;
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     #[tokio::test]
     #[ignore = "Requires a Vulkan Video GPU and the FFmpeg 9 SDK"]
     async fn native_gpu_project_segments_keep_audio_cache_and_previous_export() {
-        for encoder in ["h264_vulkan", "hevc_vulkan"] {
+        #[cfg(target_os = "windows")]
+        let encoders = ["h264_vulkan", "hevc_vulkan"];
+        #[cfg(target_os = "macos")]
+        let encoders = ["h264_videotoolbox", "hevc_videotoolbox"];
+        for encoder in encoders {
             eprintln!("native_gpu_project backend=vulkan encoder={encoder}");
-            assert_generated_segments(encoder).await;
+            assert_generated_segments(hwaccel::RenderPipeline::gpu(encoder)).await;
         }
     }
 
-    async fn assert_generated_segments(encoder: &'static str) {
+    async fn assert_generated_segments(pipeline: hwaccel::RenderPipeline) {
+        let encoder = pipeline.encoder;
         let directory = tempfile::tempdir().unwrap();
         let cache = directory.path().join("cache [项目]'s");
         let output = directory.path().join("export.mp4");
@@ -2648,7 +2656,7 @@ mod tests {
             danmus: Vec::new(),
             danmu_options: Danmu2AssOptions::default(),
             render_settings: crate::project::RenderSettings {
-                codec: if encoder == "hevc_vulkan" {
+                codec: if encoder.starts_with("hevc_") {
                     crate::project::VideoCodec::Hevc
                 } else {
                     crate::project::VideoCodec::H264
@@ -2662,9 +2670,15 @@ mod tests {
             seconds: 0.1,
             parts: 16,
         };
-        let first = render_with_encoder(&NoopReporter, &project, limits, encoder)
-            .await
-            .unwrap();
+        let first = render_with_pipeline_and_resources(
+            &NoopReporter,
+            &project,
+            limits,
+            pipeline,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             first,
             RenderStats {
@@ -2676,7 +2690,7 @@ mod tests {
         assert_eq!((metadata.width, metadata.height), (1920, 1080));
         assert_eq!(
             metadata.video_codec,
-            if encoder == "hevc_vulkan" {
+            if encoder.starts_with("hevc_") {
                 "hevc"
             } else {
                 "h264"
@@ -2700,9 +2714,15 @@ mod tests {
             }
         }
         assert_eq!(wavs, 2);
-        let again = render_with_encoder(&NoopReporter, &project, limits, encoder)
-            .await
-            .unwrap();
+        let again = render_with_pipeline_and_resources(
+            &NoopReporter,
+            &project,
+            limits,
+            pipeline,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             again,
             RenderStats {
@@ -2714,11 +2734,15 @@ mod tests {
         let mut missing = sound(0.0, 0.2, 0.0, false);
         missing.path = directory.path().join("missing.wav");
         project.sounds.push(missing);
-        assert!(
-            render_with_encoder(&NoopReporter, &project, limits, encoder)
-                .await
-                .is_err()
-        );
+        assert!(render_with_pipeline_and_resources(
+            &NoopReporter,
+            &project,
+            limits,
+            pipeline,
+            Vec::new()
+        )
+        .await
+        .is_err());
         assert_eq!(std::fs::read(&output).unwrap(), previous);
         assert!(std::fs::read_dir(&cache)
             .unwrap()
@@ -2727,20 +2751,24 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_native_project_cleans_worker_assets_and_keeps_previous_export_without_cli() {
-        assert_cancelled_native_project("libx264").await;
+        assert_cancelled_native_project(hwaccel::RenderPipeline::cpu("libx264")).await;
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     #[tokio::test]
     #[ignore = "Requires a Vulkan Video GPU and the FFmpeg 9 SDK"]
     async fn native_gpu_project_cancellation_keeps_previous_export_and_releases_assets() {
-        for encoder in ["h264_vulkan", "hevc_vulkan"] {
+        #[cfg(target_os = "windows")]
+        let encoders = ["h264_vulkan", "hevc_vulkan"];
+        #[cfg(target_os = "macos")]
+        let encoders = ["h264_videotoolbox", "hevc_videotoolbox"];
+        for encoder in encoders {
             eprintln!("native_gpu_cancel backend=vulkan encoder={encoder}");
-            assert_cancelled_native_project(encoder).await;
+            assert_cancelled_native_project(hwaccel::RenderPipeline::gpu(encoder)).await;
         }
     }
 
-    async fn assert_cancelled_native_project(encoder: &'static str) {
+    async fn assert_cancelled_native_project(pipeline: hwaccel::RenderPipeline) {
         #[derive(Clone)]
         struct PauseOnProgress(Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>);
         #[async_trait]
@@ -2778,11 +2806,12 @@ mod tests {
                 output: &render_output,
                 segment_cache: Some(&render_cache),
             };
-            render_with_encoder(
+            render_with_pipeline_and_resources(
                 &PauseOnProgress(Arc::new(Mutex::new(Some(ready)))),
                 &project,
                 SEGMENT_LIMITS,
-                encoder,
+                pipeline,
+                Vec::new(),
             )
             .await
         });
@@ -2859,7 +2888,7 @@ mod tests {
             directory: Path::new("."),
             resource: None,
             fps,
-            encoder: "libx264",
+            pipeline: hwaccel::RenderPipeline::cpu("libx264"),
             files: HashMap::new(),
             pictures: vec![Some("picture".to_string()); job.overlays.len()],
             subtitles: Some(Subtitles {

@@ -162,6 +162,7 @@ dependencies = [
 name = "ffmpeg_utils"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "ffmpeg-next",
  "ffmpeg-sys-next",
  "flate2",

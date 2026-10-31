@@ -241,8 +241,8 @@ async fn prepare_images(danmus: &[DanmuEntry], directory: &Path) -> HashMap<Url,
         .await
 }
 
-pub(super) fn overlay_graph(fps: f64, encoder: &str) -> String {
-    if hwaccel::is_vulkan_encoder(encoder) {
+pub(super) fn overlay_graph(fps: f64, pipeline: hwaccel::RenderPipeline) -> String {
+    if pipeline.uses_gpu() {
         return format!(
             "[0:v]{},fps={fps},scale=out_color_matrix=bt709:out_range=tv,format=nv12[outv]\n",
             hwaccel::H264_SCALE_PAD_FILTER,
@@ -257,7 +257,7 @@ pub(super) fn overlay_graph(fps: f64, encoder: &str) -> String {
     );
     // Keep the premultiplied colours in RGB until they have been composited;
     // converting the transparent layer to subsampled YUV first damages edges.
-    let format = hwaccel::output_format_filter(encoder);
+    let format = hwaccel::output_format_filter(pipeline.encoder);
     filter.push_str(&format!("[composited]{format}[outv]\n"));
     filter
 }
@@ -411,15 +411,15 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
         .await
         .map_err(|error| format!("Failed to inspect source video: {error}"))?;
     let fps = danmu_output_fps(metadata.fps);
-    let mut encoder = hwaccel::material_overlay_encoder(settings).await;
-    if hwaccel::is_vulkan_encoder(encoder) && !ffmpeg_utils::video_is_sdr_bt709(file).await? {
+    let mut pipeline = hwaccel::material_overlay_pipeline(settings).await;
+    if pipeline.uses_gpu() && !ffmpeg_utils::video_is_sdr_bt709(file).await? {
         log::info!("Source colour metadata selects the existing CPU composition backend");
-        encoder = match settings {
+        pipeline = hwaccel::RenderPipeline::cpu(match settings {
             Some(settings) => hwaccel::get_cpu_render_encoder(settings).await,
             None => hwaccel::get_x264_encoder().await,
-        };
+        });
     }
-    let graph = overlay_graph(fps, encoder);
+    let graph = overlay_graph(fps, pipeline);
     let spec = OverlaySpec {
         input: native_overlay::RenderInput {
             documents: vec![native_overlay::AssSource {
@@ -434,7 +434,7 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
         start: 0.0,
         duration: probe_overlay_duration(file, metadata.duration).await?,
     };
-    let mut video = hwaccel::native_video_options(encoder, None, bitrate, settings)?;
+    let mut video = pipeline.video_options(None, bitrate, settings)?;
     // The global graph already contains the encoder's format/upload suffix.
     video.filter = None;
     let (num, den) = ffmpeg_utils::parse_frame_rate(fps).map_err(|error| error.to_string())?;
@@ -544,19 +544,29 @@ mod tests {
         assert_danmu_export(None).await;
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     #[tokio::test]
     #[ignore = "Requires a Vulkan Video GPU and the FFmpeg 9 SDK"]
     async fn native_gpu_danmu_export_keeps_real_video_audio_alpha_and_previous_output() {
+        #[cfg(target_os = "windows")]
+        let encoders = ["h264_vulkan", "hevc_vulkan"];
+        #[cfg(target_os = "macos")]
+        let encoders = ["h264_videotoolbox", "hevc_videotoolbox"];
         for (codec, expected) in [
-            (crate::project::VideoCodec::H264, "h264_vulkan"),
-            (crate::project::VideoCodec::Hevc, "hevc_vulkan"),
-        ] {
+            crate::project::VideoCodec::H264,
+            crate::project::VideoCodec::Hevc,
+        ]
+        .into_iter()
+        .zip(encoders)
+        {
             let settings = crate::project::RenderSettings {
                 codec,
                 ..Default::default()
             };
-            assert_eq!(hwaccel::get_render_encoder(&settings).await, expected);
+            assert_eq!(
+                hwaccel::get_render_pipeline(&settings).await,
+                hwaccel::RenderPipeline::gpu(expected)
+            );
             eprintln!("native_gpu_danmu_export backend=vulkan encoder={expected}");
             assert_danmu_export(Some(settings)).await;
         }
@@ -821,7 +831,7 @@ mod tests {
 
     #[test]
     fn text_only_and_vaapi_graphs_have_explicit_output_formats() {
-        let text = overlay_graph(60.0, "libx264");
+        let text = overlay_graph(60.0, hwaccel::RenderPipeline::cpu("libx264"));
         assert!(text.contains("fps=60,format=bgra[base]"));
         assert!(text.contains("[base][1:v]overlay=shortest=1:format=rgb:alpha=premultiplied"));
         assert!(!text.contains("ass="));
@@ -830,11 +840,12 @@ mod tests {
             "do not rebase video without audio"
         );
         assert!(text.contains("format=yuv420p[outv]"));
-        let hardware = overlay_graph(120.0, "hevc_vaapi");
+        let hardware = overlay_graph(120.0, hwaccel::RenderPipeline::cpu("hevc_vaapi"));
         assert!(hardware.contains("fps=120,format=bgra[base]"));
         assert!(hardware.ends_with("format=nv12,hwupload[outv]\n"));
         for encoder in ["h264_videotoolbox", "hevc_nvenc"] {
-            assert!(overlay_graph(60.0, encoder).ends_with("format=nv12[outv]\n"));
+            assert!(overlay_graph(60.0, hwaccel::RenderPipeline::cpu(encoder))
+                .ends_with("format=nv12[outv]\n"));
         }
     }
 

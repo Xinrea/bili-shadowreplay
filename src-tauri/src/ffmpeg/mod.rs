@@ -7,7 +7,7 @@ mod danmu;
 pub mod general;
 pub mod hwaccel;
 pub mod metadata;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 mod native_gpu;
 pub mod native_overlay;
 pub mod playlist;

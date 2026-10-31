@@ -33,6 +33,8 @@ struct InFlightFrame {
 /// and retains both on that same worker thread. Asynchronous mode bounds the
 /// retained frame transactions to three without exposing GPU pixels to the CPU.
 pub struct VulkanCompositor {
+    #[cfg(target_os = "macos")]
+    pub(super) encoder_bridge_created: bool,
     // The graph must release its frame references before the pools/device.
     graph: filter::Graph,
     output_pool: BufferRef,
@@ -120,6 +122,8 @@ impl VulkanCompositor {
             BufferRef(retained)
         };
         let compositor = Self {
+            #[cfg(target_os = "macos")]
+            encoder_bridge_created: false,
             graph,
             output_pool,
             pool,

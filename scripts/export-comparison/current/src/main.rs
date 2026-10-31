@@ -73,9 +73,9 @@ fn scene(value: &Value, root: &Path) -> Result<RenderInput, String> {
 
 // Exact graph builder from src-tauri/src/ffmpeg/danmu.rs. Kept here to avoid
 // linking unrelated recorder/network/download dependencies into this runner.
-fn overlay_graph(fps: f64, encoder: &str) -> String {
+fn overlay_graph(fps: f64, pipeline: ffmpeg::hwaccel::RenderPipeline) -> String {
     use ffmpeg::hwaccel;
-    if ffmpeg::is_vulkan_encoder(encoder) {
+    if pipeline.uses_gpu() {
         return format!(
             "[0:v]{},fps={fps},scale=out_color_matrix=bt709:out_range=tv,format=nv12[outv]\n",
             hwaccel::H264_SCALE_PAD_FILTER,
@@ -86,7 +86,7 @@ fn overlay_graph(fps: f64, encoder: &str) -> String {
          [base][1:v]overlay=shortest=1:format=rgb:alpha=premultiplied[composited];\n",
         hwaccel::H264_SCALE_PAD_FILTER,
     );
-    let format = hwaccel::output_format_filter(encoder);
+    let format = hwaccel::output_format_filter(pipeline.encoder);
     filter.push_str(&format!("[composited]{format}[outv]\n"));
     filter
 }
@@ -186,17 +186,17 @@ async fn run(scenario_path: &Path, output: &Path) -> Result<Value, String> {
         return Err("Scenario duration/FPS does not match the complete source video".into());
     }
     let probe = Instant::now();
-    let mut encoder = ffmpeg::hwaccel::get_render_encoder(&settings).await;
-    if ffmpeg::is_vulkan_encoder(encoder) && !ffmpeg_utils::video_is_sdr_bt709(&source).await? {
-        encoder = ffmpeg::get_cpu_render_encoder(&settings).await;
+    let mut pipeline = ffmpeg::hwaccel::get_render_pipeline(&settings).await;
+    if pipeline.uses_gpu() && !ffmpeg_utils::video_is_sdr_bt709(&source).await? {
+        pipeline = ffmpeg::hwaccel::RenderPipeline::cpu(ffmpeg::get_cpu_render_encoder(&settings).await);
     }
     let probe_ms = probe.elapsed().as_secs_f64() * 1000.0;
-    let graph = overlay_graph(fps, encoder);
-    let mut video = ffmpeg::hwaccel::native_video_options(encoder, None, None, Some(&settings))?;
+    let graph = overlay_graph(fps, pipeline);
+    let mut video = pipeline.video_options(None, None, Some(&settings))?;
     video.filter = None;
     let (num, den) = ffmpeg_utils::parse_frame_rate(fps).map_err(|error| error.to_string())?;
     video.frame_rate = FrameRatePolicy::Constant { num, den };
-    let profile = json!({"encoder": encoder, "gop": video.gop,
+    let profile = json!({"encoder": pipeline.encoder, "renderer": pipeline.cache_identity(), "gop": video.gop,
         "bit_rate": video.bit_rate, "options": video.options, "frame_processor": video.frame_processor});
     eprintln!("current_export_profile={profile}");
     let media = overlay_media_plan(source.clone(), output.clone(), graph.clone(), "outv", video);
@@ -277,6 +277,20 @@ fn render_reference(scenario_path: &Path, time: f64, output: &Path) -> Result<Va
 
 #[tokio::main]
 async fn main() {
+    struct Logger;
+    impl log::Log for Logger {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.level() <= log::Level::Info
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            if self.enabled(record.metadata()) { eprintln!("{}: {}", record.level(), record.args()); }
+        }
+        fn flush(&self) {}
+    }
+    if std::env::var_os("RUST_LOG").is_some() {
+        let _ = log::set_logger(&Logger);
+        log::set_max_level(log::LevelFilter::Info);
+    }
     let mut scenario = None;
     let mut output = None;
     let mut reference = false;

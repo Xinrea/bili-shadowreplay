@@ -7,8 +7,63 @@
 
 mod compositor;
 mod sync;
+#[cfg(target_os = "macos")]
+mod macos_runtime;
+#[cfg(target_os = "macos")]
+mod videotoolbox;
+#[cfg(target_os = "macos")]
+pub use videotoolbox::VideoToolboxFrameBridge;
 
 pub use compositor::{VulkanCompositor, VulkanCompositorStats};
+
+/// Platform-specific frame handoff, independent of scene drawing and MediaPlan
+/// scheduling. Unsupported combinations fail before the first output frame.
+pub enum HardwareEncoderFrames {
+    Vulkan(frame::Video),
+    #[cfg(target_os = "macos")]
+    VideoToolbox(VideoToolboxFrameBridge),
+}
+
+impl HardwareEncoderFrames {
+    pub fn new(compositor: &mut VulkanCompositor, encoder: &str) -> Result<Self, String> {
+        match encoder {
+            "h264_vulkan" | "hevc_vulkan" => Ok(Self::Vulkan(compositor.output_template()?)),
+            #[cfg(target_os = "macos")]
+            "h264_videotoolbox" | "hevc_videotoolbox" => {
+                VideoToolboxFrameBridge::new(compositor).map(Self::VideoToolbox)
+            }
+            _ => Err(format!("No GPU frame adapter for {encoder}")),
+        }
+    }
+
+    pub fn output_template(&self) -> Result<frame::Video, String> {
+        match self {
+            Self::Vulkan(template) => {
+                let mut result = frame::Video::empty();
+                unsafe {
+                    check(ffi::av_frame_copy_props(result.as_mut_ptr(), template.as_ptr()), "Copy Vulkan template properties")?;
+                    let raw = &mut *result.as_mut_ptr();
+                    raw.format = ffi::AVPixelFormat::AV_PIX_FMT_VULKAN as i32;
+                    raw.width = template.width() as i32;
+                    raw.height = template.height() as i32;
+                    raw.hw_frames_ctx = ffi::av_buffer_ref((*template.as_ptr()).hw_frames_ctx);
+                    if raw.hw_frames_ctx.is_null() { return Err("Retain Vulkan template pool".into()); }
+                }
+                Ok(result)
+            }
+            #[cfg(target_os = "macos")]
+            Self::VideoToolbox(bridge) => bridge.output_template(),
+        }
+    }
+
+    pub fn convert(&mut self, frames: Vec<frame::Video>) -> Result<Vec<frame::Video>, String> {
+        match self {
+            Self::Vulkan(_) => Ok(frames),
+            #[cfg(target_os = "macos")]
+            Self::VideoToolbox(bridge) => frames.into_iter().map(|frame| bridge.convert(frame)).collect(),
+        }
+    }
+}
 
 /// CPU completion waits are retained as a validation baseline. Asynchronous
 /// mode permits up to three complete GPU frame transactions in flight.
@@ -238,11 +293,20 @@ impl VulkanDevice {
         Self::new_with_mode(selector, VulkanSubmissionMode::Synchronous)
     }
     fn new_with_mode(selector: &str, mode: VulkanSubmissionMode) -> Result<Self, String> {
+        #[cfg(target_os = "macos")]
+        macos_runtime::prepare()?;
         let selector = CString::new(selector).map_err(|e| e.to_string())?;
         let mut raw = ptr::null_mut();
         let mut opts = ptr::null_mut();
         unsafe {
             ffi::av_dict_set(&mut opts, c"limit_queues".as_ptr(), c"1".as_ptr(), 0);
+            #[cfg(target_os = "macos")]
+            ffi::av_dict_set(
+                &mut opts,
+                c"device_extensions".as_ptr(),
+                c"VK_EXT_metal_objects".as_ptr(),
+                0,
+            );
             // GPU libraries and diagnostic capture layers can use debug-label
             // entry points on the shared device. Request the instance
             // extension so those markers are legal through every layer;

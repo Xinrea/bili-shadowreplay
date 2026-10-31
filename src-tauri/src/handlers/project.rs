@@ -1097,8 +1097,8 @@ async fn upload_render(
     source: ExportSource<'_>,
     directory: &Path,
 ) -> Result<(PathBuf, Option<oneshot::Receiver<Result<(), String>>>), String> {
-    let encoder = hwaccel::get_render_encoder(&source.timeline.render_settings).await;
-    let hash = source.render_hash(encoder);
+    let pipeline = hwaccel::get_render_pipeline(&source.timeline.render_settings).await;
+    let hash = source.render_hash(pipeline);
     let target = directory.join(format!("{UPLOAD_RENDER_PREFIX}{hash}.mp4"));
     if target.is_file() {
         return Ok((target, None));
@@ -1230,9 +1230,11 @@ struct ExportSource<'a> {
 
 impl ExportSource<'_> {
     /// Identifies what rendering this source contains.
-    fn render_hash(&self, encoder: &str) -> String {
+    fn render_hash(&self, pipeline: hwaccel::RenderPipeline) -> String {
         let mut extra = format!(
-            "encoder:{encoder}\nnative:{}:{}\n",
+            "encoder:{}\nrenderer:{}\nnative:{}:{}\n",
+            pipeline.encoder,
+            pipeline.cache_identity(),
             self.generated_subtitle,
             native_overlay::RENDERER_VERSION
         );
@@ -1242,7 +1244,7 @@ impl ExportSource<'_> {
         // GOP length) must also invalidate the complete video prepared for upload.
         extra.push_str(
             &serde_json::to_string(&hwaccel::project_quality_args(
-                encoder,
+                pipeline.encoder,
                 &self.timeline.render_settings,
             ))
             .unwrap(),
@@ -2329,33 +2331,48 @@ mod tests {
             x,
             y: 0.0,
         };
-        let drawn = source(vec![image("data:image/png;base64,AAAA", 10.0)]).render_hash("libx265");
+        let drawn = source(vec![image("data:image/png;base64,AAAA", 10.0)])
+            .render_hash(hwaccel::RenderPipeline::cpu("libx265"));
         assert_eq!(
             drawn,
-            source(vec![image("data:image/png;base64,AAAA", 10.0)]).render_hash("libx265")
+            source(vec![image("data:image/png;base64,AAAA", 10.0)])
+                .render_hash(hwaccel::RenderPipeline::cpu("libx265"))
         );
         assert_ne!(
             drawn,
-            source(vec![image("data:image/png;base64,AAAA", 10.0)]).render_hash("hevc_nvenc")
+            source(vec![image("data:image/png;base64,AAAA", 10.0)])
+                .render_hash(hwaccel::RenderPipeline::cpu("hevc_nvenc"))
         );
         // Drawn differently, as with another font, or placed elsewhere.
         assert_ne!(
             drawn,
-            source(vec![image("data:image/png;base64,AAAB", 10.0)]).render_hash("libx265")
+            source(vec![image("data:image/png;base64,AAAB", 10.0)])
+                .render_hash(hwaccel::RenderPipeline::cpu("libx265"))
         );
         assert_ne!(
             drawn,
-            source(vec![image("data:image/png;base64,AAAA", 11.0)]).render_hash("libx265")
+            source(vec![image("data:image/png;base64,AAAA", 11.0)])
+                .render_hash(hwaccel::RenderPipeline::cpu("libx265"))
         );
-        assert_ne!(drawn, source(Vec::new()).render_hash("libx265"));
+        assert_ne!(
+            drawn,
+            source(Vec::new()).render_hash(hwaccel::RenderPipeline::cpu("libx265"))
+        );
         let plain = source(Vec::new());
+        assert_ne!(
+            plain.render_hash(hwaccel::RenderPipeline::cpu("hevc_videotoolbox")),
+            plain.render_hash(hwaccel::RenderPipeline::gpu("hevc_videotoolbox"))
+        );
         let mut extra = format!(
-            "encoder:libx265\nnative:false:{}\n",
+            "encoder:libx265\nrenderer:cpu-bgra-overlay-v1\nnative:false:{}\n",
             native_overlay::RENDERER_VERSION,
         );
         extra.push_str(&serde_json::to_string(&timeline.render_settings).unwrap());
         extra.push('\0');
-        assert_ne!(plain.render_hash("libx265"), timeline.render_hash(&extra));
+        assert_ne!(
+            plain.render_hash(hwaccel::RenderPipeline::cpu("libx265")),
+            timeline.render_hash(&extra)
+        );
         extra.push_str(
             &serde_json::to_string(&hwaccel::project_quality_args(
                 "libx265",
@@ -2364,7 +2381,10 @@ mod tests {
             .unwrap(),
         );
         extra.push('\0');
-        assert_eq!(plain.render_hash("libx265"), timeline.render_hash(&extra));
+        assert_eq!(
+            plain.render_hash(hwaccel::RenderPipeline::cpu("libx265")),
+            timeline.render_hash(&extra)
+        );
     }
 
     #[test]

@@ -16,7 +16,7 @@
     "test:danmu-content": "node --experimental-vm-modules --test scripts/tests/danmu-content.test.mjs",
     "test:updater": "node --experimental-vm-modules --test scripts/tests/updater.test.mjs",
     "test:subtitle": "node --experimental-vm-modules --test scripts/tests/subtitle-ass.test.mjs",
-    "tauri": "tauri",
+    "tauri": "node scripts/tauri.mjs",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",

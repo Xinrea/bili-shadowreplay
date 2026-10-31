@@ -88,6 +88,10 @@ int main(void) {
     fs.mkdirSync(path.dirname(packaged), { recursive: true });
     fs.copyFileSync(binary, packaged);
     fs.cpSync(runtime, path.join(contents, "Frameworks"), { recursive: true });
+    // Licenses belong in Resources, not Frameworks (codesign treats every
+    // item directly under Frameworks as nested executable code).
+    fs.mkdirSync(path.join(contents, "Resources/licenses"), { recursive: true });
+    fs.copyFileSync(path.join(repository, "src-tauri/licenses/MoltenVK-LICENSE"), path.join(contents, "Resources/licenses/MoltenVK-LICENSE"));
     fs.writeFileSync(path.join(contents, "Info.plist"), '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleExecutable</key><string>bili-shadowreplay</string><key>CFBundleIdentifier</key><string>cn.vjoi.ffmpeg-smoke</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>1</string><key>LSMinimumSystemVersion</key><string>' + minimum + '</string></dict></plist>');
     run("codesign", ["--force", "--sign", "-", packaged]);
     run("codesign", ["--force", "--sign", "-", application]);

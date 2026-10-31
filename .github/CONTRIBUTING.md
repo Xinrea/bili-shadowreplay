@@ -4,7 +4,15 @@
 
 ### MacOS
 
-项目无需额外配置，直接 `yarn tauri dev` 即可编译运行。
+准备 Rust、Node/Yarn 和 Xcode Command Line Tools 后，在仓库目录运行：
+
+```bash
+brew install ffmpeg-full pkg-config
+yarn install --frozen-lockfile
+yarn tauri dev
+```
+
+`yarn tauri` 会自动发现 FFmpeg 开发库，并在首次启动时下载、校验和缓存固定版本的 MoltenVK，后续离线复用。无需手动设置库路径、安装 Vulkan SDK 或单独安装 MoltenVK；`dev`、`build` 和 `bundle` 使用相同的准备流程。缺少 FFmpeg 开发库时会在构建前提示安装命令。自定义 SDK 和独立 Cargo 测试配置见 [FFmpeg 开发环境](../docs/getting-started/config/ffmpeg.md#macos)。
 
 ### Linux
 

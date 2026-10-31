@@ -58,6 +58,15 @@ Windows 安装包中的 FFmpeg 资源为原生媒体运行 DLL；不再捆绑 `f
 
 ```bash
 brew install ffmpeg-full pkg-config
+yarn install --frozen-lockfile
+yarn tauri dev
+```
+
+`yarn tauri dev/build/bundle` 自动发现 FFmpeg SDK，并下载、校验和缓存固定版本的 MoltenVK；开发模式无需手动设置 `FFMPEG_DIR`、`BSR_VULKAN_LIBRARY` 或 `DYLD_LIBRARY_PATH`。首次准备运行库需要联网，后续复用本地缓存。详情见[原生渲染构建](../../development/native-overlay.md#macos-moltenvk-渲染与-videotoolbox-编码)。自定义 SDK 的显式环境配置仍优先保留。
+
+直接运行 Cargo 回归测试时仍需配置 SDK：
+
+```bash
 export PKG_CONFIG_PATH="$(brew --prefix ffmpeg-full)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 # 独立 CLI 对照测试应使用同一个 SDK，避免误用已有的其他版本。
 export PATH="$(brew --prefix ffmpeg-full)/bin:$PATH"

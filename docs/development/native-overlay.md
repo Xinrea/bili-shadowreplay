@@ -64,21 +64,21 @@ MediaPlan 解码/滤镜 → NV12 底图上传 → Skia Vulkan + Vulkan compute �
 
 macOS 使用 `VK_EXT_metal_objects` 导出两个独立 GPU 纹理，复制到 FFmpeg VideoToolbox 帧池提供的 IOSurface。它不使用 Skia Metal 渲染后端，也不要求 Vulkan Video。桥接默认采用最多三帧的异步交接队列：检查 Vulkan 写入完成后提交 Metal GPU blit，复制完成的帧按顺序交给原 `MediaPlan` 编码器；队列满、收尾或取消时才阻塞推进。没有 `readPixels`、`hwdownload` 或 CVPixelBuffer CPU 映射，但每帧仍有一次 GPU 内部复制，并非严格的零拷贝。底图目前仍由 CPU 多线程解码并上传一次。
 
-开发依赖：
+安装一次编译依赖后，直接启动开发模式：
 
 ```bash
-brew install ffmpeg-full pkg-config molten-vk
-export FFMPEG_DIR="$(brew --prefix ffmpeg-full)"
-export PKG_CONFIG_PATH="$FFMPEG_DIR/lib/pkgconfig"
-export BSR_MOLTENVK_LIBRARY="$(brew --prefix molten-vk)/lib/libMoltenVK.dylib"
-# 未打包开发运行时，为 FFmpeg 提供动态库搜索目录：
-export DYLD_LIBRARY_PATH="$(dirname "$BSR_MOLTENVK_LIBRARY")${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+brew install ffmpeg-full pkg-config
+yarn install --frozen-lockfile
 yarn tauri dev
 ```
 
+`yarn tauri dev/build/bundle` 会自动发现 Homebrew 的 `ffmpeg-full`，为子进程设置匹配的 SDK 环境；首次下载官方 MoltenVK 1.4.2 macOS 运行库，校验固定 SHA-256 后缓存到 `src-tauri/target/macos-runtime`。准备过程检查架构、最低系统版本和 Metal 纹理导出符号，并将副本的 install-name 调整为 FFmpeg 可加载的 `libvulkan.dylib` 后签名。后续启动复用经过校验的缓存，不再联网；无需手工安装 Vulkan SDK、MoltenVK 或设置动态库路径。下载失败或校验失败会在 Cargo 构建前报错，避免开发导出悄悄回退到 CPU。
+
+Rust、Node/Yarn、Xcode Command Line Tools 和 FFmpeg 开发库仍是编译前提；启动器不会修改系统软件包。自定义 FFmpeg SDK 可以继续设置 `FFMPEG_DIR`；自定义 MoltenVK 可设置 `BSR_MOLTENVK_LIBRARY`，同样会准备独立副本，不修改原库。缺少 FFmpeg SDK 时会直接给出安装命令。直接调用 `cargo` 的独立测试仍需配置 SDK 与运行库环境。
+
 Skia 默认构建 `textlayout-vulkan`，无需新增 Cargo feature 开关。普通构建仍保留能力探测后的 CPU 回退；不支持的 SDR/HDR 输入和质量优先策略维持已有行为。
 
-发布 hook 将 MoltenVK 复制为 `Contents/Frameworks/libvulkan.dylib`，统一重定位 SDK 内 Vulkan 动态依赖（完整 FFmpeg SDK 若包含 libplacebo，也会处理它的依赖；合成器不再调用该滤镜），并使用适合 FFmpeg `dlopen` 的 install-name。应用从包内绝对路径加载，所有 dylib 继续执行架构、最低系统版本与签名检查。安装后的应用无需 Vulkan SDK、ICD 文件或环境变量。`BSR_MOLTENVK_LIBRARY` 仅指定构建时的库；`BSR_VULKAN_LIBRARY` 是未打包验证工具的加载覆盖，必须指向绝对路径 `libvulkan.dylib`，可用于 Vulkan loader/API capture，打包应用优先使用自己的库。
+发布 hook 将同一份 MoltenVK 复制为 `Contents/Frameworks/libvulkan.dylib`，携带下载包中的许可证，统一重定位 SDK 内 Vulkan 动态依赖（完整 FFmpeg SDK 若包含 libplacebo，也会处理它的依赖；合成器不再调用该滤镜）。应用从包内绝对路径加载，所有 dylib 继续执行架构、最低系统版本与签名检查。安装后的应用无需 Vulkan SDK、ICD 文件或环境变量。`BSR_VULKAN_LIBRARY` 仍可覆盖未打包程序的加载路径，必须指向绝对路径 `libvulkan.dylib`，用于 Vulkan loader/API capture；正常开发由启动器自动设置，打包应用始终优先使用自己的库。
 
 FFmpeg 9.0.2 在 MoltenVK 设备创建时存在 Vulkan 1.2 features 与独立 timeline semaphore features 重复声明的已知验证层诊断（`VUID-VkDeviceCreateInfo-pNext-02830`）。SDK 升级后需重新验证设备初始化与实际导出，不应屏蔽验证层来替代修复。
 

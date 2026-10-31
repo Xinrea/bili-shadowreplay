@@ -20,6 +20,10 @@ const TARGET_ENCODERS: [&str; 14] = [
 pub const H264_SCALE_PAD_FILTER: &str =
     "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2";
 
+/// Normalize GPU inputs in one scaling/conversion pass before composition.
+pub const GPU_SCALE_PAD_FILTER: &str =
+    "scale=1920:1080:force_original_aspect_ratio=decrease:out_color_matrix=bt709:out_range=tv,format=nv12,pad=1920:1080:(ow-iw)/2:(oh-ih)/2";
+
 const VAAPI_ENCODER: &str = "h264_vaapi";
 const NVENC_ENCODER: &str = "h264_nvenc";
 const VIDEOTOOLBOX_ENCODER: &str = "h264_videotoolbox";

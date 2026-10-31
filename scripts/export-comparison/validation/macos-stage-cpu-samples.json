@@ -1,0 +1,311 @@
+{
+  "method": "xctrace CPU Profiler attached to the packaged exporter PID after launch; sampled cycles, not elapsed time. Sampling excludes early startup. No export timing from this traced run is used in the performance comparison.",
+  "source_binary": "/private/tmp/bsr-macos-stage-optimization/Profile.app/Contents/MacOS/bili-shadowreplay",
+  "worker": {
+    "thread": "tokio-rt-worker (0x2dc7a67) (bili-shadowreplay, pid: 29252)",
+    "cycles": 43103316070,
+    "samples": 69264,
+    "cores": {
+      "CPU 7 (S Core)": 4159098123,
+      "CPU 9 (S Core)": 7242749915,
+      "CPU 4 (S Core)": 4889582022,
+      "CPU 6 (S Core)": 4117155754,
+      "CPU 10 (S Core)": 5546130930,
+      "CPU 5 (S Core)": 4694874568,
+      "CPU 8 (S Core)": 8519138970,
+      "CPU 11 (S Core)": 3918111708,
+      "CPU 3 (E Core)": 3459301,
+      "CPU 0 (E Core)": 7924091,
+      "CPU 1 (E Core)": 3198815,
+      "CPU 2 (E Core)": 1891873
+    },
+    "leaf_binaries": {
+      "IOGPU": 1804080961,
+      "AGXMetalG14X": 4997047447,
+      "bili-shadowreplay": 9872332795,
+      "libvulkan.dylib": 4169152397,
+      "libsystem_kernel.dylib": 1539614711,
+      "libsystem_malloc.dylib": 3392088004,
+      "libobjcMsgSend1.dylib": 234540680,
+      "libobjcMsgSend.dylib": 694378887,
+      "libswscale.10.1.102.dylib": 738703715,
+      "libsystem_pthread.dylib": 592164686,
+      "libplacebo.360.dylib": 2015537004,
+      "libsystem_platform.dylib": 5371954613,
+      "libobjc.A.dylib": 927262566,
+      "libxpc.dylib": 74654270,
+      "libavcodec.63.1.102.dylib": 91058938,
+      "CoreFoundation": 901950650,
+      "Metal": 952077160,
+      "libavutil.61.1.102.dylib": 405250398,
+      "libdispatch.dylib": 591980093,
+      "libobjcMsgSend14.dylib": 309559360,
+      "libavfilter.12.1.102.dylib": 339571522,
+      "libavformat.63.1.102.dylib": 54038500,
+      "IOKit": 343352938,
+      "dyld": 152759836,
+      "CoreMedia": 34624857,
+      "libsystem_c.dylib": 174237689,
+      "libsystem_blocks.dylib": 133346259,
+      "IOSurface": 106306043,
+      "libc++.1.dylib": 113161562,
+      "libobjcMsgSend4.dylib": 82122016,
+      "libc++abi.dylib": 210371495,
+      "CoreVideo": 126620763,
+      "FramePacing": 8930452,
+      "VideoToolbox": 34929804,
+      "libdyld.dylib": 20967376,
+      "libsystem_featureflags.dylib": 19008175,
+      "CoreText": 22837785,
+      "Foundation": 67293617,
+      "libsystem_m.dylib": 17005763,
+      "libFontParser.dylib": 110333870,
+      "CoreGraphics": 5532244,
+      "libshaderc_shared.1.dylib": 3813521
+    },
+    "leaf": [
+      [
+        "_platform_memmove",
+        3471174245
+      ],
+      [
+        "(anonymous namespace)::TextureOpImpl::onCombineIfPossible(GrOp*, SkArenaAlloc*, GrCaps const&)",
+        2058304202
+      ],
+      [
+        "objc_msgSend",
+        1144041811
+      ],
+      [
+        "_xzm_xzone_malloc_tiny",
+        1111436360
+      ],
+      [
+        "_platform_memset",
+        989328299
+      ],
+      [
+        "_xzm_free_main",
+        928300510
+      ],
+      [
+        "0x105055e30",
+        715850771
+      ],
+      [
+        "mach_absolute_time",
+        559319626
+      ],
+      [
+        "MVKTraceVulkanCallStartImpl(char const*)",
+        530318546
+      ],
+      [
+        "<deduplicated_symbol>",
+        497703792
+      ],
+      [
+        "AGX::ComputeContext<AGX::G14X::Encoders, AGX::G14X::Classes, AGX::G14X::ObjClasses, AGX::G14X::CommandEncoding, AGX::G14X::EncoderComputeServiceClasses>::ComputeContext<AGX::G14X::EncoderComputeServiceConfigA>(ComputeContextConfig, AGX::G14X::EncoderComputeServiceConfigA)",
+        432402967
+      ],
+      [
+        "-[AGXG14XFamilyRenderContext initWithCommandBuffer:descriptor:subEncoderIndex:framebuffer:]",
+        409112537
+      ],
+      [
+        "_ioGPUResourceListAddResourceEntry",
+        379897152
+      ],
+      [
+        "__bzero",
+        355596080
+      ],
+      [
+        "ioGPUResourceListAddHashValue",
+        347381192
+      ],
+      [
+        "AGX::RenderContext<AGX::G14X::Encoders, AGX::G14X::Classes, AGX::G14X::ObjClasses, AGX::G14X::CommandEncoding>::encodeAndEmitRenderState(AGX::G14X::VertexProgramVariant const*, AGX::G14X::FragmentProgramVariant const*, AGX::G14X::FixedLayoutUserArgumentTable*, AGX::G14X::FixedLayoutUserArgumentTable*, AGX::RenderDirtyBits<AGX::G14X::Classes>&, bool)",
+        295708026
+      ],
+      [
+        "MVKCommandBuffer::reset(unsigned int)",
+        289164237
+      ],
+      [
+        "AGX::ContextCommon<AGX::G14X::Encoders, AGX::G14X::Classes, AGX::G14X::ObjClasses, AGX::G14X::DataBufferAllocator>::newCommand(unsigned long, bool)",
+        282380261
+      ],
+      [
+        "pl_mem_hash",
+        271013653
+      ],
+      [
+        "_kernelrpc_mach_port_allocate_trap",
+        237673993
+      ]
+    ],
+    "inclusive": [
+      [
+        "thread_start",
+        43103316070
+      ],
+      [
+        "_pthread_start",
+        43103316070
+      ],
+      [
+        "_$LT$tokio..runtime..blocking..task..BlockingTask$LT$T$GT$$u20$as$u20$core..future..future..Future$GT$::poll::h48d6a48eaece5dfc",
+        43102870534
+      ],
+      [
+        "tokio::runtime::task::core::Core$LT$T$C$S$GT$::poll::hdefe2f9596bfb443",
+        43102870534
+      ],
+      [
+        "std::sys::pal::unix::thread::Thread::new::thread_start::h87df50f049a92661",
+        43102870534
+      ],
+      [
+        "std::sys::backtrace::__rust_begin_short_backtrace::h3bf96b5f42d9c61f",
+        43102870534
+      ],
+      [
+        "core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h3f712e2d930b7676",
+        43102870534
+      ],
+      [
+        "ffmpeg_utils::profiling::measure::h6eb6707f7c6127c7",
+        43102870534
+      ],
+      [
+        "tokio::runtime::task::harness::Harness$LT$T$C$S$GT$::poll::hca1262655a11365b",
+        43102870534
+      ],
+      [
+        "tokio::runtime::blocking::pool::Inner::run::had52f4013460d6d3",
+        43102870534
+      ],
+      [
+        "ffmpeg_utils::media::graph::Job::run::h4a7aa80f360f5721",
+        43100985631
+      ],
+      [
+        "ffmpeg_utils::media::graph::Job::pull_graph::hfb1b5e0b85cc4095",
+        38986143440
+      ],
+      [
+        "ffmpeg_utils::media::video_encoder::VideoEncoderStage::submit_filtered::hf824ebeae1f3359b",
+        38932203556
+      ],
+      [
+        "ffmpeg_utils::media::video_encoder::VideoEncoderStage::encode::h42adad2ef54557c0",
+        38887781645
+      ],
+      [
+        "_$LT$current_export_comparison..ffmpeg..native_gpu..VulkanOverlayProcessor$u20$as$u20$ffmpeg_utils..media..video_processor..VideoFrameProcessor$GT$::process::h1e18e9aa51771d0d",
+        38049985811
+      ],
+      [
+        "ffmpeg_utils::vulkan_video::compositor::VulkanCompositor::submit_frame::h5ce5f681967f176e",
+        19047391326
+      ],
+      [
+        "ffmpeg_utils::vulkan_video::compositor::VulkanCompositor::drain::hb790ddf6b0f968a4",
+        18736996520
+      ],
+      [
+        "ffmpeg_utils::profiling::measure::h1b6a251f9ba90cfc",
+        18684051691
+      ],
+      [
+        "0x10209382c",
+        17961536285
+      ],
+      [
+        "pl_render_image_mix",
+        17928699974
+      ],
+      [
+        "pl_render_image",
+        16592996679
+      ],
+      [
+        "ffmpeg_utils::profiling::measure::h196a7fc616318e4d",
+        16177503147
+      ],
+      [
+        "native_overlay::vulkan::VulkanRenderer::render_into::h6a3ce486b429f8b2",
+        16157730531
+      ],
+      [
+        "native_overlay::renderer::Renderer::compose_gpu::haddc562a84e56827",
+        15951175413
+      ],
+      [
+        "pl_dispatch_finish",
+        14333209434
+      ],
+      [
+        "MVKQueue::submit(MVKQueueSubmission*)",
+        13974018367
+      ],
+      [
+        "run_pass",
+        13171074855
+      ],
+      [
+        "pass_output_target",
+        12765985560
+      ],
+      [
+        "MVKQueueCommandBufferSubmission::execute()",
+        11956385861
+      ],
+      [
+        "pl_pass_run",
+        11633339663
+      ],
+      [
+        "pl_pass_run_vbo",
+        11599468486
+      ],
+      [
+        "vk_pass_run",
+        10828570874
+      ],
+      [
+        "MVKQueueFullCommandBufferSubmission<1ul>::submitCommandBuffers()",
+        10803074864
+      ],
+      [
+        "MVKCommandBuffer::submit(MVKQueueCommandBufferSubmission*, MVKCommandEncodingContext*)",
+        10795886848
+      ],
+      [
+        "vkQueueSubmit2",
+        10795421985
+      ],
+      [
+        "VkResult MVKQueue::submit<VkSubmitInfo2>(unsigned int, VkSubmitInfo2 const*, VkFence_T*, MVKCommandUse)",
+        10789557850
+      ],
+      [
+        "_end_cmd",
+        10239961533
+      ],
+      [
+        "vk_cmd_submit",
+        10191648754
+      ],
+      [
+        "MVKCommandEncoder::encode(id<MTLCommandBuffer>, MVKCommandEncodingContext*)",
+        10005339555
+      ],
+      [
+        "GrDirectContext::flushAndSubmit(SkSurface*, GrSyncCpu)",
+        8715643991
+      ]
+    ]
+  }
+}

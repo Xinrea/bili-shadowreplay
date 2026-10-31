@@ -23,6 +23,12 @@ unchanged. `BSR_STAGE_PROFILE=/absolute/output.json` enables this separate
 benchmark build's collector. Without the variable it provides an observer
 control; it is still an instrumented build, not the unmodified PR binary.
 
+For the separate CPU-activity ablation, extract another fresh tree and pass
+`--without-cpu-activity` to the instrumenter. This removes the busy-loop helper
+and records `without_cpu_activity: true` in the manifest. Label this binary
+separately; it is not the default PR459 control. No other queue, QoS, codec or
+synchronization setting changes.
+
 Decode, render, encode and CPU-activity threads have independent root spans.
 Their exclusive partitions are checked **per thread**. They overlap and must
 not be summed into export latency. `gpu_completion_wait` is a host wait;

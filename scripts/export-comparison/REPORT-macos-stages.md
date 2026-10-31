@@ -61,4 +61,32 @@ libplacebo 与 Skia 的宿主工作占 worker CPU 的大部分；这不表示像
 
 方法见 [profiling/README.md](profiling/README.md)，[逐次阶段数据、遥测、资源和输出校验](validation/macos-stage-baseline-fa4d90f6.json)。原始日志与参考图片在 `/private/tmp/bsr-macos-stage-optimization/baseline-native`。初次沙箱预热因无法访问 Metal/VideoToolbox 而拒绝 GPU 导出，不计入数据；正式测量均在宿主设备执行。
 
-后续优化将分别验证 worker QoS 与 CPU 预处理，保持 MediaPlan、Skia Vulkan/MoltenVK 和 GPU 帧交接不变。
+## 第一轮优化与消融
+
+下面是同一批次的单次诊断，用于筛选方向，不当作统计上稳定的百分比收益。完整 300 秒导出与 10 秒预热均已校验。
+
+| 方案 | 完整导出墙钟 | 进程 CPU 总时间 |
+| --- | ---: | ---: |
+| 原始、未加新计时的当前二进制 | 40.685 s | 126.09 s |
+| 当前，同一 QoS 实验二进制继承 Default | 40.861 s | 126.23 s |
+| 当前，同一二进制请求 UserInitiated | 41.157 s | 125.95 s |
+| 合并 CPU 预处理，继承 Default | 40.882 s | 125.29 s |
+| #459，关闭 CPU activity 忙等线程 | 37.931 s | 70.51 s |
+| #459，保持原忙等线程 | 37.942 s | 107.71 s |
+
+**保留 CPU 预处理合并**：将尺寸缩放、BT.709 limited-range 转换和 NV12 输出放在同一个 scale 后填黑边，避免第二次遍历。该阶段从 3.296 s / 3.266 CPU s 降到 1.834 s / 1.818 CPU s，减少约 44%；端到端没有可辨认收益，部分余量转成了 GPU 帧槽等待。此处没有改变编码器、GOP、码率或渲染后端。
+
+独立 CLI 像素 oracle 中，实际 1080p 视频、横屏 720p YUV、竖屏 YUV 的旧／新 NV12 原始帧逐字节一致，竖屏黑边 Y=16、UV=128 正确。RGB 彩条因一次缩放／色度转换取代两次重采样而不逐字节一致（8-bit 样本平均绝对差 0.213、最大 32），不能据此宣称所有输入无损等价。正式应用仍完全通过原生库导出，CLI 仅用于独立验证。
+
+**不保留 QoS 修改**：同一二进制切换没有加速。Instruments 的关键 worker 采样中，按 sampled cycles 加权的 99.96% 在性能核，不能把本轮差距归因于落到能效核。较多采样落在 libplacebo dispatch、MoltenVK queue submit、Metal 驱动、Skia 操作合并和内存操作；这是调用栈证据，不是各阶段独立耗时之和。复现实验补丁只存放在 benchmark 目录，没有应用到产品。
+
+**#459 的忙等线程在本机本负载下没有可辨认收益**，关闭后少消耗约 37 CPU 秒；仅对独立 PR 副本做了消融。基线保留其原始行为。
+
+新增 IOKit 遥测显示：上述当前实现的 GPU device utilization 中位数为 **99%**，#459 两种辅助线程配置均约 **26%**。该系统级计数器不是逐进程 GPU 时间，也不衡量 VideoToolbox 的编码单元占用；测量期间没有同时运行其他基准任务。结合帧槽等待，后续应检查 GPU 合成工作量与提交方式，不能只按线程 CPU 排名判断唯一瓶颈。
+
+证据：[候选方案逐次结果](validation/macos-stage-candidates-0adc9bbb.json)、[归一化像素 oracle](validation/macos-normalization-oracle.json)、[关键 worker CPU 栈摘要](validation/macos-stage-cpu-samples.json)。运行像素 oracle：
+
+```sh
+python3 scripts/export-comparison/profiling/check_normalization.py \
+  --ffmpeg /opt/homebrew/opt/ffmpeg-full/bin/ffmpeg --output /tmp/normalization.json
+```

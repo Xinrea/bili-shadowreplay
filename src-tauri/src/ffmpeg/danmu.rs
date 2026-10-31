@@ -243,10 +243,7 @@ async fn prepare_images(danmus: &[DanmuEntry], directory: &Path) -> HashMap<Url,
 
 pub(super) fn overlay_graph(fps: f64, pipeline: hwaccel::RenderPipeline) -> String {
     if pipeline.uses_gpu() {
-        return format!(
-            "[0:v]{},fps={fps},scale=out_color_matrix=bt709:out_range=tv,format=nv12[outv]\n",
-            hwaccel::H264_SCALE_PAD_FILTER,
-        );
+        return format!("[0:v]{},fps={fps}[outv]\n", hwaccel::GPU_SCALE_PAD_FILTER,);
     }
     // Change FPS before compositing, not only at the encoder, so motion is
     // actually evaluated at 60+ FPS rather than duplicating already-drawn frames.

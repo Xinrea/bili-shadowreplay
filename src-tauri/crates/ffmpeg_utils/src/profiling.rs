@@ -358,7 +358,7 @@ mod tests {
         let collector = MediaProfiler::default();
         {
             let _session = collector.start();
-            for frames in 1..=514 * 600 {
+            for frames in 1u64..=514 * 600 {
                 if frames.is_multiple_of(600) {
                     measure("frame", || ());
                 }

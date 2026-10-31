@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Apply timing-only edits to a freshly extracted pinned PR459 tree.
+"""Instrument a freshly extracted pinned PR459 tree for stage measurements.
 
-Exact source hash verification rejects a different/already modified tree. No
-queue size, encoder option, QoS, CPU activity or synchronization is changed.
+Exact source hash verification rejects a different/already modified tree. By
+default only timing is added. --without-cpu-activity explicitly removes the
+busy-loop helper for a separate ablation; the manifest records this choice.
 """
 import argparse
 import hashlib
@@ -16,7 +17,7 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def instrument(root):
+def instrument(root, without_cpu_activity=False):
     manifest = json.loads((root / 'source-manifest.json').read_text())
     assert manifest['verified_head'] == 'c73c7aaff9b9dd9abb561c90a48f19b2d6374112'
     for name, digest in manifest['files'].items():
@@ -55,12 +56,22 @@ def instrument(root):
     draw = 'bsr_skia_metal_draw(renderer, time, (__bridge void*)slot.overlay)'
     p = replace(p, draw, 'prprof::measure("skia_render", [&] { return ' + draw + '; })')
     p = replace(p, 'Frame result(slot.frame);', 'prprof::observe("composite_gpu", (slot.command.GPUEndTime - slot.command.GPUStartTime) * 1000.0);\n        Frame result(slot.frame);')
+    if without_cpu_activity:
+        signature = '    explicit CPUActivity(unsigned logicalCPUs) {'
+        start = p.index(signature)
+        depth, end = 1, start + len(signature)
+        while depth:
+            depth += (p[end] == '{') - (p[end] == '}')
+            end += 1
+        p = p[:start] + signature + '\n        (void)logicalCPUs; // Isolated benchmark ablation.\n    }' + p[end:]
     (native / 'metal.mm').write_text(p)
-    result = {'base': manifest, 'instrumented_files': {str(f.relative_to(root)): sha(f) for f in (native / 'pipeline.h', native / 'metal.mm', native / 'pr459_profile.hpp')}, 'instrumentation_sha256': sha(Path(__file__))}
+    result = {'base': manifest, 'without_cpu_activity': without_cpu_activity, 'instrumented_files': {str(f.relative_to(root)): sha(f) for f in (native / 'pipeline.h', native / 'metal.mm', native / 'pr459_profile.hpp')}, 'instrumentation_sha256': sha(Path(__file__))}
     (root / 'instrumentation.json').write_text(json.dumps(result, indent=2) + '\n')
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('root', type=Path)
-    instrument(parser.parse_args().root.resolve(strict=True))
+    parser.add_argument('--without-cpu-activity', action='store_true', help='Benchmark ablation only: remove the busy-loop helper')
+    args = parser.parse_args()
+    instrument(args.root.resolve(strict=True), args.without_cpu_activity)

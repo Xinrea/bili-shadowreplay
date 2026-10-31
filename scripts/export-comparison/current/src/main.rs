@@ -77,8 +77,8 @@ fn overlay_graph(fps: f64, pipeline: ffmpeg::hwaccel::RenderPipeline) -> String 
     use ffmpeg::hwaccel;
     if pipeline.uses_gpu() {
         return format!(
-            "[0:v]{},fps={fps},scale=out_color_matrix=bt709:out_range=tv,format=nv12[outv]\n",
-            hwaccel::H264_SCALE_PAD_FILTER,
+            "[0:v]{},fps={fps}[outv]\n",
+            hwaccel::GPU_SCALE_PAD_FILTER,
         );
     }
     let mut filter = format!(

@@ -1088,3 +1088,5 @@ async fn native_rotation_matrix_copy_and_autorotate_match_cli() {
 
 mod concat;
 mod graphs;
+
+mod decoder;

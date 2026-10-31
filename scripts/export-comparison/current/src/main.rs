@@ -161,6 +161,7 @@ async fn run(
     output: &Path,
     require_gpu: bool,
     measure_stages: bool,
+    decoder_threads: Option<usize>,
 ) -> Result<Value, String> {
     let wall = Instant::now();
     let scenario_path = scenario_path.canonicalize().map_err(|e| e.to_string())?;
@@ -208,7 +209,9 @@ async fn run(
     let profile = json!({"encoder": pipeline.encoder, "renderer": pipeline.cache_identity(), "gop": video.gop,
         "bit_rate": video.bit_rate, "options": video.options, "frame_processor": video.frame_processor});
     eprintln!("current_export_profile={profile}");
-    let media = overlay_media_plan(source.clone(), output.clone(), graph.clone(), "outv", video);
+    let mut media =
+        overlay_media_plan(source.clone(), output.clone(), graph.clone(), "outv", video);
+    media.inputs[0].decoder_threads = decoder_threads;
     let started = Instant::now();
     let profiler = measure_stages.then(ffmpeg_utils::profiling::MediaProfiler::default);
     let spec = ffmpeg::native_overlay::OverlaySpec {
@@ -256,7 +259,7 @@ async fn run(
         "scenario_sha256": format!("{:x}", Sha256::digest(&bytes)),
         "source": source, "output": output, "platform": std::env::consts::OS,
         "linked_ffmpeg_version": ffmpeg_utils::linked_ffmpeg_version(),
-        "stage_profile": profiler.map(|p| p.report()),
+        "stage_profile": profiler.map(|p| p.report()), "decoder_threads_override": decoder_threads,
         "profile": profile, "filter_graph": graph, "width": 1920, "height": 1080,
         "fps": fps, "duration_seconds": duration, "frames": result.video_frames,
         "audio_mode": "copy", "source_audio_codec": metadata.audio_codec,
@@ -323,10 +326,27 @@ async fn main() {
     let mut reference = false;
     let mut require_gpu = false;
     let mut measure_stages = false;
+    let mut decoder_threads = None;
     let mut time = None;
     let mut args = std::env::args_os().skip(1);
     let result = (|| -> Result<(), String> {
         while let Some(arg) = args.next() {
+            if arg == "--decoder-threads" {
+                if decoder_threads.is_some() {
+                    return Err("Duplicate decoder thread option".into());
+                }
+                let value = args.next().ok_or("Missing decoder thread count")?;
+                let value = value
+                    .to_str()
+                    .ok_or("Invalid decoder thread count")?
+                    .parse::<usize>()
+                    .map_err(|error| error.to_string())?;
+                if value == 0 || value > i32::MAX as usize {
+                    return Err("Decoder threads must be positive".into());
+                }
+                decoder_threads = Some(value);
+                continue;
+            }
             if arg == "--measure-stages" {
                 measure_stages = true;
                 continue;
@@ -361,7 +381,7 @@ async fn main() {
                 Some("--output") => &mut output,
                 _ => {
                     return Err(
-                        "Usage: current-export-comparison [--require-gpu] [--render-reference --time SECONDS] --scenario PATH --output PATH".into(),
+                        "Usage: current-export-comparison [--require-gpu] [--measure-stages] [--decoder-threads N] [--render-reference --time SECONDS] --scenario PATH --output PATH".into(),
                     )
                 }
             };
@@ -377,7 +397,16 @@ async fn main() {
     let result = match (result, scenario, output) {
         (Ok(()), Some(scenario), Some(output)) => match (reference, time) {
             (true, Some(time)) => render_reference(&scenario, time, &output),
-            (false, None) => run(&scenario, &output, require_gpu, measure_stages).await,
+            (false, None) => {
+                run(
+                    &scenario,
+                    &output,
+                    require_gpu,
+                    measure_stages,
+                    decoder_threads,
+                )
+                .await
+            }
             _ => Err("--render-reference and --time must be used together".into()),
         },
         (Err(error), _, _) => Err(error),

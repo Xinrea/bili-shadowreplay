@@ -85,6 +85,14 @@ pub(super) fn open_decoder(
         unsafe {
             (*decoder.as_mut_ptr()).thread_count = threads as i32;
         }
+    } else if decoder_codec.medium() == ffmpeg::media::Type::Video {
+        // libavcodec defaults to one thread. Let the codec choose its supported
+        // frame/slice parallelism for file video, as FFmpeg's CLI does. Explicit
+        // input limits (notably still-image overlays) and codec AVOptions retain
+        // their existing precedence; audio keeps its codec default.
+        unsafe {
+            (*decoder.as_mut_ptr()).thread_count = 0;
+        }
     }
     open_codec(decoder.as_mut(), decoder_codec, &input.decoder_options)?;
     Ok(codec::decoder::Opened(decoder))

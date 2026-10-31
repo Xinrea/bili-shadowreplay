@@ -46,6 +46,8 @@ pub enum MediaProgressTotal {
 #[derive(Debug, Clone)]
 pub struct MediaInput {
     pub source: MediaSource,
+    /// Positive explicit limit; None selects automatic video decoding threads
+    /// and leaves audio at its codec default. Codec AVOptions still apply last.
     pub decoder_threads: Option<usize>,
     pub decoder_options: AvOptions,
     pub format: Option<String>,

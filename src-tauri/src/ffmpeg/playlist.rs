@@ -12,11 +12,11 @@ use super::Range;
 /// recording ranges the output covers.
 ///
 /// A stream-copied cut keeps the packets up to the keyframe before its start
-/// behind an edit list and runs a little past its end. Joining decodes the
-/// pieces, which honours that edit list, so each joined piece starts where it
-/// was asked and lasts as long as its measured video track. A single range is
-/// only remuxed, so it is returned as asked for the caller to measure. The
-/// join targets `bitrate` (kbps) when given.
+/// behind an edit list and runs a little past its end. Without encoding options
+/// or a transition, the pieces are joined by stream copy. Explicit encoding
+/// applies those edit lists before joining. A single range is only remuxed,
+/// so it is returned as asked for the caller to measure. The join targets
+/// `bitrate` (kbps) when given.
 pub async fn clip_multiple_from_playlist(
     reporter: Option<&impl ProgressReporterTrait>,
     playlist_path: &Path,
@@ -57,6 +57,9 @@ pub async fn clip_multiple_with_settings(
     let temp_dir = tempdir_in(output_dir)
         .map_err(|e| format!("Failed to create playlist clip directory: {e}"))?;
     let count = ranges.len();
+    let copy = settings.is_none()
+        && bitrate.is_none()
+        && (transition.is_none() || transition == Some("none"));
     let mut clips = Vec::with_capacity(count);
     let mut covered = Vec::with_capacity(count);
 
@@ -79,9 +82,18 @@ pub async fn clip_multiple_with_settings(
             Ok(metadata) if count > 1 && metadata.duration > 0.0 => metadata.duration,
             _ => range.duration(),
         };
-        covered.push(Range {
-            start: range.start,
-            end: range.start + duration,
+        covered.push(if copy && count > 1 {
+            // Each copied range can include the preceding keyframe. Keep
+            // external danmaku aligned with those retained packets.
+            Range {
+                start: (range.end - duration).max(0.0),
+                end: range.end,
+            }
+        } else {
+            Range {
+                start: range.start,
+                end: range.start + duration,
+            }
         });
         clips.push(video_path);
     }
@@ -96,15 +108,19 @@ pub async fn clip_multiple_with_settings(
             "提取片段"
         })
     });
-    super::general::concat_videos_with_settings(
-        merging.as_ref(),
-        &clips,
-        output_path,
-        transition,
-        bitrate,
-        settings.filter(|_| count > 1),
-    )
-    .await?;
+    if copy {
+        super::general::concat_copy_videos(merging.as_ref(), &clips, output_path).await?;
+    } else {
+        super::general::concat_videos_with_settings(
+            merging.as_ref(),
+            &clips,
+            output_path,
+            transition,
+            bitrate,
+            settings.filter(|_| count > 1),
+        )
+        .await?;
+    }
     Ok(covered)
 }
 
@@ -403,7 +419,10 @@ pub async fn concat_playlists_to_video(
             )
             .await?;
         }
-        None => super::general::concat_videos(reporter, &segments, output_path).await?,
+        None if burned => {
+            super::general::concat_videos(reporter, &segments, output_path).await?;
+        }
+        None => super::general::concat_copy_videos(reporter, &segments, output_path).await?,
     }
     Ok(burned)
 }
@@ -483,13 +502,21 @@ seg-3.mp4
 
     /// A recording with a keyframe every 2 s, cut into 2 s HLS segments.
     async fn create_test_playlist(dir: &Path, duration: f64) -> std::path::PathBuf {
+        create_test_playlist_with_size(dir, duration, "320x180").await
+    }
+
+    async fn create_test_playlist_with_size(
+        dir: &Path,
+        duration: f64,
+        size: &str,
+    ) -> std::path::PathBuf {
         let playlist = dir.join("playlist.m3u8");
         let output = ffmpeg_utils::ffmpeg_command()
             .args([
                 "-f",
                 "lavfi",
                 "-i",
-                &format!("color=c=blue:s=320x180:r=30:d={duration}"),
+                &format!("color=c=blue:s={size}:r=30:d={duration}"),
                 "-f",
                 "lavfi",
                 "-i",
@@ -526,6 +553,33 @@ seg-3.mp4
             String::from_utf8_lossy(&output.stderr)
         );
         playlist
+    }
+
+    async fn packet_hashes(path: &Path) -> Vec<String> {
+        let output = ffmpeg_utils::ffprobe_command()
+            .args([
+                "-v",
+                "error",
+                "-show_packets",
+                "-show_data_hash",
+                "sha256",
+                "-show_entries",
+                "packet=data_hash",
+                "-of",
+                "json",
+            ])
+            .arg(path)
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        let packets: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        packets["packets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|packet| packet["data_hash"].as_str().unwrap().to_string())
+            .collect()
     }
 
     async fn video_timeline(path: &Path) -> (serde_json::Value, Vec<serde_json::Value>) {
@@ -572,52 +626,32 @@ seg-3.mp4
     }
 
     async fn join_cli_reference(clips: &[std::path::PathBuf], output: &Path) {
-        let encoder = super::super::hwaccel::get_x264_encoder().await;
-        let mut command = ffmpeg_utils::ffmpeg_command();
-        let mut graph = "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[outv][outa]".to_string();
-        let video_label = if super::super::hwaccel::is_vaapi_encoder(encoder) {
-            let options =
-                super::super::hwaccel::native_video_options(encoder, None, None, None).unwrap();
-            let device = options.hardware_device.unwrap().device.unwrap();
-            command.args(["-vaapi_device", &device]);
-            graph.push_str(&format!(
-                ";[outv]{}[outv_hw]",
-                super::super::hwaccel::vaapi_filter_suffix()
-            ));
-            "[outv_hw]"
-        } else {
-            "[outv]"
-        };
-        for clip in clips {
-            command.arg("-i").arg(clip);
-        }
-        let result = command
-            .args([
-                "-filter_complex",
-                &graph,
-                "-map",
-                video_label,
-                "-map",
-                "[outa]",
-            ])
-            .args(["-c:v", encoder])
-            .args(super::super::hwaccel::quality_args_with_bitrate(
-                encoder, None,
-            ))
-            .args(["-c:a", "aac", "-y"])
+        let list = output.with_extension("txt");
+        std::fs::write(
+            &list,
+            clips
+                .iter()
+                .map(|clip| format!("file '{}'\n", clip.display()))
+                .collect::<String>(),
+        )
+        .unwrap();
+        let result = ffmpeg_utils::ffmpeg_command()
+            .args(["-f", "concat", "-safe", "0", "-i"])
+            .arg(&list)
+            .args(["-c", "copy", "-y"])
             .arg(output)
             .output()
             .await
             .unwrap();
         assert!(
             result.status.success(),
-            "CLI reference failed for {encoder}: {}",
+            "CLI copy reference failed: {}",
             String::from_utf8_lossy(&result.stderr)
         );
     }
 
     #[tokio::test]
-    async fn joined_ranges_report_the_recording_the_output_covers() {
+    async fn copied_ranges_report_the_recording_the_output_covers() {
         let dir = tempfile::tempdir().unwrap();
         let playlist = create_test_playlist(dir.path(), 30.0).await;
         let output = dir.path().join("joined.mp4");
@@ -644,8 +678,8 @@ seg-3.mp4
         .unwrap();
 
         // Keep the returned recording boundaries tied to each measured cut.
-        // Copied MP4 edit lists/B-frame tails make those track durations
-        // non-additive; the old CLI join has the same property.
+        // The copy path deliberately retains concat demuxer/edit-list behavior.
+        // Compare with CLI stream copy rather than a decoded concat filter.
         let mut reference_cuts = Vec::new();
         for (index, (covered, asked)) in covered.iter().zip(&ranges).enumerate() {
             let cut = dir.path().join(format!("reference-cut-{index}.mp4"));
@@ -658,11 +692,13 @@ seg-3.mp4
             .await
             .unwrap();
             let metadata = ffmpeg_utils::extract_video_metadata(&cut).await.unwrap();
-            assert_eq!(covered.end, asked.start + metadata.duration);
+            assert_eq!(covered.start, (asked.end - metadata.duration).max(0.0));
+            assert_eq!(covered.end, asked.end);
             reference_cuts.push(cut);
         }
         let oracle = dir.path().join("cli-joined.mp4");
         join_cli_reference(&reference_cuts, &oracle).await;
+        assert_eq!(packet_hashes(&output).await, packet_hashes(&oracle).await);
         let (actual_stream, actual_frames) = video_timeline(&output).await;
         let (expected_stream, expected_frames) = video_timeline(&oracle).await;
         assert_eq!(actual_stream, expected_stream, "joined video stream");
@@ -680,8 +716,52 @@ seg-3.mp4
             .duration;
         assert_eq!(joined, expected, "joined metadata duration");
         for (covered, asked) in covered.iter().zip(&ranges) {
-            assert_eq!(covered.start, asked.start);
-            assert!(covered.end >= asked.end - 0.05, "{covered:?} {asked:?}");
+            assert!(covered.start <= asked.start + 0.05, "{covered:?} {asked:?}");
+            assert_eq!(covered.end, asked.end);
+        }
+    }
+
+    #[tokio::test]
+    async fn whole_clip_without_settings_never_reencodes_mismatched_sources() {
+        type Reporter = crate::progress::progress_reporter::ProgressReporter;
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let playlists = [
+            create_test_playlist(first.path(), 0.5).await,
+            create_test_playlist_with_size(second.path(), 0.5, "640x360").await,
+        ];
+        let mut sources = Vec::new();
+        for playlist in &playlists {
+            let video = playlist.with_extension("mp4");
+            clip_from_playlist(None::<&Reporter>, playlist, &video, None)
+                .await
+                .unwrap();
+            sources.push(video);
+        }
+        for count in [1, 2] {
+            let output = first.path().join(format!("copy-{count}.mp4"));
+            assert!(!concat_playlists_to_video(
+                None::<&Reporter>,
+                &playlists[..count]
+                    .iter()
+                    .map(|p| p.as_path())
+                    .collect::<Vec<_>>(),
+                vec![None; count],
+                &crate::danmu2ass::Danmu2AssOptions::default(),
+                &output,
+                None,
+            )
+            .await
+            .unwrap());
+            let hashes = packet_hashes(&output).await;
+            assert!(!hashes.is_empty());
+            let oracle = first.path().join(format!("cli-copy-{count}.mp4"));
+            join_cli_reference(&sources[..count], &oracle).await;
+            assert_eq!(
+                hashes,
+                packet_hashes(&oracle).await,
+                "copy mode must match CLI stream copy for video and audio packets"
+            );
         }
     }
 

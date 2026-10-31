@@ -78,7 +78,7 @@ pub struct ClipRangeParams {
     #[serde(default)]
     pub render_settings: Option<crate::project::RenderSettings>,
     pub local_offset: i64,
-    /// Fix encoding after clip
+    /// Re-encode the material; requests without render_settings use defaults.
     pub fix_encoding: bool,
     /// Transition effect between clips (for multiple ranges)
     pub transition: Option<String>,
@@ -92,12 +92,10 @@ impl ClipRangeParams {
         self.danmu.then_some(self.danmu_bitrate).flatten()
     }
 
-    /// Joining already encodes multiple ranges. Burning also encodes and
-    /// normalizes the picture, so it satisfies an explicit fix request too.
+    /// Explicit settings already encode multiple ranges while joining.
+    /// Burning also encodes, so either path satisfies a re-encode request.
     pub fn needs_final_encode(&self, danmu_embedded: bool) -> bool {
-        self.render_settings.is_some()
-            && !danmu_embedded
-            && (self.ranges.len() <= 1 || self.fix_encoding)
+        self.render_settings.is_some() && !danmu_embedded && self.ranges.len() <= 1
     }
 }
 
@@ -162,7 +160,7 @@ mod encoding_tests {
                     params.fix_encoding = fix;
                     // The requested danmu toggle alone is not proof of an encode:
                     // missing/empty/super-chat-only danmaku still need the guard.
-                    assert_eq!(params.needs_final_encode(false), count <= 1 || fix);
+                    assert_eq!(params.needs_final_encode(false), count <= 1);
                     assert!(!params.needs_final_encode(true));
                 }
             }
@@ -1198,7 +1196,7 @@ impl RecorderManager {
         if params.fix_encoding && params.render_settings.is_none() {
             // transcode clip_file
             let tmp_clip_file = clip_file.with_extension("tmp.mp4");
-            let fixing = reporter.map(|reporter| reporter.stage("修复编码"));
+            let fixing = reporter.map(|reporter| reporter.stage("重新编码"));
             if let Err(e) = transcode(
                 fixing.as_ref(),
                 &clip_file,

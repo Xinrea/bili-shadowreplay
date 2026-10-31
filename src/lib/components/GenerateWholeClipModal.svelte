@@ -22,6 +22,7 @@
   let wholeClipArchives: RecordItem[] = $state([]);
   let isLoading = $state(false);
   let encodeDanmu = $state(false);
+  let reencode = $state(false);
   let selectedLiveIds: string[] = $state([]);
   let outputName = $state("");
   let showSelectionHelp = $state(false);
@@ -88,7 +89,7 @@
         parentId: archive.parent_id,
         selectedLiveIds: [...selectedLiveIds],
         outputName: outputName.trim() ? outputName.trim() : undefined,
-        renderSettings: { ...renderSettings },
+        renderSettings: encodeDanmu || reencode ? { ...renderSettings } : undefined,
       });
 
       showModal = false;
@@ -359,12 +360,18 @@
           </div>
           <div class="min-w-0 space-y-3 border-t border-line pt-4">
             <div class="flex items-center justify-between gap-4">
-              <div class="flex flex-wrap items-baseline gap-x-2">
-                <h3 class="text-[12px] font-semibold text-fg">编码设置</h3>
-                <p class="ui-hint">按所选参数重新编码</p>
-              </div>
+              <label class="flex items-center gap-2 text-[12px] text-fg-secondary">
+                <input
+                  type="checkbox"
+                  class="ui-checkbox"
+                  checked={encodeDanmu || reencode}
+                  onchange={(event) => (reencode = event.currentTarget.checked)}
+                  disabled={encodeDanmu || isLoading || isSubmitting}
+                />
+                <span>重新编码</span>
+              </label>
               <label class="flex cursor-pointer items-center gap-2 text-[12px] text-fg-secondary">
-                <span>压制弹幕</span>
+                <span>内嵌弹幕</span>
                 <span class="ui-switch">
                   <input
                     type="checkbox"
@@ -376,7 +383,14 @@
                 </span>
               </label>
             </div>
-            <RenderSettingsFields layout="columns" bind:value={renderSettings} disabled={isLoading || isSubmitting} />
+            <p class="ui-hint">
+              {encodeDanmu
+                ? "内嵌弹幕需要重新编码，无法取消"
+                : reencode
+                  ? "按以下设置重新编码，耗时较长"
+                  : "保留原始编码，直接复制并拼接片段"}
+            </p>
+            <RenderSettingsFields layout="columns" bind:value={renderSettings} disabled={(!encodeDanmu && !reencode) || isLoading || isSubmitting} />
           </div>
         </div>
 

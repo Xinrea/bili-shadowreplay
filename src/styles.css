@@ -180,6 +180,10 @@
     @apply h-[14px] w-[14px] cursor-pointer rounded-[4px] border border-line-strong bg-control text-accent shadow-none;
   }
 
+  .ui-checkbox:disabled {
+    @apply cursor-not-allowed opacity-50;
+  }
+
   .ui-checkbox:focus {
     @apply shadow-none outline-none;
   }

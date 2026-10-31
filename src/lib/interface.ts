@@ -565,7 +565,7 @@ export interface ClipRangeParams {
   danmu: boolean;
   /** Video bitrate in kbps for burning danmaku; null keeps the encoder default. */
   danmu_bitrate?: number | null;
-  /** Explicit encoding settings for the generated material, with or without danmaku. */
+  /** Omit to stream-copy; explicit settings re-encode with or without danmaku. */
   render_settings?: RenderSettings;
   local_offset: number;
   fix_encoding: boolean;

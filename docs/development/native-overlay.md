@@ -47,7 +47,7 @@ yarn tauri build
 
 应用后端允许最多三帧 GPU 工作在途。Skia 提交后通过同一图形队列和 `AVVkFrame` timeline 连接后续转换与编码，不再在每次绘制及桥接屏障后固定等待 CPU；复用帧槽、最终 drain、错误或取消时仍会等待 GPU，并持有帧和纹理直到消费者结束。编码器使用 `async_depth=3`。这消除了渲染帧回读，CPU 视频解码和底图上传仍然存在。
 
-默认的速度优先导出先用一个小样本实际渲染、编码和解码检查蓝色底图与半透明红色叠层，成功后自动选择 Vulkan；设备或编码器不支持时在启动前选择现有 CPU 合成路径。质量优先保留已有编码策略；明确不符合 SDR BT.709 范围的源在启动前选择 CPU 合成。执行中的错误不会静默重跑。CPU 与 Vulkan 分片使用不同缓存身份。Windows 与 macOS 默认包含 Vulkan 渲染后端；macOS 通过下述 VideoToolbox 适配器编码，Linux 保留已有路径。
+默认的速度优先导出先用一个小样本实际渲染、编码和解码检查蓝色底图与半透明红色叠层，成功后自动选择 Vulkan；设备或编码器不支持时在启动前选择现有 CPU 合成路径。质量优先保留已有编码策略；明确不符合受支持 SDR 范围（BT.709 色域、BT.709/sRGB 传递曲线）的源在启动前选择 CPU 合成。执行中的错误不会静默重跑。CPU 与 Vulkan 分片使用不同缓存身份。Windows 与 macOS 默认包含 Vulkan 渲染后端；macOS 通过下述 VideoToolbox 适配器编码，Linux 保留已有路径。
 
 需要匹配的 FFmpeg 9 开发 SDK、Vulkan Video 编码器与驱动。FFmpeg 9.0.2 仍有已知的 Vulkan 编码器退出图片视图清理问题；源码回补及校验说明见 [`scripts/ffmpeg-sdk-patches`](../../scripts/ffmpeg-sdk-patches/README.md)。功能测试通过不等于旧 SDK 的 Vulkan validation 全量无错误。实际运行与验证记录见独立工具的 [README](../../scripts/vulkan-video-poc/README.md)。
 
@@ -80,7 +80,7 @@ export DYLD_LIBRARY_PATH="$(dirname "$BSR_MOLTENVK_LIBRARY")${DYLD_LIBRARY_PATH:
 yarn tauri dev
 ```
 
-Skia 默认构建 `textlayout-vulkan`，无需新增 Cargo feature 开关。普通构建仍保留能力探测后的 CPU 回退；不支持 SDR BT.709 的输入和质量优先策略维持已有行为。
+Skia 默认构建 `textlayout-vulkan`，无需新增 Cargo feature 开关。普通构建仍保留能力探测后的 CPU 回退；不支持的 SDR/HDR 输入和质量优先策略维持已有行为。
 
 发布 hook 将 MoltenVK 复制为 `Contents/Frameworks/libvulkan.dylib`，统一重定位 SDK 内 Vulkan 动态依赖（完整 FFmpeg SDK 若包含 libplacebo，也会处理它的依赖；合成器不再调用该滤镜），并使用适合 FFmpeg `dlopen` 的 install-name。应用从包内绝对路径加载，所有 dylib 继续执行架构、最低系统版本与签名检查。安装后的应用无需 Vulkan SDK、ICD 文件或环境变量。`BSR_MOLTENVK_LIBRARY` 仅指定构建时的库；`BSR_VULKAN_LIBRARY` 是未打包验证工具的加载覆盖，必须指向绝对路径 `libvulkan.dylib`，可用于 Vulkan loader/API capture，打包应用优先使用自己的库。
 
@@ -136,3 +136,5 @@ AppImage 也受到构建系统 ABI 和系统运行库的限制，不代表兼容
 Docker 的构建阶段与运行阶段应保持在同一 **Debian trixie** 基线上，分别安装对应的开发包和运行库。不要只升级 builder 后继续使用旧版 Debian runtime，也不要把 Ubuntu 构建出的二进制直接复制到 Debian 镜像中。容器使用自身的用户态运行库，不要求宿主机安装上述 Ubuntu 桌面依赖；使用方式见 [Docker 部署](../getting-started/installation/docker.md)。
 
 发布前仍需在 Linux CI 或对应系统上完成实际源码编译、原生渲染测试和安装包冒烟测试，并检查二进制的动态依赖（例如 `ldd`）是否都能在目标系统解析。仅检查 workflow、配置或文档不能替代这些验证。
+
+共享 compute 已支持 `iec61966-2-1`（sRGB）视频输入：在 GPU 内先将视频的 sRGB 传递曲线转换为 BT.709，再合成现有 Skia 预乘 RGBA 叠层，输出 BT.709 NV12。转换按实际 AVFrame 判断，支持拼接时切换传递曲线，不新增 CPU 帧回读。整场录播/弹幕压制和仅使用原生 Skia 叠层的项目可走此路径；带前置 CPU 图片/视频叠层或外部 libass 字幕的项目仍保留 BT.709 预检，避免对已经混合的颜色执行错误转换。验证与边界见 [sRGB 验证报告](../../scripts/vulkan-compute-validation/REPORT-macos-srgb.md)。

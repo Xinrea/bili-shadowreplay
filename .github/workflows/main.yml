@@ -60,8 +60,9 @@ jobs:
       - name: Install FFmpeg development libraries (macOS only)
         if: runner.os == 'macOS'
         run: |
-          brew install ffmpeg-full pkg-config
+          brew install ffmpeg-full pkg-config molten-vk
           echo "PKG_CONFIG_PATH=$(brew --prefix ffmpeg-full)/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "BSR_MOLTENVK_LIBRARY=$(brew --prefix molten-vk)/lib/libMoltenVK.dylib" >> "$GITHUB_ENV"
           # Optional CLI oracles must use this SDK's version and components.
           echo "$(brew --prefix ffmpeg-full)/bin" >> "$GITHUB_PATH"
 

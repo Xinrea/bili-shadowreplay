@@ -18,11 +18,24 @@ test("macOS native FFmpeg dependencies relocate, survive repeated bundling and p
     const binary = path.join(directory, "bili-shadowreplay");
     const runtime = path.join(directory, "runtime");
     fs.writeFileSync(source, String.raw`#include <stdio.h>
+#include <stdlib.h>
+#include <dlfcn.h>
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libswresample/swresample.h>
 #include <libavfilter/avfilter.h>
+extern int vkEnumerateInstanceVersion(unsigned int *version);
 int main(void) {
+    unsigned int version = 0;
+    if (vkEnumerateInstanceVersion(&version) != 0 || !version) return 1;
+    if (getenv("BSR_TEST_BUNDLED_VULKAN")) {
+        void *molten = dlopen("@executable_path/../Frameworks/libvulkan.dylib", RTLD_NOW | RTLD_LOCAL);
+        if (!molten || dlopen("libvulkan.dylib", RTLD_NOW | RTLD_LOCAL) != molten ||
+            !dlsym(molten, "vkExportMetalObjectsEXT")) {
+            fprintf(stderr, "Bundled MoltenVK is not available through FFmpeg's loader name\n");
+            return 1;
+        }
+    }
     const char *encoders[] = { "libopus", "libmp3lame", "libx264", "libx265", "aac", "flac", "pcm_s16le", "mjpeg", "png", "ass", "mov_text" };
     const char *muxers[] = { "opus", "mp3", "wav", "flac", "ipod", "mp4", "mpegts", "hls", "matroska" };
     const char *filters[] = { "subtitles", "overlay", "concat", "xfade", "acrossfade", "amix", "scale", "pad", "aresample", "color", "anullsrc" };
@@ -41,7 +54,10 @@ int main(void) {
 `);
     const include = run("pkg-config", ["--variable=includedir", "libavformat"]).trim();
     const lib = run("pkg-config", ["--variable=libdir", "libavformat"]).trim();
-    run("cc", [source, `-I${include}`, `-L${lib}`, "-lavformat", "-lavcodec", "-lswresample", "-lavfilter", "-mmacosx-version-min=15.0", "-Wl,-headerpad_max_install_names", "-o", binary]);
+    const molten = process.env.BSR_MOLTENVK_LIBRARY || path.join(run("brew", ["--prefix", "molten-vk"]).trim(), "lib/libMoltenVK.dylib");
+    // Cover an SDK linked directly to MoltenVK as well as libplacebo's loader
+    // dependency: both must resolve to a single bundled implementation.
+    run("cc", [source, `-I${include}`, `-L${lib}`, "-lavformat", "-lavcodec", "-lswresample", "-lavfilter", molten, `-Wl,-rpath,${path.dirname(molten)}`, "-mmacosx-version-min=15.0", "-Wl,-headerpad_max_install_names", "-o", binary]);
     const expected = run(binary, []);
     const minimum = run("sw_vers", ["-productVersion"]).trim();
     const original = fs.readFileSync(binary);
@@ -77,7 +93,7 @@ int main(void) {
     run("codesign", ["--force", "--sign", "-", application]);
     run("codesign", ["--verify", "--deep", "--strict", application]);
     run(process.execPath, [hook, "--verify", application]);
-    const env = { ...process.env, PATH: "/nonexistent", DYLD_PRINT_LIBRARIES: "1" };
+    const env = { ...process.env, PATH: "/nonexistent", DYLD_PRINT_LIBRARIES: "1", BSR_TEST_BUNDLED_VULKAN: "1" };
     delete env.DYLD_LIBRARY_PATH;
     delete env.DYLD_FALLBACK_LIBRARY_PATH;
     const launched = spawnSync(packaged, [], { encoding: "utf8", env });
@@ -86,6 +102,7 @@ int main(void) {
     assert.match(launched.stderr, /Contents\/Frameworks\/libavformat/);
     assert.match(launched.stderr, /Contents\/Frameworks\/libswresample/);
     assert.match(launched.stderr, /Contents\/Frameworks\/libavfilter/);
+    assert.match(launched.stderr, /Contents\/Frameworks\/libvulkan\.dylib/);
     assert.doesNotMatch(launched.stderr, /\/opt\/homebrew\/|\/usr\/local\/Cellar\//);
 
     // An explicit CI target must not reuse an old native executable.

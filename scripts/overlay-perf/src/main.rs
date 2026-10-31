@@ -18,6 +18,29 @@ mod stubs;
 #[cfg(feature = "current")]
 use stubs::{danmu2ass, progress};
 
+// This harness measures the CPU renderer deliberately. The imported production
+// dispatcher also names the GPU adapter on desktop platforms; reject GPU plans
+// explicitly instead of linking an unrelated hardware backend into this oracle.
+#[cfg(all(feature = "current", any(target_os = "windows", target_os = "macos")))]
+mod native_gpu {
+    pub fn uses_vulkan(plan: &ffmpeg_utils::MediaPlan) -> bool {
+        plan.routes.iter().any(|route| {
+            matches!(&route.mode,
+            ffmpeg_utils::StreamMode::Video(options) if options.frame_processor)
+        })
+    }
+
+    pub async fn run_overlay_plan<R: crate::progress::progress_reporter::ProgressReporterTrait>(
+        _: ffmpeg_utils::MediaPlan,
+        _: super::overlay_stream::OverlaySpec,
+        _: super::runner::ProgressMode,
+        _: impl Into<String>,
+        _: Option<&R>,
+    ) -> Result<ffmpeg_utils::MediaJobResult, String> {
+        Err("The CPU reference benchmark does not accept GPU frame processors".into())
+    }
+}
+
 const WIDTH: u32 = 1920;
 const HEIGHT: u32 = 1080;
 const FPS: f64 = 60.0;

@@ -10,9 +10,10 @@ const run = (program, args) => execFileSync(program, args, { encoding: "utf8", s
 const systemLibrary = (name) => name.startsWith("/usr/lib/") || name.startsWith("/System/Library/");
 
 function dependencies(binary) {
+  const ownIds = new Set(run("otool", ["-D", binary]).split("\n").map((line) => line.trim()).filter((line) => line && !line.endsWith(":")));
   return run("otool", ["-L", binary]).split("\n").slice(1)
     .map((line) => line.trim().replace(/\s+\(compatibility version.*$/, ""))
-    .filter(Boolean);
+    .filter((line) => line && !line.endsWith(":") && !ownIds.has(line));
 }
 
 function rpaths(binary) {
@@ -31,6 +32,7 @@ function verify(application) {
   const minimum = run("plutil", ["-extract", "LSMinimumSystemVersion", "raw", "-o", "-", path.join(application, "Contents/Info.plist")]);
   const executable = path.join(application, "Contents/MacOS/bili-shadowreplay");
   const directory = path.join(application, "Contents/Frameworks");
+  if (!fs.existsSync(path.join(directory, "libvulkan.dylib"))) throw new Error("Bundled MoltenVK runtime is missing");
   const files = [executable, ...fs.readdirSync(directory).filter((name) => name.endsWith(".dylib")).map((name) => path.join(directory, name))];
   for (const file of files) {
     assertMacosDeployment(run("otool", ["-l", file]), minimum, file);
@@ -100,6 +102,13 @@ if (process.argv[2] === "--verify") {
     const links = [];
     for (const dependency of dependencies(owner)) {
       if (systemLibrary(dependency)) continue;
+      if (/^(?:libvulkan(?:\.[\d.]+)?|libMoltenVK)\.dylib$/.test(path.basename(dependency))) {
+        // libplacebo may link the loader even though FFmpeg opens it at
+        // runtime. Route both to the same MoltenVK implementation; mixing a
+        // loader's handles with direct MoltenVK dispatch is invalid.
+        links.push({ dependency, name: "libvulkan.dylib" });
+        continue;
+      }
       const source = resolve(dependency, owner);
       if (source === fs.realpathSync(owner)) continue; // LC_ID_DYLIB
       const name = path.basename(source);
@@ -110,7 +119,7 @@ if (process.argv[2] === "--verify") {
         assertMacosDeployment(run("otool", ["-l", source]), minimum, source);
         names.set(name, source);
         libraries.set(source, null);
-        libraries.set(source, collect(source));
+        libraries.set(source, { name, links: collect(source) });
       }
     }
     return links;
@@ -118,11 +127,28 @@ if (process.argv[2] === "--verify") {
   try {
     const executableLinks = collect(executable);
     if (![...names.keys()].some((name) => /^libavformat\./.test(name))) throw new Error("Executable does not link libavformat; refusing an incomplete FFmpeg bundle");
-    for (const [source, links] of libraries) {
-      const copy = path.join(temporary, path.basename(source));
+    // FFmpeg opens libvulkan.dylib first. Ship MoltenVK under that name so it
+    // can be preloaded by absolute app path, with no loader/ICD/environment
+    // dependency and no possibility of selecting a different installed ICD.
+    const moltenCandidates = [process.env.BSR_MOLTENVK_LIBRARY,
+      process.env.VULKAN_SDK && path.join(process.env.VULKAN_SDK, "lib/libMoltenVK.dylib"),
+      "/opt/homebrew/opt/molten-vk/lib/libMoltenVK.dylib", "/usr/local/opt/molten-vk/lib/libMoltenVK.dylib",
+      path.join(destination, "libvulkan.dylib")].filter(Boolean);
+    const molten = moltenCandidates.find((candidate) => fs.existsSync(candidate));
+    if (!molten) throw new Error("MoltenVK runtime missing: install molten-vk or set BSR_MOLTENVK_LIBRARY");
+    const moltenSource = fs.realpathSync(molten);
+    assertArchitecture(moltenSource);
+    assertMacosDeployment(run("otool", ["-l", moltenSource]), minimum, moltenSource);
+    if (!run("nm", ["-gU", moltenSource]).includes("_vkExportMetalObjectsEXT")) throw new Error("MoltenVK must export VK_EXT_metal_objects");
+    if (names.has("libvulkan.dylib")) throw new Error("Executable already links a competing Vulkan loader");
+    libraries.set(moltenSource, { name: "libvulkan.dylib", links: collect(moltenSource) });
+    for (const [source, { name: libraryName, links }] of libraries) {
+      const copy = path.join(temporary, libraryName);
       fs.copyFileSync(source, copy);
       fs.chmodSync(copy, 0o755);
-      const changes = ["-id", `@loader_path/${path.basename(source)}`];
+      // dyld matches a preloaded @rpath ID through dlopen's bare filename;
+      // @loader_path IDs do not match calls originating in another image.
+      const changes = ["-id", `${libraryName === "libvulkan.dylib" ? "@rpath" : "@loader_path"}/${libraryName}`];
       for (const { dependency, name } of links) changes.push("-change", dependency, `@loader_path/${name}`);
       run("install_name_tool", [...changes, copy]);
       const identity = process.env.APPLE_SIGNING_IDENTITY || config.bundle.macOS.signingIdentity || "-";

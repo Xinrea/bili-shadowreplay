@@ -1,0 +1,6 @@
+{
+    "label":  "final-gui-check",
+    "arguments":  "check --locked --manifest-path \"C:\\Users\\xinre\\AppData\\Local\\Temp\\bsr-native-gpu-export-20261030\\src-tauri\\Cargo.toml\"",
+    "elapsed_seconds":  44.4141899,
+    "exit_code":  0
+}

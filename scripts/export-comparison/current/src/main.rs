@@ -156,7 +156,7 @@ fn overlay_media_plan(
     }
 }
 
-async fn run(scenario_path: &Path, output: &Path) -> Result<Value, String> {
+async fn run(scenario_path: &Path, output: &Path, require_gpu: bool) -> Result<Value, String> {
     let wall = Instant::now();
     let scenario_path = scenario_path.canonicalize().map_err(|e| e.to_string())?;
     let root = scenario_path.parent().ok_or("Scenario has no parent")?;
@@ -188,7 +188,11 @@ async fn run(scenario_path: &Path, output: &Path) -> Result<Value, String> {
     let probe = Instant::now();
     let mut pipeline = ffmpeg::hwaccel::get_render_pipeline(&settings).await;
     if pipeline.uses_gpu() && !ffmpeg_utils::video_is_sdr_bt709(&source).await? {
-        pipeline = ffmpeg::hwaccel::RenderPipeline::cpu(ffmpeg::get_cpu_render_encoder(&settings).await);
+        pipeline =
+            ffmpeg::hwaccel::RenderPipeline::cpu(ffmpeg::get_cpu_render_encoder(&settings).await);
+    }
+    if require_gpu && !pipeline.uses_gpu() {
+        return Err("GPU export was required but capability/source probing selected CPU".into());
     }
     let probe_ms = probe.elapsed().as_secs_f64() * 1000.0;
     let graph = overlay_graph(fps, pipeline);
@@ -283,7 +287,9 @@ async fn main() {
             metadata.level() <= log::Level::Info
         }
         fn log(&self, record: &log::Record<'_>) {
-            if self.enabled(record.metadata()) { eprintln!("{}: {}", record.level(), record.args()); }
+            if self.enabled(record.metadata()) {
+                eprintln!("{}: {}", record.level(), record.args());
+            }
         }
         fn flush(&self) {}
     }
@@ -294,10 +300,15 @@ async fn main() {
     let mut scenario = None;
     let mut output = None;
     let mut reference = false;
+    let mut require_gpu = false;
     let mut time = None;
     let mut args = std::env::args_os().skip(1);
     let result = (|| -> Result<(), String> {
         while let Some(arg) = args.next() {
+            if arg == "--require-gpu" {
+                require_gpu = true;
+                continue;
+            }
             if arg == "--render-reference" {
                 if reference {
                     return Err("Duplicate reference option".into());
@@ -324,7 +335,7 @@ async fn main() {
                 Some("--output") => &mut output,
                 _ => {
                     return Err(
-                        "Usage: current-export-comparison [--render-reference --time SECONDS] --scenario PATH --output PATH".into(),
+                        "Usage: current-export-comparison [--require-gpu] [--render-reference --time SECONDS] --scenario PATH --output PATH".into(),
                     )
                 }
             };
@@ -340,7 +351,7 @@ async fn main() {
     let result = match (result, scenario, output) {
         (Ok(()), Some(scenario), Some(output)) => match (reference, time) {
             (true, Some(time)) => render_reference(&scenario, time, &output),
-            (false, None) => run(&scenario, &output).await,
+            (false, None) => run(&scenario, &output, require_gpu).await,
             _ => Err("--render-reference and --time must be used together".into()),
         },
         (Err(error), _, _) => Err(error),

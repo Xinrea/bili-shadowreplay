@@ -1,14 +1,15 @@
-//! Single-threaded Vulkan-renderer to Vulkan Video bridge.
+//! Shared Vulkan rendering/composition with platform-specific encoder frames.
 //!
 //! A borrowed renderer writes the RGB frame pool; libplacebo composites on the
-//! same device into NV12, and FFmpeg's Vulkan Video encoder consumes that pool.
+//! same device into NV12. Vulkan Video consumes that pool directly; macOS
+//! exports MoltenVK textures for a GPU copy into VideoToolbox IOSurfaces.
 //! The compositor can upload a CPU-decoded NV12 base once. Rendered/composited
 //! pixels remain GPU images and are never read back by this bridge.
 
 mod compositor;
-mod sync;
 #[cfg(target_os = "macos")]
 mod macos_runtime;
+mod sync;
 #[cfg(target_os = "macos")]
 mod videotoolbox;
 #[cfg(target_os = "macos")]
@@ -41,13 +42,18 @@ impl HardwareEncoderFrames {
             Self::Vulkan(template) => {
                 let mut result = frame::Video::empty();
                 unsafe {
-                    check(ffi::av_frame_copy_props(result.as_mut_ptr(), template.as_ptr()), "Copy Vulkan template properties")?;
+                    check(
+                        ffi::av_frame_copy_props(result.as_mut_ptr(), template.as_ptr()),
+                        "Copy Vulkan template properties",
+                    )?;
                     let raw = &mut *result.as_mut_ptr();
                     raw.format = ffi::AVPixelFormat::AV_PIX_FMT_VULKAN as i32;
                     raw.width = template.width() as i32;
                     raw.height = template.height() as i32;
                     raw.hw_frames_ctx = ffi::av_buffer_ref((*template.as_ptr()).hw_frames_ctx);
-                    if raw.hw_frames_ctx.is_null() { return Err("Retain Vulkan template pool".into()); }
+                    if raw.hw_frames_ctx.is_null() {
+                        return Err("Retain Vulkan template pool".into());
+                    }
                 }
                 Ok(result)
             }
@@ -60,7 +66,10 @@ impl HardwareEncoderFrames {
         match self {
             Self::Vulkan(_) => Ok(frames),
             #[cfg(target_os = "macos")]
-            Self::VideoToolbox(bridge) => frames.into_iter().map(|frame| bridge.convert(frame)).collect(),
+            Self::VideoToolbox(bridge) => frames
+                .into_iter()
+                .map(|frame| bridge.convert(frame))
+                .collect(),
         }
     }
 }
@@ -196,8 +205,10 @@ impl VulkanVideoOptions {
 
     pub fn validate(&self) -> Result<(), String> {
         self.render_options().validate()?;
-        if self.bit_rate == 0 || self.bit_rate > i64::MAX as u64
-            || self.gop == 0 || self.gop > i32::MAX as u32
+        if self.bit_rate == 0
+            || self.bit_rate > i64::MAX as u64
+            || self.gop == 0
+            || self.gop > i32::MAX as u32
         {
             return Err("Invalid Vulkan video bitrate or GOP".into());
         }
@@ -300,6 +311,10 @@ impl VulkanDevice {
         let mut opts = ptr::null_mut();
         unsafe {
             ffi::av_dict_set(&mut opts, c"limit_queues".as_ptr(), c"1".as_ptr(), 0);
+            // MoltenVK cannot portably render/storage-bind multi-planar YUV
+            // images. Separate R8/RG8 VkImages still represent GPU NV12.
+            #[cfg(target_os = "macos")]
+            ffi::av_dict_set(&mut opts, c"disable_multiplane".as_ptr(), c"1".as_ptr(), 0);
             #[cfg(target_os = "macos")]
             ffi::av_dict_set(
                 &mut opts,
@@ -1029,8 +1044,12 @@ fn prepare_nv12_pool(graph: &mut filter::Graph) -> Result<(), String> {
         return Err("Vulkan conversion must output GPU NV12 frames".into());
     }
     let vk = unsafe { &mut *pool.hwctx.cast::<ffi::AVVulkanFramesContext>() };
-    if vk.format[0] != 1_000_156_003 || vk.format[1] != 0 {
-        return Err("Vulkan compositor requires one G8_B8R8_2PLANE_420_UNORM image per NV12 frame".into());
+    #[cfg(target_os = "macos")]
+    let supported = vk.format[0] == 9 && vk.format[1] == 16 && vk.format[2] == 0;
+    #[cfg(not(target_os = "macos"))]
+    let supported = vk.format[0] == 1_000_156_003 && vk.format[1] == 0;
+    if !supported {
+        return Err("Vulkan compositor received an unsupported NV12 image-plane layout".into());
     }
     if pool.initial_pool_size != 0 {
         return Err("Cannot configure a Vulkan conversion pool with preallocated frames".into());

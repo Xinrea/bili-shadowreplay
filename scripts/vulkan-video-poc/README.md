@@ -1,5 +1,9 @@
 # Windows Vulkan Video PoC
 
+The production macOS path now shares Skia Vulkan/MediaPlan and uses MoltenVK
+with a VideoToolbox GPU-frame adapter. See [macOS VideoToolbox validation](MACOS_VIDEOTOOLBOX.md)
+for both-platform regressions, packaged-runtime checks and the remaining SDK validation issue.
+
 For the measured macOS driver capabilities and standalone GPU-render check, see
 [KosmicKrisp runtime validation](MACOS_KOSMICKRISP.md). The tested SDK 1.4.363.0
 driver runs Skia Vulkan/NV12 conversion but provides no Vulkan Video extensions.

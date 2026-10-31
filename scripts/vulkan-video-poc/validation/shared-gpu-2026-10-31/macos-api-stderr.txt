@@ -1,0 +1,3 @@
+2026-10-31 11:16:51.678 current-export-comparison[60666:47197096] Metal API Validation Enabled
+INFO: Vulkan GPU composition and encoder probe passed: hevc_videotoolbox
+current_export_profile={"bit_rate":10000000,"encoder":"hevc_videotoolbox","frame_processor":true,"gop":120,"options":{"prio_speed":"1"},"renderer":"vulkan-nv12-overlay-v2"}

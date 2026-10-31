@@ -1,0 +1,6 @@
+{
+    "label":  "shared-gpu-benchmark",
+    "arguments":  "test --locked --manifest-path \"C:\\Users\\xinre\\AppData\\Local\\Temp\\bsr-native-gpu-export-20261030\\src-tauri\\Cargo.toml\" --no-default-features --features headless native_gpu_benchmark_submission_modes_with_default_export_parameters -- --ignored --nocapture --test-threads=1",
+    "elapsed_seconds":  92.0695791,
+    "exit_code":  0
+}

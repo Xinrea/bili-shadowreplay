@@ -1,0 +1,199 @@
+
+running 195 tests
+test ffmpeg::audio::native_opus_tests::material_audio_sample_is_a_complete_native_mono_opus_sidecar ... ok
+test ffmpeg::audio::native_opus_tests::material_audio_sample_failures_preserve_previous_sidecars ... ok
+test ffmpeg::audio::native_wav_tests::native_segment_keeps_pcm_boundaries_and_does_not_publish_failed_ranges ... ok
+test ffmpeg::audio::native_wav_tests::cancelling_native_segment_cleans_its_temporary_wav_and_keeps_the_target ... ok
+test ffmpeg::audio::native_wav_tests::native_wav_failures_leave_existing_output_and_remove_temporary_files ... ok
+test ffmpeg::audio::native_wav_tests::native_wav_chunks_join_to_the_complete_audio_without_losing_boundary_samples ... ok
+test ffmpeg::audio::native_wav_tests::native_wav_stereo_resampling_preserves_the_tail_and_format ... ok
+test ffmpeg::audio::preview_audio_tests::sound_is_counted_from_its_first_sample_and_aac_put_on_its_frame_grid ... ok
+test ffmpeg::audio::preview_audio_tests::native_audio_probe_keeps_sample_rate_duration_and_silent_video_behavior ... ok
+test ffmpeg::clip::encoding_tests::material_join_uses_explicit_codec_and_priority ... ok
+test ffmpeg::clip::native_clip_tests::native_clip_failures_leave_existing_output_intact ... ok
+test ffmpeg::clip::native_clip_tests::native_remux_and_trim_read_real_recordings_without_cli ... ok
+test ffmpeg::danmu::tests::an_image_decoded_before_is_not_downloaded_again ... ignored, requires FFmpeg
+test ffmpeg::danmu::tests::download_errors_and_oversized_responses_are_rejected_before_decode ... ok
+test ffmpeg::danmu::tests::downloads_are_deduplicated_and_skip_non_danmu ... ok
+test ffmpeg::danmu::tests::ffmpeg_image_danmu_workflow ... ignored, requires FFmpeg with libx264/libwebp and native Skia renderer
+test ffmpeg::danmu::tests::ffmpeg_preserves_delayed_video_and_shared_danmu_clock ... ignored, requires FFmpeg with libx264 and native Skia renderer
+test ffmpeg::danmu::tests::ffmpeg_text_fallback_without_audio ... ignored, requires FFmpeg with libx264 and native Skia renderer
+test ffmpeg::danmu::tests::image_footprints_match_preview_and_clamp_bad_dimensions ... ok
+test ffmpeg::danmu::tests::image_urls_match_preview_security_policy ... ok
+test ffmpeg::danmu::tests::invalid_options_are_rejected_before_downloading ... ok
+test ffmpeg::clip::encoding_tests::explicit_material_settings_encode_codec_instead_of_copying ... ok
+test ffmpeg::danmu::tests::native_gpu_danmu_export_keeps_real_video_audio_alpha_and_previous_output ... ignored, Requires a Vulkan Video GPU and the FFmpeg 9 SDK
+test ffmpeg::danmu::tests::native_image_normalization_works_without_a_cli_and_keeps_prior_output_on_error ... ok
+test ffmpeg::danmu::tests::only_supported_image_payloads_are_decoded ... ok
+test ffmpeg::danmu::tests::output_fps_preserves_high_rates_and_defaults_to_60 ... ok
+test ffmpeg::danmu::tests::overlay_duration_covers_delayed_video_without_using_absolute_pts ... ok
+test ffmpeg::danmu::tests::text_only_and_vaapi_graphs_have_explicit_output_formats ... ok
+test ffmpeg::general::concat_videos_tests::concat_videos_keeps_audio_aligned_across_a_recording_without_audio ... ok
+test ffmpeg::danmu::tests::native_danmu_export_preserves_sixty_fps_and_copied_audio_without_cli ... ok
+test ffmpeg::general::concat_videos_tests::concat_without_transition_does_not_dump_edit_list_audio_at_join ... ok
+test ffmpeg::general::concat_videos_tests::concat_with_transition_keeps_audio_in_sync_with_video ... ok
+test ffmpeg::general::concat_videos_tests::test_concat_videos_with_chinese_and_brackets ... ok
+test ffmpeg::general::concat_videos_tests::test_concat_videos_with_spaces_and_special_chars ... ok
+test ffmpeg::general::concat_videos_tests::concat_without_transition_normalizes_mismatched_resolutions ... ok
+test ffmpeg::general::native_concat_tests::failed_native_concat_keeps_previous_output_without_cli ... ok
+test ffmpeg::general::native_concat_tests::native_copy_concat_handles_special_paths_and_cleans_lists_without_cli ... ok
+test ffmpeg::general::tests::test_escape_concat_path_plain ... ok
+test ffmpeg::general::tests::test_escape_concat_path_single_quote ... ok
+test ffmpeg::general::tests::test_escape_concat_path_spaces ... ok
+test ffmpeg::general::tests::test_escape_concat_path_square_brackets ... ok
+test ffmpeg::general::tests::test_random_filename ... ok
+test ffmpeg::general::transition_filter_tests::every_xfade_input_is_conformed_first ... ok
+test ffmpeg::general::transition_filter_tests::hardcut_concat_fills_inputs_without_audio_with_silence ... ok
+test ffmpeg::general::transition_filter_tests::hardcut_concat_maps_all_streams_in_order ... ok
+test ffmpeg::general::transition_filter_tests::hardcut_concat_normalizes_mismatched_inputs ... ok
+test ffmpeg::general::transition_filter_tests::implausible_frame_rates_fall_back_to_thirty ... ok
+test ffmpeg::general::transition_filter_tests::matching_frame_rates_only_share_a_time_base ... ok
+test ffmpeg::general::transition_filter_tests::mismatched_frame_rates_follow_the_first_clip ... ok
+test ffmpeg::general::transition_filter_tests::mismatched_sizes_are_put_on_the_hardcut_canvas ... ok
+test ffmpeg::general::transition_filter_tests::three_clips_accumulate_overlap_on_video_and_audio ... ok
+test ffmpeg::general::transition_filter_tests::two_clips_use_matching_xfade_and_acrossfade ... ok
+test ffmpeg::hwaccel::tests::bitrate_replaces_constant_quality_for_libx264 ... ok
+test ffmpeg::hwaccel::tests::bitrate_replaces_hardware_targets ... ok
+test ffmpeg::hwaccel::tests::composited_output_uses_nv12_only_for_hardware_encoders ... ok
+test ffmpeg::hwaccel::tests::encoded_keyframe_gaps_respect_the_120_frame_gop ... ignored, requires FFmpeg/ffprobe with libx264 and libx265; also tests available NVENC/VideoToolbox
+test ffmpeg::hwaccel::tests::explicit_priority_mapping_matches_benchmarked_encoders_and_software ... ok
+test ffmpeg::hwaccel::tests::explicit_settings_use_bitrate_without_constant_quality_or_b_frame_overrides ... ok
+test ffmpeg::hwaccel::tests::legacy_encoding_uses_the_same_gop_with_or_without_manual_bitrate ... ok
+test ffmpeg::hwaccel::tests::native_profiles_preserve_quality_units_and_explicit_hevc_settings ... ok
+test ffmpeg::hwaccel::tests::no_bitrate_keeps_the_default_quality ... ok
+test ffmpeg::hwaccel::tests::quality_args_are_flag_value_pairs ... ok
+test ffmpeg::hwaccel::tests::rendering_is_independent_of_the_encoder_and_changes_cache_identity ... ok
+test ffmpeg::hwaccel::tests::test_hardware_encoders_have_bitrate_targets ... ok
+test ffmpeg::hwaccel::tests::test_quality_args_for_amf ... ok
+test ffmpeg::hwaccel::tests::test_quality_args_for_libx264 ... ok
+test ffmpeg::hwaccel::tests::test_quality_args_for_media_foundation ... ok
+test ffmpeg::hwaccel::tests::test_quality_args_for_nvenc ... ok
+test ffmpeg::hwaccel::tests::test_quality_args_for_qsv ... ok
+test ffmpeg::hwaccel::tests::test_quality_args_for_v4l2m2m ... ok
+test ffmpeg::hwaccel::tests::test_quality_args_for_vaapi ... ok
+test ffmpeg::hwaccel::tests::test_quality_args_for_videotoolbox ... ok
+test ffmpeg::hwaccel::tests::test_vbr_hardware_encoders_have_peak_constraints ... ok
+test ffmpeg::hwaccel::tests::vulkan_speed_profile_preserves_export_limits_and_rejects_quality_downgrade ... ok
+test ffmpeg::metadata::tests::thumbnail_recovers_from_a_seek_past_eof_and_reports_missing_frames ... ok
+test ffmpeg::native_gpu::tests::native_gpu_benchmark_submission_modes_with_default_export_parameters ... ignored, Benchmarks real video on a Vulkan Video GPU without validation layers
+test ffmpeg::native_gpu::tests::native_gpu_export_probes_both_codecs_with_the_media_plan ... ignored, Requires a GPU render/encode backend and FFmpeg 9 SDK
+test ffmpeg::general::concat_videos_tests::transition_conforms_mismatched_sizes_and_frame_rates ... ok
+test ffmpeg::native_gpu::tests::native_gpu_moving_video_keeps_every_frame_audio_and_temporal_content ... ignored, Requires a Vulkan Video GPU and the FFmpeg 9 SDK
+test ffmpeg::native_gpu::tests::native_gpu_probe_rejects_black_missing_overlay_and_linear_alpha ... ok
+test ffmpeg::native_gpu::tests::native_gpu_probe_verifies_the_decoded_cpu_scene_without_a_device ... ok
+test ffmpeg::native_overlay::tests::dropping_guard_closes_a_backpressured_source_without_a_worker ... ok
+test ffmpeg::native_overlay::tests::image_coordinates_and_sizes_share_the_scheduler_scale ... ok
+test ffmpeg::native_overlay::tests::native_alpha_pixels_match_real_cli_exactly ... ok
+test ffmpeg::native_overlay::tests::pooled_native_stream_profiles_real_frames_and_stops_at_primary_eof ... ok
+test ffmpeg::native_overlay::tests::premultiplied_native_stream_matches_straight_preview_on_coloured_backgrounds ... ok
+test ffmpeg::native_overlay::tests::raw_input_is_premultiplied_bgra_and_rounds_up_partial_frames ... ok
+test ffmpeg::native_overlay::tests::rejects_unbounded_work_before_appending_input ... ok
+test ffmpeg::playlist::tests::joined_ranges_report_the_recording_the_output_covers ... ok
+test ffmpeg::playlist::tests::map_uri_before_segment_inherits_the_latest_map ... ok
+test ffmpeg::playlist::tests::parses_map_uri ... ok
+test ffmpeg::playlist::tests::rejects_zero_filled_playlist_without_panicking ... ok
+test ffmpeg::playlist::tests::reports_empty_playlist_without_exposing_content ... ok
+test ffmpeg::playlist::tests::reports_invalid_playlist_without_exposing_content ... ok
+test ffmpeg::native_gpu::tests::native_gpu_moving_reference_samples_change_without_a_device ... ok
+test ffmpeg::playlist::tests::whole_clip_rejects_invalid_settings_before_creating_output ... ok
+test ffmpeg::project::tests::a_clip_longer_than_its_file_keeps_its_timeline_length ... ignored, requires FFmpeg with libx264
+test ffmpeg::project::tests::a_clip_turned_down_sounds_so_in_segments_of_its_own ... ok
+test ffmpeg::project::tests::a_part_cut_within_a_clip_goes_on_in_project_time ... ok
+test ffmpeg::project::tests::a_render_uses_the_segments_it_finds_rendered_again ... ignored, requires FFmpeg with libass and libx264
+test ffmpeg::project::tests::a_see_through_video_overlay_fades_its_alpha_after_rotating ... ok
+test ffmpeg::project::tests::ass_events_are_read_with_their_times ... ok
+test ffmpeg::project::tests::black_after_the_clips_lasts_whole_frames ... ok
+test ffmpeg::project::tests::cancelled_native_project_cleans_worker_assets_and_keeps_previous_export_without_cli ... ok
+test ffmpeg::project::tests::changing_output_settings_invalidates_cached_segments ... ok
+test ffmpeg::project::tests::clips_are_normalized_and_joined_in_order ... ok
+test ffmpeg::project::tests::cuts_between_frames_keep_later_clips_on_the_timeline ... ignored, requires FFmpeg with libx264
+test ffmpeg::project::tests::ffmpeg_lays_overlays_across_segments ... ignored, requires FFmpeg with libx264
+test ffmpeg::project::tests::ffmpeg_lays_videos_and_pictures_over_the_clips ... ignored, requires FFmpeg with libx264
+test ffmpeg::project::tests::ffmpeg_renders_subtitles_and_danmaku_across_segments ... ignored, requires FFmpeg with libass and libx264
+test ffmpeg::project::tests::ffmpeg_renders_subtitles_and_danmaku_on_the_joined_timeline ... ignored, requires FFmpeg with libass and libx264
+test ffmpeg::project::tests::ffmpeg_renders_trimmed_clips_on_one_canvas ... ignored, requires FFmpeg with libx264
+test ffmpeg::project::tests::frame_rate_follows_the_fastest_clip_within_limits ... ok
+test ffmpeg::project::tests::generated_subtitles_burn_what_the_preview_draws ... ignored, requires FFmpeg with libx264 and native system fonts
+test ffmpeg::project::tests::image_only_danmaku_uses_the_native_stream ... ok
+test ffmpeg::project::tests::native_documents_keep_project_time_and_subtitle_danmaku_order ... ok
+test ffmpeg::project::tests::native_font_cache_identity_uses_contents_not_temporary_paths ... ok
+test ffmpeg::project::tests::native_generated_segments_keep_exact_pcm_cache_and_previous_export_without_cli ... ok
+test ffmpeg::project::tests::native_generated_subtitles_render_across_segments ... ignored, requires FFmpeg with libx264 and native system fonts
+test ffmpeg::project::tests::native_gpu_project_cancellation_keeps_previous_export_and_releases_assets ... ignored, Requires a Vulkan Video GPU and the FFmpeg 9 SDK
+test ffmpeg::project::tests::native_gpu_project_segments_keep_audio_cache_and_previous_export ... ignored, Requires a Vulkan Video GPU and the FFmpeg 9 SDK
+test ffmpeg::project::tests::native_renderer_and_font_identity_invalidate_cached_segments ... ok
+test ffmpeg::project::tests::native_stream_skips_external_subtitles_and_empty_segments ... ok
+test ffmpeg::project::tests::only_the_segments_of_a_render_stay_before_it_writes_its_own ... ok
+test ffmpeg::project::tests::overlays_are_laid_over_the_joined_clips_in_order ... ok
+test ffmpeg::project::tests::overlays_go_on_in_the_segments_after_the_one_they_start_in ... ok
+test ffmpeg::project::tests::overlays_running_past_the_clips_show_over_black ... ignored, requires FFmpeg with libx264
+test ffmpeg::project::tests::segment_caches_beyond_the_limit_go_least_recently_used_first ... ok
+test ffmpeg::project::tests::segments_cut_within_a_clip_join_without_a_seam ... ignored, requires FFmpeg with libx264
+test ffmpeg::project::tests::segments_moved_by_whole_frames_keep_their_keys ... ok
+test ffmpeg::project::tests::segments_rendering_at_once_report_one_progress ... ok
+test ffmpeg::project::tests::segments_take_the_image_danmaku_on_screen_during_them ... ok
+test ffmpeg::project::tests::selected_output_settings_render_and_replace_cached_video ... ignored, requires FFmpeg with libx264
+test ffmpeg::project::tests::sounds_are_mixed_on_as_few_lanes_as_they_overlap ... ok
+test ffmpeg::project::tests::sounds_are_placed_by_the_samples_of_the_segment_they_fall_in ... ok
+test ffmpeg::project::tests::sounds_play_on_across_segments_where_they_are_placed ... ignored, requires FFmpeg with libx264
+test ffmpeg::project::tests::subtitles_and_danmaku_moved_by_whole_frames_keep_their_keys ... ok
+test ffmpeg::project_plan::tests::a_clip_shorter_than_a_frame_keeps_its_sound ... ok
+test ffmpeg::project_plan::tests::a_long_clip_is_cut_between_frames_into_segments_of_its_own ... ok
+test ffmpeg::project_plan::tests::an_edit_regroups_only_up_to_the_next_picked_clip ... ok
+test ffmpeg::project_plan::tests::clips_are_grouped_up_to_the_limits ... ok
+test ffmpeg::project_plan::tests::cuts_between_frames_do_not_add_up ... ok
+test ffmpeg::project_plan::tests::picked_clips_start_segments ... ok
+test ffmpeg::project_plan::tests::sound_is_counted_from_each_segment_start ... ok
+test ffmpeg::runner::native_media_tests::failed_native_progress_preserves_output_and_does_not_claim_completion ... ok
+test ffmpeg::runner::native_media_tests::native_progress_finishes_only_after_publication_without_cli ... ok
+test ffmpeg::runner::native_media_tests::partial_outputs_are_removed_but_completed_outputs_are_kept ... ok
+test ffmpeg::subtitle::libass_native_tests::cancelled_public_ass_api_keeps_temp_assets_until_queued_worker_closes ... ok
+test ffmpeg::subtitle::libass_native_tests::native_libass_bad_subtitles_preserve_previous_output_without_a_cli ... ok
+test ffmpeg::subtitle::libass_native_tests::native_libass_draws_styles_and_cue_end_and_copies_audio_without_a_cli ... ok
+test ffmpeg::subtitle::libass_native_tests::native_libass_matches_cli_pixels_for_special_paths_fonts_and_style_overrides ... ok
+test ffmpeg::subtitle::native_srt_tests::native_srt_rejects_invalid_input_and_keeps_previous_output_without_cli ... ok
+test ffmpeg::subtitle::native_srt_tests::native_srt_renders_cue_boundaries_and_copies_audio_without_cli ... ok
+test ffmpeg::subtitle::subtitle_filter_tests::ass_filter_has_no_force_style_override ... ok
+test ffmpeg::subtitle::subtitle_filter_tests::escapes_both_filter_parsers_for_paths_and_style_values ... ok
+test ffmpeg::subtitle::subtitle_filter_tests::fonts_directory_uses_the_same_filter_escaping_as_subtitle_paths ... ok
+test ffmpeg::subtitle::subtitle_filter_tests::native_graph_preserves_source_timeline_and_ends_with_source_video ... ok
+test ffmpeg::subtitle::subtitle_filter_tests::native_srt_burns_color_emoji_and_honors_cue_end ... ignored, requires FFmpeg with libx264 and native system fonts
+test ffmpeg::subtitle::subtitle_filter_tests::srt_style_remains_a_single_filter_option ... ok
+test ffmpeg::subtitle::subtitle_filter_tests::truncated_wav_reports_a_decode_error ... ok
+test ffmpeg::subtitle::subtitle_filter_tests::wav_decodes_to_the_same_f32_samples_as_whisper_conversion ... ok
+test ffmpeg::subtitle_native::tests::all_named_colors_are_supported ... ok
+test ffmpeg::subtitle_native::tests::canonical_resolution_scales_legacy_lengths_and_inline_sizes ... ok
+test ffmpeg::subtitle_native::tests::every_style_field_and_alpha ... ok
+test ffmpeg::subtitle_native::tests::invalid_style_fields_fail_explicitly ... ok
+test ffmpeg::subtitle_native::tests::legacy_alignment_mapping ... ok
+test ffmpeg::subtitle_native::tests::literals_emoji_unknown_tags_and_control_characters ... ok
+test ffmpeg::subtitle_native::tests::malformed_and_out_of_bounds_times_fail ... ok
+test ffmpeg::subtitle_native::tests::native_defaults_and_quotes_are_literal ... ok
+test ffmpeg::subtitle_native::tests::nested_font_restores_every_attribute ... ok
+test ffmpeg::subtitle_native::tests::rich_text_nesting_and_line_breaks ... ok
+test ffmpeg::subtitle_native::tests::times_round_carry_sort_and_omit_collapsed_cues ... ok
+test ffmpeg::subtitle_native::tests::unsupported_recognized_effects_fail ... ok
+test ffmpeg::tests::clip_timeline_anchors_empty_ranges ... ok
+test ffmpeg::tests::clip_timeline_anchors_single_range_stays_at_zero_with_transition ... ok
+test ffmpeg::tests::clip_timeline_anchors_with_transition_subtract_xfade_overlap ... ok
+test ffmpeg::tests::clip_timeline_anchors_without_transition_sum_durations ... ok
+test ffmpeg::tests::test_audio_chunk_directory_structure ... ok
+test ffmpeg::tests::test_check_ffmpeg ... ok
+test ffmpeg::tests::test_encode_video_subtitle_rejects_empty_subtitle ... ok
+test ffmpeg::tests::test_encode_video_subtitle_rejects_missing_subtitle ... ok
+test ffmpeg::tests::test_extract_video_metadata ... ok
+test ffmpeg::tests::test_filename_processing ... ok
+test ffmpeg::tests::test_generate_thumbnail ... ok
+test ffmpeg::tests::test_generate_video_subtitle_errors ... ok
+test ffmpeg::tests::test_get_audio_duration ... ok
+test ffmpeg::tests::test_list_supported_hwaccels ... ok
+test ffmpeg::tests::test_range_creation ... ok
+test ffmpeg::tests::test_range_display ... ok
+test ffmpeg::tests::test_range_duration ... ok
+test ffmpeg::tests::test_range_edge_cases ... ok
+test ffmpeg::tests::test_range_is_in_at_boundaries ... ok
+test ffmpeg::tests::test_range_is_in_inside ... ok
+test ffmpeg::tests::test_range_is_in_outside ... ok
+test ffmpeg::playlist::tests::whole_clip_explicit_settings_cover_missing_empty_and_burned_danmu ... ok
+
+test result: ok. 169 passed; 0 failed; 26 ignored; 0 measured; 321 filtered out; finished in 13.26s

@@ -1,0 +1,9 @@
+
+running 5 tests
+test ffmpeg::danmu::tests::native_gpu_danmu_export_keeps_real_video_audio_alpha_and_previous_output ... ok
+test ffmpeg::native_gpu::tests::native_gpu_export_probes_both_codecs_with_the_media_plan ... ok
+test ffmpeg::native_gpu::tests::native_gpu_moving_video_keeps_every_frame_audio_and_temporal_content ... ok
+test ffmpeg::project::tests::native_gpu_project_cancellation_keeps_previous_export_and_releases_assets ... ok
+test ffmpeg::project::tests::native_gpu_project_segments_keep_audio_cache_and_previous_export ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 511 filtered out; finished in 19.59s

@@ -611,7 +611,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Benchmarks real video on a Vulkan Video GPU without validation layers"]
+    #[ignore = "Benchmarks real video on a GPU render/encode backend without validation layers"]
     async fn native_gpu_benchmark_submission_modes_with_default_export_parameters() {
         use super::VulkanSubmissionMode::{Asynchronous, Synchronous};
 
@@ -657,21 +657,21 @@ mod tests {
                 },
                 ..Default::default()
             };
+            let mut options =
+                super::super::hwaccel::native_video_options(encoder, None, None, Some(&settings))
+                    .unwrap();
+            assert_eq!(options.bit_rate, Some(10_000_000));
+            assert_eq!(options.gop, Some(120));
+            if super::super::hwaccel::is_vulkan_encoder(encoder) {
+                assert_eq!(options.options.get("async_depth").unwrap(), "3");
+            } else {
+                assert_eq!(options.options.get("prio_speed").unwrap(), "1");
+            }
+            options.frame_processor = true;
+            options.frame_rate = FrameRatePolicy::Constant { num: 60, den: 1 };
             let plan = |output: &Path| {
                 let mut plan = moving_plan(&source, output, encoder);
-                let mut options = super::super::hwaccel::native_video_options(
-                    encoder,
-                    None,
-                    None,
-                    Some(&settings),
-                )
-                .unwrap();
-                assert_eq!(options.bit_rate, Some(10_000_000));
-                assert_eq!(options.gop, Some(120));
-                assert_eq!(options.options.get("async_depth").unwrap(), "3");
-                options.frame_processor = true;
-                options.frame_rate = FrameRatePolicy::Constant { num: 60, den: 1 };
-                plan.routes[0].mode = StreamMode::Video(options);
+                plan.routes[0].mode = StreamMode::Video(options.clone());
                 plan
             };
 
@@ -719,8 +719,8 @@ mod tests {
                         Asynchronous => async_seconds.push(seconds),
                     }
                     eprintln!(
-                        "native_gpu_benchmark encoder={encoder} pair={pair} order={position} mode={mode:?} width=1920 height=1080 fps=60 bitrate=10000000 gop=120 async_depth=3 frames={} wall_ms={:.3} encoded_fps={:.3}",
-                        result.video_frames, seconds * 1000.0, result.video_frames as f64 / seconds
+                        "native_gpu_benchmark encoder={encoder} pair={pair} order={position} mode={mode:?} width=1920 height=1080 fps=60 bitrate=10000000 gop=120 encoder_options={:?} frames={} wall_ms={:.3} encoded_fps={:.3}",
+                        options.options, result.video_frames, seconds * 1000.0, result.video_frames as f64 / seconds
                     );
 
                     assert_eq!(result.video_frames, reference_result.video_frames);
@@ -813,7 +813,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires a Vulkan Video GPU and the FFmpeg 9 SDK"]
+    #[ignore = "Requires a GPU render/encode backend and FFmpeg 9 SDK"]
     async fn native_gpu_moving_video_keeps_every_frame_audio_and_temporal_content() {
         let directory = tempfile::tempdir().unwrap();
         let source = Path::new(env!("CARGO_MANIFEST_DIR"))

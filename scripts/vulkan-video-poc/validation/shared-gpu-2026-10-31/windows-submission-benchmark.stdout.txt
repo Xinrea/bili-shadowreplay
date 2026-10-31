@@ -1,0 +1,37 @@
+
+running 1 test
+test ffmpeg::native_gpu::tests::native_gpu_benchmark_submission_modes_with_default_export_parameters ... native_gpu_benchmark_begin encoder=h264_vulkan pair=warmup order=0 mode=Synchronous
+native_gpu_benchmark_end encoder=h264_vulkan pair=warmup order=0 mode=Synchronous
+native_gpu_benchmark_begin encoder=h264_vulkan pair=warmup order=1 mode=Asynchronous
+native_gpu_benchmark_end encoder=h264_vulkan pair=warmup order=1 mode=Asynchronous
+native_gpu_benchmark_begin encoder=h264_vulkan pair=0 order=0 mode=Synchronous
+native_gpu_benchmark_end encoder=h264_vulkan pair=0 order=0 mode=Synchronous
+native_gpu_benchmark_begin encoder=h264_vulkan pair=0 order=1 mode=Asynchronous
+native_gpu_benchmark_end encoder=h264_vulkan pair=0 order=1 mode=Asynchronous
+native_gpu_benchmark_begin encoder=h264_vulkan pair=1 order=0 mode=Asynchronous
+native_gpu_benchmark_end encoder=h264_vulkan pair=1 order=0 mode=Asynchronous
+native_gpu_benchmark_begin encoder=h264_vulkan pair=1 order=1 mode=Synchronous
+native_gpu_benchmark_end encoder=h264_vulkan pair=1 order=1 mode=Synchronous
+native_gpu_benchmark_begin encoder=h264_vulkan pair=2 order=0 mode=Synchronous
+native_gpu_benchmark_end encoder=h264_vulkan pair=2 order=0 mode=Synchronous
+native_gpu_benchmark_begin encoder=h264_vulkan pair=2 order=1 mode=Asynchronous
+native_gpu_benchmark_end encoder=h264_vulkan pair=2 order=1 mode=Asynchronous
+native_gpu_benchmark_begin encoder=hevc_vulkan pair=warmup order=0 mode=Synchronous
+native_gpu_benchmark_end encoder=hevc_vulkan pair=warmup order=0 mode=Synchronous
+native_gpu_benchmark_begin encoder=hevc_vulkan pair=warmup order=1 mode=Asynchronous
+native_gpu_benchmark_end encoder=hevc_vulkan pair=warmup order=1 mode=Asynchronous
+native_gpu_benchmark_begin encoder=hevc_vulkan pair=0 order=0 mode=Synchronous
+native_gpu_benchmark_end encoder=hevc_vulkan pair=0 order=0 mode=Synchronous
+native_gpu_benchmark_begin encoder=hevc_vulkan pair=0 order=1 mode=Asynchronous
+native_gpu_benchmark_end encoder=hevc_vulkan pair=0 order=1 mode=Asynchronous
+native_gpu_benchmark_begin encoder=hevc_vulkan pair=1 order=0 mode=Asynchronous
+native_gpu_benchmark_end encoder=hevc_vulkan pair=1 order=0 mode=Asynchronous
+native_gpu_benchmark_begin encoder=hevc_vulkan pair=1 order=1 mode=Synchronous
+native_gpu_benchmark_end encoder=hevc_vulkan pair=1 order=1 mode=Synchronous
+native_gpu_benchmark_begin encoder=hevc_vulkan pair=2 order=0 mode=Synchronous
+native_gpu_benchmark_end encoder=hevc_vulkan pair=2 order=0 mode=Synchronous
+native_gpu_benchmark_begin encoder=hevc_vulkan pair=2 order=1 mode=Asynchronous
+native_gpu_benchmark_end encoder=hevc_vulkan pair=2 order=1 mode=Asynchronous
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 515 filtered out; finished in 72.05s

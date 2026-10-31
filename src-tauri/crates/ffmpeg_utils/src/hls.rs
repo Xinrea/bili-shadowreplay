@@ -147,6 +147,7 @@ fn record_sync(
             input_base,
             parameters,
             offset,
+            last_dts: None,
             audio_clock: (stream.parameters().medium() == media::Type::Audio)
                 .then(AudioPacketClock::new),
         });
@@ -164,6 +165,7 @@ fn record_sync(
         .output
         .write_header_with(mux_options)
         .map_err(|error| format!("写入 HLS 文件头失败: {error}"))?;
+    let mux_flags = unsafe { (*output.output.format().as_ptr()).flags };
     let read_result = loop {
         if cancelled.load(Ordering::Acquire) {
             return Err("录制已取消".into());
@@ -213,6 +215,22 @@ fn record_sync(
         }
         packet.set_stream(route.output_index);
         packet.set_position(-1);
+        // Like fftools and MediaPlan's muxer, repair live timestamp jitter in
+        // the final output time base. Keep independent clocks for each stream.
+        if mux_flags & ffi::AVFMT_NOTIMESTAMPS == 0 {
+            if let (Some(dts), Some(last)) = (packet.dts(), route.last_dts) {
+                let minimum = last
+                    .checked_add(i64::from(mux_flags & ffi::AVFMT_TS_NONSTRICT == 0))
+                    .ok_or("录制 DTS 溢出")?;
+                if dts < minimum {
+                    if let Some(pts) = packet.pts().filter(|pts| *pts >= dts) {
+                        packet.set_pts(Some(pts.max(minimum)));
+                    }
+                    packet.set_dts(Some(minimum));
+                }
+            }
+        }
+        route.last_dts = packet.dts();
         packet
             .write_interleaved(&mut output.output)
             .map_err(|error| format!("写入录制分片失败: {error}"))?;
@@ -237,6 +255,7 @@ struct Route {
     input_base: Rational,
     parameters: codec::Parameters,
     offset: i64,
+    last_dts: Option<i64>,
     audio_clock: Option<AudioPacketClock>,
 }
 

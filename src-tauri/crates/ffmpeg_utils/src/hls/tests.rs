@@ -109,6 +109,80 @@ async fn finite_live_input_records_video_audio_and_appends_without_a_cli() {
 }
 
 #[tokio::test]
+async fn regressing_and_duplicate_video_dts_keep_all_packets_and_publish_the_tail() {
+    let reference = tempfile::tempdir().unwrap();
+    record(reference.path()).await;
+    let (_, segments, durations) = playlist(reference.path());
+    let expected: Vec<_> = segments.iter().flat_map(|path| packets(path)).collect();
+    // Change one AVC frame in the pending final segment, keeping its payload
+    // and composition offset intact. No CLI is needed to create this fixture.
+    for timestamp in [4800_u32, 4920, 4960] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut data = fs::read(fixture()).unwrap();
+        let mut offset = u32::from_be_bytes(data[5..9].try_into().unwrap()) as usize + 4;
+        let mut changed = false;
+        while offset + 11 <= data.len() {
+            let size = u32::from_be_bytes([0, data[offset + 1], data[offset + 2], data[offset + 3]])
+                as usize;
+            let time = u32::from_be_bytes([
+                data[offset + 7],
+                data[offset + 4],
+                data[offset + 5],
+                data[offset + 6],
+            ]);
+            if data[offset] == 9 && time == 5000 && data[offset + 12] == 1 {
+                let bytes = timestamp.to_be_bytes();
+                data[offset + 4..offset + 7].copy_from_slice(&bytes[1..]);
+                data[offset + 7] = bytes[0];
+                changed = true;
+                break;
+            }
+            offset += 11 + size + 4;
+        }
+        assert!(changed, "fixture must contain the 5000 ms AVC frame");
+        let source = directory.path().join("jitter.flv");
+        fs::write(&source, data).unwrap();
+        record_to_hls(
+            source.to_str().unwrap(),
+            &directory.path().join("playlist.m3u8"),
+            &directory.path().join("%d.ts"),
+            HlsRecordingOptions::default(),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await
+        .unwrap();
+        let (_, actual_segments, actual_durations) = playlist(directory.path());
+        assert_eq!(
+            actual_durations, durations,
+            "pending tail must be published"
+        );
+        let actual: Vec<_> = actual_segments
+            .iter()
+            .flat_map(|path| packets(path))
+            .collect();
+        for codec in [codec::Id::H264, codec::Id::AAC] {
+            let before: Vec<_> = expected.iter().filter(|p| p.codec == codec).collect();
+            let after: Vec<_> = actual.iter().filter(|p| p.codec == codec).collect();
+            assert_eq!(
+                after.len(),
+                before.len(),
+                "no {codec:?} packets may be dropped"
+            );
+            for (a, b) in after.iter().zip(&before) {
+                assert_eq!(a.bytes, b.bytes);
+                assert!(a.pts.unwrap() >= a.dts.unwrap());
+                if codec == codec::Id::AAC {
+                    assert_eq!(a, b, "video repair must not shift audio");
+                }
+            }
+            assert!(after
+                .windows(2)
+                .all(|pair| pair[0].dts.unwrap() < pair[1].dts.unwrap()));
+        }
+    }
+}
+
+#[tokio::test]
 async fn native_hls_matches_cli_segments_packets_and_timing_when_available() {
     if !Command::new(crate::ffmpeg_path())
         .arg("-version")

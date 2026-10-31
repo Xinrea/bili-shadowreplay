@@ -102,7 +102,7 @@ test("presets are canonical, keep the font and are recognized after applying", a
   assert.equal(ids.size, api.SUBTITLE_STYLE_PRESETS.length);
 });
 
-test("flags pasted as 1 are accepted like libass and kept as written", async () => {
+test("boolean style flags pasted as 1 are kept as written", async () => {
   const api = await loadModule();
   const code = replaceFields(api.serializeAssStyle(api.DEFAULT_SUBTITLE_STYLE), { 7: "1", 8: "-1", 9: "0", 10: "1" });
   assert.deepEqual(styleRow(api.parseAssStyle(code).assStyle).slice(7, 11), ["1", "-1", "0", "1"]);

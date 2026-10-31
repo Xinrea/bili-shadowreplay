@@ -21,7 +21,7 @@ FLV 直播录制直接复制音视频包到 event HLS，保留请求头、User-A
 
 兼容完整片段的无损拼接和无转场合并使用原生 concat demuxer，保留时长提示、H.264 参数集转换和 MPEG-TS 默认封装延迟。临时列表由工作线程保留至输入关闭，任务取消后也会清理；不兼容片段、时间轴范围片段与转场也已迁移到共享原生滤镜图，逐输入解码以保留 AAC 预滚和 edit list 行为，支持缺失音轨补静音以及 xfade／acrossfade。
 
-外部 ASS 字幕通过原生 `libavfilter` 的 `subtitles` 滤镜烧录，保留路径转义、`force_style`、`fontsdir`、缩放填充和音轨复制行为。链接的 SDK 必须启用 libass；不会改用 PATH 上的可执行文件补齐组件。SRT 和弹幕使用原生字体渲染器生成有界 BGRA 帧流，经同一原生滤镜图叠加；渲染器与工作线程共同持有临时素材，取消时队列两端都会被唤醒。
+字幕和弹幕由原生 Skia 渲染器绘制，CPU 路径通过有界 BGRA 帧流接入原生滤镜图，GPU 路径使用共享 Vulkan 合成器。项目只处理应用生成的受控 ASS 子集；独立字幕压制处理素材的 SRT。外部 ASS/libass 压制入口已移除，不再要求 SDK 启用 libass 滤镜。渲染器与工作线程共同持有临时素材，取消时队列两端都会被唤醒。
 
 弹幕表情图片也在进程内标准化：仅接受不超过 8 MiB 的本地 PNG/APNG、JPEG、GIF、WebP 普通文件，画布不超过 4,194,304 像素，单线程提取首帧并缩放为不大于 512×512 的 RGBA PNG。压缩 PNG 文本和 ICC 元数据的解压总量另限 8 MiB。失败、取消或十秒超时不会覆盖已有图片；原生调用协作取消，不能强制终止正在运行的解码器。输入限制不等于每任务的硬内存上限，也不会修改进程全局的 FFmpeg 分配限制。
 
@@ -64,7 +64,7 @@ export PATH="$(brew --prefix ffmpeg-full)/bin:$PATH"
 cargo test --manifest-path src-tauri/Cargo.toml -p ffmpeg_utils
 ```
 
-构建示例使用带 libass 的 `ffmpeg-full`；普通 `ffmpeg` formula 未必启用所需字幕滤镜。自定义 SDK 也必须满足上述组件要求。不应把机器上的 `/opt/homebrew` 或 Cellar 绝对路径提交到共享 Cargo 配置。Intel 和 Apple Silicon 发布任务分别固定使用 `macos-15-intel` 和 `macos-15` 原生 runner，保持产品的 macOS 15 最低版本。
+构建示例使用提供完整编解码组件的 `ffmpeg-full`。自定义 SDK 也必须满足上述组件要求。不应把机器上的 `/opt/homebrew` 或 Cellar 绝对路径提交到共享 Cargo 配置。Intel 和 Apple Silicon 发布任务分别固定使用 `macos-15-intel` 和 `macos-15` 原生 runner，保持产品的 macOS 15 最低版本。
 
 `tauri.macos.conf.json` 的 `beforeBundleCommand` 会运行 `scripts/bundle-macos-ffmpeg.mjs`，从最终可执行文件递归收集非系统动态库，将 install name 改为应用内部路径并签名，然后通过 `bundle.macOS.files` 放入 `Contents/Frameworks`。脚本会先读取可执行文件及每个传递依赖的 Mach-O 最低系统版本，若高于产品的 `minimumSystemVersion`（当前 15.0）则拒绝打包；验包时还会按包内 `LSMinimumSystemVersion` 复查。较新 macOS 上安装的 Homebrew bottle 可能要求 26/27，不能仅设置 `MACOSX_DEPLOYMENT_TARGET=15.0` 将其降级，应使用 macOS 15 发布 runner 或为 15 构建的完整 FFmpeg SDK 及匹配依赖。该步骤不修改 Homebrew 原件，也不会改写 Mach-O 最低版本来伪装兼容。打包后的检查命令为：
 

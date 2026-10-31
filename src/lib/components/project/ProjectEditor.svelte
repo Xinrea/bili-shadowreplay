@@ -1693,7 +1693,6 @@
         id: projectId,
         timeline: exported,
         subtitleAss: exportedSubtitles ? exportedAss : null,
-        generatedSubtitle: true,
         overlays: overlayImages,
         target,
         base: parseTimeline(syncedTimeline),

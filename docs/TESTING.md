@@ -159,12 +159,11 @@ Cancellation verifies that network input closes before its worker-owned list is
 released; application tests also run with an empty PATH and retain prior output
 when a later input is missing.
 
-Native libass burn tests use a generated black-video/AAC fixture. They verify
-ASS styles, force-style overrides, event boundaries, escaped paths and fonts
-directories, exact retained audio samples and preservation of existing output
-when subtitles are invalid. On FFmpeg 6/9, ten rendered JPEG frames across two
-styles also match the former CLI byte for byte. Library-only checks run without
-an executable; the pixel oracle is optional when the matching CLI is available.
+Native Skia subtitle tests cover generated styles, color emoji, cue boundaries,
+preview/export agreement, copied audio and invalid-input output retention.
+Project tests exercise generated subtitles and danmaku across segment boundaries
+and invalidate cached segments when subtitle contents or font identity change.
+External ASS/libass burn-in and its CLI parity tests have been removed.
 
 Shared-graph tests compare decoded concat and xfade/acrossfade against matching
 FFmpeg 6/9 commands, including mixed 12/24 fps inputs, explicit 30 fps, every

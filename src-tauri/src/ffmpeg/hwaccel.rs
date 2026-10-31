@@ -142,22 +142,6 @@ pub fn output_format_filter(encoder: &str) -> &'static str {
     }
 }
 
-/// Configure the explicit VAAPI device for optional CLI test oracles.
-#[cfg(test)]
-fn apply_vaapi_device(command: &mut tokio::process::Command) {
-    if let Some(device_path) = vaapi_device_path() {
-        command.args(["-vaapi_device", device_path.to_string_lossy().as_ref()]);
-    } else {
-        log::warn!("VAAPI encoder selected but no /dev/dri/renderD* device was found");
-    }
-}
-
-/// Apply the shared profile to an optional CLI test oracle.
-#[cfg(test)]
-pub(super) fn apply_x264_quality_args(command: &mut tokio::process::Command, encoder: &str) {
-    command.args(quality_args_with_bitrate(encoder, None));
-}
-
 fn with_output_gop(mut args: Vec<String>) -> Vec<String> {
     args.extend(OUTPUT_GOP_ARGS.map(str::to_owned));
     args
@@ -417,29 +401,6 @@ fn native_bit_rate(value: &str) -> Result<u64, String> {
         .ok()
         .and_then(|value| value.checked_mul(multiplier))
         .ok_or_else(|| format!("Invalid native encoder bit rate: {value}"))
-}
-
-/// Configure an encoder/filter for optional CLI test oracles.
-#[cfg(test)]
-pub(super) fn apply_x264_encoder_args(
-    command: &mut tokio::process::Command,
-    encoder: &str,
-    filter: Option<&str>,
-) {
-    if is_vaapi_encoder(encoder) {
-        apply_vaapi_device(command);
-
-        let filter = filter
-            .map(build_vaapi_filter)
-            .unwrap_or_else(|| VAAPI_FILTER_SUFFIX.to_string());
-        command.args(["-vf", filter.as_str()]);
-        command.args(["-c:v", encoder]);
-    } else {
-        if let Some(filter) = filter {
-            command.args(["-vf", filter]);
-        }
-        command.args(["-c:v", encoder]);
-    }
 }
 
 /// Hardware H.264/HEVC encoder names registered by the linked FFmpeg SDK.

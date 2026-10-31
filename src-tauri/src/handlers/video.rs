@@ -2,7 +2,6 @@ use crate::database::task::TaskRow;
 use crate::database::upload::UploadRow;
 use crate::database::video::VideoRow;
 use crate::ffmpeg;
-use crate::handlers::subtitle_fonts::prepare_subtitle_font_directory;
 use crate::handlers::utils::{decode_data_url, get_disk_info_inner};
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
 use crate::recorder_manager::ClipRangeParams;
@@ -1293,24 +1292,11 @@ pub async fn encode_video_subtitle(
     event_id: String,
     id: i64,
     srt_style: String,
-    ass_content: Option<String>,
 ) -> Result<TaskRow, String> {
     let video = state.db.get_video(id).await?;
-    let (filepath, cache) = {
-        let config = state.config.read().await;
-        (
-            Path::new(&config.output).join(&video.file),
-            PathBuf::from(&config.cache),
-        )
-    };
-    // Freeze both ASS and legacy SRT inputs at submission time. Later edits
-    // must not change a job that is waiting in the queue.
-    let subtitle =
-        prepare_subtitle_encoding_input(&filepath, srt_style.clone(), ass_content.as_deref())?;
-    let font_name = ass_content
-        .as_deref()
-        .map(ass_primary_font_name)
-        .transpose()?;
+    let filepath = Path::new(&state.config.read().await.output).join(&video.file);
+    // Freeze SRT at submission time so later edits cannot change a queued job.
+    let subtitle = prepare_subtitle_encoding_input(&filepath, srt_style.clone())?;
     let reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
     let task = TaskRow {
         id: event_id.clone(),
@@ -1320,7 +1306,7 @@ pub async fn encode_video_subtitle(
         metadata: json!({
             "video_id": id,
             "srt_style": srt_style,
-            "subtitle_format": if ass_content.is_some() { "ass" } else { "srt" },
+            "subtitle_format": "srt",
         })
         .to_string(),
         created_at: Utc::now().to_rfc3339(),
@@ -1346,9 +1332,7 @@ pub async fn encode_video_subtitle(
                     SubtitleEncodingJob {
                         video,
                         filepath,
-                        cache,
                         subtitle,
-                        font_name,
                     },
                 )
                 .await;
@@ -1462,31 +1446,22 @@ struct SubtitleEncodingInput {
 struct SubtitleEncodingJob {
     video: VideoRow,
     filepath: PathBuf,
-    cache: PathBuf,
     subtitle: SubtitleEncodingInput,
-    font_name: Option<String>,
 }
 
 fn prepare_subtitle_encoding_input(
     video_path: &Path,
     srt_style: String,
-    ass_content: Option<&str>,
 ) -> Result<SubtitleEncodingInput, String> {
-    let (content, extension, force_style) = if let Some(content) = ass_content {
-        validate_ass_document(content)?;
-        (content.to_string(), ".ass", String::new())
-    } else {
-        let source = video_path.with_extension("srt");
-        let content = std::fs::read_to_string(&source)
-            .map_err(|error| format!("字幕文件不可用：{} ({error})", source.display()))?;
-        if content.trim().is_empty() {
-            return Err(format!("字幕文件为空：{}", source.display()));
-        }
-        (content, ".srt", srt_style)
-    };
+    let source = video_path.with_extension("srt");
+    let content = std::fs::read_to_string(&source)
+        .map_err(|error| format!("字幕文件不可用：{} ({error})", source.display()))?;
+    if content.trim().is_empty() {
+        return Err(format!("字幕文件为空：{}", source.display()));
+    }
     let mut file = tempfile::Builder::new()
         .prefix("bili-shadowreplay-subtitle-")
-        .suffix(extension)
+        .suffix(".srt")
         .tempfile()
         .map_err(|error| format!("创建临时字幕文件失败：{error}"))?;
     file.write_all(content.as_bytes())
@@ -1494,9 +1469,7 @@ fn prepare_subtitle_encoding_input(
     let temporary_subtitle = file.into_temp_path();
     Ok(SubtitleEncodingInput {
         path: temporary_subtitle.to_path_buf(),
-        // The preview and burn-in must use the exact same ASS document. Applying
-        // legacy SRT overrides here would silently change the document's styles.
-        force_style,
+        force_style: srt_style,
         _temporary_subtitle: temporary_subtitle,
     })
 }
@@ -1509,33 +1482,19 @@ async fn encode_video_subtitle_inner(
     let SubtitleEncodingJob {
         video,
         filepath,
-        cache,
         subtitle,
-        font_name,
     } = job;
-    let fonts_directory = if let Some(font_name) = font_name {
-        Some(prepare_subtitle_font_directory(cache, font_name).await?)
-    } else {
-        None
-    };
-    let fonts_path = fonts_directory
-        .as_ref()
-        .map(|directory| directory.path().to_path_buf());
     let SubtitleEncodingInput {
         path,
         force_style,
         _temporary_subtitle,
     } = subtitle;
-    let mut resources = vec![ffmpeg_utils::MediaResourceLease::new(_temporary_subtitle)];
-    if let Some(directory) = fonts_directory {
-        resources.push(ffmpeg_utils::MediaResourceLease::new(directory));
-    }
+    let resources = vec![ffmpeg_utils::MediaResourceLease::new(_temporary_subtitle)];
     let output_filename = ffmpeg::encode_video_subtitle_with_resources(
         reporter,
         &filepath,
         &path,
         force_style,
-        fonts_path.as_deref(),
         resources,
     )
     .await?;
@@ -2134,7 +2093,7 @@ mod subtitle_encoding_tests {
         [Events]\nDialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,字幕\\N第二行\n";
 
     #[test]
-    fn legacy_srt_input_snapshots_content_and_style_and_removes_temporary_file() {
+    fn srt_input_snapshots_content_and_style_and_removes_temporary_file() {
         let dir = tempfile::tempdir().unwrap();
         let video = dir.path().join("clip.mp4");
         let source = video.with_extension("srt");
@@ -2142,12 +2101,9 @@ mod subtitle_encoding_tests {
         std::fs::write(&source, original).unwrap();
         let path;
         {
-            let input = prepare_subtitle_encoding_input(
-                &video,
-                "FontName=Arial,FontSize=24".to_string(),
-                None,
-            )
-            .unwrap();
+            let input =
+                prepare_subtitle_encoding_input(&video, "FontName=Arial,FontSize=24".to_string())
+                    .unwrap();
             path = input.path.clone();
             std::fs::write(&source, "Later edits").unwrap();
             assert_ne!(input.path, source);
@@ -2159,30 +2115,12 @@ mod subtitle_encoding_tests {
     }
 
     #[test]
-    fn legacy_srt_rejects_missing_and_empty_input_before_enqueuing() {
+    fn srt_rejects_missing_and_empty_input_before_enqueuing() {
         let dir = tempfile::tempdir().unwrap();
         let video = dir.path().join("clip.mp4");
-        assert!(prepare_subtitle_encoding_input(&video, String::new(), None).is_err());
+        assert!(prepare_subtitle_encoding_input(&video, String::new()).is_err());
         std::fs::write(video.with_extension("srt"), " \n").unwrap();
-        assert!(prepare_subtitle_encoding_input(&video, String::new(), None).is_err());
-    }
-
-    #[test]
-    fn ass_input_is_preserved_without_srt_overrides_and_removed_after_use() {
-        let path;
-        {
-            let input = prepare_subtitle_encoding_input(
-                Path::new("/videos/clip.mp4"),
-                "FontName=Other,FontSize=99".to_string(),
-                Some(ASS),
-            )
-            .unwrap();
-            path = input.path.clone();
-            assert_eq!(path.extension().unwrap(), "ass");
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), ASS);
-            assert!(input.force_style.is_empty());
-        }
-        assert!(!path.exists());
+        assert!(prepare_subtitle_encoding_input(&video, String::new()).is_err());
     }
 
     #[test]
@@ -2311,7 +2249,7 @@ mod queued_subtitle_tests {
         for id in ["first", "second"] {
             let task = tokio::time::timeout(
                 std::time::Duration::from_secs(1),
-                encode_video_subtitle(state.clone(), id.into(), 1, String::new(), None),
+                encode_video_subtitle(state.clone(), id.into(), 1, String::new()),
             )
             .await
             .expect("submission must return without running the job")
@@ -2364,11 +2302,11 @@ mod queued_subtitle_tests {
     async fn queue_full_marks_submission_failed_instead_of_leaving_it_pending() {
         let dir = tempfile::tempdir().unwrap();
         let state = fixture(dir.path(), 1, false).await;
-        encode_video_subtitle(state.clone(), "first".into(), 1, String::new(), None)
+        encode_video_subtitle(state.clone(), "first".into(), 1, String::new())
             .await
             .unwrap();
         assert_eq!(
-            encode_video_subtitle(state.clone(), "overflow".into(), 1, String::new(), None)
+            encode_video_subtitle(state.clone(), "overflow".into(), 1, String::new())
                 .await
                 .unwrap_err(),
             "Queue is full"
@@ -2698,7 +2636,7 @@ mod queued_subtitle_tests {
     async fn whole_clip_rejected_by_a_full_queue_is_marked_failed() {
         let dir = tempfile::tempdir().unwrap();
         let state = fixture(dir.path(), 1, false).await;
-        encode_video_subtitle(state.clone(), "first".into(), 1, String::new(), None)
+        encode_video_subtitle(state.clone(), "first".into(), 1, String::new())
             .await
             .unwrap();
 

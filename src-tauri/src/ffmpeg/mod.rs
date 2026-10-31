@@ -25,7 +25,7 @@ pub use danmu::{encode_video_danmu, encode_video_danmu_with_settings};
 pub use metadata::{
     check_ffmpeg, check_videos, extract_frame, generate_thumbnail, get_random_thumbnail_timestamp,
 };
-#[allow(unused_imports)]
+#[cfg(test)]
 pub use subtitle::encode_video_subtitle;
 pub use subtitle::{encode_video_subtitle_with_resources, generate_video_subtitle};
 
@@ -321,7 +321,6 @@ mod tests {
             Path::new("tests/video/test.mp4"),
             Path::new("tests/video/does_not_exist.srt"),
             "FontSize=24".to_string(),
-            None,
         )
         .await;
 
@@ -339,7 +338,6 @@ mod tests {
             Path::new("tests/video/test.mp4"),
             &empty_srt,
             "FontSize=24".to_string(),
-            None,
         )
         .await;
 

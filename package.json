@@ -36,7 +36,6 @@
     "@tauri-apps/plugin-shell": "~2",
     "@tauri-apps/plugin-sql": "~2",
     "@tauri-apps/plugin-updater": "2.9.0",
-    "libass-wasm": "4.1.0",
     "lucide-svelte": "^0.479.0",
     "marked": "^16.1.1",
     "qrcode": "^1.5.4",

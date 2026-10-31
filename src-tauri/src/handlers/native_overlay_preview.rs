@@ -18,8 +18,8 @@ fn validate_preview(ass_content: &str, time: f64, font_name: &str) -> Result<(),
     Ok(())
 }
 
-/// Only app-generated, active-event ASS documents belong here. External ASS
-/// keeps its existing libass path. Style/font fields in the document remain
+/// Only app-generated, active-event ASS documents belong here.
+/// Style/font fields in the document remain
 /// authoritative; font_name is not interpreted as a filesystem path.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn render_generated_subtitle_preview(

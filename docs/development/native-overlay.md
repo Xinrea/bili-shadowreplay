@@ -100,7 +100,7 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml -p ffmpeg_utils --featu
 
 测试覆盖颜色与透明度、BT.709/sRGB 转换、H.264/HEVC、短尾排空、帧时间戳、音频、取消及帧资源生命周期。输出校验使用独立参考；正式导出仍只调用 FFmpeg 库。
 
-共享 compute 支持 `iec61966-2-1`（sRGB）视频输入：在 GPU 内先将视频的 sRGB 传递曲线转换为 BT.709，再合成现有 Skia 预乘 RGBA 叠层，输出 BT.709 NV12。转换按实际 AVFrame 判断，支持拼接时切换传递曲线，不新增 CPU 帧回读。整场录播/弹幕压制和仅使用原生 Skia 叠层的项目可走此路径；带前置 CPU 图片/视频叠层或外部 libass 字幕的项目仍保留 BT.709 预检，避免对已经混合的颜色执行错误转换。
+共享 compute 支持 `iec61966-2-1`（sRGB）视频输入：在 GPU 内先将视频的 sRGB 传递曲线转换为 BT.709，再合成现有 Skia 预乘 RGBA 叠层，输出 BT.709 NV12。转换按实际 AVFrame 判断，支持拼接时切换传递曲线，不新增 CPU 帧回读。整场录播/弹幕压制和仅使用原生 Skia 叠层的项目可走此路径；带前置 CPU 图片/视频叠层的项目仍保留 BT.709 预检，避免对已经混合的颜色执行错误转换。
 
 ## Linux：Ubuntu 24.04 起
 
@@ -150,3 +150,7 @@ AppImage 也受到构建系统 ABI 和系统运行库的限制，不代表兼容
 Docker 的构建阶段与运行阶段应保持在同一 **Debian trixie** 基线上，分别安装对应的开发包和运行库。不要只升级 builder 后继续使用旧版 Debian runtime，也不要把 Ubuntu 构建出的二进制直接复制到 Debian 镜像中。容器使用自身的用户态运行库，不要求宿主机安装上述 Ubuntu 桌面依赖；使用方式见 [Docker 部署](../getting-started/installation/docker.md)。
 
 发布前仍需在 Linux CI 或对应系统上完成实际源码编译、原生渲染测试和安装包冒烟测试，并检查二进制的动态依赖（例如 `ldd`）是否都能在目标系统解析。仅检查 workflow、配置或文档不能替代这些验证。
+
+## 字幕入口
+
+应用生成的项目字幕和弹幕使用 Skia；独立字幕压制读取素材的 SRT，经受控转换后也由 Skia 绘制。项目导出及投稿保留 `subtitleAss` 作为应用生成字幕的内部传输格式，统一走 Skia，不再接受 `generatedSubtitle` 模式选择。独立压制删除 `assContent` 参数，外部 ASS 的 libass 兼容分支已移除。字幕预览继续使用 `render_generated_subtitle_preview`，其中的 `assContent` 是应用生成的受控字幕文档。

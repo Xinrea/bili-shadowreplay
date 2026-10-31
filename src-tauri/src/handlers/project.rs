@@ -1013,7 +1013,6 @@ pub(crate) async fn project_upload_video(
     event_id: &str,
     id: i64,
     subtitle_ass: Option<String>,
-    generated_subtitle: bool,
     overlay_images: Vec<OverlayImage>,
     directory: &Path,
 ) -> Result<(PathBuf, Option<oneshot::Receiver<Result<(), String>>>), String> {
@@ -1033,7 +1032,6 @@ pub(crate) async fn project_upload_video(
         title: project.title.clone(),
         metadata: json!({ "project_id": project.id, "title": project.title }),
         subtitle_ass: subtitle_ass.filter(|_| timeline.has_visible_subtitles()),
-        generated_subtitle,
         overlay_images,
         timeline,
         materials: &materials,
@@ -1081,7 +1079,6 @@ pub(crate) async fn material_danmu_video(
         materials: &materials,
         audio: &audio,
         subtitle_ass: None,
-        generated_subtitle: false,
         overlay_images: Vec::new(),
         danmu_options: danmu_options(state).await,
         project: None,
@@ -1220,7 +1217,6 @@ struct ExportSource<'a> {
     /// The files of the audio library it plays.
     audio: &'a HashMap<i64, AudioRow>,
     subtitle_ass: Option<String>,
-    generated_subtitle: bool,
     /// Pictures of the text and sticker overlays.
     overlay_images: Vec<OverlayImage>,
     danmu_options: Danmu2AssOptions,
@@ -1232,10 +1228,9 @@ impl ExportSource<'_> {
     /// Identifies what rendering this source contains.
     fn render_hash(&self, pipeline: hwaccel::RenderPipeline) -> String {
         let mut extra = format!(
-            "encoder:{}\nrenderer:{}\nnative:{}:{}\n",
+            "encoder:{}\nrenderer:{}\nnative:{}\n",
             pipeline.encoder,
             pipeline.cache_identity(),
-            self.generated_subtitle,
             native_overlay::RENDERER_VERSION
         );
         extra.push_str(&serde_json::to_string(&self.timeline.render_settings).unwrap());
@@ -1275,7 +1270,6 @@ struct ExportJob {
     /// Each audio library file's path, by id.
     audio_files: HashMap<i64, PathBuf>,
     subtitle_ass: Option<String>,
-    generated_subtitle: bool,
     font_name: Option<String>,
     /// The picture of each text and sticker overlay, by id.
     overlay_images: HashMap<String, DecodedOverlayImage>,
@@ -1296,7 +1290,6 @@ pub async fn export_project(
     id: i64,
     timeline: Timeline,
     subtitle_ass: Option<String>,
-    generated_subtitle: Option<bool>,
     overlays: Option<Vec<OverlayImage>>,
     target: Option<String>,
     base: Option<Timeline>,
@@ -1334,7 +1327,6 @@ pub async fn export_project(
         materials: &materials,
         audio: &audio,
         subtitle_ass,
-        generated_subtitle: generated_subtitle.unwrap_or(false),
         overlay_images: overlays.unwrap_or_default(),
         danmu_options: danmu_options(&state).await,
         project: Some(project.id),
@@ -1378,7 +1370,6 @@ async fn queue_export(
         materials,
         audio,
         subtitle_ass,
-        generated_subtitle,
         overlay_images,
         danmu_options,
         project,
@@ -1435,7 +1426,6 @@ async fn queue_export(
             .collect(),
         timeline,
         subtitle_ass,
-        generated_subtitle,
         font_name,
         overlay_images,
         danmu_options,
@@ -1679,7 +1669,6 @@ async fn render_timeline(
             overlays,
             sounds,
             subtitle_ass: job.subtitle_ass.clone(),
-            generated_subtitle: job.generated_subtitle,
             fonts_directory: fonts_path.as_deref(),
             danmus,
             danmu_options: job.danmu_options.clone(),
@@ -2320,7 +2309,6 @@ mod tests {
             materials: &materials,
             audio: &audio,
             subtitle_ass: None,
-            generated_subtitle: false,
             overlay_images: images,
             danmu_options: Danmu2AssOptions::default(),
             project: None,
@@ -2364,7 +2352,7 @@ mod tests {
             plain.render_hash(hwaccel::RenderPipeline::gpu("hevc_videotoolbox"))
         );
         let mut extra = format!(
-            "encoder:libx265\nrenderer:cpu-bgra-overlay-v1\nnative:false:{}\n",
+            "encoder:libx265\nrenderer:cpu-bgra-overlay-v1\nnative:{}\n",
             native_overlay::RENDERER_VERSION,
         );
         extra.push_str(&serde_json::to_string(&timeline.render_settings).unwrap());

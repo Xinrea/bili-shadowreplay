@@ -22,7 +22,7 @@ static FONT_FAMILIES: OnceLock<Vec<SubtitleFontFamily>> = OnceLock::new();
 const FONT_CACHE_DIRECTORY: &str = "subtitle-fonts";
 const FONT_EXTENSIONS: &[&str] = &["ttf", "otf", "ttc", "otc"];
 
-// Native libass asks the platform font provider for missing glyphs
+// Native subtitle rendering uses platform fonts for missing glyphs
 // (DirectWrite, CoreText or fontconfig). Prefer the family each provider
 // normally returns for Simplified Chinese, so the preview's only CJK fallback
 // is the one used when burning.
@@ -54,21 +54,15 @@ const CJK_FAMILIES: &[&str] = &[
     "Droid Sans Fallback",
 ];
 
-#[derive(Debug, Serialize)]
-pub struct SubtitlePreviewFont {
-    /// Actual family name, including when the requested family was unavailable.
-    family: String,
-    /// Path relative to the existing cache static-file root.
+#[derive(Debug)]
+struct CachedSubtitleFont {
+    /// Path relative to the font cache root.
     file: String,
-    /// Whether this file matched the requested family, including localized aliases.
-    requested: bool,
-    /// Whether this file is the CJK fallback native libass is expected to use.
-    fallback: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SubtitleFontFamily {
-    /// Name written to the ASS style; native and WASM libass both match it.
+    /// Name written to the ASS style; Skia resolves it using the encoding machine's fonts.
     family: String,
     /// Chinese family name shown beside `family`, when the font provides one.
     localized: Option<String>,
@@ -78,10 +72,7 @@ pub struct SubtitleFontFamily {
 
 #[derive(Debug)]
 struct FontFile {
-    family: String,
     path: PathBuf,
-    requested: bool,
-    fallback: bool,
 }
 
 fn system_fonts() -> &'static Database {
@@ -118,17 +109,7 @@ fn family_files(database: &Database, family: &str) -> Vec<FontFile> {
         if !is_supported_font(path) || !seen.insert(path.clone()) {
             continue;
         }
-        let actual_family = face
-            .families
-            .first()
-            .map(|(name, _)| name.as_str())
-            .unwrap_or(family);
-        files.push(FontFile {
-            family: actual_family.to_string(),
-            path: path.clone(),
-            requested: false,
-            fallback: false,
-        });
+        files.push(FontFile { path: path.clone() });
     }
     files.sort_by(|left, right| left.path.cmp(&right.path));
     files
@@ -162,18 +143,14 @@ fn requested_family_files(database: &Database, requested: &str) -> Vec<FontFile>
 fn select_font_files(database: &Database, requested: &str) -> Vec<FontFile> {
     let mut selected: Vec<FontFile> = Vec::new();
     let mut add = |font: FontFile| {
-        if let Some(existing) = selected.iter_mut().find(|other| other.path == font.path) {
-            existing.requested |= font.requested;
-            existing.fallback |= font.fallback;
-        } else {
+        if !selected.iter().any(|other| other.path == font.path) {
             selected.push(font);
         }
     };
 
     // Keep the requested family first, then one explicit Chinese fallback and
-    // the system sans face. libass performs glyph/style selection from them.
-    for mut font in requested_family_files(database, requested) {
-        font.requested = true;
+    // the system sans face. Skia performs glyph/style selection from them.
+    for font in requested_family_files(database, requested) {
         add(font);
     }
     if let Some(files) = CJK_FAMILIES
@@ -181,8 +158,7 @@ fn select_font_files(database: &Database, requested: &str) -> Vec<FontFile> {
         .map(|family| family_files(database, family))
         .find(|files| !files.is_empty())
     {
-        for mut font in files {
-            font.fallback = true;
+        for font in files {
             add(font);
         }
     }
@@ -305,9 +281,9 @@ fn hex_digest(parts: &[&[u8]]) -> String {
 }
 
 /// Copy a system font into a cache shared by every font name. Files are named
-/// `<source>-<version>` so a changed system font gets a new URL, and the
+/// `<source>-<version>` so a changed system font gets a new cache identity, and the
 /// previous copy of that source is removed.
-fn cache_font(font: FontFile, cache_root: &Path) -> Result<SubtitlePreviewFont, String> {
+fn cache_font(font: FontFile, cache_root: &Path) -> Result<CachedSubtitleFont, String> {
     let metadata =
         std::fs::metadata(&font.path).map_err(|error| format!("读取系统字幕字体失败：{error}"))?;
     let modified = metadata
@@ -339,11 +315,8 @@ fn cache_font(font: FontFile, cache_root: &Path) -> Result<SubtitlePreviewFont, 
             remove_previous_versions(&directory, &source_key, &file_name);
         }
     }
-    Ok(SubtitlePreviewFont {
-        family: font.family,
+    Ok(CachedSubtitleFont {
         file: format!("{FONT_CACHE_DIRECTORY}/{file_name}"),
-        requested: font.requested,
-        fallback: font.fallback,
     })
 }
 
@@ -401,21 +374,10 @@ fn remove_previous_versions(directory: &Path, source_key: &str, current: &str) {
     }
 }
 
-/// Supply the WASM renderer with installed font files also supplied to native
-/// libass, rather than relying on unrelated browser web fonts.
-#[cfg_attr(feature = "gui", tauri::command)]
-pub async fn get_subtitle_preview_fonts(
-    state: state_type!(),
-    font_name: String,
-) -> Result<Vec<SubtitlePreviewFont>, String> {
-    let cache_root = PathBuf::from(&state.config.read().await.cache);
-    prepare_subtitle_fonts(cache_root, font_name).await
-}
-
-pub async fn prepare_subtitle_fonts(
+async fn prepare_subtitle_fonts(
     cache_root: PathBuf,
     font_name: String,
-) -> Result<Vec<SubtitlePreviewFont>, String> {
+) -> Result<Vec<CachedSubtitleFont>, String> {
     let font_name = font_name.trim().to_string();
     if font_name.len() > 512 || font_name.contains('\0') {
         return Err("字幕字体名称无效".to_string());
@@ -434,8 +396,8 @@ pub async fn prepare_subtitle_fonts(
     .map_err(|error| format!("加载系统字幕字体失败：{error}"))?
 }
 
-/// Build an FFmpeg `fontsdir` holding exactly the preview's font files. libass
-/// loads every file in that directory, so the shared cache cannot be used.
+/// Snapshot the selected font files for Skia rendering and cache identity.
+/// Each job retains its own links even when the shared font cache is refreshed.
 /// The directory is removed when the returned value is dropped.
 pub async fn prepare_subtitle_font_directory(
     cache_root: PathBuf,
@@ -449,7 +411,7 @@ pub async fn prepare_subtitle_font_directory(
 
 fn link_font_directory(
     cache_root: &Path,
-    fonts: &[SubtitlePreviewFont],
+    fonts: &[CachedSubtitleFont],
 ) -> Result<tempfile::TempDir, String> {
     // Stay on the cache volume so hard links normally succeed without copying.
     let directory = tempfile::Builder::new()
@@ -583,10 +545,7 @@ mod tests {
 
     fn font_file(path: &Path) -> FontFile {
         FontFile {
-            family: "Arial".to_string(),
             path: path.to_path_buf(),
-            requested: true,
-            fallback: false,
         }
     }
 
@@ -627,15 +586,19 @@ mod tests {
         );
         let fonts = select_font_files(&database, "arial");
         assert_eq!(fonts.len(), 3);
-        assert!(fonts[..2]
-            .iter()
-            .all(|font| font.family == "Arial" && font.requested && !font.fallback));
-        assert_eq!(fonts[2].family, CJK_FAMILIES[0]);
-        assert!(fonts[2].fallback && !fonts[2].requested);
+        let paths: Vec<_> = fonts.iter().map(|font| font.path.as_path()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                Path::new("/fonts/bold.ttf"),
+                Path::new("/fonts/regular.ttf"),
+                Path::new("/fonts/cjk.ttc"),
+            ]
+        );
     }
 
     #[test]
-    fn a_requested_cjk_family_is_also_marked_as_the_fallback() {
+    fn a_requested_cjk_family_is_not_duplicated_as_fallback() {
         let mut database = Database::new();
         add_face(
             &mut database,
@@ -645,7 +608,7 @@ mod tests {
         );
         let fonts = select_font_files(&database, CJK_FAMILIES[0]);
         assert_eq!(fonts.len(), 1);
-        assert!(fonts[0].requested && fonts[0].fallback);
+        assert_eq!(fonts[0].path, Path::new("/fonts/cjk.ttc"));
     }
 
     #[test]
@@ -660,7 +623,6 @@ mod tests {
         let fonts = select_font_files(&database, "/private/secret.ttf");
         assert_eq!(fonts.len(), 1);
         assert_eq!(fonts[0].path, Path::new("/fonts/regular.ttf"));
-        assert!(!fonts[0].requested);
         assert!(requested_family_files(&database, "/private/secret.ttf").is_empty());
     }
 
@@ -691,7 +653,6 @@ mod tests {
         for requested in ["微软雅黑", "Microsoft YaHei", "sans-serif", "sans"] {
             let fonts = requested_family_files(&database, requested);
             assert_eq!(fonts.len(), 1, "{requested}");
-            assert_eq!(fonts[0].family, "Microsoft YaHei");
             assert_eq!(fonts[0].path, Path::new("/fonts/yahei.ttc"));
         }
     }

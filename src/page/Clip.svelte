@@ -1,11 +1,13 @@
 <script lang="ts">
   import { formatTimecode } from "../lib/time-format";
+  import { trapFocus } from "../lib/focus-trap";
   import { createStateRefresh, watchStateChanges } from "../lib/state-refresh";
   import { invoke, get_static_url } from "../lib/invoker";
   import type { ProjectItem } from "../lib/interface";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
   import DeleteConfirmActions from "../lib/components/DeleteConfirmActions.svelte";
   import { onMount } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
   import {
     Calendar,
     Clapperboard,
@@ -30,7 +32,8 @@
   let selectedRoomId: string | null = $state(null);
   let search = $state("");
   let sortBy: "updated_at" | "created_at" | "title" | "duration" = $state("updated_at");
-  let projectToDelete: ProjectRow | null = $state(null);
+  const selectedProjects = new SvelteSet<number>();
+  let projectsToDelete: ProjectRow[] | null = $state(null);
   let projectToNote: ProjectRow | null = $state(null);
   let editingNote = $state("");
   let creating = $state(false);
@@ -56,6 +59,16 @@
             return new Date(b[sortBy]).getTime() - new Date(a[sortBy]).getTime();
         }
       });
+  });
+  let selected = $derived(filtered.filter((project) => selectedProjects.has(project.id)));
+  let allSelected = $derived(filtered.length > 0 && selected.length === filtered.length);
+
+  $effect(() => {
+    // Keep selection within the current results, including after a remote deletion.
+    const visibleIds = new Set(filtered.map((project) => project.id));
+    for (const id of selectedProjects) {
+      if (!visibleIds.has(id)) selectedProjects.delete(id);
+    }
   });
 
   const stateRefresh = createStateRefresh(async () => {
@@ -125,10 +138,37 @@
     }
   }
 
-  async function deleteProject(project: ProjectRow) {
-    await invoke("delete_project", { id: project.id });
-    await stateRefresh.run();
-    projectToDelete = null;
+  function toggleProjectSelection(id: number) {
+    if (selectedProjects.has(id)) selectedProjects.delete(id);
+    else selectedProjects.add(id);
+  }
+
+  function selectAllProjects() {
+    if (allSelected) selectedProjects.clear();
+    else filtered.forEach((project) => selectedProjects.add(project.id));
+  }
+
+  function confirmDelete(project: ProjectRow | null = null) {
+    const targets = project ? [project] : selected;
+    if (targets.length > 0) projectsToDelete = [...targets];
+  }
+
+  async function deleteProjects() {
+    // Snapshot the confirmed targets: background refreshes may replace the list.
+    const targets = [...(projectsToDelete ?? [])];
+    if (targets.length === 0) return;
+    try {
+      for (const project of targets) {
+        await invoke("delete_project", { id: project.id });
+        selectedProjects.delete(project.id);
+        projects = projects.filter((item) => item.id !== project.id);
+        // On failure, retry only the failed and unattempted projects.
+        projectsToDelete = projectsToDelete!.filter((item) => item.id !== project.id);
+      }
+    } finally {
+      await stateRefresh.run();
+    }
+    projectsToDelete = null;
   }
 
   function openNoteDialog(project: ProjectRow) {
@@ -207,6 +247,19 @@
       </div>
     </div>
 
+    {#if selected.length > 0}
+      <div class="ui-card flex items-center justify-between gap-3 px-4 py-2.5">
+        <span class="text-[12px] text-fg-secondary">已选择 {selected.length} 个切片</span>
+        <div class="flex items-center gap-2">
+          <button class="ui-btn" onclick={() => selectedProjects.clear()}>取消选择</button>
+          <button class="ui-btn ui-btn-danger" onclick={() => confirmDelete()}>
+            <Trash2 class="h-3.5 w-3.5" />
+            <span>删除选中</span>
+          </button>
+        </div>
+      </div>
+    {/if}
+
     <div class="ui-card overflow-hidden">
       {#if loading}
         <div class="flex flex-col items-center justify-center space-y-3 p-12 text-[12px] text-fg-muted">
@@ -228,6 +281,16 @@
           <table class="w-full table-fixed whitespace-nowrap">
             <thead>
               <tr class="border-b border-line bg-control/60">
+                <th class="w-12 px-4 py-2.5 text-left">
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    indeterminate={selected.length > 0 && !allSelected}
+                    onchange={selectAllProjects}
+                    class="ui-checkbox"
+                    aria-label="全选当前筛选结果中的切片"
+                  />
+                </th>
                 <th class="w-80 px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted">切片</th>
                 <th class="w-28 px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted">直播间</th>
                 <th class="w-32 px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted">内容</th>
@@ -238,7 +301,16 @@
             </thead>
             <tbody class="divide-y divide-line">
               {#each filtered as project (project.id)}
-                <tr class="group transition-colors hover:bg-control-hover/50">
+                <tr class="group transition-colors hover:bg-control-hover/50 {selectedProjects.has(project.id) ? 'bg-accent-soft/40' : ''}">
+                  <td class="w-12 px-4 py-2.5">
+                    <input
+                      type="checkbox"
+                      checked={selectedProjects.has(project.id)}
+                      onchange={() => toggleProjectSelection(project.id)}
+                      class="ui-checkbox"
+                      aria-label={`选择切片「${project.title || "未命名切片"}」`}
+                    />
+                  </td>
                   <td class="px-4 py-2.5">
                     <button
                       class="flex w-full items-center gap-3 text-left"
@@ -319,7 +391,7 @@
                       <button
                         class="action-button hover:bg-danger-soft"
                         title="删除"
-                        onclick={() => (projectToDelete = project)}
+                        onclick={() => confirmDelete(project)}
                       >
                         <Trash2 class="h-3.5 w-3.5 text-danger-fg" />
                       </button>
@@ -335,20 +407,40 @@
   </div>
 </div>
 
-{#if projectToDelete}
+{#if projectsToDelete}
   <div class="ui-modal-backdrop">
-    <div class="ui-modal w-[400px] max-w-full">
+    <div
+      use:trapFocus
+      class="ui-modal w-[400px] max-w-full"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="project-delete-title"
+      tabindex="-1"
+    >
       <div class="space-y-4 p-6">
         <div class="space-y-2 text-center">
-          <h3 class="text-[14px] font-semibold text-fg">确认删除</h3>
+          <h3 id="project-delete-title" class="text-[14px] font-semibold text-fg">确认删除</h3>
           <p class="text-[12px] text-fg-muted">
-            确定要删除切片「{projectToDelete.title || "未命名切片"}」吗？
+            {#if projectsToDelete.length === 0}
+              切片已删除，正在刷新列表…
+            {:else if projectsToDelete.length === 1}
+              确定要删除切片「{projectsToDelete[0].title || "未命名切片"}」吗？
+            {:else}
+              确定要删除选中的 {projectsToDelete.length} 个切片吗？
+            {/if}
           </p>
+          {#if projectsToDelete.length > 1}
+            <ul class="max-h-28 overflow-y-auto text-[12px] text-fg custom-scrollbar-light">
+              {#each projectsToDelete as project (project.id)}
+                <li class="truncate" title={project.title || "未命名切片"}>「{project.title || "未命名切片"}」</li>
+              {/each}
+            </ul>
+          {/if}
           <p class="text-[11px] text-fg-muted">素材不会被删除，切片的导出文件和封面会一并删除。</p>
         </div>
         <DeleteConfirmActions
-          oncancel={() => (projectToDelete = null)}
-          onconfirm={() => deleteProject(projectToDelete!)}
+          oncancel={() => (projectsToDelete = null)}
+          onconfirm={deleteProjects}
         />
       </div>
     </div>

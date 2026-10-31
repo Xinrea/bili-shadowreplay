@@ -177,3 +177,94 @@ test("material batch retains only failed and unattempted IDs for retry", async (
   assert.deepEqual([...context.selectedVideos], [2, 3]);
   assert.equal(closed, false);
 });
+
+test("project batch deletes only confirmed targets even if selection and results change", async () => {
+  const text = await read("src/page/Clip.svelte");
+  const projects = [1, 2, 3].map((id) => ({ id, title: `Project ${id}` }));
+  const calls = [];
+  const context = vm.createContext({
+    projects,
+    selected: projects.slice(0, 2),
+    selectedProjects: new Set([1, 2]),
+    projectsToDelete: null,
+    invoke: async (command, { id }) => {
+      assert.equal(command, "delete_project");
+      calls.push(id);
+      // A background refresh can replace the visible results during deletion.
+      context.projects = [];
+    },
+    stateRefresh: { run: async () => {} },
+  });
+  vm.runInContext(scriptCode(text, ["confirmDelete", "deleteProjects"]), context);
+  context.confirmDelete();
+  assert.deepEqual(Array.from(context.projectsToDelete, ({ id }) => id), [1, 2]);
+  context.selected = [projects[2]];
+  context.selectedProjects.clear();
+  context.selectedProjects.add(3);
+  await context.deleteProjects();
+  assert.deepEqual(calls, [1, 2]);
+  assert.deepEqual([...context.selectedProjects], [3]);
+  assert.equal(context.projectsToDelete, null);
+});
+
+test("project batch refreshes after partial failure and retries only unfinished deletions", async () => {
+  const text = await read("src/page/Clip.svelte");
+  const projects = [1, 2, 3, 4].map((id) => ({ id, title: `Project ${id}` }));
+  const calls = [];
+  let fail = true;
+  let refreshes = 0;
+  const refresh = deferred();
+  const context = vm.createContext({
+    projects,
+    selected: projects.slice(0, 3),
+    selectedProjects: new Set([1, 2, 3]),
+    projectsToDelete: null,
+    invoke: async (_command, { id }) => {
+      calls.push(id);
+      if (id === 2 && fail) throw new Error("busy");
+    },
+    stateRefresh: { run: async () => {
+      refreshes++;
+      if (!fail) await refresh.promise;
+    } },
+  });
+  vm.runInContext(scriptCode(text, ["confirmDelete", "deleteProjects"]), context);
+  context.confirmDelete();
+  await assert.rejects(context.deleteProjects(), /busy/);
+  assert.equal(refreshes, 1);
+  assert.deepEqual(Array.from(context.projectsToDelete, ({ id }) => id), [2, 3]);
+  assert.deepEqual(Array.from(context.projects, ({ id }) => id), [2, 3, 4]);
+  assert.deepEqual([...context.selectedProjects], [2, 3]);
+
+  fail = false;
+  const retry = context.deleteProjects();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, [1, 2, 2, 3]);
+  assert.notEqual(context.projectsToDelete, null, "keep the modal until refresh completes");
+  refresh.resolve();
+  await retry;
+  assert.equal(refreshes, 2);
+  assert.equal(context.projectsToDelete, null);
+  assert.deepEqual(Array.from(context.projects, ({ id }) => id), [4]);
+  assert.equal(context.selectedProjects.size, 0);
+});
+
+test("single project deletion leaves other selected projects intact", async () => {
+  const text = await read("src/page/Clip.svelte");
+  const projects = [1, 2].map((id) => ({ id, title: `Project ${id}` }));
+  const calls = [];
+  const context = vm.createContext({
+    projects,
+    selected: projects,
+    selectedProjects: new Set([1, 2]),
+    projectsToDelete: null,
+    invoke: async (_command, { id }) => { calls.push(id); },
+    stateRefresh: { run: async () => {} },
+  });
+  vm.runInContext(scriptCode(text, ["confirmDelete", "deleteProjects"]), context);
+  context.confirmDelete(projects[0]);
+  await context.deleteProjects();
+  assert.deepEqual(calls, [1]);
+  assert.deepEqual([...context.selectedProjects], [2]);
+  assert.deepEqual(Array.from(context.projects, ({ id }) => id), [2]);
+});

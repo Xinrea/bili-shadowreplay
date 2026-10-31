@@ -139,15 +139,13 @@ test("queue enforces UTF-8 document and retained PNG cache bounds", async () => 
   assert.equal(h.requests.length, 11, "large PNG is displayed but not retained");
 });
 
-test("generated preview callers opt in while the external ASS component is preserved", async () => {
+test("generated preview and export callers share the native subtitle document", async () => {
   const root = new URL("../../src/lib/components/", import.meta.url);
   const project = await readFile(new URL("project/ProjectEditor.svelte", root), "utf8");
   const style = await readFile(new URL("SubtitleStyleEditor.svelte", root), "utf8");
   const upload = await readFile(new URL("upload/UploadEditor.svelte", root), "utf8");
-  const legacy = await readFile(new URL("AssSubtitlePreview.svelte", root), "utf8");
   assert.match(project, /<NativeSubtitlePreview/);
   assert.match(style, /<NativeSubtitlePreview/);
-  assert.match(project, /subtitleAss: exportedSubtitles \? exportedAss : null,\s*generatedSubtitle: true/);
-  assert.match(upload, /subtitleAss, generatedSubtitle: true/);
-  assert.match(legacy, /import\("libass-wasm"\)/);
+  assert.match(project, /subtitleAss: exportedSubtitles \? exportedAss : null/);
+  assert.match(upload, /subtitleAss, overlays/);
 });

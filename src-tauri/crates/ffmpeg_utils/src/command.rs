@@ -1,59 +1,65 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-/// Path of the `ffmpeg` binary, which is expected on `PATH` (the installers and
-/// the Docker image put it there).
-pub fn ffmpeg_path() -> PathBuf {
-    executable_path("ffmpeg")
-}
+// Compile subprocess support only for unit tests or explicitly enabled oracles.
+#[cfg(any(test, feature = "cli-test-oracles"))]
+mod cli {
+    use std::path::PathBuf;
 
-/// Path of the `ffprobe` binary.
-pub fn ffprobe_path() -> PathBuf {
-    executable_path("ffprobe")
-}
-
-fn executable_path(name: &str) -> PathBuf {
-    let mut path = PathBuf::from(name);
-    if cfg!(windows) {
-        path.set_extension("exe");
+    /// Path of the external `ffmpeg` executable used by optional test oracles.
+    pub fn ffmpeg_path() -> PathBuf {
+        executable_path("ffmpeg")
     }
 
-    path
+    /// Path of the external `ffprobe` executable used by optional test oracles.
+    pub fn ffprobe_path() -> PathBuf {
+        executable_path("ffprobe")
+    }
+
+    fn executable_path(name: &str) -> PathBuf {
+        let mut path = PathBuf::from(name);
+        if cfg!(windows) {
+            path.set_extension("exe");
+        }
+
+        path
+    }
+
+    /// A test-oracle `ffmpeg` process, killed on drop and hidden on Windows.
+    pub fn ffmpeg_command() -> tokio::process::Command {
+        base_command(ffmpeg_path())
+    }
+
+    /// A test-oracle `ffprobe` process, killed on drop and hidden on Windows.
+    pub fn ffprobe_command() -> tokio::process::Command {
+        base_command(ffprobe_path())
+    }
+
+    fn base_command(program: PathBuf) -> tokio::process::Command {
+        let mut command = tokio::process::Command::new(program);
+        command.kill_on_drop(true);
+        hide_console_window(&mut command);
+        command
+    }
+
+    /// Windows opens a console window for every child process unless told
+    /// otherwise, which would flash in front of the application.
+    #[cfg(target_os = "windows")]
+    fn hide_console_window(command: &mut tokio::process::Command) {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn hide_console_window(_command: &mut tokio::process::Command) {}
 }
 
-/// A `ffmpeg` child process with the defaults every call site wants: killed
-/// when its handle is dropped, and without a console window on Windows.
-pub fn ffmpeg_command() -> tokio::process::Command {
-    base_command(ffmpeg_path())
-}
+#[cfg(any(test, feature = "cli-test-oracles"))]
+pub use cli::{ffmpeg_command, ffmpeg_path, ffprobe_command, ffprobe_path};
 
-/// A `ffprobe` child process with the defaults every call site wants.
-pub fn ffprobe_command() -> tokio::process::Command {
-    base_command(ffprobe_path())
-}
-
-fn base_command(program: PathBuf) -> tokio::process::Command {
-    let mut command = tokio::process::Command::new(program);
-    command.kill_on_drop(true);
-    hide_console_window(&mut command);
-    command
-}
-
-/// Windows opens a console window for every child process unless told
-/// otherwise, which would flash in front of the application.
-#[cfg(target_os = "windows")]
-fn hide_console_window(command: &mut tokio::process::Command) {
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    command.creation_flags(CREATE_NO_WINDOW);
-}
-
-#[cfg(not(target_os = "windows"))]
-fn hide_console_window(_command: &mut tokio::process::Command) {}
-
-/// Render a path as an argument for an ffmpeg/ffprobe child process.
+/// Borrow a UTF-8 media path for native FFmpeg calls and filter options.
 ///
-/// Both binaries receive their arguments as UTF-8, so a path that is not valid
-/// UTF-8 cannot be passed through faithfully. Fail with the path in the message
-/// instead of silently handing a mangled file name to the child process.
+/// This crate passes paths through FFmpeg string interfaces as UTF-8. Reject
+/// invalid paths instead of silently replacing bytes in the file name.
 pub fn path_str(path: &Path) -> Result<&str, String> {
     path.to_str()
         .ok_or_else(|| format!("Path is not valid UTF-8: {}", path.display()))

@@ -20,8 +20,8 @@ use crate::database::video::VideoRow;
 use crate::database::{Database, DatabaseError};
 use crate::ffmpeg::hwaccel;
 use crate::ffmpeg::project::{
-    limit_segment_caches, project_frame_rate, render_project, OverlayLayer, ProjectRender,
-    RenderClip, RenderOverlay, RenderSound, VideoLayer,
+    limit_segment_caches, project_frame_rate, render_project_with_resources, OverlayLayer,
+    ProjectRender, RenderClip, RenderOverlay, RenderSound, VideoLayer,
 };
 use crate::handlers::subtitle_fonts::prepare_subtitle_font_directory;
 use crate::handlers::utils::{decode_data_url, get_disk_info_inner};
@@ -1013,7 +1013,6 @@ pub(crate) async fn project_upload_video(
     event_id: &str,
     id: i64,
     subtitle_ass: Option<String>,
-    generated_subtitle: bool,
     overlay_images: Vec<OverlayImage>,
     directory: &Path,
 ) -> Result<(PathBuf, Option<oneshot::Receiver<Result<(), String>>>), String> {
@@ -1033,7 +1032,6 @@ pub(crate) async fn project_upload_video(
         title: project.title.clone(),
         metadata: json!({ "project_id": project.id, "title": project.title }),
         subtitle_ass: subtitle_ass.filter(|_| timeline.has_visible_subtitles()),
-        generated_subtitle,
         overlay_images,
         timeline,
         materials: &materials,
@@ -1081,7 +1079,6 @@ pub(crate) async fn material_danmu_video(
         materials: &materials,
         audio: &audio,
         subtitle_ass: None,
-        generated_subtitle: false,
         overlay_images: Vec::new(),
         danmu_options: danmu_options(state).await,
         project: None,
@@ -1097,8 +1094,8 @@ async fn upload_render(
     source: ExportSource<'_>,
     directory: &Path,
 ) -> Result<(PathBuf, Option<oneshot::Receiver<Result<(), String>>>), String> {
-    let encoder = hwaccel::get_render_encoder(&source.timeline.render_settings).await;
-    let hash = source.render_hash(encoder);
+    let pipeline = hwaccel::get_render_pipeline(&source.timeline.render_settings).await;
+    let hash = source.render_hash(pipeline);
     let target = directory.join(format!("{UPLOAD_RENDER_PREFIX}{hash}.mp4"));
     if target.is_file() {
         return Ok((target, None));
@@ -1220,7 +1217,6 @@ struct ExportSource<'a> {
     /// The files of the audio library it plays.
     audio: &'a HashMap<i64, AudioRow>,
     subtitle_ass: Option<String>,
-    generated_subtitle: bool,
     /// Pictures of the text and sticker overlays.
     overlay_images: Vec<OverlayImage>,
     danmu_options: Danmu2AssOptions,
@@ -1230,10 +1226,11 @@ struct ExportSource<'a> {
 
 impl ExportSource<'_> {
     /// Identifies what rendering this source contains.
-    fn render_hash(&self, encoder: &str) -> String {
+    fn render_hash(&self, pipeline: hwaccel::RenderPipeline) -> String {
         let mut extra = format!(
-            "encoder:{encoder}\nnative:{}:{}\n",
-            self.generated_subtitle,
+            "encoder:{}\nrenderer:{}\nnative:{}\n",
+            pipeline.encoder,
+            pipeline.cache_identity(),
             native_overlay::RENDERER_VERSION
         );
         extra.push_str(&serde_json::to_string(&self.timeline.render_settings).unwrap());
@@ -1242,7 +1239,7 @@ impl ExportSource<'_> {
         // GOP length) must also invalidate the complete video prepared for upload.
         extra.push_str(
             &serde_json::to_string(&hwaccel::project_quality_args(
-                encoder,
+                pipeline.encoder,
                 &self.timeline.render_settings,
             ))
             .unwrap(),
@@ -1273,7 +1270,6 @@ struct ExportJob {
     /// Each audio library file's path, by id.
     audio_files: HashMap<i64, PathBuf>,
     subtitle_ass: Option<String>,
-    generated_subtitle: bool,
     font_name: Option<String>,
     /// The picture of each text and sticker overlay, by id.
     overlay_images: HashMap<String, DecodedOverlayImage>,
@@ -1294,7 +1290,6 @@ pub async fn export_project(
     id: i64,
     timeline: Timeline,
     subtitle_ass: Option<String>,
-    generated_subtitle: Option<bool>,
     overlays: Option<Vec<OverlayImage>>,
     target: Option<String>,
     base: Option<Timeline>,
@@ -1332,7 +1327,6 @@ pub async fn export_project(
         materials: &materials,
         audio: &audio,
         subtitle_ass,
-        generated_subtitle: generated_subtitle.unwrap_or(false),
         overlay_images: overlays.unwrap_or_default(),
         danmu_options: danmu_options(&state).await,
         project: Some(project.id),
@@ -1376,7 +1370,6 @@ async fn queue_export(
         materials,
         audio,
         subtitle_ass,
-        generated_subtitle,
         overlay_images,
         danmu_options,
         project,
@@ -1433,7 +1426,6 @@ async fn queue_export(
             .collect(),
         timeline,
         subtitle_ass,
-        generated_subtitle,
         font_name,
         overlay_images,
         danmu_options,
@@ -1657,29 +1649,34 @@ async fn render_timeline(
         Vec::new()
     };
 
-    // Kept alive until FFmpeg exits; dropping it removes the directory.
     let fonts_directory = match &job.font_name {
         Some(font_name) => {
             Some(prepare_subtitle_font_directory(job.cache.clone(), font_name.clone()).await?)
         }
         None => None,
     };
-
-    render_project(
+    let fonts_path = fonts_directory
+        .as_ref()
+        .map(|directory| directory.path().to_path_buf());
+    let resources = fonts_directory
+        .map(ffmpeg_utils::MediaResourceLease::new)
+        .into_iter()
+        .collect();
+    render_project_with_resources(
         reporter,
         ProjectRender {
             clips,
             overlays,
             sounds,
             subtitle_ass: job.subtitle_ass.clone(),
-            generated_subtitle: job.generated_subtitle,
-            fonts_directory: fonts_directory.as_ref().map(|directory| directory.path()),
+            fonts_directory: fonts_path.as_deref(),
             danmus,
             danmu_options: job.danmu_options.clone(),
             render_settings: job.timeline.render_settings.clone(),
             output,
             segment_cache: job.segment_cache.as_deref(),
         },
+        resources,
     )
     .await?;
     if let Some(segment_cache) = &job.segment_cache {
@@ -2312,7 +2309,6 @@ mod tests {
             materials: &materials,
             audio: &audio,
             subtitle_ass: None,
-            generated_subtitle: false,
             overlay_images: images,
             danmu_options: Danmu2AssOptions::default(),
             project: None,
@@ -2323,33 +2319,48 @@ mod tests {
             x,
             y: 0.0,
         };
-        let drawn = source(vec![image("data:image/png;base64,AAAA", 10.0)]).render_hash("libx265");
+        let drawn = source(vec![image("data:image/png;base64,AAAA", 10.0)])
+            .render_hash(hwaccel::RenderPipeline::cpu("libx265"));
         assert_eq!(
             drawn,
-            source(vec![image("data:image/png;base64,AAAA", 10.0)]).render_hash("libx265")
+            source(vec![image("data:image/png;base64,AAAA", 10.0)])
+                .render_hash(hwaccel::RenderPipeline::cpu("libx265"))
         );
         assert_ne!(
             drawn,
-            source(vec![image("data:image/png;base64,AAAA", 10.0)]).render_hash("hevc_nvenc")
+            source(vec![image("data:image/png;base64,AAAA", 10.0)])
+                .render_hash(hwaccel::RenderPipeline::cpu("hevc_nvenc"))
         );
         // Drawn differently, as with another font, or placed elsewhere.
         assert_ne!(
             drawn,
-            source(vec![image("data:image/png;base64,AAAB", 10.0)]).render_hash("libx265")
+            source(vec![image("data:image/png;base64,AAAB", 10.0)])
+                .render_hash(hwaccel::RenderPipeline::cpu("libx265"))
         );
         assert_ne!(
             drawn,
-            source(vec![image("data:image/png;base64,AAAA", 11.0)]).render_hash("libx265")
+            source(vec![image("data:image/png;base64,AAAA", 11.0)])
+                .render_hash(hwaccel::RenderPipeline::cpu("libx265"))
         );
-        assert_ne!(drawn, source(Vec::new()).render_hash("libx265"));
+        assert_ne!(
+            drawn,
+            source(Vec::new()).render_hash(hwaccel::RenderPipeline::cpu("libx265"))
+        );
         let plain = source(Vec::new());
+        assert_ne!(
+            plain.render_hash(hwaccel::RenderPipeline::cpu("hevc_videotoolbox")),
+            plain.render_hash(hwaccel::RenderPipeline::gpu("hevc_videotoolbox"))
+        );
         let mut extra = format!(
-            "encoder:libx265\nnative:false:{}\n",
+            "encoder:libx265\nrenderer:cpu-bgra-overlay-v1\nnative:{}\n",
             native_overlay::RENDERER_VERSION,
         );
         extra.push_str(&serde_json::to_string(&timeline.render_settings).unwrap());
         extra.push('\0');
-        assert_ne!(plain.render_hash("libx265"), timeline.render_hash(&extra));
+        assert_ne!(
+            plain.render_hash(hwaccel::RenderPipeline::cpu("libx265")),
+            timeline.render_hash(&extra)
+        );
         extra.push_str(
             &serde_json::to_string(&hwaccel::project_quality_args(
                 "libx265",
@@ -2358,7 +2369,10 @@ mod tests {
             .unwrap(),
         );
         extra.push('\0');
-        assert_eq!(plain.render_hash("libx265"), timeline.render_hash(&extra));
+        assert_eq!(
+            plain.render_hash(hwaccel::RenderPipeline::cpu("libx265")),
+            timeline.render_hash(&extra)
+        );
     }
 
     #[test]

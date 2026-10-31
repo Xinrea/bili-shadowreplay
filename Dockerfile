@@ -35,6 +35,11 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     glib-2.0-dev \
     libclang-dev \
+    libavformat-dev \
+    libavcodec-dev \
+    libavutil-dev \
+    libswresample-dev \
+    libavfilter-dev \
     libfontconfig1-dev \
     libicu-dev \
     libharfbuzz-dev \
@@ -102,7 +107,12 @@ RUN apt-get update && apt-get install -y \
     fonts-wqy-microhei \
     netbase \
     nscd \
-    ffmpeg \
+    libavformat61 \
+    libavcodec61 \
+    libavutil59 \
+    libswresample5 \
+    libavfilter10 \
+    libswscale8 \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -118,8 +128,11 @@ COPY --from=frontend-builder /app/dist ./dist
 
 # Copy built Rust binary
 COPY --from=rust-builder /app/src-tauri/target/release/bili-shadowreplay .
-# Fail the image build if system Skia dependencies were missed in the runtime.
-RUN ldd ./bili-shadowreplay > /tmp/bsr-linked-libraries \
+# The runtime uses the same trixie FFmpeg ABI as the Rust builder, without CLI tools.
+# Fail if any linked FFmpeg/Skia dependency was missed in the runtime.
+RUN ! command -v ffmpeg \
+    && ! command -v ffprobe \
+    && ldd ./bili-shadowreplay > /tmp/bsr-linked-libraries \
     && cat /tmp/bsr-linked-libraries \
     && ! grep -q 'not found' /tmp/bsr-linked-libraries \
     && rm /tmp/bsr-linked-libraries

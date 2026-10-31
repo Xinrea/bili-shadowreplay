@@ -4,7 +4,7 @@
 
 由于程序会对账号等敏感信息进行管理，请从信任的来源进行下载；所有版本均可在 [GitHub Releases](https://github.com/Xinrea/bili-shadowreplay/releases) 页面下载安装。
 
-对于 MacOS 用户，请先手动安装 FFmpeg，详情见 [FFmpeg 配置](../config/ffmpeg.md)。
+Windows 和 macOS 安装包已携带媒体处理运行库，无需单独安装 `ffmpeg` 或 `ffprobe`。Linux 使用匹配的系统共享库，详情见 [FFmpeg 配置](../config/ffmpeg.md)。
 
 ## Windows
 

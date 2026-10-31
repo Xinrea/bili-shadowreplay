@@ -283,7 +283,6 @@ impl BsrTool {
                 | "encode_video_subtitle"
                 | "post_video_to_bilibili"
                 | "clip_range"
-                | "generic_ffmpeg_command"
                 | "open_clip"
                 | "list_folder"
                 | "generate_archive_subtitle"
@@ -708,12 +707,6 @@ impl BsrTool {
                 "List recent archives from all rooms.",
                 json!({ "offset": integer(), "limit": integer() }),
                 &["offset", "limit"],
-            ),
-            Self::action_schema(
-                "generic_ffmpeg_command",
-                "Run ffmpeg arguments after user confirmation.",
-                json!({ "args": { "type": "array", "items": string() } }),
-                &["args"],
             ),
             Self::action_schema(
                 "open_clip",
@@ -1155,6 +1148,31 @@ pub async fn agent_chat(
 mod tests {
     use super::*;
     use rig_core::message::{DocumentSourceKind, ImageMediaType};
+
+    #[test]
+    fn media_tools_use_structured_actions_instead_of_arbitrary_commands() {
+        let definitions = BsrTool::action_definitions();
+        let definition = |action: &str| {
+            definitions
+                .iter()
+                .find(|schema| schema["properties"]["action"]["const"] == action)
+        };
+        assert!(definition("generic_ffmpeg_command").is_none());
+        assert!(!BsrTool::requires_confirmation("generic_ffmpeg_command"));
+        for (action, argument) in [
+            ("clip_range", "clip_range_params"),
+            ("extract_video_frames", "video_id"),
+            ("merge_videos", "video_ids"),
+            ("extract_video_audio", "video_id"),
+            ("encode_video_subtitle", "id"),
+        ] {
+            let schema = definition(action).unwrap_or_else(|| panic!("missing {action}"));
+            let args = &schema["properties"]["args"];
+            assert_eq!(args["additionalProperties"], false);
+            assert!(args["properties"][argument].is_object(), "{action}");
+            assert!(BsrTool::requires_confirmation(action), "{action}");
+        }
+    }
 
     fn danmu(ts: i64, content: &str) -> DanmuEntry {
         DanmuEntry {

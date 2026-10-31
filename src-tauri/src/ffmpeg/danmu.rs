@@ -7,13 +7,16 @@ use std::{
     collections::{HashMap, HashSet},
     num::NonZeroU32,
     path::{Path, PathBuf},
-    process::Stdio,
-    sync::OnceLock,
     time::Duration,
 };
 
 use danmu_stream::EmojiContent;
+#[cfg(test)]
 use ffmpeg_utils::ffmpeg_command;
+use ffmpeg_utils::{
+    FilterGraphPlan, FrameRatePolicy, GraphInput, GraphOutput, MediaInput, MediaKind, MediaOutput,
+    MediaPlan, MediaResourceLease, StreamMode, StreamRoute, StreamSelector, StreamSource,
+};
 use futures::{stream, StreamExt};
 use recorder::danmu::DanmuEntry;
 use sha2::{Digest, Sha256};
@@ -30,48 +33,12 @@ use crate::{
 
 use super::{
     hwaccel,
-    native_overlay::{add_overlay_input, image_events, run_overlay_command, OverlaySpec},
-    runner::{ProgressMode, ProgressTotal, TempArtifact},
+    native_overlay::{image_events, run_overlay_plan, OverlaySpec},
+    runner::{ProgressMode, ProgressTotal},
 };
 
 const MIN_DANMU_FPS: f64 = 60.0;
 
-/// FFmpeg 7 still accepts `-filter_complex_script`. FFmpeg 9 removed it; the
-/// replacement `-/filter_complex <file>` reads the same graph from a file, which
-/// keeps long danmaku tracks off the OS command-line limit.
-fn select_filter_complex_file_option(help: &str) -> &'static str {
-    if help.contains("-filter_complex_script") {
-        "-filter_complex_script"
-    } else {
-        "-/filter_complex"
-    }
-}
-
-pub(super) async fn filter_complex_file_option() -> &'static str {
-    static OPTION: OnceLock<&'static str> = OnceLock::new();
-    if let Some(option) = OPTION.get() {
-        return option;
-    }
-
-    let help = match ffmpeg_command()
-        .args(["-hide_banner", "-h", "full"])
-        .output()
-        .await
-    {
-        Ok(output) => {
-            let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-            text.push_str(&String::from_utf8_lossy(&output.stderr));
-            text
-        }
-        Err(error) => {
-            log::warn!("Failed to query ffmpeg options; using -/filter_complex: {error}");
-            String::new()
-        }
-    };
-    let option = select_filter_complex_file_option(&help);
-    let _ = OPTION.set(option);
-    OPTION.get().copied().unwrap_or(option)
-}
 const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 const IMAGE_TIMEOUT: Duration = Duration::from_secs(10);
 // Keep in sync with src/lib/danmu-content.ts. Never let recorded URLs request
@@ -223,39 +190,14 @@ async fn download_image(
 /// FFmpeg versions cannot decode animated WebP; those images fall back to text.
 /// The PNG can be held by FFmpeg without a looping decoder.
 async fn decode_image(source: &Path, output: &Path) -> Result<(), String> {
-    let mut command = ffmpeg_command();
-    command
-        .args(["-hide_banner", "-loglevel", "error", "-nostdin"])
-        .args(["-max_alloc", "67108864", "-protocol_whitelist", "file"])
-        .args(["-format_whitelist", "image2,png_pipe,jpeg_pipe,webp_pipe,gif,apng"])
-        .args(["-max_pixels", "4194304", "-threads", "1", "-i"])
-        .arg(source)
-        .args([
-            "-vf", "scale=w='min(iw,512)':h='min(ih,512)':force_original_aspect_ratio=decrease,format=rgba",
-            "-frames:v", "1", "-threads", "1", "-update", "1", "-y",
-        ])
-        .arg(output)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
-    let result = tokio::time::timeout(IMAGE_TIMEOUT, command.output())
-        .await
-        .map_err(|_| "image decode timed out".to_string())?
-        .map_err(|error| error.to_string())?;
-    if !result.status.success() {
-        return Err(format!(
-            "image decode failed: {}",
-            String::from_utf8_lossy(&result.stderr)
-        ));
-    }
-    if tokio::fs::metadata(output)
-        .await
-        .map_err(|error| error.to_string())?
-        .len()
-        == 0
-    {
-        return Err("image decoder produced no frame".into());
-    }
-    Ok(())
+    // The linked decoder enforces image/byte/pixel/thread limits. Dropping its
+    // future cancels publication and interrupts cooperative native work.
+    tokio::time::timeout(
+        IMAGE_TIMEOUT,
+        ffmpeg_utils::normalize_image_to_png(source, output),
+    )
+    .await
+    .map_err(|_| "image decode timed out".to_string())?
 }
 
 fn image_urls(danmus: &[DanmuEntry]) -> Vec<Url> {
@@ -299,7 +241,10 @@ async fn prepare_images(danmus: &[DanmuEntry], directory: &Path) -> HashMap<Url,
         .await
 }
 
-fn overlay_graph(fps: f64, encoder: &str) -> String {
+pub(super) fn overlay_graph(fps: f64, pipeline: hwaccel::RenderPipeline) -> String {
+    if pipeline.uses_gpu() {
+        return format!("[0:v]{},fps={fps}[outv]\n", hwaccel::GPU_SCALE_PAD_FILTER,);
+    }
     // Change FPS before compositing, not only at the encoder, so motion is
     // actually evaluated at 60+ FPS rather than duplicating already-drawn frames.
     let mut filter = format!(
@@ -309,7 +254,7 @@ fn overlay_graph(fps: f64, encoder: &str) -> String {
     );
     // Keep the premultiplied colours in RGB until they have been composited;
     // converting the transparent layer to subsampled YUV first damages edges.
-    let format = hwaccel::output_format_filter(encoder);
+    let format = hwaccel::output_format_filter(pipeline.encoder);
     filter.push_str(&format!("[composited]{format}[outv]\n"));
     filter
 }
@@ -347,8 +292,8 @@ async fn danmu_plan(
 }
 
 /// Lay out the danmaku track into `danmu.ass` in `directory` and return the
-/// image danmaku to overlay. Filters must run with `directory` as the working
-/// directory.
+/// image danmaku to overlay. The native renderer reads absolute asset paths;
+/// the caller holds the directory through a media resource lease.
 pub(super) async fn prepare_danmu_layers<R: ProgressReporterTrait>(
     reporter: Option<&R>,
     danmus: &[DanmuEntry],
@@ -388,8 +333,8 @@ pub async fn encode_video_danmu_with_settings<R: ProgressReporterTrait>(
     if let Some(settings) = settings {
         settings.validate()?;
     }
-    // Use fixed relative names inside a private job directory. No user/CDN path
-    // is interpolated into filter syntax (including Windows drive letters).
+    // Asset ownership is transferred to the media plan and renderer worker.
+    // Cancelling the awaiting future must not remove images still being read.
     let directory = tempfile::Builder::new()
         .prefix("bili-danmu-")
         .tempdir()
@@ -404,7 +349,7 @@ pub async fn encode_video_danmu_with_settings<R: ProgressReporterTrait>(
         plan,
         options,
         bitrate,
-        directory.path(),
+        Some(MediaResourceLease::new(directory)),
         settings,
     )
     .await
@@ -413,53 +358,31 @@ pub async fn encode_video_danmu_with_settings<R: ProgressReporterTrait>(
 /// FFmpeg rebases all streams against the container start, not the first
 /// video frame. A delayed video can therefore end later than its track length.
 /// Cover that timeline (and let the primary video end the overlay naturally).
-fn overlay_timeline_duration(probe: &serde_json::Value, track_duration: f64) -> f64 {
-    let number = |value: &serde_json::Value| {
-        value
-            .as_str()
-            .and_then(|value| value.parse::<f64>().ok())
-            .filter(|value| value.is_finite())
-    };
-    let format = &probe["format"];
-    let container_start = number(&format["start_time"]).unwrap_or(0.0);
-    let video_start = probe["streams"]
-        .as_array()
-        .and_then(|streams| {
-            streams
-                .iter()
-                .find(|stream| stream["codec_type"] == "video")
-        })
-        .and_then(|video| number(&video["start_time"]))
-        .unwrap_or(container_start);
+fn overlay_timeline_duration(
+    track_duration: f64,
+    container_start: Option<f64>,
+    video_start: Option<f64>,
+    container_duration: Option<f64>,
+) -> f64 {
+    let container_start = container_start.unwrap_or(0.0);
+    let video_start = video_start.unwrap_or(container_start);
     (track_duration + (video_start - container_start).max(0.0))
-        .max(number(&format["duration"]).unwrap_or(0.0))
+        .max(container_duration.unwrap_or(0.0))
 }
 
 pub(super) async fn probe_overlay_duration(
     file: &Path,
     track_duration: f64,
 ) -> Result<f64, String> {
-    let output = ffmpeg_utils::ffprobe_command()
-        .args([
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration,start_time:stream=codec_type,start_time",
-            "-of",
-            "json",
-        ])
-        .arg(file)
-        .output()
+    let probe = ffmpeg_utils::probe_media(file)
         .await
-        .map_err(|error| error.to_string())?;
-    if !output.status.success() {
-        return Err(format!(
-            "Failed to inspect overlay timeline: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    let probe = serde_json::from_slice(&output.stdout).map_err(|error| error.to_string())?;
-    Ok(overlay_timeline_duration(&probe, track_duration))
+        .map_err(|error| format!("Failed to inspect overlay timeline: {error}"))?;
+    Ok(overlay_timeline_duration(
+        track_duration,
+        probe.container_start_time,
+        probe.video_start_time,
+        probe.container_duration,
+    ))
 }
 
 async fn encode_danmu_plan<R: ProgressReporterTrait>(
@@ -468,7 +391,7 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
     plan: DanmuRenderPlan,
     options: &Danmu2AssOptions,
     bitrate: Option<NonZeroU32>,
-    directory: &Path,
+    resource: Option<MediaResourceLease>,
     settings: Option<&crate::project::RenderSettings>,
 ) -> Result<PathBuf, String> {
     let filename = file
@@ -485,8 +408,15 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
         .await
         .map_err(|error| format!("Failed to inspect source video: {error}"))?;
     let fps = danmu_output_fps(metadata.fps);
-    let encoder = hwaccel::material_encoder(settings).await;
-    let graph = overlay_graph(fps, encoder);
+    let mut pipeline = hwaccel::material_overlay_pipeline(settings).await;
+    if pipeline.uses_gpu() && !ffmpeg_utils::video_supports_gpu_sdr(file).await? {
+        log::info!("Source colour metadata selects the existing CPU composition backend");
+        pipeline = hwaccel::RenderPipeline::cpu(match settings {
+            Some(settings) => hwaccel::get_cpu_render_encoder(settings).await,
+            None => hwaccel::get_x264_encoder().await,
+        });
+    }
+    let graph = overlay_graph(fps, pipeline);
     let spec = OverlaySpec {
         input: native_overlay::RenderInput {
             documents: vec![native_overlay::AssSource {
@@ -501,40 +431,266 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
         start: 0.0,
         duration: probe_overlay_duration(file, metadata.duration).await?,
     };
-    let mut command = ffmpeg_command();
-    command
-        .current_dir(directory)
-        .args(["-nostdin", "-i"])
-        .arg(&input);
-    add_overlay_input(&mut command, &spec).await?;
-    command
-        .arg("-filter_complex")
-        .arg(graph)
-        .args(["-map", "[outv]", "-map", "0:a?"]);
-    hwaccel::apply_x264_encoder_only(&mut command, encoder);
-    hwaccel::apply_material_quality(&mut command, encoder, bitrate, settings);
-    command
-        .args(["-c:a", "copy", "-r", &fps.to_string(), "-y"])
-        .arg(&absolute_output);
-    let output_guard = TempArtifact::new(&absolute_output);
-    run_overlay_command(
-        command,
+    let mut video = pipeline.video_options(None, bitrate, settings)?;
+    // The global graph already contains the encoder's format/upload suffix.
+    video.filter = None;
+    let (num, den) = ffmpeg_utils::parse_frame_rate(fps).map_err(|error| error.to_string())?;
+    video.frame_rate = FrameRatePolicy::Constant { num, den };
+    let mut media = overlay_media_plan(input, absolute_output.clone(), graph, "outv", video);
+    media.resources.extend(resource);
+    run_overlay_plan(
+        media,
         spec,
+        1,
         ProgressMode::stage("压制弹幕", ProgressTotal::FirstInput),
         "Encode video danmu",
         reporter,
     )
     .await?;
-    output_guard.keep();
-    // The caller's TempDir keeps assets alive through encoding and removes them
-    // on error/cancellation. The FFmpeg factory uses kill_on_drop for the process.
     log::info!("Encode video danmu task end: {}", output_path.display());
     Ok(output_path)
+}
+
+/// Match explicit `[video]` and `0:a?` maps: retain every audio stream and omit
+/// embedded subtitle streams. The raw source is appended by run_overlay_plan.
+pub(super) fn overlay_media_plan(
+    input: PathBuf,
+    output: PathBuf,
+    graph: String,
+    label: &str,
+    video: ffmpeg_utils::VideoEncodeOptions,
+) -> MediaPlan {
+    let gpu_composition = video.frame_processor;
+    MediaPlan {
+        inputs: vec![MediaInput::file(input)],
+        outputs: vec![MediaOutput::file(output)],
+        routes: vec![
+            StreamRoute {
+                source: StreamSource::Filter {
+                    label: label.into(),
+                },
+                output: 0,
+                required: true,
+                mode: StreamMode::Video(video),
+            },
+            StreamRoute {
+                source: StreamSource::Input {
+                    input: 0,
+                    selector: StreamSelector::AllAudio,
+                },
+                output: 0,
+                required: false,
+                mode: StreamMode::Copy,
+            },
+        ],
+        filter_graph: Some(FilterGraphPlan {
+            spec: graph,
+            inputs: if gpu_composition {
+                vec![GraphInput {
+                    input: 0,
+                    selector: StreamSelector::FirstVideo,
+                    label: "0:v".into(),
+                    required: true,
+                }]
+            } else {
+                vec![
+                    GraphInput {
+                        input: 0,
+                        selector: StreamSelector::FirstVideo,
+                        label: "0:v".into(),
+                        required: true,
+                    },
+                    GraphInput {
+                        input: 1,
+                        selector: StreamSelector::FirstVideo,
+                        label: "1:v".into(),
+                        required: true,
+                    },
+                ]
+            },
+            outputs: vec![GraphOutput {
+                label: label.into(),
+                kind: MediaKind::Video,
+            }],
+        }),
+        ..Default::default()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn native_image_normalization_works_without_a_cli_and_keeps_prior_output_on_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("crates/ffmpeg_utils/src/image/fixtures/animated.png");
+        let output = directory.path().join("normalized.png");
+        decode_image(&source, &output).await.unwrap();
+        let retained = std::fs::read(&output).unwrap();
+        assert!(retained.starts_with(b"\x89PNG\r\n\x1a\n"));
+        let invalid = directory.path().join("invalid.png");
+        std::fs::write(&invalid, b"\x89PNG\r\n\x1a\nnot an image").unwrap();
+        assert!(decode_image(&invalid, &output).await.is_err());
+        assert_eq!(std::fs::read(&output).unwrap(), retained);
+    }
+
+    #[tokio::test]
+    async fn native_danmu_export_preserves_sixty_fps_and_copied_audio_without_cli() {
+        assert_danmu_export(None).await;
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    #[tokio::test]
+    #[ignore = "Requires a Vulkan Video GPU and the FFmpeg 9 SDK"]
+    async fn native_gpu_danmu_export_keeps_real_video_audio_alpha_and_previous_output() {
+        #[cfg(target_os = "windows")]
+        let encoders = ["h264_vulkan", "hevc_vulkan"];
+        #[cfg(target_os = "macos")]
+        let encoders = ["h264_videotoolbox", "hevc_videotoolbox"];
+        for (codec, expected) in [
+            crate::project::VideoCodec::H264,
+            crate::project::VideoCodec::Hevc,
+        ]
+        .into_iter()
+        .zip(encoders)
+        {
+            let settings = crate::project::RenderSettings {
+                codec,
+                ..Default::default()
+            };
+            assert_eq!(
+                hwaccel::get_render_pipeline(&settings).await,
+                hwaccel::RenderPipeline::gpu(expected)
+            );
+            eprintln!("native_gpu_danmu_export backend=vulkan encoder={expected}");
+            assert_danmu_export(Some(settings)).await;
+        }
+    }
+
+    async fn assert_danmu_export(settings: Option<crate::project::RenderSettings>) {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.mp4");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/video/subtitle-black.mp4");
+        std::fs::copy(fixture, &source).unwrap();
+        if settings.is_some() {
+            assert!(ffmpeg_utils::video_supports_gpu_sdr(&source).await.unwrap());
+        }
+        let options = Danmu2AssOptions::default();
+        let plan = DanmuRenderPlan {
+            ass: super::super::subtitle_native::srt_to_ass(
+                "1\n00:00:00,000 --> 00:00:00,800\nNative\n",
+                if settings.is_some() {
+                    "FontName=Arial,FontSize=36,PrimaryColour=&H800000FF"
+                } else {
+                    "FontName=Arial,FontSize=36,PrimaryColour=&H000000FF"
+                },
+            )
+            .unwrap(),
+            images: vec![],
+        };
+        let output = encode_danmu_plan(
+            None::<&NoopReporter>,
+            &source,
+            plan,
+            &options,
+            None,
+            None,
+            settings.as_ref(),
+        )
+        .await
+        .unwrap();
+        let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+        assert_eq!((metadata.width, metadata.height), (1920, 1080));
+        assert_eq!(metadata.fps, 60.0);
+        assert!(
+            (metadata.duration - 1.1).abs() < 0.02,
+            "{}",
+            metadata.duration
+        );
+        #[derive(Default)]
+        struct Pcm(Vec<i16>);
+        impl ffmpeg_utils::AudioSink for Pcm {
+            fn write(&mut self, data: &[i16]) -> Result<(), String> {
+                self.0.extend_from_slice(data);
+                Ok(())
+            }
+        }
+        let decode_options = ffmpeg_utils::AudioDecodeOptions { sample_rate: 16000 };
+        let before = ffmpeg_utils::decode_audio(&source, decode_options, Pcm::default())
+            .await
+            .unwrap()
+            .sink
+            .0;
+        let after = ffmpeg_utils::decode_audio(&output, decode_options, Pcm::default())
+            .await
+            .unwrap()
+            .sink
+            .0;
+        assert_eq!(before, after);
+        let retained = std::fs::read(&output).unwrap();
+        assert!(encode_danmu_plan(
+            None::<&NoopReporter>,
+            &source,
+            DanmuRenderPlan {
+                ass: "invalid ASS".into(),
+                images: vec![],
+            },
+            &options,
+            None,
+            None,
+            settings.as_ref()
+        )
+        .await
+        .is_err());
+        assert_eq!(std::fs::read(&output).unwrap(), retained);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 2);
+        // Read rendered pixels through the linked JPEG decoder and the same
+        // Skia image implementation used for previews, without a CLI helper.
+        let image = directory.path().join("frame.jpg");
+        ffmpeg_utils::write_jpeg(&output, 0.3, Some(2), &image)
+            .await
+            .unwrap();
+        let mut preview = native_overlay::Renderer::new(
+            1920,
+            1080,
+            native_overlay::RenderInput {
+                documents: vec![],
+                images: vec![native_overlay::ImageEvent {
+                    path: image,
+                    start: 0.0,
+                    end: 1.0,
+                    from: (0.0, 0.0),
+                    to: (0.0, 0.0),
+                    width: 1920.0,
+                    height: 1080.0,
+                    opacity: 1.0,
+                }],
+            },
+            vec![],
+        )
+        .unwrap();
+        let pixels = preview.frame(0.0).unwrap();
+        assert!(
+            pixels
+                .chunks_exact(4)
+                .filter(|p| p[0] > 100
+                    && p[0] > p[1].saturating_add(30)
+                    && p[0] > p[2].saturating_add(30))
+                .count()
+                > 50
+        );
+        if settings.is_some() {
+            assert!(
+                pixels
+                    .chunks_exact(4)
+                    .filter(|p| p[0] > p[1].saturating_add(30) && p[0] > p[2].saturating_add(30))
+                    .all(|p| p[0] < 190),
+                "50%-opaque red must be composited once over the source black"
+            );
+        }
+    }
 
     fn emoji(url: &str) -> EmojiContent {
         EmojiContent {
@@ -567,31 +723,20 @@ mod tests {
     }
 
     #[test]
-    fn filter_complex_file_option_follows_the_installed_ffmpeg() {
-        assert_eq!(
-            select_filter_complex_file_option("-filter_complex_script <filename>"),
-            "-filter_complex_script"
-        );
-        assert_eq!(
-            select_filter_complex_file_option("-filter_complex <graph>\n-filter_complex_threads"),
-            "-/filter_complex"
-        );
-    }
-
-    #[test]
     fn overlay_duration_covers_delayed_video_without_using_absolute_pts() {
-        let delayed = serde_json::json!({
-            "format": {"start_time":"0.0", "duration":"5.0"},
-            "streams": [{"codec_type":"audio", "start_time":"0.0"},
-                        {"codec_type":"video", "start_time":"2.0"}],
-        });
-        assert_eq!(overlay_timeline_duration(&delayed, 3.0), 5.0);
-        let ts = serde_json::json!({
-            "format": {"start_time":"10000.0", "duration":"3.0"},
-            "streams": [{"codec_type":"video", "start_time":"10000.2"}],
-        });
-        assert!((overlay_timeline_duration(&ts, 3.0) - 3.2).abs() < 0.001);
-        assert_eq!(overlay_timeline_duration(&serde_json::json!({}), 3.0), 3.0);
+        assert_eq!(
+            overlay_timeline_duration(3.0, Some(0.0), Some(2.0), Some(5.0)),
+            5.0
+        );
+        assert!(
+            (overlay_timeline_duration(3.0, Some(10000.0), Some(10000.2), Some(3.0)) - 3.2).abs()
+                < 0.001
+        );
+        assert_eq!(overlay_timeline_duration(3.0, None, None, None), 3.0);
+        assert_eq!(
+            overlay_timeline_duration(3.0, Some(10000.0), None, None),
+            3.0
+        );
     }
 
     #[test]
@@ -683,7 +828,7 @@ mod tests {
 
     #[test]
     fn text_only_and_vaapi_graphs_have_explicit_output_formats() {
-        let text = overlay_graph(60.0, "libx264");
+        let text = overlay_graph(60.0, hwaccel::RenderPipeline::cpu("libx264"));
         assert!(text.contains("fps=60,format=bgra[base]"));
         assert!(text.contains("[base][1:v]overlay=shortest=1:format=rgb:alpha=premultiplied"));
         assert!(!text.contains("ass="));
@@ -692,11 +837,12 @@ mod tests {
             "do not rebase video without audio"
         );
         assert!(text.contains("format=yuv420p[outv]"));
-        let hardware = overlay_graph(120.0, "hevc_vaapi");
+        let hardware = overlay_graph(120.0, hwaccel::RenderPipeline::cpu("hevc_vaapi"));
         assert!(hardware.contains("fps=120,format=bgra[base]"));
         assert!(hardware.ends_with("format=nv12,hwupload[outv]\n"));
         for encoder in ["h264_videotoolbox", "hevc_nvenc"] {
-            assert!(overlay_graph(60.0, encoder).ends_with("format=nv12[outv]\n"));
+            assert!(overlay_graph(60.0, hwaccel::RenderPipeline::cpu(encoder))
+                .ends_with("format=nv12[outv]\n"));
         }
     }
 
@@ -972,7 +1118,7 @@ mod tests {
             plan,
             &options,
             None,
-            &job,
+            None,
             None,
         )
         .await
@@ -1093,7 +1239,7 @@ mod tests {
             plan,
             &options,
             None,
-            directory.path(),
+            None,
             None,
         )
         .await

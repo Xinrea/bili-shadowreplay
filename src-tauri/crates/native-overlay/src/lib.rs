@@ -1,6 +1,8 @@
 mod ass;
 mod renderer;
 mod state;
+#[cfg(feature = "vulkan")]
+mod vulkan;
 
 use std::path::PathBuf;
 
@@ -44,3 +46,8 @@ pub struct RenderInput {
 pub const RENDERER_VERSION: &str = "skia082-noto-e20cbc2-unicode16-v2";
 
 pub use renderer::{RenderStats, Renderer};
+#[cfg(feature = "vulkan")]
+pub use vulkan::{
+    ExternalVulkanImage, NativeVulkanDevice, VulkanImageState, VulkanProcAddress,
+    VulkanRenderStats, VulkanRenderer,
+};

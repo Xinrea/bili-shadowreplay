@@ -251,7 +251,7 @@ function assTime(centiseconds: number): string {
 }
 
 function literalText(text: string): string {
-  // libass supports escaped braces. A word joiner prevents literal \N, \h,
+  // ASS uses escaped braces. A word joiner prevents literal \N, \h,
   // or \n from becoming ASS escapes, following FFmpeg's plain-text escaping.
   return text.replace(/\\/g, "\\\u2060").replace(/{/g, "\\{").replace(/}/g, "\\}")
     .replace(/\r\n?|\n/g, "\\N").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
@@ -259,7 +259,7 @@ function literalText(text: string): string {
 
 function cueText(text: string): string {
   // SRT supports these simple formatting tags. Everything else remains text;
-  // the same generated ASS is passed verbatim to the browser and FFmpeg.
+  // the same generated ASS is passed verbatim to the preview and export.
   let result = "";
   let offset = 0;
   let color: string | undefined;
@@ -310,7 +310,7 @@ export function buildSubtitleAss(cues: readonly SubtitleCue[], style: SubtitleSt
     const start = Math.round(cue.startTime * 100);
     const end = Math.round(cue.endTime * 100);
     if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end <= start) continue;
-    // All cues share a layer so libass performs collision avoidance. LayerOrder
+    // All cues share a layer for native subtitle collision avoidance. LayerOrder
     // only breaks ties in read order; distinct layers would overlap instead.
     events.push(`Dialogue: 0,${assTime(start)},${assTime(end)},${values[0]},,0,0,0,,${cueText(cue.text)}`);
   }

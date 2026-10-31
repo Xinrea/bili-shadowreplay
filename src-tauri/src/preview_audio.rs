@@ -214,6 +214,109 @@ pub async fn respond(output: &Path, cache: &Path, query: ChunkQuery) -> Response
 mod tests {
     use super::*;
 
+    fn write_pcm(path: &Path, frames: usize) {
+        let mut writer = hound::WavWriter::create(
+            path,
+            hound::WavSpec {
+                channels: 2,
+                sample_rate: 48_000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for index in 0..frames {
+            writer
+                .write_sample((12_000.0 * (index as f64 * 0.031).sin()) as i16)
+                .unwrap();
+            writer
+                .write_sample((8_000.0 * (index as f64 * 0.057).sin()) as i16)
+                .unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    fn flac_samples(path: &Path) -> u64 {
+        let data = std::fs::read(path).unwrap();
+        assert_eq!(&data[..4], b"fLaC");
+        let format = u64::from_be_bytes(data[18..26].try_into().unwrap());
+        assert_eq!(format >> 44, 48_000);
+        assert_eq!(((format >> 41) & 7) + 1, 2);
+        assert_eq!(((format >> 36) & 31) + 1, 16);
+        format & ((1 << 36) - 1)
+    }
+
+    #[tokio::test]
+    async fn native_preview_cache_keeps_complete_chunks_and_concurrent_requests_without_a_cli() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("output");
+        let cache = directory.path().join("cache");
+        std::fs::create_dir_all(&output).unwrap();
+        let source = output.join("声音 样本.wav");
+        write_pcm(&source, 480_101);
+        let (first, concurrent) = tokio::join!(
+            chunk_path(&output, &cache, "声音 样本.wav", 0),
+            chunk_path(&output, &cache, "声音 样本.wav", 0)
+        );
+        let first = first.unwrap().unwrap();
+        assert_eq!(concurrent.unwrap(), Some(first.clone()));
+        assert_eq!(flac_samples(&first), 480_000);
+        let data = std::fs::read(&first).unwrap();
+        assert_eq!(&data[8..12], &[16, 0, 16, 0]);
+        let modified = std::fs::metadata(&first).unwrap().modified().unwrap();
+        assert_eq!(
+            chunk_path(&output, &cache, "声音 样本.wav", 0)
+                .await
+                .unwrap(),
+            Some(first.clone())
+        );
+        assert_eq!(
+            std::fs::metadata(&first).unwrap().modified().unwrap(),
+            modified
+        );
+        assert_eq!(std::fs::read(&first).unwrap(), data);
+        let last = chunk_path(&output, &cache, "声音 样本.wav", 1)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(flac_samples(&last), 101);
+        let eof = chunk_path(&output, &cache, "声音 样本.wav", 2)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(flac_samples(&eof), 0);
+        assert_eq!(
+            std::fs::read_dir(first.parent().unwrap()).unwrap().count(),
+            3
+        );
+        // A changed source gets fresh timing and chunks under a new key.
+        write_pcm(&source, 48_017);
+        let changed = chunk_path(&output, &cache, "声音 样本.wav", 0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(changed.parent(), first.parent());
+        assert_eq!(flac_samples(&changed), 48_017);
+    }
+
+    #[tokio::test]
+    async fn native_preview_cache_does_not_create_chunks_for_video_without_audio() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("output");
+        let cache = directory.path().join("cache");
+        std::fs::create_dir_all(&output).unwrap();
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/video/test.mp4"),
+            output.join("silent.mp4"),
+        )
+        .unwrap();
+        assert_eq!(
+            chunk_path(&output, &cache, "silent.mp4", 0).await.unwrap(),
+            None
+        );
+        assert!(!cache.exists());
+    }
+
     #[tokio::test]
     async fn chunks_are_cut_only_from_files_inside_the_output_dir() {
         let dir = tempfile::tempdir().unwrap();

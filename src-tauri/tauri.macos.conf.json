@@ -3,7 +3,10 @@
     "macOS": {
       "minimumSystemVersion": "15.0",
       "signingIdentity": "-",
-      "entitlements": "Entitlements.plist"
+      "entitlements": "Entitlements.plist",
+      "files": {
+        "Frameworks": "./target/ffmpeg-runtime"
+      }
     }
   },
   "app": {
@@ -22,5 +25,8 @@
         "trafficLightPosition": { "x": 16, "y": 22 }
       }
     ]
+  },
+  "build": {
+    "beforeBundleCommand": "node scripts/bundle-macos-ffmpeg.mjs"
   }
 }

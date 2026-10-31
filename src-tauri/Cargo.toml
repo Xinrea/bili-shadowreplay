@@ -35,7 +35,6 @@ serde_derive = "1.0.158"
 serde = "1.0.158"
 sysinfo = "0.32.0"
 m3u8-rs = { workspace = true }
-async-ffmpeg-sidecar = { workspace = true }
 chrono = { version = "0.4.24", features = ["serde"] }
 toml = "0.9"
 tokio = { version = "1.27.0", features = ["process", "fs", "sync"] }
@@ -71,18 +70,24 @@ sentry = { version = "0.46.0", features = ["log", "logs"] }
 # dependencies to the desktop application.
 rig-core = { version = "0.40.0", default-features = false, features = ["derive", "rustls"] }
 
+[dev-dependencies]
+# Dependency crates do not inherit cfg(test); opt in only for application tests.
+ffmpeg_utils = { path = "crates/ffmpeg_utils", features = ["cli-test-oracles"] }
+
 [target.'cfg(windows)'.dependencies]
+# The normal Windows application includes GPU composition. Runtime probes
+# choose a supported device/codec before falling back to the CPU renderer.
+ffmpeg_utils = { path = "crates/ffmpeg_utils", features = ["vulkan-video"] }
+native-overlay = { path = "crates/native-overlay", features = ["vulkan"] }
 sherpa-onnx = { version = "1.13.4", default-features = false, features = ["shared"] }
 
 [target.'cfg(not(windows))'.dependencies]
 sherpa-onnx = "1.13.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+ffmpeg_utils = { path = "crates/ffmpeg_utils", features = ["vulkan-video"] }
+native-overlay = { path = "crates/native-overlay", features = ["vulkan"] }
 libc = "0.2"
-# async-ffmpeg-sidecar enables async_zip's full feature, pulling in liblzma-sys
-# through async-compression. Without static linking, pkg-config can select
-# Homebrew's xz and the app fails to launch on Macs without it. Build from source.
-liblzma-sys = { version = "0.4", features = ["static"] }
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem
@@ -206,4 +211,9 @@ md5 = "0.8"
 pct-str = "2.0"
 rand = "0.10"
 m3u8-rs = "6.0"
-async-ffmpeg-sidecar = "0.0.3"
+
+# ffmpeg-sys-next 9's unoptimized build script overflows Windows' 1 MiB
+# executable stack before main. Optimize this FFI crate, keeping app code in
+# the normal dev profile and avoiding global linker/stack environment flags.
+[profile.dev.package.ffmpeg-sys-next]
+opt-level = 1

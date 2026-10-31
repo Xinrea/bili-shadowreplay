@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{Local, Utc};
-use ffmpeg_utils::ffmpeg_command;
+use ffmpeg_utils::ImportAudioMode;
 
 use crate::database::audio::AudioRow;
 use crate::ffmpeg::runner::TempArtifact;
@@ -25,20 +25,19 @@ async fn output_dir(state: &State) -> PathBuf {
     PathBuf::from(&state.config.read().await.output)
 }
 
-/// How a file with sound in `codec` is kept, as `(extension, codec options)`:
+/// How a file with sound in `codec` is kept:
 /// as it is where every web view plays and seeks it exactly, or else as AAC.
 /// MP3 is encoded again too, as players only guess where to seek in one with a
 /// variable bit rate, and the preview would not play what the export does.
 /// WAV of other samples than 16-bit, which web views may not play, becomes
 /// 16-bit, as the export mixes it.
-fn kept_as(extension: &str, codec: &str) -> (&'static str, &'static [&'static str]) {
-    const COPY: &[&str] = &["-c:a", "copy"];
+fn kept_as(extension: &str, codec: &str) -> ImportAudioMode {
     match (extension, codec) {
-        ("wav", "pcm_s16le") => ("wav", COPY),
-        ("wav", codec) if codec.starts_with("pcm_") => ("wav", &["-c:a", "pcm_s16le"]),
-        ("flac", "flac") => ("flac", COPY),
-        (_, "aac") => ("m4a", COPY),
-        _ => ("m4a", &["-c:a", "aac", "-b:a", "256k"]),
+        ("wav", "pcm_s16le") => ImportAudioMode::CopyWav,
+        ("wav", codec) if codec.starts_with("pcm_") => ImportAudioMode::Pcm16Wav,
+        ("flac", "flac") => ImportAudioMode::CopyFlac,
+        (_, "aac") => ImportAudioMode::CopyAacM4a,
+        _ => ImportAudioMode::Aac256M4a,
     }
 }
 
@@ -54,33 +53,11 @@ fn display_name(name: Option<&str>, path: &Path) -> String {
         })
 }
 
-/// Write the first sound of `source` to `target`, alone, with `codec` options.
-async fn write_sound(source: &Path, target: &Path, codec: &[&str]) -> Result<(), String> {
-    let mut command = ffmpeg_command();
-    command
-        .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i"])
-        .arg(source)
-        .args(["-map", "0:a:0", "-vn", "-sn", "-dn"])
-        .args(codec);
-    if target
-        .extension()
-        .is_some_and(|extension| extension == "m4a")
-    {
-        // Its index first, for the preview to seek before it has loaded.
-        command.args(["-movflags", "+faststart"]);
-    }
-    let output = command
-        .arg(target)
-        .output()
+/// Write only the first sound of `source`, with the library's format policy.
+async fn write_sound(source: &Path, target: &Path, mode: ImportAudioMode) -> Result<(), String> {
+    ffmpeg_utils::import_audio(source, target, mode)
         .await
-        .map_err(|e| format!("无法启动 FFmpeg: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "转换声音文件失败: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    Ok(())
+        .map_err(|error| format!("转换声音文件失败: {error}"))
 }
 
 /// The audio library, the latest import first.
@@ -109,7 +86,8 @@ pub async fn import_audio_file(
         .extension()
         .map(|extension| extension.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    let (extension, codec) = kept_as(&extension, &metadata.audio_codec);
+    let mode = kept_as(&extension, &metadata.audio_codec);
+    let extension = mode.extension();
     let file = format!(
         "{AUDIO_DIR}/{}-{}.{extension}",
         Utc::now().timestamp_millis(),
@@ -122,7 +100,7 @@ pub async fn import_audio_file(
             .map_err(|e| e.to_string())?;
     }
     let guard = TempArtifact::new(&target);
-    write_sound(&source, &target, codec).await?;
+    write_sound(&source, &target, mode).await?;
     // Without the pictures some files carry, the container's length is the
     // sound's.
     let duration = ffmpeg_utils::extract_video_metadata(&target)
@@ -209,17 +187,13 @@ mod tests {
 
     #[test]
     fn files_that_play_and_seek_everywhere_are_kept_and_others_encoded() {
-        assert_eq!(kept_as("wav", "pcm_s16le"), ("wav", &["-c:a", "copy"][..]));
+        assert_eq!(kept_as("wav", "pcm_s16le"), ImportAudioMode::CopyWav);
         for codec in ["pcm_f32le", "pcm_s24le", "pcm_alaw", "pcm_mulaw"] {
-            assert_eq!(
-                kept_as("wav", codec),
-                ("wav", &["-c:a", "pcm_s16le"][..]),
-                "{codec}"
-            );
+            assert_eq!(kept_as("wav", codec), ImportAudioMode::Pcm16Wav, "{codec}");
         }
-        assert_eq!(kept_as("flac", "flac").0, "flac");
-        assert_eq!(kept_as("aac", "aac"), ("m4a", &["-c:a", "copy"][..]));
-        assert_eq!(kept_as("m4a", "aac").0, "m4a");
+        assert_eq!(kept_as("flac", "flac"), ImportAudioMode::CopyFlac);
+        assert_eq!(kept_as("aac", "aac"), ImportAudioMode::CopyAacM4a);
+        assert_eq!(kept_as("m4a", "aac").extension(), "m4a");
         for (extension, codec) in [
             ("mp3", "mp3"),
             ("ogg", "vorbis"),
@@ -228,7 +202,7 @@ mod tests {
         ] {
             assert_eq!(
                 kept_as(extension, codec),
-                ("m4a", &["-c:a", "aac", "-b:a", "256k"][..]),
+                ImportAudioMode::Aac256M4a,
                 "{extension} {codec}"
             );
         }
@@ -240,5 +214,68 @@ mod tests {
         assert_eq!(display_name(Some(" BGM "), path), "BGM");
         assert_eq!(display_name(Some("  "), path), "片头曲");
         assert_eq!(display_name(None, path), "片头曲");
+    }
+
+    #[tokio::test]
+    async fn native_library_import_keeps_pcm_and_writes_aac_without_a_cli() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("音乐 样本.wav");
+        let mut writer = hound::WavWriter::create(
+            &source,
+            hound::WavSpec {
+                channels: 2,
+                sample_rate: 44_100,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        let samples: Vec<_> = (0..88_226)
+            .map(|index| (12_000.0 * (index as f64 * 0.031).sin()) as i16)
+            .collect();
+        for sample in &samples {
+            writer.write_sample(*sample).unwrap();
+        }
+        writer.finalize().unwrap();
+        let copy = directory.path().join("copy.wav");
+        write_sound(&source, &copy, kept_as("wav", "pcm_s16le"))
+            .await
+            .unwrap();
+        let reader = hound::WavReader::open(&copy).unwrap();
+        assert_eq!(
+            (reader.spec().sample_rate, reader.spec().channels),
+            (44_100, 2)
+        );
+        assert_eq!(
+            reader
+                .into_samples::<i16>()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+            samples
+        );
+        let output = directory.path().join("encoded.m4a");
+        write_sound(&source, &output, ImportAudioMode::Aac256M4a)
+            .await
+            .unwrap();
+        let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+        assert_eq!(metadata.audio_codec, "aac");
+        assert!(metadata.duration > 0.0);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 3);
+    }
+
+    #[tokio::test]
+    async fn native_library_import_failures_keep_the_previous_sound() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("kept.m4a");
+        std::fs::write(&output, b"previous sound").unwrap();
+        let video = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/video/test.mp4");
+        for input in [&video, &directory.path().join("missing.wav")] {
+            assert!(write_sound(input, &output, ImportAudioMode::Aac256M4a)
+                .await
+                .unwrap_err()
+                .starts_with("转换声音文件失败: "));
+            assert_eq!(std::fs::read(&output).unwrap(), b"previous sound");
+            assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+        }
     }
 }

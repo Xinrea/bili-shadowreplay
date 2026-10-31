@@ -50,10 +50,7 @@ use crate::{
             get_total_length, remove_recorder, send_danmaku, set_enable, ExportDanmuOptions,
         },
         sticker::{add_cover_sticker, delete_cover_sticker, get_cover_stickers, CoverSticker},
-        subtitle_fonts::{
-            get_subtitle_font_families, get_subtitle_preview_fonts, SubtitleFontFamily,
-            SubtitlePreviewFont,
-        },
+        subtitle_fonts::{get_subtitle_font_families, SubtitleFontFamily},
         summary::{
             delete_archive_summary, generate_archive_summary, get_archive_summary,
             get_archive_summary_statuses,
@@ -69,11 +66,10 @@ use crate::{
         },
         video::{
             batch_import_external_videos, cancel, clip_range, clip_video, delete_video,
-            encode_video_subtitle, generate_audio_sample, generate_video_subtitle,
-            generic_ffmpeg_command, get_all_videos, get_file_size, get_import_progress, get_video,
-            get_video_cover, get_video_subtitle, get_video_typelist, get_videos,
-            import_external_video, update_video_cover, update_video_note, update_video_subtitle,
-            upload_procedure,
+            encode_video_subtitle, generate_audio_sample, generate_video_subtitle, get_all_videos,
+            get_file_size, get_import_progress, get_video, get_video_cover, get_video_subtitle,
+            get_video_typelist, get_videos, import_external_video, update_video_cover,
+            update_video_note, update_video_subtitle, upload_procedure,
         },
         AccountInfo,
     },
@@ -1249,8 +1245,6 @@ struct ExportProjectRequest {
     #[serde(default)]
     subtitle_ass: Option<String>,
     #[serde(default)]
-    generated_subtitle: Option<bool>,
-    #[serde(default)]
     overlays: Option<Vec<OverlayImage>>,
     #[serde(default)]
     target: Option<String>,
@@ -1268,7 +1262,6 @@ async fn handler_export_project(
         param.id,
         param.timeline,
         param.subtitle_ass,
-        param.generated_subtitle,
         param.overlays,
         param.target,
         param.base,
@@ -1441,8 +1434,6 @@ struct PostUploadRequest {
     #[serde(default)]
     subtitle_ass: Option<String>,
     #[serde(default)]
-    generated_subtitle: Option<bool>,
-    #[serde(default)]
     overlays: Option<Vec<OverlayImage>>,
 }
 
@@ -1455,7 +1446,6 @@ async fn handler_post_upload(
         param.event_id,
         param.id,
         param.subtitle_ass,
-        param.generated_subtitle,
         param.overlays,
     )
     .await?;
@@ -1712,8 +1702,6 @@ struct EncodeVideoSubtitleRequest {
     event_id: String,
     id: i64,
     srt_style: String,
-    #[serde(default)]
-    ass_content: Option<String>,
 }
 
 async fn handler_encode_video_subtitle(
@@ -1725,18 +1713,11 @@ async fn handler_encode_video_subtitle(
         encode_video_subtitle_param.event_id.clone(),
         encode_video_subtitle_param.id,
         encode_video_subtitle_param.srt_style,
-        encode_video_subtitle_param.ass_content,
     )
     .await?;
     Ok(Json(ApiResponse::success(
         encode_video_subtitle_param.event_id,
     )))
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SubtitlePreviewFontsRequest {
-    font_name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1757,14 +1738,6 @@ async fn handler_render_generated_subtitle_preview(
     )
     .await?;
     Ok(Json(ApiResponse::success(image)))
-}
-
-async fn handler_get_subtitle_preview_fonts(
-    state: axum::extract::State<State>,
-    Json(param): Json<SubtitlePreviewFontsRequest>,
-) -> Result<Json<ApiResponse<Vec<SubtitlePreviewFont>>>, ApiError> {
-    let fonts = get_subtitle_preview_fonts(state.0, param.font_name).await?;
-    Ok(Json(ApiResponse::success(fonts)))
 }
 
 async fn handler_get_subtitle_font_families(
@@ -2292,20 +2265,6 @@ async fn handler_get_tasks(
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GenericFfmpegCommandRequest {
-    args: Vec<String>,
-}
-
-async fn handler_generic_ffmpeg_command(
-    state: axum::extract::State<State>,
-    Json(params): Json<GenericFfmpegCommandRequest>,
-) -> Result<Json<ApiResponse<String>>, ApiError> {
-    let result = generic_ffmpeg_command(state.0, params.args).await?;
-    Ok(Json(ApiResponse::success(result)))
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
 struct ListFolderRequest {
     path: String,
 }
@@ -2568,10 +2527,6 @@ pub async fn start_api_server(state: State) {
                 post(handler_generate_archive_subtitle),
             )
             .route(
-                "/api/generic_ffmpeg_command",
-                post(handler_generic_ffmpeg_command),
-            )
-            .route(
                 "/api/update_video_subtitle",
                 post(handler_update_video_subtitle),
             )
@@ -2780,10 +2735,6 @@ pub async fn start_api_server(state: State) {
         .route(
             "/api/render_generated_subtitle_preview",
             post(handler_render_generated_subtitle_preview),
-        )
-        .route(
-            "/api/get_subtitle_preview_fonts",
-            post(handler_get_subtitle_preview_fonts),
         )
         .route(
             "/api/get_subtitle_font_families",

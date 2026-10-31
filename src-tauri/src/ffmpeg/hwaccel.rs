@@ -1,7 +1,4 @@
-use std::{collections::HashSet, num::NonZeroU32, path::PathBuf, process::Stdio, sync::OnceLock};
-
-use ffmpeg_utils::ffmpeg_command;
-use tokio::io::AsyncReadExt;
+use std::{num::NonZeroU32, path::PathBuf, sync::OnceLock};
 
 const TARGET_ENCODERS: [&str; 14] = [
     "h264_nvenc",
@@ -22,6 +19,10 @@ const TARGET_ENCODERS: [&str; 14] = [
 
 pub const H264_SCALE_PAD_FILTER: &str =
     "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2";
+
+/// Normalize GPU inputs in one scaling/conversion pass before composition.
+pub const GPU_SCALE_PAD_FILTER: &str =
+    "scale=1920:1080:force_original_aspect_ratio=decrease:out_color_matrix=bt709:out_range=tv,format=nv12,pad=1920:1080:(ow-iw)/2:(oh-ih)/2";
 
 const VAAPI_ENCODER: &str = "h264_vaapi";
 const NVENC_ENCODER: &str = "h264_nvenc";
@@ -71,6 +72,58 @@ pub fn is_vaapi_encoder(encoder: &str) -> bool {
     matches!(encoder, "h264_vaapi" | "hevc_vaapi")
 }
 
+pub(super) fn is_vulkan_encoder(encoder: &str) -> bool {
+    matches!(encoder, "h264_vulkan" | "hevc_vulkan")
+}
+
+/// Rendering and encoding are selected independently. A hardware encoder can
+/// consume either CPU-composited frames or frames supplied by a GPU adapter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenderBackend {
+    Cpu,
+    Vulkan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RenderPipeline {
+    pub encoder: &'static str,
+    pub renderer: RenderBackend,
+}
+impl RenderPipeline {
+    pub fn cpu(encoder: &'static str) -> Self {
+        Self {
+            encoder,
+            renderer: RenderBackend::Cpu,
+        }
+    }
+    pub fn gpu(encoder: &'static str) -> Self {
+        Self {
+            encoder,
+            renderer: RenderBackend::Vulkan,
+        }
+    }
+    pub fn uses_gpu(self) -> bool {
+        self.renderer == RenderBackend::Vulkan
+    }
+    pub fn cache_identity(self) -> &'static str {
+        if self.uses_gpu() {
+            "vulkan-nv12-compute-v4-srgb"
+        } else {
+            "cpu-bgra-overlay-v1"
+        }
+    }
+    pub fn video_options(
+        self,
+        filter: Option<&str>,
+        bitrate: Option<NonZeroU32>,
+        settings: Option<&crate::project::RenderSettings>,
+    ) -> Result<ffmpeg_utils::VideoEncodeOptions, String> {
+        let mut options = native_video_options(self.encoder, filter, bitrate, settings)?;
+        options.frame_processor = self.uses_gpu();
+        Ok(options)
+    }
+}
+
 /// 返回 VAAPI 硬件上传滤镜片段。
 pub fn vaapi_filter_suffix() -> &'static str {
     VAAPI_FILTER_SUFFIX
@@ -82,52 +135,16 @@ pub fn vaapi_filter_suffix() -> &'static str {
 pub fn output_format_filter(encoder: &str) -> &'static str {
     if is_vaapi_encoder(encoder) {
         vaapi_filter_suffix()
-    } else if TARGET_ENCODERS.contains(&encoder) {
+    } else if TARGET_ENCODERS.contains(&encoder) || is_vulkan_encoder(encoder) {
         "format=nv12"
     } else {
         "format=yuv420p"
     }
 }
 
-/// 为 FFmpeg 命令追加 VAAPI 设备参数。
-fn apply_vaapi_device(command: &mut tokio::process::Command) {
-    if let Some(device_path) = vaapi_device_path() {
-        command.args(["-vaapi_device", device_path.to_string_lossy().as_ref()]);
-    } else {
-        log::warn!("VAAPI encoder selected but no /dev/dri/renderD* device was found");
-    }
-}
-
-/// 只追加视频编码器参数，不追加视频滤镜。
-pub fn apply_x264_encoder_only(command: &mut tokio::process::Command, encoder: &str) {
-    if is_vaapi_encoder(encoder) {
-        apply_vaapi_device(command);
-    }
-    command.args(["-c:v", encoder]);
-}
-
-/// 按编码器类型追加质量参数。
-pub fn apply_x264_quality_args(command: &mut tokio::process::Command, encoder: &str) {
-    apply_x264_quality_args_with_bitrate(command, encoder, None);
-}
-
 fn with_output_gop(mut args: Vec<String>) -> Vec<String> {
     args.extend(OUTPUT_GOP_ARGS.map(str::to_owned));
     args
-}
-
-/// 按编码器类型追加质量参数；指定 `bitrate`（kbps）时改用该目标码率。
-pub fn apply_x264_quality_args_with_bitrate(
-    command: &mut tokio::process::Command,
-    encoder: &str,
-    bitrate: Option<NonZeroU32>,
-) {
-    let quality_args = quality_args_with_bitrate(encoder, bitrate);
-    log::info!(
-        "Applying H.264 quality parameters: encoder={encoder}, args={}",
-        quality_args.join(" ")
-    );
-    command.args(quality_args);
 }
 
 /// The encoder's quality arguments, targeting `bitrate` kbps instead of its
@@ -169,6 +186,7 @@ pub fn quality_args_with_bitrate(encoder: &str, bitrate: Option<NonZeroU32>) -> 
 /// 返回指定 H.264 编码器应使用的质量参数。
 pub fn quality_args_for_encoder(encoder: &str) -> &'static [&'static str] {
     match encoder {
+        "h264_vulkan" | "hevc_vulkan" => &["-rc_mode", "vbr", "-async_depth", "3", "-b:v", "8000k"],
         VAAPI_ENCODER => &["-b:v", "8000k", "-maxrate", "10000k", "-bufsize", "16000k"],
         NVENC_ENCODER => &[
             "-preset", "p5", "-rc", "vbr", "-cq", "23", "-b:v", "8000k", "-maxrate", "10000k",
@@ -206,6 +224,7 @@ pub fn project_quality_args(
     use crate::project::EncodingPriority;
     let quality = settings.priority == EncodingPriority::Quality;
     let options: &[&str] = match encoder {
+        "h264_vulkan" | "hevc_vulkan" => &["-rc_mode", "vbr", "-async_depth", "3"],
         "h264_nvenc" | "hevc_nvenc" => {
             &["-preset", if quality { "p7" } else { "p1" }, "-rc", "vbr"]
         }
@@ -234,9 +253,44 @@ pub fn project_quality_args(
     with_output_gop(args)
 }
 
-/// Choose and probe an encoder for each codec/priority combination. Unlike the
-/// legacy selector, the probe uses exactly the options the render will use.
-pub async fn get_render_encoder(settings: &crate::project::RenderSettings) -> &'static str {
+/// Choose and probe an encoder for project/overlay exports, whose native plans
+/// can bind the Vulkan frame processor. Ordinary conversion callers use
+/// `material_encoder` and retain their existing composition path.
+pub async fn get_render_pipeline(settings: &crate::project::RenderSettings) -> RenderPipeline {
+    use crate::project::{EncodingPriority, VideoCodec};
+    static CACHES: [tokio::sync::OnceCell<RenderPipeline>; 4] =
+        [const { tokio::sync::OnceCell::const_new() }; 4];
+    let hevc = settings.codec == VideoCodec::Hevc;
+    let index = usize::from(hevc) * 2 + usize::from(settings.priority == EncodingPriority::Quality);
+    *CACHES[index]
+        .get_or_init(|| async {
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            {
+                if settings.priority == EncodingPriority::Speed {
+                    #[cfg(target_os = "windows")]
+                    let candidate = if hevc { "hevc_vulkan" } else { "h264_vulkan" };
+                    #[cfg(target_os = "macos")]
+                    let candidate = if hevc { "hevc_videotoolbox" } else { "h264_videotoolbox" };
+                    if super::native_gpu::probe_encoder(candidate).await {
+                        return RenderPipeline::gpu(candidate);
+                    }
+                } else {
+                    log::info!(
+                        "Quality-priority export keeps the CPU compositor and its existing encoder profile"
+                    );
+                }
+            }
+            RenderPipeline::cpu(get_cpu_render_encoder(settings).await)
+        })
+        .await
+}
+
+/// CPU composition with the existing hardware/software encoder profiles. This
+/// is selected before starting a plan when its source is outside the GPU's SDR
+/// colour contract, or when GPU initialization is unavailable.
+pub(super) async fn get_cpu_render_encoder(
+    settings: &crate::project::RenderSettings,
+) -> &'static str {
     use crate::project::{EncodingPriority, VideoCodec};
     static CACHES: [tokio::sync::OnceCell<&'static str>; 4] =
         [const { tokio::sync::OnceCell::const_new() }; 4];
@@ -265,125 +319,102 @@ pub async fn get_render_encoder(settings: &crate::project::RenderSettings) -> &'
 /// Optional settings keep old material callers on the old H.264 path.
 pub async fn material_encoder(settings: Option<&crate::project::RenderSettings>) -> &'static str {
     match settings {
-        Some(settings) => get_render_encoder(settings).await,
+        Some(settings) => get_cpu_render_encoder(settings).await,
         None => get_x264_encoder().await,
     }
 }
 
-pub fn apply_material_quality(
-    command: &mut tokio::process::Command,
-    encoder: &str,
-    bitrate: Option<NonZeroU32>,
+pub(super) async fn material_overlay_pipeline(
     settings: Option<&crate::project::RenderSettings>,
-) {
+) -> RenderPipeline {
     match settings {
-        Some(settings) => {
-            command.args(project_quality_args(encoder, settings));
-        }
-        None => apply_x264_quality_args_with_bitrate(command, encoder, bitrate),
+        Some(settings) => get_render_pipeline(settings).await,
+        None => RenderPipeline::cpu(get_x264_encoder().await),
     }
 }
 
-/// 追加视频编码器参数，并在 VAAPI 下补齐硬件上传滤镜。
-pub fn apply_x264_encoder_args(
-    command: &mut tokio::process::Command,
+/// Native encoder settings from the shared profile and cache-identity policy.
+/// The canonical profile strings remain stable for existing segment caches.
+pub fn native_video_options(
     encoder: &str,
     filter: Option<&str>,
-) {
-    if is_vaapi_encoder(encoder) {
-        apply_vaapi_device(command);
-
-        let filter = filter
-            .map(build_vaapi_filter)
-            .unwrap_or_else(|| VAAPI_FILTER_SUFFIX.to_string());
-        command.args(["-vf", filter.as_str()]);
-        command.args(["-c:v", encoder]);
-    } else {
-        if let Some(filter) = filter {
-            command.args(["-vf", filter]);
-        }
-        command.args(["-c:v", encoder]);
+    bitrate: Option<NonZeroU32>,
+    settings: Option<&crate::project::RenderSettings>,
+) -> Result<ffmpeg_utils::VideoEncodeOptions, String> {
+    if is_vulkan_encoder(encoder)
+        && settings
+            .is_some_and(|settings| settings.priority == crate::project::EncodingPriority::Quality)
+    {
+        return Err("Vulkan export currently supports speed priority; use the existing quality backend for quality priority".into());
     }
+    let args = match settings {
+        Some(settings) => project_quality_args(encoder, settings),
+        None => quality_args_with_bitrate(encoder, bitrate),
+    };
+    let mut options = ffmpeg_utils::VideoEncodeOptions {
+        encoder: encoder.to_owned(),
+        filter: filter.map(str::to_owned),
+        frame_processor: false,
+        ..Default::default()
+    };
+    for pair in args.as_chunks::<2>().0 {
+        let (flag, value) = (pair[0].as_str(), pair[1].as_str());
+        match flag {
+            "-b:v" => options.bit_rate = Some(native_bit_rate(value)?),
+            "-maxrate" => options.max_rate = Some(native_bit_rate(value)?),
+            "-bufsize" => options.buffer_size = Some(native_bit_rate(value)?),
+            "-g" => {
+                options.gop = Some(
+                    value
+                        .parse()
+                        .map_err(|error| format!("Invalid encoder GOP: {error}"))?,
+                )
+            }
+            "-tag:v" => options.tag = Some(value.to_owned()),
+            "-preset" | "-crf" | "-cq" | "-rc" | "-rc_mode" | "-quality" | "-prio_speed"
+            | "-rate_control" | "-compression_level" | "-async_depth" => {
+                options
+                    .options
+                    .insert(flag[1..].to_owned(), value.to_owned());
+            }
+            _ => return Err(format!("Unsupported native encoder quality option: {flag}")),
+        }
+    }
+    if is_vaapi_encoder(encoder) {
+        let device = vaapi_device_path()
+            .ok_or("VAAPI encoder selected but no /dev/dri/renderD* device was found")?;
+        options.hardware_device = Some(ffmpeg_utils::HardwareDevice {
+            kind: "vaapi".into(),
+            device: Some(device.to_string_lossy().into_owned()),
+        });
+        options.filter = Some(build_vaapi_filter(filter.unwrap_or_default()));
+    }
+    Ok(options)
 }
 
-/// 检测当前环境下 FFmpeg 支持的 H.264 硬件编码器。
-///
-/// 返回值为可直接用于 `-c:v <value>` 的编码器名称列表。
+fn native_bit_rate(value: &str) -> Result<u64, String> {
+    let (digits, multiplier) = value
+        .strip_suffix('k')
+        .map_or((value, 1), |digits| (digits, 1000));
+    digits
+        .parse::<u64>()
+        .ok()
+        .and_then(|value| value.checked_mul(multiplier))
+        .ok_or_else(|| format!("Invalid native encoder bit rate: {value}"))
+}
+
+/// Hardware H.264/HEVC encoder names registered by the linked FFmpeg SDK.
 pub async fn list_supported_hwaccels() -> Result<Vec<String>, String> {
-    let mut command = ffmpeg_command();
-
-    let mut child = command
-        .arg("-hide_banner")
-        .arg("-encoders")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("无法启动 ffmpeg 进程: {e}"))?;
-
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "无法获取 ffmpeg 标准输出".to_string())?;
-    let mut stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "无法获取 ffmpeg 标准错误输出".to_string())?;
-
-    let (mut stdout_buf, mut stderr_buf) = (String::new(), String::new());
-
-    let stdout_future = stdout.read_to_string(&mut stdout_buf);
-    let stderr_future = stderr.read_to_string(&mut stderr_buf);
-
-    let (stdout_res, stderr_res, status) = tokio::join!(stdout_future, stderr_future, child.wait());
-
-    stdout_res.map_err(|e| format!("读取 ffmpeg 标准输出失败: {e}"))?;
-    stderr_res.map_err(|e| format!("读取 ffmpeg 标准错误输出失败: {e}"))?;
-
-    let status = status.map_err(|e| format!("等待 ffmpeg 进程退出失败: {e}"))?;
-
-    if !status.success() {
-        let err = if stderr_buf.trim().is_empty() {
-            stdout_buf.trim().to_string()
-        } else {
-            stderr_buf.trim().to_string()
-        };
-        log::error!("ffmpeg -encoders 运行失败: {err}");
-        return Err(format!("ffmpeg -encoders 运行失败: {err}"));
-    }
-
-    let mut hwaccels = Vec::new();
-
-    for line in stdout_buf.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.is_empty() || !trimmed.starts_with('V') {
-            continue;
-        }
-
-        let mut parts = trimmed.split_whitespace();
-        let flags = parts.next().unwrap_or_default();
-        if !flags.starts_with('V') {
-            continue;
-        }
-
-        if let Some(name) = parts.next() {
-            if TARGET_ENCODERS
-                .iter()
-                .any(|candidate| candidate.eq_ignore_ascii_case(name))
-            {
-                hwaccels.push(name.to_string());
-            }
-        }
-    }
-
-    // 去重并保持原有顺序（即第一次出现时保留）
-    let mut seen = HashSet::new();
-    hwaccels.retain(|value| seen.insert(value.clone()));
+    let hwaccels: Vec<_> = ffmpeg_utils::available_video_encoders()
+        .into_iter()
+        .filter(|name| TARGET_ENCODERS.iter().any(|candidate| candidate == name))
+        .collect();
 
     if hwaccels.is_empty() {
-        log::info!("No supported H.264 hardware encoders reported by FFmpeg");
+        log::info!("No H.264/HEVC hardware encoders registered in the FFmpeg SDK");
     } else {
         log::info!(
-            "FFmpeg reported supported H.264 hardware encoders: {}",
+            "FFmpeg SDK registered H.264/HEVC hardware encoders: {}",
             hwaccels.join(", ")
         );
     }
@@ -402,87 +433,17 @@ async fn test_encoder_with_settings(
     encoder: &str,
     settings: Option<&crate::project::RenderSettings>,
 ) -> bool {
-    let mut command = ffmpeg_command();
-
-    // 使用合成输入源 (testsrc2) 测试编码器
-    // -frames:v 3 只编码3帧，快速测试
-    // -f null 丢弃输出，不需要实际文件
-    command.arg("-hide_banner").arg("-loglevel").arg("error");
-
-    let filter = if is_vaapi_encoder(encoder) {
-        if let Some(device_path) = vaapi_device_path() {
-            command.args(["-vaapi_device", device_path.to_string_lossy().as_ref()]);
-            Some(vaapi_filter_suffix())
-        } else {
-            log::warn!(
-                "H.264 encoder test skipped: encoder={encoder}, reason=no /dev/dri/renderD* device"
-            );
+    let options = match native_video_options(encoder, None, None, settings) {
+        Ok(options) => options,
+        Err(error) => {
+            log::warn!("Native video encoder probe failed: encoder={encoder}, error={error}");
             return false;
         }
-    } else {
-        None
     };
-
-    command
-        .arg("-f")
-        .arg("lavfi")
-        .arg("-i")
-        .arg("testsrc2=duration=1:size=320x240:rate=30");
-
-    if let Some(filter) = filter {
-        command.args(["-vf", filter]);
-    }
-    command.args(["-c:v", encoder]);
-    let quality_args = match settings {
-        Some(settings) => project_quality_args(encoder, settings),
-        None => quality_args_with_bitrate(encoder, None),
-    };
-    log::info!(
-        "Testing H.264 encoder: encoder={encoder}, quality_args={}",
-        quality_args.join(" ")
-    );
-    command.args(&quality_args);
-
-    let child = command
-        .arg("-frames:v")
-        .arg("3")
-        .arg("-f")
-        .arg("null")
-        .arg("-")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
-
-    match child {
-        Ok(process) => {
-            let output = process.wait_with_output().await;
-            match output {
-                Ok(output) => {
-                    // 如果退出码为0，说明编码器可用
-                    if output.status.success() {
-                        log::info!(
-                            "H.264 encoder test succeeded: encoder={encoder}, quality_args={}",
-                            quality_args.join(" ")
-                        );
-                        true
-                    } else {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        log::warn!(
-                            "H.264 encoder test failed: encoder={encoder}, quality_args={}, stderr={}",
-                            quality_args.join(" "),
-                            stderr.trim()
-                        );
-                        false
-                    }
-                }
-                Err(err) => {
-                    log::warn!("H.264 encoder test error: encoder={encoder}, error={err}");
-                    false
-                }
-            }
-        }
-        Err(err) => {
-            log::warn!("Failed to start H.264 encoder test: encoder={encoder}, error={err}");
+    match ffmpeg_utils::probe_video_encoder(options).await {
+        Ok(()) => true,
+        Err(error) => {
+            log::warn!("Native video encoder probe failed: encoder={encoder}, error={error}");
             false
         }
     }
@@ -575,6 +536,55 @@ mod tests {
     ];
 
     #[test]
+    fn vulkan_speed_profile_preserves_export_limits_and_rejects_quality_downgrade() {
+        let mut settings = crate::project::RenderSettings::default();
+        let options = super::RenderPipeline::gpu("hevc_vulkan")
+            .video_options(None, None, Some(&settings))
+            .unwrap();
+        assert!(options.frame_processor);
+        assert_eq!(options.bit_rate, Some(10_000_000));
+        assert_eq!(options.gop, Some(120));
+        assert_eq!(
+            options.options.get("async_depth").map(String::as_str),
+            Some("3")
+        );
+        assert_eq!(options.tag.as_deref(), Some("hvc1"));
+        assert_eq!(super::output_format_filter("hevc_vulkan"), "format=nv12");
+        settings.priority = crate::project::EncodingPriority::Quality;
+        assert!(super::native_video_options("hevc_vulkan", None, None, Some(&settings)).is_err());
+        for encoder in ["h264_vulkan", "hevc_vulkan"] {
+            let legacy = super::native_video_options(encoder, None, None, None).unwrap();
+            assert_eq!(
+                legacy.options.get("async_depth").map(String::as_str),
+                Some("3")
+            );
+        }
+    }
+
+    #[test]
+    fn rendering_is_independent_of_the_encoder_and_changes_cache_identity() {
+        let cpu = super::RenderPipeline::cpu("hevc_videotoolbox");
+        let gpu = super::RenderPipeline::gpu("hevc_videotoolbox");
+        let settings = crate::project::RenderSettings::default();
+        assert!(
+            !cpu.video_options(None, None, Some(&settings))
+                .unwrap()
+                .frame_processor
+        );
+        assert!(
+            gpu.video_options(None, None, Some(&settings))
+                .unwrap()
+                .frame_processor
+        );
+        assert_ne!(cpu.cache_identity(), gpu.cache_identity());
+        assert!(
+            !super::native_video_options("hevc_vulkan", None, None, Some(&settings))
+                .unwrap()
+                .frame_processor
+        );
+    }
+
+    #[test]
     fn composited_output_uses_nv12_only_for_hardware_encoders() {
         for encoder in super::TARGET_ENCODERS {
             let expected = if super::is_vaapi_encoder(encoder) {
@@ -619,6 +629,50 @@ mod tests {
                 "-g", "120"
             ]
         );
+    }
+
+    #[test]
+    fn native_profiles_preserve_quality_units_and_explicit_hevc_settings() {
+        let legacy = super::native_video_options("libx264", None, None, None).unwrap();
+        assert_eq!(legacy.options.get("crf").map(String::as_str), Some("20"));
+        assert_eq!(
+            legacy.options.get("preset").map(String::as_str),
+            Some("medium")
+        );
+        assert_eq!(legacy.gop, Some(120));
+        assert!(legacy.bit_rate.is_none());
+        let target =
+            super::native_video_options("libx264", None, NonZeroU32::new(12000), None).unwrap();
+        assert_eq!(
+            (target.bit_rate, target.max_rate, target.buffer_size),
+            (Some(12_000_000), Some(15_000_000), Some(24_000_000))
+        );
+        assert!(!target.options.contains_key("crf"));
+        let settings = crate::project::RenderSettings {
+            codec: crate::project::VideoCodec::Hevc,
+            priority: crate::project::EncodingPriority::Quality,
+            bitrate_kbps: 6000,
+        };
+        let explicit = super::native_video_options(
+            "libx265",
+            Some(super::H264_SCALE_PAD_FILTER),
+            NonZeroU32::new(12000),
+            Some(&settings),
+        )
+        .unwrap();
+        assert_eq!(explicit.encoder, "libx265");
+        assert_eq!(explicit.bit_rate, Some(6_000_000));
+        assert_eq!((explicit.max_rate, explicit.buffer_size), (None, None));
+        assert_eq!(explicit.tag.as_deref(), Some("hvc1"));
+        assert_eq!(
+            explicit.options.get("preset").map(String::as_str),
+            Some("slow")
+        );
+        assert_eq!(
+            explicit.filter.as_deref(),
+            Some(super::H264_SCALE_PAD_FILTER)
+        );
+        assert_eq!(explicit.gop, Some(120));
     }
 
     #[test]
@@ -681,10 +735,59 @@ mod tests {
         }
     }
 
+    async fn assert_encoded_keyframe_gaps(path: &std::path::Path, context: &str) {
+        let probed = ffmpeg_utils::ffprobe_command()
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "frame=key_frame",
+                "-of",
+                "json",
+            ])
+            .arg(path)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            probed.status.success(),
+            "{context}: {}",
+            String::from_utf8_lossy(&probed.stderr)
+        );
+        let value: serde_json::Value = serde_json::from_slice(&probed.stdout).unwrap();
+        let frames = value["frames"].as_array().unwrap();
+        assert_eq!(frames.len(), 301, "{context}");
+        let keyframes: Vec<_> = frames
+            .iter()
+            .enumerate()
+            .filter_map(|(index, frame)| (frame["key_frame"] == 1).then_some(index))
+            .collect();
+        assert_eq!(keyframes.first(), Some(&0), "{context}");
+        assert!(
+            keyframes.windows(2).all(|pair| pair[1] - pair[0] <= 120),
+            "{context}: {keyframes:?}"
+        );
+        assert!(
+            frames.len() - keyframes.last().unwrap() <= 120,
+            "{context}: {keyframes:?}"
+        );
+        assert!(
+            keyframes.windows(2).any(|pair| pair[1] - pair[0] == 120),
+            "{context}: {keyframes:?}"
+        );
+        eprintln!("GOP 120 verified: {context}, keyframes={keyframes:?}");
+    }
+
     #[tokio::test]
     #[ignore = "requires FFmpeg/ffprobe with libx264 and libx265; also tests available NVENC/VideoToolbox"]
     async fn encoded_keyframe_gaps_respect_the_120_frame_gop() {
         use crate::project::{EncodingPriority, RenderSettings, VideoCodec};
+        use ffmpeg_utils::{
+            ColorSource, FilterGraphPlan, GraphInput, GraphOutput, MediaInput, MediaKind,
+            MediaOutput, MediaPlan, StreamMode, StreamRoute, StreamSelector, StreamSource,
+        };
         let directory = tempfile::tempdir().unwrap();
         for encoder in [
             "libx264",
@@ -712,7 +815,7 @@ mod tests {
                     eprintln!("Skipping unavailable hardware encoder: {encoder} {priority:?}");
                     continue;
                 }
-                let path = directory.path().join("gop.mp4");
+                let path = directory.path().join("gop-cli.mp4");
                 let encoded = ffmpeg_utils::ffmpeg_command()
                     .args([
                         "-v",
@@ -720,7 +823,9 @@ mod tests {
                         "-f",
                         "lavfi",
                         "-i",
-                        "color=c=0x204060:s=128x96:r=60",
+                        // Match the native probe's supported 320x240 geometry.
+                        // Some NVENC devices reject the old 128x96 fixture.
+                        "color=c=0x204060:s=320x240:r=60",
                     ])
                     .args(["-vf", super::output_format_filter(encoder), "-c:v", encoder])
                     .args(super::project_quality_args(encoder, &settings))
@@ -734,48 +839,57 @@ mod tests {
                     "{encoder}: {}",
                     String::from_utf8_lossy(&encoded.stderr)
                 );
-                let probed = ffmpeg_utils::ffprobe_command()
-                    .args([
-                        "-v",
-                        "error",
-                        "-select_streams",
-                        "v:0",
-                        "-show_entries",
-                        "frame=key_frame",
-                        "-of",
-                        "json",
-                    ])
-                    .arg(&path)
-                    .output()
+                assert_encoded_keyframe_gaps(&path, &format!("{encoder} {priority:?} CLI")).await;
+
+                let native_path = directory.path().join("gop-native.mp4");
+                let mut input = MediaInput::generated_video(ColorSource {
+                    color: "0x204060".into(),
+                    width: 320,
+                    height: 240,
+                    frame_rate_num: 60,
+                    frame_rate_den: 1,
+                });
+                input.duration = Some(301.0 / 60.0);
+                let options = super::native_video_options(
+                    encoder,
+                    Some(super::output_format_filter(encoder)),
+                    None,
+                    Some(&settings),
+                )
+                .unwrap();
+                let plan = MediaPlan {
+                    inputs: vec![input],
+                    outputs: vec![MediaOutput::file(&native_path)],
+                    routes: vec![StreamRoute {
+                        source: StreamSource::Filter { label: "v".into() },
+                        output: 0,
+                        required: true,
+                        mode: StreamMode::Video(options),
+                    }],
+                    filter_graph: Some(FilterGraphPlan {
+                        spec: "[0:v]null[v]".into(),
+                        inputs: vec![GraphInput {
+                            input: 0,
+                            selector: StreamSelector::FirstVideo,
+                            label: "0:v".into(),
+                            required: true,
+                        }],
+                        outputs: vec![GraphOutput {
+                            label: "v".into(),
+                            kind: MediaKind::Video,
+                        }],
+                    }),
+                    ..Default::default()
+                };
+                let result = ffmpeg_utils::execute_media_plan(plan, None)
                     .await
-                    .unwrap();
-                assert!(
-                    probed.status.success(),
-                    "{}",
-                    String::from_utf8_lossy(&probed.stderr)
-                );
-                let value: serde_json::Value = serde_json::from_slice(&probed.stdout).unwrap();
-                let frames = value["frames"].as_array().unwrap();
-                assert_eq!(frames.len(), 301, "{encoder}");
-                let keyframes: Vec<_> = frames
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, frame)| (frame["key_frame"] == 1).then_some(index))
-                    .collect();
-                assert_eq!(keyframes.first(), Some(&0), "{encoder}");
-                assert!(
-                    keyframes.windows(2).all(|pair| pair[1] - pair[0] <= 120),
-                    "{encoder}: {keyframes:?}"
-                );
-                assert!(
-                    frames.len() - keyframes.last().unwrap() <= 120,
-                    "{encoder}: {keyframes:?}"
-                );
-                assert!(
-                    keyframes.windows(2).any(|pair| pair[1] - pair[0] == 120),
-                    "{encoder}: {keyframes:?}"
-                );
-                eprintln!("GOP 120 verified: {encoder} {priority:?}, keyframes={keyframes:?}");
+                    .unwrap_or_else(|error| panic!("{encoder} {priority:?} native: {error}"));
+                assert_eq!(result.video_frames, 301, "{encoder} {priority:?} native");
+                assert_encoded_keyframe_gaps(
+                    &native_path,
+                    &format!("{encoder} {priority:?} native"),
+                )
+                .await;
             }
         }
     }

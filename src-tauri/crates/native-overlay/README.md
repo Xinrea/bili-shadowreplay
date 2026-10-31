@@ -1,10 +1,16 @@
 # native-overlay
 
-CPU Skia compositor for this application's generated subtitle/danmaku ASS, not a general ASS engine. Skia is pinned to **0.82.0** with `textlayout`; Windows links `advapi32` for the prebuilt ICU dependency. No network access is needed at runtime.
+Skia compositor for this application's generated subtitle/danmaku ASS, not a general ASS engine. Skia is pinned to **0.82.0** with `textlayout`; the Windows application enables Vulkan by default for GPU export. Windows links `advapi32` for the prebuilt ICU dependency. No network access is needed at runtime.
 
 ## Linux build baseline
 
 Linux builds require Ubuntu 24.04+ (or equivalent system libraries) and source-build Skia with `FORCE_SKIA_BUILD=1 SKIA_USE_SYSTEM_LIBRARIES=1`. The old upstream Linux archive has no COLRv1 paint implementation and its bundled ICU collides with V8; do not use it for this renderer. CI/release set those variables only on Linux, and the Docker builder/runtime both use Debian trixie. macOS keeps the validated prebuilt configuration. Windows uses the prebuilt archive with the ICU symbols it shares with V8 renamed: run `node scripts/prepare-windows-skia.mjs` and set the `SKIA_BINARIES_URL` it prints (the release workflow does this). See `docs/development/native-overlay.md` for packages and build/runtime ABI details before running the commands below on Linux.
+
+When testing this crate alone on Windows, add `--features vulkan` to the commands
+below to match the default preparation script's archive. Standalone CPU-only
+crate tests instead require a separate `node scripts/prepare-windows-skia.mjs --cpu`
+preparation and its printed `SKIA_BINARIES_URL`; application target features are
+not inherited when selecting only this crate.
 
 ## Integration
 
@@ -98,11 +104,7 @@ cargo fmt --manifest-path src-tauri/crates/native-overlay/Cargo.toml --check
 
 Tests cover parsing, cache eviction/redecode pixel stability, active indexing/backwards seeks, layout/collision semantics, actual color emoji pixels, all Unicode 16 fully-qualified emoji shaping, PNG/raw parity, allocating/reused-buffer parity and invalid buffer rejection for both formats, explicit non-gray BGRA channel order with both RGBA/BGRA surface storage, zero/partial/full alpha and straight/premultiplied rounding, translucent text/outline/shadow/image pixels, nonfatal missing glyphs, image containment/movement, path-and-rounded-size sprite sharing with exact cache counters, and opt-in profiling with PNG excluded from timings/frame counts. Assets with pinned upstream URLs, SHA-256 hashes and licenses are listed in `assets/README.md`.
 
-## Verified integration
-
-- macOS: application GUI/headless compilation, renderer tests and main application tests; real FFmpeg workflows include standalone SRT, text/image danmaku, delayed video clocks, project clips/audio, segment caching and generated subtitles crossing segment boundaries.
-- Windows x64: the independent prototype completed both 1080p60 videos and alpha/time checks; this production renderer crate compiled and passed 21 tests with Rust 1.89 / MSVC 14.42.34433. Whole Windows GUI installer/manual interaction is not covered by those results.
-- Linux: CI checks the Ubuntu 24.04 source/system-library configuration, including actual color pixels and full application linking. Manual desktop acceptance, long-video sustained memory, 4K and all hardware encoders are not covered by those checks.
+## Application integration tests
 
 Useful integration commands from the repository root:
 
@@ -112,4 +114,15 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features -
 cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --features headless ffmpeg:: -- --ignored --test-threads=2
 ```
 
-The last command deliberately runs FFmpeg-dependent tests normally marked ignored; it requires a working FFmpeg with the encoders/filters used by those tests. Production exports stream premultiplied BGRA, explicitly composite in RGB, then convert the result to NV12 for hardware encoding (yuv420p for software). Input `alpha_mode=premultiplied` metadata is declared when the installed FFmpeg supports it; older versions use the explicit overlay alpha setting. Failed/cancelled streaming jobs drop the child/stdin, signal the blocking raster thread and release the bounded channel; they do not write a movie-sized intermediate raw-video file.
+The last command deliberately runs FFmpeg-dependent tests normally marked ignored;
+it requires matching linked FFmpeg libraries and the CLI test oracles. Windows
+GPU export tests require a Vulkan Video-capable device; macOS uses MoltenVK and
+VideoToolbox. See the [application GPU regression commands](../../../docs/development/native-overlay.md#共享-shader-与回归测试).
+
+The CPU export backend supplies premultiplied BGRA through a bounded native frame
+channel, composites in RGB, then converts to NV12 for hardware encoding (yuv420p
+for software). Failed/cancelled jobs signal the worker and release the channel
+after native processing stops. Windows GPU exports instead draw on shared Vulkan
+images, combine the video base and overlay with the shared Vulkan NV12 compute shader, and pass hardware NV12
+frames to the same native MediaPlan encoder. Neither backend invokes an external
+FFmpeg child or writes an intermediate raw-video file.

@@ -1,7 +1,7 @@
 // Seamless preview of a project timeline with two <video> elements: while one
 // shows a clip, the other is already loaded at the next clip's in point, and
 // they swap at the cut. The player itself behaves like a media element whose
-// time is project time, so components that follow a <video> (the libass
+// time is project time, so components that follow a <video> (the native
 // subtitle preview) can follow the whole project instead. The project may go
 // on past its last clip, with overlays and sounds running on: there the clock
 // goes on and the last clip holds its last frame, which the editor hides.

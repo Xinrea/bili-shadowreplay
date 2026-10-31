@@ -1,0 +1,268 @@
+[Vulkan Loader] LAYER:          Searching for implicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/target/debug/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.config/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/xdg/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/lunarg/Dev/macos-sdk-build/Vulkan-Loader/build/install/etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:             Found no files
+[Vulkan Loader] LAYER:          Searching for implicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/target/debug/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.config/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/xdg/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/lunarg/Dev/macos-sdk-build/Vulkan-Loader/build/install/etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:             Found no files
+[Vulkan Loader] LAYER:          Searching for explicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d
+[Vulkan Loader] LAYER:             Found the following files:
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_api_dump.json
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_gfxreconstruct.json
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_khronos_profiles.json
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_screenshot.json
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_khronos_synchronization2.json
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_khronos_shader_object.json
+[Vulkan Loader] LAYER:          Searching for implicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/target/debug/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.config/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/xdg/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/lunarg/Dev/macos-sdk-build/Vulkan-Loader/build/install/etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:             Found no files
+[Vulkan Loader] LAYER:          Searching for implicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/target/debug/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.config/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/xdg/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/lunarg/Dev/macos-sdk-build/Vulkan-Loader/build/install/etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:             Found no files
+[Vulkan Loader] LAYER:          Searching for explicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d
+[Vulkan Loader] LAYER:             Found the following files:
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_api_dump.json
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_gfxreconstruct.json
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_khronos_profiles.json
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_screenshot.json
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_khronos_synchronization2.json
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_khronos_shader_object.json
+[Vulkan Loader] LAYER:          Searching for implicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/target/debug/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.config/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/xdg/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/lunarg/Dev/macos-sdk-build/Vulkan-Loader/build/install/etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:             Found no files
+[Vulkan Loader] LAYER:          Searching for implicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/target/debug/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.config/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/xdg/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/lunarg/Dev/macos-sdk-build/Vulkan-Loader/build/install/etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:             Found no files
+[Vulkan Loader] LAYER:          Searching for implicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/target/debug/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.config/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/xdg/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/lunarg/Dev/macos-sdk-build/Vulkan-Loader/build/install/etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:             Found no files
+[Vulkan Loader] LAYER:          Searching for implicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/target/debug/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.config/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/xdg/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/lunarg/Dev/macos-sdk-build/Vulkan-Loader/build/install/etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:             Found no files
+[Vulkan Loader] LAYER:          Searching for implicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/target/debug/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.config/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/xdg/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/lunarg/Dev/macos-sdk-build/Vulkan-Loader/build/install/etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:             Found no files
+[Vulkan Loader] LAYER:          Searching for explicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d
+[Vulkan Loader] LAYER:             Found the following files:
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_api_dump.json
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_gfxreconstruct.json
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_khronos_profiles.json
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_screenshot.json
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_khronos_synchronization2.json
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_khronos_shader_object.json
+[Vulkan Loader] WARNING | LAYER: env var 'VK_INSTANCE_LAYERS' defined and adding layers "VK_LAYER_LUNARG_api_dump:VK_LAYER_KHRONOS_validation"
+[Vulkan Loader] WARNING | LAYER: env var 'VK_INSTANCE_LAYERS' defined and adding layers "VK_LAYER_LUNARG_api_dump:VK_LAYER_KHRONOS_validation"
+[Vulkan Loader] DEBUG | LAYER:  Loading layer library /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/../../../lib/libVkLayer_khronos_validation.dylib
+[Vulkan Loader] INFO | LAYER:   Insert instance layer "VK_LAYER_KHRONOS_validation" (/private/tmp/bsr-kosmickrisp-validation/sdk/macOS/lib/libVkLayer_khronos_validation.dylib)
+[Vulkan Loader] DEBUG | LAYER:  Loading layer library /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/../../../lib/libVkLayer_api_dump.dylib
+[Vulkan Loader] INFO | LAYER:   Insert instance layer "VK_LAYER_LUNARG_api_dump" (/private/tmp/bsr-kosmickrisp-validation/sdk/macOS/lib/libVkLayer_api_dump.dylib)
+[Vulkan Loader] LAYER:          vkCreateInstance layer callstack setup to:
+[Vulkan Loader] LAYER:             <Application>
+[Vulkan Loader] LAYER:               ||
+[Vulkan Loader] LAYER:             <Loader>
+[Vulkan Loader] LAYER:               ||
+[Vulkan Loader] LAYER:             VK_LAYER_LUNARG_api_dump
+[Vulkan Loader] LAYER:                     Type: Explicit
+[Vulkan Loader] LAYER:                     Enabled By: Environment Variable VK_INSTANCE_LAYERS
+[Vulkan Loader] LAYER:                     Manifest: /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_api_dump.json
+[Vulkan Loader] LAYER:                     Library:  /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/lib/libVkLayer_api_dump.dylib
+[Vulkan Loader] LAYER:               ||
+[Vulkan Loader] LAYER:             VK_LAYER_KHRONOS_validation
+[Vulkan Loader] LAYER:                     Type: Explicit
+[Vulkan Loader] LAYER:                     Enabled By: Environment Variable VK_INSTANCE_LAYERS
+[Vulkan Loader] LAYER:                     Manifest: /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json
+[Vulkan Loader] LAYER:                     Library:  /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/lib/libVkLayer_khronos_validation.dylib
+[Vulkan Loader] LAYER:               ||
+[Vulkan Loader] LAYER:             <Drivers>
+[Vulkan Loader] INFO | LAYER:   Inserted device layer "VK_LAYER_KHRONOS_validation" (/private/tmp/bsr-kosmickrisp-validation/sdk/macOS/lib/libVkLayer_khronos_validation.dylib)
+[Vulkan Loader] INFO | LAYER:   Inserted device layer "VK_LAYER_LUNARG_api_dump" (/private/tmp/bsr-kosmickrisp-validation/sdk/macOS/lib/libVkLayer_api_dump.dylib)
+[Vulkan Loader] DRIVER:         vkCreateDevice layer callstack setup to:
+[Vulkan Loader] DRIVER:            <Application>
+[Vulkan Loader] DRIVER:              ||
+[Vulkan Loader] DRIVER:            <Loader>
+[Vulkan Loader] DRIVER:              ||
+[Vulkan Loader] LAYER:             VK_LAYER_LUNARG_api_dump
+[Vulkan Loader] LAYER:                     Type: Explicit
+[Vulkan Loader] LAYER:                     Enabled By: Environment Variable VK_INSTANCE_LAYERS
+[Vulkan Loader] LAYER:                     Manifest: /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_api_dump.json
+[Vulkan Loader] LAYER:                     Library:  /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/lib/libVkLayer_api_dump.dylib
+[Vulkan Loader] LAYER:               ||
+[Vulkan Loader] LAYER:             VK_LAYER_KHRONOS_validation
+[Vulkan Loader] LAYER:                     Type: Explicit
+[Vulkan Loader] LAYER:                     Enabled By: Environment Variable VK_INSTANCE_LAYERS
+[Vulkan Loader] LAYER:                     Manifest: /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json
+[Vulkan Loader] LAYER:                     Library:  /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/lib/libVkLayer_khronos_validation.dylib
+[Vulkan Loader] LAYER:               ||
+[Vulkan Loader] DRIVER:            <Device>
+[Vulkan Loader] DRIVER:                Using "Apple M2 Max" with driver: "/private/tmp/bsr-kosmickrisp-validation/sdk/macOS/lib/libvulkan_kosmickrisp.dylib"
+[Vulkan Loader] LAYER:          Searching for implicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/target/debug/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.config/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/xdg/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/lunarg/Dev/macos-sdk-build/Vulkan-Loader/build/install/etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:             Found no files
+[Vulkan Loader] LAYER:          Searching for implicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/target/debug/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.config/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/xdg/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/lunarg/Dev/macos-sdk-build/Vulkan-Loader/build/install/etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:             Found no files
+[Vulkan Loader] LAYER:          Searching for implicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/target/debug/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.config/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/xdg/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/lunarg/Dev/macos-sdk-build/Vulkan-Loader/build/install/etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:             Found no files
+[Vulkan Loader] LAYER:          Searching for implicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/target/debug/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.config/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/xdg/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/lunarg/Dev/macos-sdk-build/Vulkan-Loader/build/install/etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:             Found no files
+[Vulkan Loader] LAYER:          Searching for implicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/target/debug/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.config/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/xdg/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/lunarg/Dev/macos-sdk-build/Vulkan-Loader/build/install/etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:             Found no files
+[Vulkan Loader] LAYER:          Searching for implicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/target/debug/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.config/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/xdg/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/lunarg/Dev/macos-sdk-build/Vulkan-Loader/build/install/etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:             Found no files
+[Vulkan Loader] LAYER:          Searching for implicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/target/debug/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.config/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/xdg/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/lunarg/Dev/macos-sdk-build/Vulkan-Loader/build/install/etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:             Found no files
+[Vulkan Loader] LAYER:          Searching for implicit layer manifest files
+[Vulkan Loader] LAYER:             In following locations:
+[Vulkan Loader] LAYER:                /private/tmp/bsr-kosmickrisp-validation/target/debug/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.config/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/xdg/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/lunarg/Dev/macos-sdk-build/Vulkan-Loader/build/install/etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /etc/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /Users/xinreasuper/.local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/local/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:                /usr/share/vulkan/implicit_layer.d
+[Vulkan Loader] LAYER:             Found no files
+{"compositor":{"composition":{"nanos":210352753,"secs":0},"frame_drain_wait":{"nanos":0,"secs":0},"frame_reuse_wait":{"nanos":0,"secs":0},"frame_slot_reuses":0,"gpu_wait":{"nanos":52154999,"secs":0},"in_flight_peak":0,"output_frames":60,"submitted_frames":60,"unique_rgb_images":2,"upload":{"nanos":0,"secs":0},"uploaded_frames":0},"hardware_output_frames":60,"height":1080,"missing_glyphs":0,"rendered_frames":60,"scene_readback_ns":0,"scope":"Skia Vulkan scene and libplacebo NV12 conversion; no encoder or pixel readback","width":1920}
+[Vulkan Loader] DEBUG | LAYER:  Unloading layer library /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/lib/libVkLayer_api_dump.dylib
+[Vulkan Loader] DEBUG | LAYER:  Unloading layer library /private/tmp/bsr-kosmickrisp-validation/sdk/macOS/lib/libVkLayer_khronos_validation.dylib

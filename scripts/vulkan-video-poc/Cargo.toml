@@ -9,6 +9,10 @@ default-run = "vulkan-video-poc"
 name = "vulkan-benchmark"
 path = "src/benchmark/main.rs"
 
+[[bin]]
+name = "vulkan-render-probe"
+path = "src/render_probe.rs"
+
 # Exercise the real libraries without Tauri, speech runtimes or the application.
 [workspace]
 

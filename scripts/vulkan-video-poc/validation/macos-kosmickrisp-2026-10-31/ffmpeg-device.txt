@@ -1,0 +1,66 @@
+[Vulkan @ 0x78aac58000] Supported layers:
+[Vulkan @ 0x78aac58000] Using instance extension VK_KHR_portability_enumeration
+[Vulkan @ 0x78aac58000] GPU listing:
+[Vulkan @ 0x78aac58000]     0: Apple M2 Max (integrated) (0x64)
+[Vulkan @ 0x78aac58000] Device 0 selected: Apple M2 Max (integrated) (0x64)
+[Vulkan @ 0x78aac58000] Using device extension VK_KHR_push_descriptor
+[Vulkan @ 0x78aac58000] Using device extension VK_EXT_shader_atomic_float
+[Vulkan @ 0x78aac58000] Using device extension VK_KHR_shader_subgroup_rotate
+[Vulkan @ 0x78aac58000] Using device extension VK_EXT_host_image_copy
+[Vulkan @ 0x78aac58000] Using device extension VK_KHR_workgroup_memory_explicit_layout
+[Vulkan @ 0x78aac58000] Using device extension VK_KHR_shader_relaxed_extended_instruction
+[Vulkan @ 0x78aac58000] Using device extension VK_EXT_shader_replicated_composites
+[Vulkan @ 0x78aac58000] Using device extension VK_KHR_shader_expect_assume
+[Vulkan @ 0x78aac58000] Using device extension VK_KHR_external_semaphore_fd
+[Vulkan @ 0x78aac58000] Using device extension VK_EXT_external_memory_host
+[Vulkan @ 0x78aac58000] Queue families:
+[Vulkan @ 0x78aac58000]     0: graphics compute transfer (queues: 1)
+[Vulkan @ 0x78aac58000] Using device: Apple M2 Max
+[Vulkan @ 0x78aac58000] Alignments:
+[Vulkan @ 0x78aac58000]     optimalBufferCopyRowPitchAlignment: 1
+[Vulkan @ 0x78aac58000]     minMemoryMapAlignment:              16384
+[Vulkan @ 0x78aac58000]     nonCoherentAtomSize:                64
+[Vulkan @ 0x78aac58000]     minImportedHostPointerAlignment:    16384
+[Parsed_color_0 @ 0x78aacdc480] size:640x360 rate:30/1 duration:-1.000000 sar:1/1
+Input #0, lavfi, from 'color=size=640x360:rate=30':
+  Duration: N/A, start: 0.000000, bitrate: N/A
+  Stream #0:0: Video: wrapped_avframe, 1 reference frame, yuv420p, 640x360 [SAR 1:1 DAR 16:9], 30 fps, 30 tbr, 30 tbn
+[out#0/null @ 0x78aacdc780] No explicit maps, mapping streams automatically...
+[vost#0:0/wrapped_avframe @ 0x78ab1e4000] Created video stream from input stream 0:0
+Stream mapping:
+  Stream #0:0 -> #0:0 (wrapped_avframe (native) -> wrapped_avframe (native))
+[vost#0:0/wrapped_avframe @ 0x78ab1e4000] Starting thread...
+[vf#0:0 @ 0x78aae78000] Starting thread...
+[vist#0:0/wrapped_avframe @ 0x78ab400180] [dec:wrapped_avframe @ 0x78ab1d8140] Starting thread...
+[in#0/lavfi @ 0x78ab1d8000] Starting thread...
+Press [q] to stop, [?] for help
+[graph -1 input from stream 0:0 @ 0x78aacdd080] w:640 h:360 pixfmt:yuv420p tb:1/30 fr:30/1 sar:1/1 csp:unknown range:unknown alpha:unspecified
+[graph -1 input from stream 0:0 @ 0x78aacdd080] video frame properties congruent with link at pts_time: 0
+Output #0, null, to 'pipe:':
+  Metadata:
+    encoder         : Lavf63.1.102
+  Stream #0:0: Video: wrapped_avframe, 1 reference frame, yuv420p(progressive), 640x360 [SAR 1:1 DAR 16:9], q=2-31, 200 kb/s, 30 fps, 30 tbn
+    Metadata:
+      encoder         : Lavc63.1.102 wrapped_avframe
+[out#0/null @ 0x78aacdc780] Starting thread...
+[vf#0:0 @ 0x78aae78000] All consumers returned EOF
+[vost#0:0/wrapped_avframe @ 0x78ab1e4000] [enc:wrapped_avframe @ 0x78ab094620] Encoder thread received EOF
+[vost#0:0/wrapped_avframe @ 0x78ab1e4000] Terminating thread with return code 0 (success)
+[out#0/null @ 0x78aacdc780] All streams finished
+[out#0/null @ 0x78aacdc780] Terminating thread with return code 0 (success)
+[vf#0:0 @ 0x78aae78000] Terminating thread with return code 0 (success)
+[vist#0:0/wrapped_avframe @ 0x78ab400180] [dec:wrapped_avframe @ 0x78ab1d8140] Decoder returned EOF, finishing
+[vist#0:0/wrapped_avframe @ 0x78ab400180] [dec:wrapped_avframe @ 0x78ab1d8140] Terminating thread with return code 0 (success)
+[vist#0:0/wrapped_avframe @ 0x78ab400180] All consumers of this stream are done
+[in#0/lavfi @ 0x78ab1d8000] All consumers are done
+[in#0/lavfi @ 0x78ab1d8000] Terminating thread with return code 0 (success)
+[out#0/null @ 0x78aacdc780] Output file #0 (pipe:):
+[out#0/null @ 0x78aacdc780]   Output stream #0:0 (video): 1 frames encoded; 1 packets muxed (424 bytes);
+[out#0/null @ 0x78aacdc780]   Total: 1 packets (424 bytes) muxed
+[out#0/null @ 0x78aacdc780] video:0KiB audio:0KiB subtitle:0KiB other streams:0KiB global headers:0KiB muxing overhead: unknown
+frame=    1 fps=0.0 q=-0.0 Lsize=N/A time=00:00:00.03 bitrate=N/A speed=51.1x elapsed=0:00:00.00
+[in#0/lavfi @ 0x78ab1d8000] Input file #0 (color=size=640x360:rate=30):
+[in#0/lavfi @ 0x78ab1d8000]   Input stream #0:0 (video): 14 packets read (5936 bytes); 5 frames decoded; 0 decode errors;
+[in#0/lavfi @ 0x78ab1d8000]   Total: 14 packets (5936 bytes) demuxed
+
+Exiting with exit code 0

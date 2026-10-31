@@ -1,5 +1,9 @@
 # Windows Vulkan Video PoC
 
+For the measured macOS driver capabilities and standalone GPU-render check, see
+[KosmicKrisp runtime validation](MACOS_KOSMICKRISP.md). The tested SDK 1.4.363.0
+driver runs Skia Vulkan/NV12 conversion but provides no Vulkan Video extensions.
+
 This standalone harness exercises the real overlay scene compositor and linked
 FFmpeg libraries without starting Tauri or the speech runtimes. The application
 includes the Vulkan backend by default on Windows through the existing native

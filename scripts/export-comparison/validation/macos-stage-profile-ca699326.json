@@ -1,0 +1,5270 @@
+{
+  "status": "complete",
+  "jobs": [
+    {
+      "name": "warmup-control",
+      "fixture": "warmup",
+      "measured": false,
+      "command": [
+        "/private/tmp/bsr-stage-profile/Current.app/Contents/MacOS/bili-shadowreplay",
+        "--scenario",
+        "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/warmup.json",
+        "--output",
+        "/private/tmp/bsr-stage-profile/macos/warmup-control.mp4",
+        "--require-gpu"
+      ],
+      "process_wall_seconds": 3.80177216604352,
+      "exit_code": 0,
+      "diagnostics": {
+        "audio_mode": "copy",
+        "audio_samples": 0,
+        "counts": {
+          "image": 40,
+          "text": 160,
+          "total": 200
+        },
+        "duration_seconds": 10.0,
+        "encoded_fps": 179.93599449956298,
+        "encoder_probe_ms": 355.39166700000004,
+        "export_ms": 3334.5190420000004,
+        "filter_graph": "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=60,scale=out_color_matrix=bt709:out_range=tv,format=nv12[outv]\n",
+        "fps": 60.0,
+        "frames": 600,
+        "height": 1080,
+        "implementation": "current-production",
+        "linked_ffmpeg_version": "9.0.2",
+        "output": "/private/tmp/bsr-stage-profile/macos/warmup-control.mp4",
+        "platform": "macos",
+        "profile": {
+          "bit_rate": 10000000,
+          "encoder": "hevc_videotoolbox",
+          "frame_processor": true,
+          "gop": 120,
+          "options": {
+            "prio_speed": "1"
+          },
+          "renderer": "vulkan-nv12-overlay-v2"
+        },
+        "scenario": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/warmup.json",
+        "scenario_sha256": "53f090b3948b2171d7e8a4ae0e1bb138ea297641fb9c076bf3f3898fd8a5663c",
+        "source": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/source-10s.mp4",
+        "source_audio_codec": "aac",
+        "stage_profile": null,
+        "wall_ms": 3712.4045419999998,
+        "width": 1920
+      },
+      "resources": {
+        "path": "/private/tmp/bsr-stage-profile/macos/warmup-control.time",
+        "raw": "        3.78 real         2.31 user         1.73 sys\n           203636736  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n               14995  page reclaims\n                 129  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                  10  voluntary context switches\n               74925  involuntary context switches\n         31387185991  instructions retired\n         13043071416  cycles elapsed\n           400884816  peak memory footprint\n",
+        "user_seconds": 2.31,
+        "system_seconds": 1.73,
+        "mean_cpu_cores": 1.0626623120881025,
+        "maximum_resident_set_size_bytes": 203636736
+      },
+      "validation": {
+        "ok": true,
+        "video": {
+          "frames": 600,
+          "first_pts": 0.0,
+          "last_pts": 9.983333,
+          "pts_grid_max_error": 3.333333342681044e-07,
+          "pts_sha256": "cb7785bcab16f0361c3a45fcf4bbb2b8b44ea5e654588c7c34812ec0f2b62d07",
+          "stream": {
+            "codec_name": "hevc",
+            "profile": "Main",
+            "width": 1920,
+            "height": 1080,
+            "has_b_frames": 0,
+            "pix_fmt": "yuv420p",
+            "avg_frame_rate": "60/1",
+            "time_base": "1/15360",
+            "bit_rate": "10063114",
+            "disposition": {
+              "default": 1,
+              "dub": 0,
+              "original": 0,
+              "comment": 0,
+              "lyrics": 0,
+              "karaoke": 0,
+              "forced": 0,
+              "hearing_impaired": 0,
+              "visual_impaired": 0,
+              "clean_effects": 0,
+              "attached_pic": 0,
+              "timed_thumbnails": 0,
+              "non_diegetic": 0,
+              "captions": 0,
+              "descriptions": 0,
+              "metadata": 0,
+              "dependent": 0,
+              "still_image": 0,
+              "multilayer": 0
+            },
+            "tags": {
+              "language": "und",
+              "handler_name": "VideoHandler",
+              "encoder": "Lavc63.1.102 hevc_videotoolbox"
+            }
+          },
+          "format": {
+            "duration": "10.000000",
+            "size": "12831649",
+            "bit_rate": "10265319",
+            "tags": {
+              "major_brand": "isom",
+              "minor_version": "512",
+              "compatible_brands": "isomiso2mp41",
+              "title": "Big Buck Bunny, Sunflower version",
+              "artist": "Blender Foundation 2008, Janus Bager Kristensen 2013",
+              "composer": "Jan Morgenstern;Sacha Goedegebure",
+              "encoder": "Lavf63.1.102",
+              "comment": "Creative Commons Attribution 3.0 - http://bbb3d.renderfarming.net",
+              "genre": "Animation"
+            }
+          },
+          "picture_types": {
+            "I": 5,
+            "P": 595
+          },
+          "keyframes": 5,
+          "keyframe_indices": [
+            0,
+            120,
+            240,
+            360,
+            480
+          ],
+          "gop_gaps": {
+            "120": 4
+          },
+          "maximum_gop_gap": 120
+        },
+        "audio": {
+          "stream": {
+            "codec_name": "aac",
+            "sample_rate": "48000",
+            "channels": 2,
+            "channel_layout": "stereo"
+          },
+          "packets": 469,
+          "payload_bytes": 239767,
+          "packet_hashes_sha256": "a22b2a7ea448e908e74c71eeec665db005edeb974519da04d81e66cc8cfb453f"
+        },
+        "audio_packets_identical": true,
+        "pcm_fallback": null,
+        "bytes": 12831649,
+        "sha256": "90770cbe954c1f30ccd9aa0d4077a801a285ea05a3dac8fbbf8a1a5cabc8ba54",
+        "samples": [
+          {
+            "time": 2.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-warmup-control/frame-0.ppm",
+            "sha256": "91a7e67ac861f8de783f64de0f55dc6865e296821a878141e37c80f1b2c28115",
+            "source_mae": 7.6278125,
+            "reference_mae": 1.3352387152777778,
+            "components": {
+              "text": {
+                "pixels": 27040,
+                "source_to_reference_mae": 57.14844674556213,
+                "output_to_reference_mae": 7.783925049309665,
+                "output_from_source_mae": 55.67122781065089,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 1949,
+                "source_to_reference_mae": 63.81528989225244,
+                "output_to_reference_mae": 9.49700701214298,
+                "output_from_source_mae": 61.628014366341716,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 5.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-warmup-control/frame-1.ppm",
+            "sha256": "35b1a3b4a2531f25f70da43f21ee4c1764971d34e7cf2a1e7fecc39a45b17ded",
+            "source_mae": 31.43526765046296,
+            "reference_mae": 5.568595196759259,
+            "components": {
+              "text": {
+                "pixels": 114327,
+                "source_to_reference_mae": 57.748846145996424,
+                "output_to_reference_mae": 8.930631725955665,
+                "output_from_source_mae": 56.81523466314461,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 5693,
+                "source_to_reference_mae": 67.00948533286493,
+                "output_to_reference_mae": 9.887054277182505,
+                "output_from_source_mae": 65.1042801100767,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 9.9,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-warmup-control/frame-2.ppm",
+            "sha256": "48f08efe877a87242e1f46bc567a8ff5a065568db9bfb8f331abdd2dc126ffe7",
+            "source_mae": 62.489583333333336,
+            "reference_mae": 9.700457175925926,
+            "components": {
+              "text": {
+                "pixels": 184370,
+                "source_to_reference_mae": 74.0119813418669,
+                "output_to_reference_mae": 10.317560702211134,
+                "output_from_source_mae": 72.82529876516425,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 7986,
+                "source_to_reference_mae": 75.18945654896068,
+                "output_to_reference_mae": 11.161699641038483,
+                "output_from_source_mae": 73.76321061858252,
+                "closer_than_missing_overlay": true
+              }
+            }
+          }
+        ]
+      },
+      "output_sha256": "90770cbe954c1f30ccd9aa0d4077a801a285ea05a3dac8fbbf8a1a5cabc8ba54"
+    },
+    {
+      "name": "warmup-measured",
+      "fixture": "warmup",
+      "measured": true,
+      "command": [
+        "/private/tmp/bsr-stage-profile/Current.app/Contents/MacOS/bili-shadowreplay",
+        "--scenario",
+        "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/warmup.json",
+        "--output",
+        "/private/tmp/bsr-stage-profile/macos/warmup-measured.mp4",
+        "--require-gpu",
+        "--measure-stages"
+      ],
+      "process_wall_seconds": 3.7062962919007987,
+      "exit_code": 0,
+      "diagnostics": {
+        "audio_mode": "copy",
+        "audio_samples": 0,
+        "counts": {
+          "image": 40,
+          "text": 160,
+          "total": 200
+        },
+        "duration_seconds": 10.0,
+        "encoded_fps": 186.02006505431706,
+        "encoder_probe_ms": 342.208416,
+        "export_ms": 3225.4585,
+        "filter_graph": "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=60,scale=out_color_matrix=bt709:out_range=tv,format=nv12[outv]\n",
+        "fps": 60.0,
+        "frames": 600,
+        "height": 1080,
+        "implementation": "current-production",
+        "linked_ffmpeg_version": "9.0.2",
+        "output": "/private/tmp/bsr-stage-profile/macos/warmup-measured.mp4",
+        "platform": "macos",
+        "profile": {
+          "bit_rate": 10000000,
+          "encoder": "hevc_videotoolbox",
+          "frame_processor": true,
+          "gop": 120,
+          "options": {
+            "prio_speed": "1"
+          },
+          "renderer": "vulkan-nv12-overlay-v2"
+        },
+        "scenario": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/warmup.json",
+        "scenario_sha256": "53f090b3948b2171d7e8a4ae0e1bb138ea297641fb9c076bf3f3898fd8a5663c",
+        "source": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/source-10s.mp4",
+        "source_audio_codec": "aac",
+        "stage_profile": {
+          "metadata": {
+            "compositor_counters": "submitted=600, output=600, uploaded=600, in_flight_peak=3",
+            "decoder_0_0": "thread_count=1, active_thread_type=0",
+            "vulkan_submission": "Asynchronous"
+          },
+          "observations": {
+            "metal_blit_gpu": {
+              "calls": 600,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 18.669321,
+              "max_ms": 0.12237500000000001,
+              "p50_upper_ms": 0.032768,
+              "p95_upper_ms": 0.03573375738397516
+            },
+            "metal_cleanup_cpu": {
+              "calls": 600,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 1.396626,
+              "max_ms": 0.011417,
+              "p50_upper_ms": 0.0022333598364984476,
+              "p95_upper_ms": 0.0037560485609663334
+            },
+            "metal_commit_cpu": {
+              "calls": 600,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 1.840844,
+              "max_ms": 0.017374999999999998,
+              "p50_upper_ms": 0.002896309375740099,
+              "p95_upper_ms": 0.004870992343051145
+            },
+            "metal_prepare_cpu": {
+              "calls": 600,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 11.810407999999999,
+              "max_ms": 0.12429100000000001,
+              "p50_upper_ms": 0.01948396937220458,
+              "p95_upper_ms": 0.030048388487730667
+            },
+            "metal_texture_views_cpu": {
+              "calls": 600,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 3.872823,
+              "max_ms": 0.111876,
+              "p50_upper_ms": 0.005792618751480198,
+              "p95_upper_ms": 0.00974198468610229
+            },
+            "metal_wait_cpu": {
+              "calls": 600,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 141.711795,
+              "max_ms": 1.0939999999999999,
+              "p50_upper_ms": 0.22043594988026974,
+              "p95_upper_ms": 0.37072760009473266
+            },
+            "skia_flush_submit_cpu": {
+              "calls": 600,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 124.13803,
+              "max_ms": 8.359541,
+              "p50_upper_ms": 0.11021797494013487,
+              "p95_upper_ms": 0.6234870199105466
+            },
+            "skia_image_prepare_cpu": {
+              "calls": 600,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 2.065749,
+              "max_ms": 0.21770799999999998,
+              "p50_upper_ms": 1.0905077326652576e-06,
+              "p95_upper_ms": 1.0905077326652576e-06
+            },
+            "skia_scene_cpu": {
+              "calls": 600,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 94.535385,
+              "max_ms": 6.903292,
+              "p50_upper_ms": 0.15587175497763664,
+              "p95_upper_ms": 0.3117435099552733
+            },
+            "skia_text_layout_cpu": {
+              "calls": 600,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 23.626831,
+              "max_ms": 6.307334,
+              "p50_upper_ms": 1.0905077326652576e-06,
+              "p95_upper_ms": 0.12019355395092267
+            },
+            "skia_text_sprite_cpu": {
+              "calls": 600,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 10.817619,
+              "max_ms": 0.580333,
+              "p50_upper_ms": 1.0905077326652576e-06,
+              "p95_upper_ms": 0.07146751476795032
+            }
+          },
+          "spans": {
+            "acquire_frame": {
+              "calls": 600,
+              "exclusive_ms": 5.081798,
+              "inclusive_ms": 7.370914,
+              "max_ms": 0.040874999999999995,
+              "p50_upper_ms": 0.012633791081741851,
+              "p95_upper_ms": 0.01786687869198758
+            },
+            "compositor_feed": {
+              "calls": 1200,
+              "exclusive_ms": 0.599376,
+              "inclusive_ms": 0.599376,
+              "max_ms": 0.006666,
+              "p50_upper_ms": 0.0004695060701207917,
+              "p95_upper_ms": 0.0009390121402415833
+            },
+            "cpu_filter": {
+              "calls": 9198,
+              "exclusive_ms": 89.259517,
+              "inclusive_ms": 89.259517,
+              "max_ms": 0.676125,
+              "p50_upper_ms": 4.5254833995939045e-05,
+              "p95_upper_ms": 0.14293502953590065
+            },
+            "decode_receive": {
+              "calls": 1201,
+              "exclusive_ms": 0.315137,
+              "inclusive_ms": 0.315137,
+              "max_ms": 0.003083,
+              "p50_upper_ms": 0.00021526948230495092,
+              "p95_upper_ms": 0.000512
+            },
+            "decode_send": {
+              "calls": 601,
+              "exclusive_ms": 994.447682,
+              "inclusive_ms": 994.447682,
+              "max_ms": 22.33325,
+              "p50_upper_ms": 1.4829104003789306,
+              "p95_upper_ms": 2.719669665715474
+            },
+            "demux_read": {
+              "calls": 1070,
+              "exclusive_ms": 4.1576130000000004,
+              "inclusive_ms": 4.1576130000000004,
+              "max_ms": 0.047541,
+              "p50_upper_ms": 0.0024354961715255725,
+              "p95_upper_ms": 0.01948396937220458
+            },
+            "encode_eof": {
+              "calls": 1,
+              "exclusive_ms": 5.039458,
+              "inclusive_ms": 5.039458,
+              "max_ms": 5.039458,
+              "p50_upper_ms": 5.439339331430948,
+              "p95_upper_ms": 5.439339331430948
+            },
+            "encode_receive": {
+              "calls": 1201,
+              "exclusive_ms": 0.19811,
+              "inclusive_ms": 0.19811,
+              "max_ms": 0.018333,
+              "p50_upper_ms": 0.000128,
+              "p95_upper_ms": 0.00030443702144069656
+            },
+            "encode_send": {
+              "calls": 600,
+              "exclusive_ms": 117.33118200000001,
+              "inclusive_ms": 117.33118200000001,
+              "max_ms": 22.591375,
+              "p50_upper_ms": 0.15587175497763664,
+              "p95_upper_ms": 0.24038710790184534
+            },
+            "encoder_frame_bridge": {
+              "calls": 601,
+              "exclusive_ms": 0.868286,
+              "inclusive_ms": 974.7106719999999,
+              "max_ms": 3.255167,
+              "p50_upper_ms": 1.617125258462957,
+              "p95_upper_ms": 2.2869604725744104
+            },
+            "frame_slot_wait": {
+              "calls": 600,
+              "exclusive_ms": 3.222408,
+              "inclusive_ms": 3.222408,
+              "max_ms": 0.930125,
+              "p50_upper_ms": 0.0037560485609663334,
+              "p95_upper_ms": 0.006316895540870926
+            },
+            "initialize_graph": {
+              "calls": 1,
+              "exclusive_ms": 0.47879,
+              "inclusive_ms": 23.611625,
+              "max_ms": 23.611625,
+              "p50_upper_ms": 23.72656640606289,
+              "p95_upper_ms": 23.72656640606289
+            },
+            "libplacebo_pull": {
+              "calls": 1201,
+              "exclusive_ms": 610.577183,
+              "inclusive_ms": 610.577183,
+              "max_ms": 81.616042,
+              "p50_upper_ms": 0.04249483852680428,
+              "p95_upper_ms": 1.048576
+            },
+            "mux_finalize": {
+              "calls": 1,
+              "exclusive_ms": 0.21333300000000002,
+              "inclusive_ms": 0.21333300000000002,
+              "max_ms": 0.21333300000000002,
+              "p50_upper_ms": 0.22043594988026974,
+              "p95_upper_ms": 0.22043594988026974
+            },
+            "mux_write": {
+              "calls": 1069,
+              "exclusive_ms": 16.256836,
+              "inclusive_ms": 16.256836,
+              "max_ms": 4.1209999999999996,
+              "p50_upper_ms": 0.007512097121932667,
+              "p95_upper_ms": 0.027554493735033717
+            },
+            "nv12_upload": {
+              "calls": 600,
+              "exclusive_ms": 74.399338,
+              "inclusive_ms": 74.399338,
+              "max_ms": 0.2985,
+              "p50_upper_ms": 0.131072,
+              "p95_upper_ms": 0.18536380004736633
+            },
+            "process_frame": {
+              "calls": 600,
+              "exclusive_ms": 2.459841,
+              "inclusive_ms": 1894.209874,
+              "max_ms": 84.22416700000001,
+              "p50_upper_ms": 2.9658208007578613,
+              "p95_upper_ms": 4.194304
+            },
+            "setup": {
+              "calls": 1,
+              "exclusive_ms": 17.915917,
+              "inclusive_ms": 17.915917,
+              "max_ms": 17.915917,
+              "p50_upper_ms": 18.295683780595283,
+              "p95_upper_ms": 18.295683780595283
+            },
+            "skia_render": {
+              "calls": 600,
+              "exclusive_ms": 222.956252,
+              "inclusive_ms": 222.956252,
+              "max_ms": 11.5875,
+              "p50_upper_ms": 0.2858700590718013,
+              "p95_upper_ms": 0.9615484316073813
+            },
+            "vt_allocate_iosurface": {
+              "calls": 600,
+              "exclusive_ms": 0.771027,
+              "inclusive_ms": 0.771027,
+              "max_ms": 0.245916,
+              "p50_upper_ms": 0.0005583399591246119,
+              "p95_upper_ms": 0.0009390121402415833
+            },
+            "vt_export_textures": {
+              "calls": 600,
+              "exclusive_ms": 0.130877,
+              "inclusive_ms": 0.130877,
+              "max_ms": 0.005417,
+              "p50_upper_ms": 0.00018101933598375618,
+              "p95_upper_ms": 0.00043053896460990183
+            },
+            "vt_metal_copy": {
+              "calls": 600,
+              "exclusive_ms": 158.155354,
+              "inclusive_ms": 158.155354,
+              "max_ms": 1.124208,
+              "p50_upper_ms": 0.262144,
+              "p95_upper_ms": 0.37072760009473266
+            },
+            "vt_vulkan_wait": {
+              "calls": 600,
+              "exclusive_ms": 814.785128,
+              "inclusive_ms": 814.785128,
+              "max_ms": 2.863,
+              "p50_upper_ms": 1.359834832857737,
+              "p95_upper_ms": 2.097152
+            },
+            "vulkan_publish": {
+              "calls": 600,
+              "exclusive_ms": 2.388257,
+              "inclusive_ms": 2.388257,
+              "max_ms": 0.029291,
+              "p50_upper_ms": 0.0037560485609663334,
+              "p95_upper_ms": 0.006316895540870926
+            },
+            "worker": {
+              "calls": 1,
+              "exclusive_ms": 81.713508,
+              "inclusive_ms": 3223.7222079999997,
+              "max_ms": 3223.7222079999997,
+              "p50_upper_ms": 3311.872529332136,
+              "p95_upper_ms": 3311.872529332136
+            }
+          }
+        },
+        "wall_ms": 3587.637375,
+        "width": 1920
+      },
+      "resources": {
+        "path": "/private/tmp/bsr-stage-profile/macos/warmup-measured.time",
+        "raw": "        3.65 real         2.26 user         1.60 sys\n           204750848  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n               15041  page reclaims\n                 127  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                   9  voluntary context switches\n               73811  involuntary context switches\n         31339785068  instructions retired\n         12482789991  cycles elapsed\n           401851424  peak memory footprint\n",
+        "user_seconds": 2.26,
+        "system_seconds": 1.6,
+        "mean_cpu_cores": 1.0414709715559123,
+        "maximum_resident_set_size_bytes": 204750848
+      },
+      "profile_validation": {
+        "worker_partition_error_ms": 0.0,
+        "profiled_frames": 600
+      },
+      "validation": {
+        "ok": true,
+        "video": {
+          "frames": 600,
+          "first_pts": 0.0,
+          "last_pts": 9.983333,
+          "pts_grid_max_error": 3.333333342681044e-07,
+          "pts_sha256": "cb7785bcab16f0361c3a45fcf4bbb2b8b44ea5e654588c7c34812ec0f2b62d07",
+          "stream": {
+            "codec_name": "hevc",
+            "profile": "Main",
+            "width": 1920,
+            "height": 1080,
+            "has_b_frames": 0,
+            "pix_fmt": "yuv420p",
+            "avg_frame_rate": "60/1",
+            "time_base": "1/15360",
+            "bit_rate": "10068904",
+            "disposition": {
+              "default": 1,
+              "dub": 0,
+              "original": 0,
+              "comment": 0,
+              "lyrics": 0,
+              "karaoke": 0,
+              "forced": 0,
+              "hearing_impaired": 0,
+              "visual_impaired": 0,
+              "clean_effects": 0,
+              "attached_pic": 0,
+              "timed_thumbnails": 0,
+              "non_diegetic": 0,
+              "captions": 0,
+              "descriptions": 0,
+              "metadata": 0,
+              "dependent": 0,
+              "still_image": 0,
+              "multilayer": 0
+            },
+            "tags": {
+              "language": "und",
+              "handler_name": "VideoHandler",
+              "encoder": "Lavc63.1.102 hevc_videotoolbox"
+            }
+          },
+          "format": {
+            "duration": "10.000000",
+            "size": "12838887",
+            "bit_rate": "10271109",
+            "tags": {
+              "major_brand": "isom",
+              "minor_version": "512",
+              "compatible_brands": "isomiso2mp41",
+              "title": "Big Buck Bunny, Sunflower version",
+              "artist": "Blender Foundation 2008, Janus Bager Kristensen 2013",
+              "composer": "Jan Morgenstern;Sacha Goedegebure",
+              "encoder": "Lavf63.1.102",
+              "comment": "Creative Commons Attribution 3.0 - http://bbb3d.renderfarming.net",
+              "genre": "Animation"
+            }
+          },
+          "picture_types": {
+            "I": 5,
+            "P": 595
+          },
+          "keyframes": 5,
+          "keyframe_indices": [
+            0,
+            120,
+            240,
+            360,
+            480
+          ],
+          "gop_gaps": {
+            "120": 4
+          },
+          "maximum_gop_gap": 120
+        },
+        "audio": {
+          "stream": {
+            "codec_name": "aac",
+            "sample_rate": "48000",
+            "channels": 2,
+            "channel_layout": "stereo"
+          },
+          "packets": 469,
+          "payload_bytes": 239767,
+          "packet_hashes_sha256": "a22b2a7ea448e908e74c71eeec665db005edeb974519da04d81e66cc8cfb453f"
+        },
+        "audio_packets_identical": true,
+        "pcm_fallback": null,
+        "bytes": 12838887,
+        "sha256": "a9500c5036d08c3dd488242ded8647bd5882d8d6d915d6abd001a84859f5f0dc",
+        "samples": [
+          {
+            "time": 2.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-warmup-measured/frame-0.ppm",
+            "sha256": "58897d68005a2859e0cee1174892e2e4b8ca7362e3aba79d31eb4769f3fc419c",
+            "source_mae": 7.627097800925926,
+            "reference_mae": 1.3349233217592593,
+            "components": {
+              "text": {
+                "pixels": 27040,
+                "source_to_reference_mae": 57.14844674556213,
+                "output_to_reference_mae": 7.7812006903353055,
+                "output_from_source_mae": 55.66482988165681,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 1949,
+                "source_to_reference_mae": 63.81528989225244,
+                "output_to_reference_mae": 9.490165897041217,
+                "output_from_source_mae": 61.608175132546606,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 5.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-warmup-measured/frame-1.ppm",
+            "sha256": "08b6ace67e7fdea4df8c376169ea895e8e33dcfdf3438ebefe674bef94185292",
+            "source_mae": 31.432936921296296,
+            "reference_mae": 5.580642361111111,
+            "components": {
+              "text": {
+                "pixels": 114327,
+                "source_to_reference_mae": 57.748846145996424,
+                "output_to_reference_mae": 8.950376259909442,
+                "output_from_source_mae": 56.803968732961884,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 5693,
+                "source_to_reference_mae": 67.00948533286493,
+                "output_to_reference_mae": 9.844955793664735,
+                "output_from_source_mae": 65.05632648281515,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 9.9,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-warmup-measured/frame-2.ppm",
+            "sha256": "92d4399f53833048807811adea98f4fbfa0b623a67471c1d6396699bfe12b3b6",
+            "source_mae": 62.464272280092594,
+            "reference_mae": 9.691043113425925,
+            "components": {
+              "text": {
+                "pixels": 184370,
+                "source_to_reference_mae": 74.0119813418669,
+                "output_to_reference_mae": 10.319533185080726,
+                "output_from_source_mae": 72.80510205926488,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 7986,
+                "source_to_reference_mae": 75.18945654896068,
+                "output_to_reference_mae": 11.125553051172886,
+                "output_from_source_mae": 73.63682277318641,
+                "closer_than_missing_overlay": true
+              }
+            }
+          }
+        ]
+      },
+      "output_sha256": "a9500c5036d08c3dd488242ded8647bd5882d8d6d915d6abd001a84859f5f0dc"
+    },
+    {
+      "name": "pair-0-control",
+      "fixture": "full",
+      "measured": false,
+      "command": [
+        "/private/tmp/bsr-stage-profile/Current.app/Contents/MacOS/bili-shadowreplay",
+        "--scenario",
+        "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/scenario.json",
+        "--output",
+        "/private/tmp/bsr-stage-profile/macos/pair-0-control.mp4",
+        "--require-gpu"
+      ],
+      "process_wall_seconds": 106.50993183301762,
+      "exit_code": 0,
+      "diagnostics": {
+        "audio_mode": "copy",
+        "audio_samples": 0,
+        "counts": {
+          "image": 1200,
+          "text": 4800,
+          "total": 6000
+        },
+        "duration_seconds": 300.0,
+        "encoded_fps": 169.7525332632808,
+        "encoder_probe_ms": 357.919625,
+        "export_ms": 106036.709167,
+        "filter_graph": "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=60,scale=out_color_matrix=bt709:out_range=tv,format=nv12[outv]\n",
+        "fps": 60.0,
+        "frames": 18000,
+        "height": 1080,
+        "implementation": "current-production",
+        "linked_ffmpeg_version": "9.0.2",
+        "output": "/private/tmp/bsr-stage-profile/macos/pair-0-control.mp4",
+        "platform": "macos",
+        "profile": {
+          "bit_rate": 10000000,
+          "encoder": "hevc_videotoolbox",
+          "frame_processor": true,
+          "gop": 120,
+          "options": {
+            "prio_speed": "1"
+          },
+          "renderer": "vulkan-nv12-overlay-v2"
+        },
+        "scenario": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/scenario.json",
+        "scenario_sha256": "c51f7f405fbe0b50d2165602c813ff5f11e4b5609919212e3682eaff214086f4",
+        "source": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/source-300s.mp4",
+        "source_audio_codec": "aac",
+        "stage_profile": null,
+        "wall_ms": 106419.02733400001,
+        "width": 1920
+      },
+      "resources": {
+        "path": "/private/tmp/bsr-stage-profile/macos/pair-0-control.time",
+        "raw": "      106.48 real        70.11 user        49.31 sys\n           219414528  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n               20890  page reclaims\n                 129  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                 178  voluntary context switches\n             2063892  involuntary context switches\n        907274095417  instructions retired\n        386217830936  cycles elapsed\n           418481256  peak memory footprint\n",
+        "user_seconds": 70.11,
+        "system_seconds": 49.31,
+        "mean_cpu_cores": 1.121209993704834,
+        "maximum_resident_set_size_bytes": 219414528
+      },
+      "validation": {
+        "ok": true,
+        "video": {
+          "frames": 18000,
+          "first_pts": 0.0,
+          "last_pts": 299.983333,
+          "pts_grid_max_error": 3.333333467026023e-07,
+          "pts_sha256": "92357726c215888ce836de8068764b75bfdad79b10d07462564ae10c196d203d",
+          "stream": {
+            "codec_name": "hevc",
+            "profile": "Main",
+            "width": 1920,
+            "height": 1080,
+            "has_b_frames": 0,
+            "pix_fmt": "yuv420p",
+            "avg_frame_rate": "60/1",
+            "time_base": "1/15360",
+            "bit_rate": "10038952",
+            "disposition": {
+              "default": 1,
+              "dub": 0,
+              "original": 0,
+              "comment": 0,
+              "lyrics": 0,
+              "karaoke": 0,
+              "forced": 0,
+              "hearing_impaired": 0,
+              "visual_impaired": 0,
+              "clean_effects": 0,
+              "attached_pic": 0,
+              "timed_thumbnails": 0,
+              "non_diegetic": 0,
+              "captions": 0,
+              "descriptions": 0,
+              "metadata": 0,
+              "dependent": 0,
+              "still_image": 0,
+              "multilayer": 0
+            },
+            "tags": {
+              "language": "und",
+              "handler_name": "VideoHandler",
+              "encoder": "Lavc63.1.102 hevc_videotoolbox"
+            }
+          },
+          "format": {
+            "duration": "300.000000",
+            "size": "384059256",
+            "bit_rate": "10241580",
+            "tags": {
+              "major_brand": "isom",
+              "minor_version": "512",
+              "compatible_brands": "isomiso2mp41",
+              "title": "Big Buck Bunny, Sunflower version",
+              "artist": "Blender Foundation 2008, Janus Bager Kristensen 2013",
+              "composer": "Jan Morgenstern;Sacha Goedegebure",
+              "encoder": "Lavf63.1.102",
+              "comment": "Creative Commons Attribution 3.0 - http://bbb3d.renderfarming.net",
+              "genre": "Animation"
+            }
+          },
+          "picture_types": {
+            "I": 150,
+            "P": 17850
+          },
+          "keyframes": 150,
+          "keyframe_indices": [
+            0,
+            120,
+            240,
+            360,
+            480,
+            600,
+            720,
+            840,
+            960,
+            1080,
+            1200,
+            1320,
+            1440,
+            1560,
+            1680,
+            1800,
+            1920,
+            2040,
+            2160,
+            2280,
+            2400,
+            2520,
+            2640,
+            2760,
+            2880,
+            3000,
+            3120,
+            3240,
+            3360,
+            3480,
+            3600,
+            3720,
+            3840,
+            3960,
+            4080,
+            4200,
+            4320,
+            4440,
+            4560,
+            4680,
+            4800,
+            4920,
+            5040,
+            5160,
+            5280,
+            5400,
+            5520,
+            5640,
+            5760,
+            5880,
+            6000,
+            6120,
+            6240,
+            6360,
+            6480,
+            6600,
+            6720,
+            6840,
+            6960,
+            7080,
+            7200,
+            7320,
+            7440,
+            7560,
+            7680,
+            7800,
+            7920,
+            8040,
+            8160,
+            8280,
+            8400,
+            8520,
+            8640,
+            8760,
+            8880,
+            9000,
+            9120,
+            9240,
+            9360,
+            9480,
+            9600,
+            9720,
+            9840,
+            9960,
+            10080,
+            10200,
+            10320,
+            10440,
+            10560,
+            10680,
+            10800,
+            10920,
+            11040,
+            11160,
+            11280,
+            11400,
+            11520,
+            11640,
+            11760,
+            11880,
+            12000,
+            12120,
+            12240,
+            12360,
+            12480,
+            12600,
+            12720,
+            12840,
+            12960,
+            13080,
+            13200,
+            13320,
+            13440,
+            13560,
+            13680,
+            13800,
+            13920,
+            14040,
+            14160,
+            14280,
+            14400,
+            14520,
+            14640,
+            14760,
+            14880,
+            15000,
+            15120,
+            15240,
+            15360,
+            15480,
+            15600,
+            15720,
+            15840,
+            15960,
+            16080,
+            16200,
+            16320,
+            16440,
+            16560,
+            16680,
+            16800,
+            16920,
+            17040,
+            17160,
+            17280,
+            17400,
+            17520,
+            17640,
+            17760,
+            17880
+          ],
+          "gop_gaps": {
+            "120": 149
+          },
+          "maximum_gop_gap": 120
+        },
+        "audio": {
+          "stream": {
+            "codec_name": "aac",
+            "sample_rate": "48000",
+            "channels": 2,
+            "channel_layout": "stereo"
+          },
+          "packets": 14064,
+          "payload_bytes": 7260857,
+          "packet_hashes_sha256": "f97d4e07f9320cf73a44dff03152d7edc262020aa26a3b7892ecd3dd36ec5f93"
+        },
+        "audio_packets_identical": true,
+        "pcm_fallback": null,
+        "bytes": 384059256,
+        "sha256": "eafe740e25ea7b1ed4824bd760cb9dfc4e706ebe1755d9a5f254e5f1f1dd63e3",
+        "samples": [
+          {
+            "time": 2.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-0-control/frame-0.ppm",
+            "sha256": "16ee97050a4f3aeebb17f6d99f7e1b444b9057c81e66282d9b7588cd9ed167ec",
+            "source_mae": 7.629671585648148,
+            "reference_mae": 1.3371686921296295,
+            "components": {
+              "text": {
+                "pixels": 27040,
+                "source_to_reference_mae": 57.153944773175546,
+                "output_to_reference_mae": 7.786785009861933,
+                "output_from_source_mae": 55.67036489151874,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 1949,
+                "source_to_reference_mae": 63.82093381221139,
+                "output_to_reference_mae": 9.488626646143322,
+                "output_from_source_mae": 61.67282367025825,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 30.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-0-control/frame-1.ppm",
+            "sha256": "d54b5d4cb48ca50b78d4b8f031b7f34d6ff95f71233e8ce2e97aad2441d1cf61",
+            "source_mae": 58.97724826388889,
+            "reference_mae": 8.977581018518519,
+            "components": {
+              "text": {
+                "pixels": 184669,
+                "source_to_reference_mae": 69.98630342215893,
+                "output_to_reference_mae": 9.791630791668698,
+                "output_from_source_mae": 68.40355085766065,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8029,
+                "source_to_reference_mae": 77.65363058911446,
+                "output_to_reference_mae": 10.306970565035082,
+                "output_from_source_mae": 76.02985012662432,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 60.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-0-control/frame-2.ppm",
+            "sha256": "010b4dc1a7cd4b916e67f4368f1812db0214494d2d249a935f02e0b129d9790c",
+            "source_mae": 53.18385271990741,
+            "reference_mae": 9.194918981481482,
+            "components": {
+              "text": {
+                "pixels": 182947,
+                "source_to_reference_mae": 64.45701214012801,
+                "output_to_reference_mae": 9.942513405521817,
+                "output_from_source_mae": 62.444376422315386,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8032,
+                "source_to_reference_mae": 59.69870517928287,
+                "output_to_reference_mae": 10.738919322709163,
+                "output_from_source_mae": 57.525605909694555,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 120.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-0-control/frame-3.ppm",
+            "sha256": "111ec0e1feb9769e4f1f80c5d5f12ff71ebc6e48f9d3a4a60fbc7e03fb275c4b",
+            "source_mae": 53.95435329861111,
+            "reference_mae": 8.732589699074074,
+            "components": {
+              "text": {
+                "pixels": 184640,
+                "source_to_reference_mae": 63.397519497400346,
+                "output_to_reference_mae": 9.54745270075101,
+                "output_from_source_mae": 62.43110015886771,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8024,
+                "source_to_reference_mae": 65.61993187105351,
+                "output_to_reference_mae": 10.166043536058492,
+                "output_from_source_mae": 64.63551013625789,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 180.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-0-control/frame-4.ppm",
+            "sha256": "18f8aa1fe2ec87c24ab0cfb0843fb25d550209d15428b6eecad6b1b11dc6b3b9",
+            "source_mae": 57.71808304398148,
+            "reference_mae": 8.705991030092592,
+            "components": {
+              "text": {
+                "pixels": 184351,
+                "source_to_reference_mae": 69.38995539306359,
+                "output_to_reference_mae": 9.55977275234019,
+                "output_from_source_mae": 67.52676868220587,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8029,
+                "source_to_reference_mae": 67.59455307842404,
+                "output_to_reference_mae": 10.272221530286046,
+                "output_from_source_mae": 66.20313862249346,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 240.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-0-control/frame-5.ppm",
+            "sha256": "1af86f84294de43b0ab50dfc531dc1fa57b168a894854a04cdf5dc0bd60fd3fd",
+            "source_mae": 74.56005931712963,
+            "reference_mae": 8.62786892361111,
+            "components": {
+              "text": {
+                "pixels": 183967,
+                "source_to_reference_mae": 91.17695202581622,
+                "output_to_reference_mae": 9.606123199631819,
+                "output_from_source_mae": 88.51890465862537,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8025,
+                "source_to_reference_mae": 89.04203530633437,
+                "output_to_reference_mae": 10.361495327102803,
+                "output_from_source_mae": 87.08494288681204,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 298.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-0-control/frame-6.ppm",
+            "sha256": "28ead4bb10b5aa8d0e3d051bc65eafebe1c3e6f9ee17661590ca9740d2a2128b",
+            "source_mae": 77.26586082175926,
+            "reference_mae": 9.028919270833333,
+            "components": {
+              "text": {
+                "pixels": 185526,
+                "source_to_reference_mae": 93.73568843899687,
+                "output_to_reference_mae": 9.942536356090251,
+                "output_from_source_mae": 90.86117130033885,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8036,
+                "source_to_reference_mae": 95.9785963165754,
+                "output_to_reference_mae": 10.666168906587025,
+                "output_from_source_mae": 93.74655715944914,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 299.9,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-0-control/frame-7.ppm",
+            "sha256": "65fc109726b71b60b6bb447f84dae9a8a12100d43e42dc79cc0f2f896e121282",
+            "source_mae": 77.84861689814815,
+            "reference_mae": 9.78257667824074,
+            "components": {
+              "text": {
+                "pixels": 185491,
+                "source_to_reference_mae": 93.56512355496133,
+                "output_to_reference_mae": 10.368008870151831,
+                "output_from_source_mae": 91.33996797688297,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 7983,
+                "source_to_reference_mae": 90.50682700739071,
+                "output_to_reference_mae": 10.739279301849765,
+                "output_from_source_mae": 88.7076287110109,
+                "closer_than_missing_overlay": true
+              }
+            }
+          }
+        ]
+      },
+      "output_sha256": "eafe740e25ea7b1ed4824bd760cb9dfc4e706ebe1755d9a5f254e5f1f1dd63e3"
+    },
+    {
+      "name": "pair-0-measured",
+      "fixture": "full",
+      "measured": true,
+      "command": [
+        "/private/tmp/bsr-stage-profile/Current.app/Contents/MacOS/bili-shadowreplay",
+        "--scenario",
+        "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/scenario.json",
+        "--output",
+        "/private/tmp/bsr-stage-profile/macos/pair-0-measured.mp4",
+        "--require-gpu",
+        "--measure-stages"
+      ],
+      "process_wall_seconds": 113.57086908398196,
+      "exit_code": 0,
+      "diagnostics": {
+        "audio_mode": "copy",
+        "audio_samples": 0,
+        "counts": {
+          "image": 1200,
+          "text": 4800,
+          "total": 6000
+        },
+        "duration_seconds": 300.0,
+        "encoded_fps": 159.223194087796,
+        "encoder_probe_ms": 374.665583,
+        "export_ms": 113048.856375,
+        "filter_graph": "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=60,scale=out_color_matrix=bt709:out_range=tv,format=nv12[outv]\n",
+        "fps": 60.0,
+        "frames": 18000,
+        "height": 1080,
+        "implementation": "current-production",
+        "linked_ffmpeg_version": "9.0.2",
+        "output": "/private/tmp/bsr-stage-profile/macos/pair-0-measured.mp4",
+        "platform": "macos",
+        "profile": {
+          "bit_rate": 10000000,
+          "encoder": "hevc_videotoolbox",
+          "frame_processor": true,
+          "gop": 120,
+          "options": {
+            "prio_speed": "1"
+          },
+          "renderer": "vulkan-nv12-overlay-v2"
+        },
+        "scenario": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/scenario.json",
+        "scenario_sha256": "c51f7f405fbe0b50d2165602c813ff5f11e4b5609919212e3682eaff214086f4",
+        "source": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/source-300s.mp4",
+        "source_audio_codec": "aac",
+        "stage_profile": {
+          "metadata": {
+            "compositor_counters": "submitted=18000, output=18000, uploaded=18000, in_flight_peak=3",
+            "decoder_0_0": "thread_count=1, active_thread_type=0",
+            "vulkan_submission": "Asynchronous"
+          },
+          "observations": {
+            "metal_blit_gpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 606.226277,
+              "max_ms": 1.040792,
+              "p50_upper_ms": 0.032768,
+              "p95_upper_ms": 0.060096776975461334
+            },
+            "metal_cleanup_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 62.367707,
+              "max_ms": 0.23775000000000002,
+              "p50_upper_ms": 0.003158447770435463,
+              "p95_upper_ms": 0.006316895540870926
+            },
+            "metal_commit_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 74.761079,
+              "max_ms": 0.10254100000000001,
+              "p50_upper_ms": 0.0037560485609663334,
+              "p95_upper_ms": 0.007512097121932667
+            },
+            "metal_prepare_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 516.389055,
+              "max_ms": 0.859084,
+              "p50_upper_ms": 0.027554493735033717,
+              "p95_upper_ms": 0.04634095001184158
+            },
+            "metal_texture_views_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 156.742688,
+              "max_ms": 0.122791,
+              "p50_upper_ms": 0.008192,
+              "p95_upper_ms": 0.015024194243865334
+            },
+            "metal_wait_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 4541.011462,
+              "max_ms": 24.998875,
+              "p50_upper_ms": 0.22043594988026974,
+              "p95_upper_ms": 0.524288
+            },
+            "skia_flush_submit_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 5251.33518,
+              "max_ms": 20.607334,
+              "p50_upper_ms": 0.18536380004736633,
+              "p95_upper_ms": 0.7414552001894653
+            },
+            "skia_image_prepare_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 2.331417,
+              "max_ms": 0.308,
+              "p50_upper_ms": 1.0905077326652576e-06,
+              "p95_upper_ms": 1.0905077326652576e-06
+            },
+            "skia_scene_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 4178.349401,
+              "max_ms": 8.930917,
+              "p50_upper_ms": 0.20214065730786962,
+              "p95_upper_ms": 0.40428131461573924
+            },
+            "skia_text_layout_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 550.810347,
+              "max_ms": 8.281749999999999,
+              "p50_upper_ms": 1.0905077326652576e-06,
+              "p95_upper_ms": 0.131072
+            },
+            "skia_text_sprite_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 333.68471999999997,
+              "max_ms": 0.741834,
+              "p50_upper_ms": 1.0905077326652576e-06,
+              "p95_upper_ms": 0.07793587748881832
+            }
+          },
+          "spans": {
+            "acquire_frame": {
+              "calls": 18000,
+              "exclusive_ms": 229.652107,
+              "inclusive_ms": 320.480045,
+              "max_ms": 1.5565,
+              "p50_upper_ms": 0.016384,
+              "p95_upper_ms": 0.030048388487730667
+            },
+            "compositor_feed": {
+              "calls": 36000,
+              "exclusive_ms": 23.344901,
+              "inclusive_ms": 23.344901,
+              "max_ms": 0.090959,
+              "p50_upper_ms": 0.000512,
+              "p95_upper_ms": 0.0015792238852177314
+            },
+            "cpu_filter": {
+              "calls": 276183,
+              "exclusive_ms": 2872.734326,
+              "inclusive_ms": 2872.734326,
+              "max_ms": 1.153083,
+              "p50_upper_ms": 9.050966799187809e-05,
+              "p95_upper_ms": 0.14293502953590065
+            },
+            "decode_receive": {
+              "calls": 36001,
+              "exclusive_ms": 16.022758000000003,
+              "inclusive_ms": 16.022758000000003,
+              "max_ms": 0.042959,
+              "p50_upper_ms": 0.00039480597130443285,
+              "p95_upper_ms": 0.0009390121402415833
+            },
+            "decode_send": {
+              "calls": 18001,
+              "exclusive_ms": 42602.61465,
+              "inclusive_ms": 42602.61465,
+              "max_ms": 85.937625,
+              "p50_upper_ms": 1.9230968632147627,
+              "p95_upper_ms": 4.9878961592843725
+            },
+            "demux_read": {
+              "calls": 32065,
+              "exclusive_ms": 220.095735,
+              "inclusive_ms": 220.095735,
+              "max_ms": 0.53225,
+              "p50_upper_ms": 0.004096,
+              "p95_upper_ms": 0.025267582163483703
+            },
+            "encode_eof": {
+              "calls": 1,
+              "exclusive_ms": 4.745667,
+              "inclusive_ms": 4.745667,
+              "max_ms": 4.745667,
+              "p50_upper_ms": 4.9878961592843725,
+              "p95_upper_ms": 4.9878961592843725
+            },
+            "encode_receive": {
+              "calls": 36001,
+              "exclusive_ms": 8.960806999999999,
+              "inclusive_ms": 8.960806999999999,
+              "max_ms": 0.08045799999999999,
+              "p50_upper_ms": 0.00021526948230495092,
+              "p95_upper_ms": 0.0004695060701207917
+            },
+            "encode_send": {
+              "calls": 18000,
+              "exclusive_ms": 3824.6136440000005,
+              "inclusive_ms": 3824.6136440000005,
+              "max_ms": 24.673166,
+              "p50_upper_ms": 0.22043594988026974,
+              "p95_upper_ms": 0.3117435099552733
+            },
+            "encoder_frame_bridge": {
+              "calls": 18001,
+              "exclusive_ms": 44.687124000000004,
+              "inclusive_ms": 31790.919182999998,
+              "max_ms": 26.680042,
+              "p50_upper_ms": 1.763487599042158,
+              "p95_upper_ms": 2.719669665715474
+            },
+            "frame_slot_wait": {
+              "calls": 18000,
+              "exclusive_ms": 91.784813,
+              "inclusive_ms": 91.784813,
+              "max_ms": 0.9512919999999999,
+              "p50_upper_ms": 0.004870992343051145,
+              "p95_upper_ms": 0.00893343934599379
+            },
+            "initialize_graph": {
+              "calls": 1,
+              "exclusive_ms": 0.537002,
+              "inclusive_ms": 25.066625,
+              "max_ms": 25.066625,
+              "p50_upper_ms": 25.87400413540731,
+              "p95_upper_ms": 25.87400413540731
+            },
+            "libplacebo_pull": {
+              "calls": 36001,
+              "exclusive_ms": 17880.333964999998,
+              "inclusive_ms": 17880.333964999998,
+              "max_ms": 86.9945,
+              "p50_upper_ms": 0.4408718997605395,
+              "p95_upper_ms": 1.2469740398210931
+            },
+            "mux_finalize": {
+              "calls": 1,
+              "exclusive_ms": 1.390417,
+              "inclusive_ms": 1.390417,
+              "max_ms": 1.390417,
+              "p50_upper_ms": 1.4829104003789306,
+              "p95_upper_ms": 1.4829104003789306
+            },
+            "mux_write": {
+              "calls": 32064,
+              "exclusive_ms": 582.994737,
+              "inclusive_ms": 582.994737,
+              "max_ms": 8.364625,
+              "p50_upper_ms": 0.00974198468610229,
+              "p95_upper_ms": 0.03896793874440916
+            },
+            "nv12_upload": {
+              "calls": 18000,
+              "exclusive_ms": 2681.4948090000003,
+              "inclusive_ms": 2681.4948090000003,
+              "max_ms": 4.938291,
+              "p50_upper_ms": 0.14293502953590065,
+              "p95_upper_ms": 0.24038710790184534
+            },
+            "process_frame": {
+              "calls": 18000,
+              "exclusive_ms": 103.326414,
+              "inclusive_ms": 62519.399399999995,
+              "max_ms": 89.465916,
+              "p50_upper_ms": 3.526975198084316,
+              "p95_upper_ms": 4.573920945148821
+            },
+            "setup": {
+              "calls": 1,
+              "exclusive_ms": 20.30275,
+              "inclusive_ms": 20.30275,
+              "max_ms": 20.30275,
+              "p50_upper_ms": 21.75735732572379,
+              "p95_upper_ms": 21.75735732572379
+            },
+            "skia_render": {
+              "calls": 18000,
+              "exclusive_ms": 9628.022793,
+              "inclusive_ms": 9628.022793,
+              "max_ms": 20.838334,
+              "p50_upper_ms": 0.40428131461573924,
+              "p95_upper_ms": 1.1434802362872052
+            },
+            "vt_allocate_iosurface": {
+              "calls": 18000,
+              "exclusive_ms": 19.719103,
+              "inclusive_ms": 19.719103,
+              "max_ms": 0.2915,
+              "p50_upper_ms": 0.0009390121402415833,
+              "p95_upper_ms": 0.0018780242804831667
+            },
+            "vt_export_textures": {
+              "calls": 18000,
+              "exclusive_ms": 8.590658,
+              "inclusive_ms": 8.590658,
+              "max_ms": 0.057083,
+              "p50_upper_ms": 0.00039480597130443285,
+              "p95_upper_ms": 0.001024
+            },
+            "vt_metal_copy": {
+              "calls": 18000,
+              "exclusive_ms": 5258.862786,
+              "inclusive_ms": 5258.862786,
+              "max_ms": 25.411459,
+              "p50_upper_ms": 0.262144,
+              "p95_upper_ms": 0.5717401181436026
+            },
+            "vt_vulkan_wait": {
+              "calls": 18000,
+              "exclusive_ms": 26459.059512,
+              "inclusive_ms": 26459.059512,
+              "max_ms": 12.951042,
+              "p50_upper_ms": 1.359834832857737,
+              "p95_upper_ms": 2.2869604725744104
+            },
+            "vulkan_publish": {
+              "calls": 18000,
+              "exclusive_ms": 92.877832,
+              "inclusive_ms": 92.877832,
+              "max_ms": 0.148958,
+              "p50_upper_ms": 0.004466719672996895,
+              "p95_upper_ms": 0.00974198468610229
+            },
+            "worker": {
+              "calls": 1,
+              "exclusive_ms": 371.79419,
+              "inclusive_ms": 113048.5635,
+              "max_ms": 113048.5635,
+              "p50_upper_ms": 115571.92329082686,
+              "p95_upper_ms": 115571.92329082686
+            }
+          }
+        },
+        "wall_ms": 113447.846,
+        "width": 1920
+      },
+      "resources": {
+        "path": "/private/tmp/bsr-stage-profile/macos/pair-0-measured.time",
+        "raw": "      113.51 real        75.31 user        53.22 sys\n           219693056  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n               20940  page reclaims\n                 127  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                 205  voluntary context switches\n             2256025  involuntary context switches\n        910806778080  instructions retired\n        413482908722  cycles elapsed\n           416957544  peak memory footprint\n",
+        "user_seconds": 75.31,
+        "system_seconds": 53.22,
+        "mean_cpu_cores": 1.1317162670029077,
+        "maximum_resident_set_size_bytes": 219693056
+      },
+      "profile_validation": {
+        "worker_partition_error_ms": 2.9103830456733704e-11,
+        "profiled_frames": 18000
+      },
+      "validation": {
+        "ok": true,
+        "video": {
+          "frames": 18000,
+          "first_pts": 0.0,
+          "last_pts": 299.983333,
+          "pts_grid_max_error": 3.333333467026023e-07,
+          "pts_sha256": "92357726c215888ce836de8068764b75bfdad79b10d07462564ae10c196d203d",
+          "stream": {
+            "codec_name": "hevc",
+            "profile": "Main",
+            "width": 1920,
+            "height": 1080,
+            "has_b_frames": 0,
+            "pix_fmt": "yuv420p",
+            "avg_frame_rate": "60/1",
+            "time_base": "1/15360",
+            "bit_rate": "10038951",
+            "disposition": {
+              "default": 1,
+              "dub": 0,
+              "original": 0,
+              "comment": 0,
+              "lyrics": 0,
+              "karaoke": 0,
+              "forced": 0,
+              "hearing_impaired": 0,
+              "visual_impaired": 0,
+              "clean_effects": 0,
+              "attached_pic": 0,
+              "timed_thumbnails": 0,
+              "non_diegetic": 0,
+              "captions": 0,
+              "descriptions": 0,
+              "metadata": 0,
+              "dependent": 0,
+              "still_image": 0,
+              "multilayer": 0
+            },
+            "tags": {
+              "language": "und",
+              "handler_name": "VideoHandler",
+              "encoder": "Lavc63.1.102 hevc_videotoolbox"
+            }
+          },
+          "format": {
+            "duration": "300.000000",
+            "size": "384059209",
+            "bit_rate": "10241578",
+            "tags": {
+              "major_brand": "isom",
+              "minor_version": "512",
+              "compatible_brands": "isomiso2mp41",
+              "title": "Big Buck Bunny, Sunflower version",
+              "artist": "Blender Foundation 2008, Janus Bager Kristensen 2013",
+              "composer": "Jan Morgenstern;Sacha Goedegebure",
+              "encoder": "Lavf63.1.102",
+              "comment": "Creative Commons Attribution 3.0 - http://bbb3d.renderfarming.net",
+              "genre": "Animation"
+            }
+          },
+          "picture_types": {
+            "I": 150,
+            "P": 17850
+          },
+          "keyframes": 150,
+          "keyframe_indices": [
+            0,
+            120,
+            240,
+            360,
+            480,
+            600,
+            720,
+            840,
+            960,
+            1080,
+            1200,
+            1320,
+            1440,
+            1560,
+            1680,
+            1800,
+            1920,
+            2040,
+            2160,
+            2280,
+            2400,
+            2520,
+            2640,
+            2760,
+            2880,
+            3000,
+            3120,
+            3240,
+            3360,
+            3480,
+            3600,
+            3720,
+            3840,
+            3960,
+            4080,
+            4200,
+            4320,
+            4440,
+            4560,
+            4680,
+            4800,
+            4920,
+            5040,
+            5160,
+            5280,
+            5400,
+            5520,
+            5640,
+            5760,
+            5880,
+            6000,
+            6120,
+            6240,
+            6360,
+            6480,
+            6600,
+            6720,
+            6840,
+            6960,
+            7080,
+            7200,
+            7320,
+            7440,
+            7560,
+            7680,
+            7800,
+            7920,
+            8040,
+            8160,
+            8280,
+            8400,
+            8520,
+            8640,
+            8760,
+            8880,
+            9000,
+            9120,
+            9240,
+            9360,
+            9480,
+            9600,
+            9720,
+            9840,
+            9960,
+            10080,
+            10200,
+            10320,
+            10440,
+            10560,
+            10680,
+            10800,
+            10920,
+            11040,
+            11160,
+            11280,
+            11400,
+            11520,
+            11640,
+            11760,
+            11880,
+            12000,
+            12120,
+            12240,
+            12360,
+            12480,
+            12600,
+            12720,
+            12840,
+            12960,
+            13080,
+            13200,
+            13320,
+            13440,
+            13560,
+            13680,
+            13800,
+            13920,
+            14040,
+            14160,
+            14280,
+            14400,
+            14520,
+            14640,
+            14760,
+            14880,
+            15000,
+            15120,
+            15240,
+            15360,
+            15480,
+            15600,
+            15720,
+            15840,
+            15960,
+            16080,
+            16200,
+            16320,
+            16440,
+            16560,
+            16680,
+            16800,
+            16920,
+            17040,
+            17160,
+            17280,
+            17400,
+            17520,
+            17640,
+            17760,
+            17880
+          ],
+          "gop_gaps": {
+            "120": 149
+          },
+          "maximum_gop_gap": 120
+        },
+        "audio": {
+          "stream": {
+            "codec_name": "aac",
+            "sample_rate": "48000",
+            "channels": 2,
+            "channel_layout": "stereo"
+          },
+          "packets": 14064,
+          "payload_bytes": 7260857,
+          "packet_hashes_sha256": "f97d4e07f9320cf73a44dff03152d7edc262020aa26a3b7892ecd3dd36ec5f93"
+        },
+        "audio_packets_identical": true,
+        "pcm_fallback": null,
+        "bytes": 384059209,
+        "sha256": "992617d41f94e5a1467068420a106885f42f5e46a0bcb6bced4ff641e2c01b30",
+        "samples": [
+          {
+            "time": 2.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-0-measured/frame-0.ppm",
+            "sha256": "8fcf64273824e2cbe881a398f88c393fca75888d227f5844aca5a48729cab881",
+            "source_mae": 7.629956597222222,
+            "reference_mae": 1.3372337962962964,
+            "components": {
+              "text": {
+                "pixels": 27040,
+                "source_to_reference_mae": 57.153944773175546,
+                "output_to_reference_mae": 7.785478303747534,
+                "output_from_source_mae": 55.67078402366864,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 1949,
+                "source_to_reference_mae": 63.82093381221139,
+                "output_to_reference_mae": 9.479049085000856,
+                "output_from_source_mae": 61.66632461091158,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 30.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-0-measured/frame-1.ppm",
+            "sha256": "23e7150956f88cae755a6b5b27f9cc7ea5c4c922eac17744a8c6b0c09f88aee9",
+            "source_mae": 58.96517795138889,
+            "reference_mae": 8.989521122685185,
+            "components": {
+              "text": {
+                "pixels": 184669,
+                "source_to_reference_mae": 69.98630342215893,
+                "output_to_reference_mae": 9.80303858976511,
+                "output_from_source_mae": 68.39031275778103,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8029,
+                "source_to_reference_mae": 77.65363058911446,
+                "output_to_reference_mae": 10.329015651596297,
+                "output_from_source_mae": 75.96653796653797,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 60.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-0-measured/frame-2.ppm",
+            "sha256": "02ea745fbfc27bd22baceb14469accbb9eea3a833c290d853ceaaafcb9af7542",
+            "source_mae": 53.18530671296296,
+            "reference_mae": 9.204865451388889,
+            "components": {
+              "text": {
+                "pixels": 182947,
+                "source_to_reference_mae": 64.45701214012801,
+                "output_to_reference_mae": 9.95621136176051,
+                "output_from_source_mae": 62.4414502560851,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8032,
+                "source_to_reference_mae": 59.69870517928287,
+                "output_to_reference_mae": 10.700365205843294,
+                "output_from_source_mae": 57.60989375830013,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 120.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-0-measured/frame-3.ppm",
+            "sha256": "8bf019d5d51e9f147c4fb8593a15aa16621551931b415a8d8ea3ed7382f40a34",
+            "source_mae": 53.914304108796294,
+            "reference_mae": 8.8428125,
+            "components": {
+              "text": {
+                "pixels": 184640,
+                "source_to_reference_mae": 63.397519497400346,
+                "output_to_reference_mae": 9.646593370883883,
+                "output_from_source_mae": 62.35254368861929,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8024,
+                "source_to_reference_mae": 65.61993187105351,
+                "output_to_reference_mae": 10.313933200398804,
+                "output_from_source_mae": 64.66492190096378,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 180.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-0-measured/frame-4.ppm",
+            "sha256": "c3c64238dd9aecb6d2d5baf64b980e11835f048c1085d71ef43cbbe0329ede2b",
+            "source_mae": 57.727203414351855,
+            "reference_mae": 8.713910590277777,
+            "components": {
+              "text": {
+                "pixels": 184351,
+                "source_to_reference_mae": 69.38995539306359,
+                "output_to_reference_mae": 9.566632854355731,
+                "output_from_source_mae": 67.53572623238641,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8029,
+                "source_to_reference_mae": 67.59455307842404,
+                "output_to_reference_mae": 10.289533773404742,
+                "output_from_source_mae": 66.26429194171129,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 240.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-0-measured/frame-5.ppm",
+            "sha256": "edd61efbd258a8e193515bb75d55f42ddbf83e83d1aa165afe594f1430832710",
+            "source_mae": 74.58068287037037,
+            "reference_mae": 8.616304976851852,
+            "components": {
+              "text": {
+                "pixels": 183967,
+                "source_to_reference_mae": 91.17695202581622,
+                "output_to_reference_mae": 9.595095859583513,
+                "output_from_source_mae": 88.54543477906364,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8025,
+                "source_to_reference_mae": 89.04203530633437,
+                "output_to_reference_mae": 10.278421599169263,
+                "output_from_source_mae": 87.04207684319834,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 298.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-0-measured/frame-6.ppm",
+            "sha256": "4ff1d781c193076f692012ca4c23753b4d0f6c212d9b16ef5d383c131c7c49ad",
+            "source_mae": 77.26451678240741,
+            "reference_mae": 9.031438078703705,
+            "components": {
+              "text": {
+                "pixels": 185526,
+                "source_to_reference_mae": 93.73568843899687,
+                "output_to_reference_mae": 9.939081314748337,
+                "output_from_source_mae": 90.85036059635846,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8036,
+                "source_to_reference_mae": 95.9785963165754,
+                "output_to_reference_mae": 10.687448149991704,
+                "output_from_source_mae": 93.74361207897793,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 299.9,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-0-measured/frame-7.ppm",
+            "sha256": "592dd1a15ae15f1f69aea3ebf7cf7e9d7e02319ebf9b5eb1b6a754f0db3e6351",
+            "source_mae": 77.85493344907407,
+            "reference_mae": 9.820539641203704,
+            "components": {
+              "text": {
+                "pixels": 185491,
+                "source_to_reference_mae": 93.56512355496133,
+                "output_to_reference_mae": 10.406936185583127,
+                "output_from_source_mae": 91.34374893301202,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 7983,
+                "source_to_reference_mae": 90.50682700739071,
+                "output_to_reference_mae": 10.779489749050065,
+                "output_from_source_mae": 88.70324439433797,
+                "closer_than_missing_overlay": true
+              }
+            }
+          }
+        ]
+      },
+      "output_sha256": "992617d41f94e5a1467068420a106885f42f5e46a0bcb6bced4ff641e2c01b30"
+    },
+    {
+      "name": "pair-1-measured",
+      "fixture": "full",
+      "measured": true,
+      "command": [
+        "/private/tmp/bsr-stage-profile/Current.app/Contents/MacOS/bili-shadowreplay",
+        "--scenario",
+        "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/scenario.json",
+        "--output",
+        "/private/tmp/bsr-stage-profile/macos/pair-1-measured.mp4",
+        "--require-gpu",
+        "--measure-stages"
+      ],
+      "process_wall_seconds": 120.01545850001276,
+      "exit_code": 0,
+      "diagnostics": {
+        "audio_mode": "copy",
+        "audio_samples": 0,
+        "counts": {
+          "image": 1200,
+          "text": 4800,
+          "total": 6000
+        },
+        "duration_seconds": 300.0,
+        "encoded_fps": 150.582294674963,
+        "encoder_probe_ms": 365.669625,
+        "export_ms": 119535.965625,
+        "filter_graph": "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=60,scale=out_color_matrix=bt709:out_range=tv,format=nv12[outv]\n",
+        "fps": 60.0,
+        "frames": 18000,
+        "height": 1080,
+        "implementation": "current-production",
+        "linked_ffmpeg_version": "9.0.2",
+        "output": "/private/tmp/bsr-stage-profile/macos/pair-1-measured.mp4",
+        "platform": "macos",
+        "profile": {
+          "bit_rate": 10000000,
+          "encoder": "hevc_videotoolbox",
+          "frame_processor": true,
+          "gop": 120,
+          "options": {
+            "prio_speed": "1"
+          },
+          "renderer": "vulkan-nv12-overlay-v2"
+        },
+        "scenario": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/scenario.json",
+        "scenario_sha256": "c51f7f405fbe0b50d2165602c813ff5f11e4b5609919212e3682eaff214086f4",
+        "source": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/source-300s.mp4",
+        "source_audio_codec": "aac",
+        "stage_profile": {
+          "metadata": {
+            "compositor_counters": "submitted=18000, output=18000, uploaded=18000, in_flight_peak=3",
+            "decoder_0_0": "thread_count=1, active_thread_type=0",
+            "vulkan_submission": "Asynchronous"
+          },
+          "observations": {
+            "metal_blit_gpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 1049.093907,
+              "max_ms": 2.373125,
+              "p50_upper_ms": 0.030048388487730667,
+              "p95_upper_ms": 0.07146751476795032
+            },
+            "metal_cleanup_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 68.897891,
+              "max_ms": 0.707541,
+              "p50_upper_ms": 0.0034443117168792147,
+              "p95_upper_ms": 0.006888623433758429
+            },
+            "metal_commit_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 80.840603,
+              "max_ms": 0.120333,
+              "p50_upper_ms": 0.004096,
+              "p95_upper_ms": 0.008192
+            },
+            "metal_prepare_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 566.54575,
+              "max_ms": 2.5586670000000002,
+              "p50_upper_ms": 0.030048388487730667,
+              "p95_upper_ms": 0.050535164326967405
+            },
+            "metal_texture_views_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 169.294397,
+              "max_ms": 0.38537499999999997,
+              "p50_upper_ms": 0.00893343934599379,
+              "p95_upper_ms": 0.016384
+            },
+            "metal_wait_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 5149.943835,
+              "max_ms": 4.987583,
+              "p50_upper_ms": 0.22043594988026974,
+              "p95_upper_ms": 0.6799174164288685
+            },
+            "skia_flush_submit_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 5413.131896000001,
+              "max_ms": 8.979208,
+              "p50_upper_ms": 0.20214065730786962,
+              "p95_upper_ms": 0.7414552001894653
+            },
+            "skia_image_prepare_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 2.228958,
+              "max_ms": 0.27829200000000004,
+              "p50_upper_ms": 1.0905077326652576e-06,
+              "p95_upper_ms": 1.0905077326652576e-06
+            },
+            "skia_scene_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 4324.614066,
+              "max_ms": 8.396042,
+              "p50_upper_ms": 0.20214065730786962,
+              "p95_upper_ms": 0.4408718997605395
+            },
+            "skia_text_layout_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 578.486292,
+              "max_ms": 7.713291,
+              "p50_upper_ms": 1.0905077326652576e-06,
+              "p95_upper_ms": 0.131072
+            },
+            "skia_text_sprite_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 349.487575,
+              "max_ms": 0.662416,
+              "p50_upper_ms": 1.0905077326652576e-06,
+              "p95_upper_ms": 0.08498967705360856
+            }
+          },
+          "spans": {
+            "acquire_frame": {
+              "calls": 18000,
+              "exclusive_ms": 248.104194,
+              "inclusive_ms": 338.294484,
+              "max_ms": 0.234541,
+              "p50_upper_ms": 0.01786687869198758,
+              "p95_upper_ms": 0.030048388487730667
+            },
+            "compositor_feed": {
+              "calls": 36000,
+              "exclusive_ms": 25.319054,
+              "inclusive_ms": 25.319054,
+              "max_ms": 0.11745799999999999,
+              "p50_upper_ms": 0.000512,
+              "p95_upper_ms": 0.0017221558584396073
+            },
+            "cpu_filter": {
+              "calls": 276183,
+              "exclusive_ms": 3034.958489,
+              "inclusive_ms": 3034.958489,
+              "max_ms": 1.803292,
+              "p50_upper_ms": 9.050966799187809e-05,
+              "p95_upper_ms": 0.14293502953590065
+            },
+            "decode_receive": {
+              "calls": 36001,
+              "exclusive_ms": 18.00769,
+              "inclusive_ms": 18.00769,
+              "max_ms": 0.034832999999999996,
+              "p50_upper_ms": 0.00043053896460990183,
+              "p95_upper_ms": 0.0009390121402415833
+            },
+            "decode_send": {
+              "calls": 18001,
+              "exclusive_ms": 42878.461424,
+              "inclusive_ms": 42878.461424,
+              "max_ms": 48.523416,
+              "p50_upper_ms": 1.9230968632147627,
+              "p95_upper_ms": 4.9878961592843725
+            },
+            "demux_read": {
+              "calls": 32065,
+              "exclusive_ms": 239.147435,
+              "inclusive_ms": 239.147435,
+              "max_ms": 0.29712500000000003,
+              "p50_upper_ms": 0.004466719672996895,
+              "p95_upper_ms": 0.025267582163483703
+            },
+            "encode_eof": {
+              "calls": 1,
+              "exclusive_ms": 4.7585,
+              "inclusive_ms": 4.7585,
+              "max_ms": 4.7585,
+              "p50_upper_ms": 4.9878961592843725,
+              "p95_upper_ms": 4.9878961592843725
+            },
+            "encode_receive": {
+              "calls": 36001,
+              "exclusive_ms": 9.475713,
+              "inclusive_ms": 9.475713,
+              "max_ms": 0.17091599999999998,
+              "p50_upper_ms": 0.00021526948230495092,
+              "p95_upper_ms": 0.0004695060701207917
+            },
+            "encode_send": {
+              "calls": 18000,
+              "exclusive_ms": 3898.300053,
+              "inclusive_ms": 3898.300053,
+              "max_ms": 24.163042,
+              "p50_upper_ms": 0.22043594988026974,
+              "p95_upper_ms": 0.3117435099552733
+            },
+            "encoder_frame_bridge": {
+              "calls": 18001,
+              "exclusive_ms": 51.189044,
+              "inclusive_ms": 37372.736646,
+              "max_ms": 28.413833,
+              "p50_upper_ms": 1.763487599042158,
+              "p95_upper_ms": 4.194304
+            },
+            "frame_slot_wait": {
+              "calls": 18000,
+              "exclusive_ms": 91.322749,
+              "inclusive_ms": 91.322749,
+              "max_ms": 1.1280000000000001,
+              "p50_upper_ms": 0.004870992343051145,
+              "p95_upper_ms": 0.00893343934599379
+            },
+            "initialize_graph": {
+              "calls": 1,
+              "exclusive_ms": 0.47470900000000005,
+              "inclusive_ms": 24.934708999999998,
+              "max_ms": 24.934708999999998,
+              "p50_upper_ms": 25.87400413540731,
+              "p95_upper_ms": 25.87400413540731
+            },
+            "libplacebo_pull": {
+              "calls": 36001,
+              "exclusive_ms": 17878.171346,
+              "inclusive_ms": 17878.171346,
+              "max_ms": 87.65391699999999,
+              "p50_upper_ms": 0.5717401181436026,
+              "p95_upper_ms": 1.2469740398210931
+            },
+            "mux_finalize": {
+              "calls": 1,
+              "exclusive_ms": 1.074083,
+              "inclusive_ms": 1.074083,
+              "max_ms": 1.074083,
+              "p50_upper_ms": 1.1434802362872052,
+              "p95_upper_ms": 1.1434802362872052
+            },
+            "mux_write": {
+              "calls": 32064,
+              "exclusive_ms": 587.8626,
+              "inclusive_ms": 587.8626,
+              "max_ms": 7.7239580000000005,
+              "p50_upper_ms": 0.01062370963170107,
+              "p95_upper_ms": 0.04249483852680428
+            },
+            "nv12_upload": {
+              "calls": 18000,
+              "exclusive_ms": 2667.91276,
+              "inclusive_ms": 2667.91276,
+              "max_ms": 3.4997499999999997,
+              "p50_upper_ms": 0.14293502953590065,
+              "p95_upper_ms": 0.24038710790184534
+            },
+            "process_frame": {
+              "calls": 18000,
+              "exclusive_ms": 108.881719,
+              "inclusive_ms": 68446.584565,
+              "max_ms": 89.991958,
+              "p50_upper_ms": 3.8461937264295254,
+              "p95_upper_ms": 5.9316416015157225
+            },
+            "setup": {
+              "calls": 1,
+              "exclusive_ms": 20.212334,
+              "inclusive_ms": 20.212334,
+              "max_ms": 20.212334,
+              "p50_upper_ms": 21.75735732572379,
+              "p95_upper_ms": 21.75735732572379
+            },
+            "skia_render": {
+              "calls": 18000,
+              "exclusive_ms": 9958.413031,
+              "inclusive_ms": 9958.413031,
+              "max_ms": 14.765,
+              "p50_upper_ms": 0.4408718997605395,
+              "p95_upper_ms": 1.2469740398210931
+            },
+            "vt_allocate_iosurface": {
+              "calls": 18000,
+              "exclusive_ms": 21.763467000000002,
+              "inclusive_ms": 21.763467000000002,
+              "max_ms": 0.28162499999999996,
+              "p50_upper_ms": 0.001024,
+              "p95_upper_ms": 0.002048
+            },
+            "vt_export_textures": {
+              "calls": 18000,
+              "exclusive_ms": 9.586788,
+              "inclusive_ms": 9.586788,
+              "max_ms": 0.035958,
+              "p50_upper_ms": 0.00043053896460990183,
+              "p95_upper_ms": 0.001024
+            },
+            "vt_metal_copy": {
+              "calls": 18000,
+              "exclusive_ms": 5934.935753999999,
+              "inclusive_ms": 5934.935753999999,
+              "max_ms": 5.14325,
+              "p50_upper_ms": 0.262144,
+              "p95_upper_ms": 0.7414552001894653
+            },
+            "vt_vulkan_wait": {
+              "calls": 18000,
+              "exclusive_ms": 31355.261593000003,
+              "inclusive_ms": 31355.261593000003,
+              "max_ms": 27.904541000000002,
+              "p50_upper_ms": 1.4829104003789306,
+              "p95_upper_ms": 3.8461937264295254
+            },
+            "vulkan_publish": {
+              "calls": 18000,
+              "exclusive_ms": 98.163942,
+              "inclusive_ms": 98.163942,
+              "max_ms": 0.151833,
+              "p50_upper_ms": 0.004870992343051145,
+              "p95_upper_ms": 0.00974198468610229
+            },
+            "worker": {
+              "calls": 1,
+              "exclusive_ms": 392.109863,
+              "inclusive_ms": 119533.868334,
+              "max_ms": 119533.868334,
+              "p50_upper_ms": 126032.07602764269,
+              "p95_upper_ms": 126032.07602764269
+            }
+          }
+        },
+        "wall_ms": 119926.238625,
+        "width": 1920
+      },
+      "resources": {
+        "path": "/private/tmp/bsr-stage-profile/macos/pair-1-measured.time",
+        "raw": "      119.99 real        77.02 user        52.44 sys\n           218693632  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n               20496  page reclaims\n                 127  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                 210  voluntary context switches\n             2237827  involuntary context switches\n        910258411479  instructions retired\n        414432778340  cycles elapsed\n           417973376  peak memory footprint\n",
+        "user_seconds": 77.02,
+        "system_seconds": 52.44,
+        "mean_cpu_cores": 1.0786943750249158,
+        "maximum_resident_set_size_bytes": 218693632
+      },
+      "profile_validation": {
+        "worker_partition_error_ms": 1.4551915228366852e-11,
+        "profiled_frames": 18000
+      },
+      "validation": {
+        "ok": true,
+        "video": {
+          "frames": 18000,
+          "first_pts": 0.0,
+          "last_pts": 299.983333,
+          "pts_grid_max_error": 3.333333467026023e-07,
+          "pts_sha256": "92357726c215888ce836de8068764b75bfdad79b10d07462564ae10c196d203d",
+          "stream": {
+            "codec_name": "hevc",
+            "profile": "Main",
+            "width": 1920,
+            "height": 1080,
+            "has_b_frames": 0,
+            "pix_fmt": "yuv420p",
+            "avg_frame_rate": "60/1",
+            "time_base": "1/15360",
+            "bit_rate": "10039000",
+            "disposition": {
+              "default": 1,
+              "dub": 0,
+              "original": 0,
+              "comment": 0,
+              "lyrics": 0,
+              "karaoke": 0,
+              "forced": 0,
+              "hearing_impaired": 0,
+              "visual_impaired": 0,
+              "clean_effects": 0,
+              "attached_pic": 0,
+              "timed_thumbnails": 0,
+              "non_diegetic": 0,
+              "captions": 0,
+              "descriptions": 0,
+              "metadata": 0,
+              "dependent": 0,
+              "still_image": 0,
+              "multilayer": 0
+            },
+            "tags": {
+              "language": "und",
+              "handler_name": "VideoHandler",
+              "encoder": "Lavc63.1.102 hevc_videotoolbox"
+            }
+          },
+          "format": {
+            "duration": "300.000000",
+            "size": "384061045",
+            "bit_rate": "10241627",
+            "tags": {
+              "major_brand": "isom",
+              "minor_version": "512",
+              "compatible_brands": "isomiso2mp41",
+              "title": "Big Buck Bunny, Sunflower version",
+              "artist": "Blender Foundation 2008, Janus Bager Kristensen 2013",
+              "composer": "Jan Morgenstern;Sacha Goedegebure",
+              "encoder": "Lavf63.1.102",
+              "comment": "Creative Commons Attribution 3.0 - http://bbb3d.renderfarming.net",
+              "genre": "Animation"
+            }
+          },
+          "picture_types": {
+            "I": 150,
+            "P": 17850
+          },
+          "keyframes": 150,
+          "keyframe_indices": [
+            0,
+            120,
+            240,
+            360,
+            480,
+            600,
+            720,
+            840,
+            960,
+            1080,
+            1200,
+            1320,
+            1440,
+            1560,
+            1680,
+            1800,
+            1920,
+            2040,
+            2160,
+            2280,
+            2400,
+            2520,
+            2640,
+            2760,
+            2880,
+            3000,
+            3120,
+            3240,
+            3360,
+            3480,
+            3600,
+            3720,
+            3840,
+            3960,
+            4080,
+            4200,
+            4320,
+            4440,
+            4560,
+            4680,
+            4800,
+            4920,
+            5040,
+            5160,
+            5280,
+            5400,
+            5520,
+            5640,
+            5760,
+            5880,
+            6000,
+            6120,
+            6240,
+            6360,
+            6480,
+            6600,
+            6720,
+            6840,
+            6960,
+            7080,
+            7200,
+            7320,
+            7440,
+            7560,
+            7680,
+            7800,
+            7920,
+            8040,
+            8160,
+            8280,
+            8400,
+            8520,
+            8640,
+            8760,
+            8880,
+            9000,
+            9120,
+            9240,
+            9360,
+            9480,
+            9600,
+            9720,
+            9840,
+            9960,
+            10080,
+            10200,
+            10320,
+            10440,
+            10560,
+            10680,
+            10800,
+            10920,
+            11040,
+            11160,
+            11280,
+            11400,
+            11520,
+            11640,
+            11760,
+            11880,
+            12000,
+            12120,
+            12240,
+            12360,
+            12480,
+            12600,
+            12720,
+            12840,
+            12960,
+            13080,
+            13200,
+            13320,
+            13440,
+            13560,
+            13680,
+            13800,
+            13920,
+            14040,
+            14160,
+            14280,
+            14400,
+            14520,
+            14640,
+            14760,
+            14880,
+            15000,
+            15120,
+            15240,
+            15360,
+            15480,
+            15600,
+            15720,
+            15840,
+            15960,
+            16080,
+            16200,
+            16320,
+            16440,
+            16560,
+            16680,
+            16800,
+            16920,
+            17040,
+            17160,
+            17280,
+            17400,
+            17520,
+            17640,
+            17760,
+            17880
+          ],
+          "gop_gaps": {
+            "120": 149
+          },
+          "maximum_gop_gap": 120
+        },
+        "audio": {
+          "stream": {
+            "codec_name": "aac",
+            "sample_rate": "48000",
+            "channels": 2,
+            "channel_layout": "stereo"
+          },
+          "packets": 14064,
+          "payload_bytes": 7260857,
+          "packet_hashes_sha256": "f97d4e07f9320cf73a44dff03152d7edc262020aa26a3b7892ecd3dd36ec5f93"
+        },
+        "audio_packets_identical": true,
+        "pcm_fallback": null,
+        "bytes": 384061045,
+        "sha256": "b34d7733458742c6c1f87914610db321e17a1bb65d4540f2985621fe81487fb2",
+        "samples": [
+          {
+            "time": 2.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-1-measured/frame-0.ppm",
+            "sha256": "c696f41372ecf2660214d76904729242125d62bc3b6775f4cd06b661f3510ffe",
+            "source_mae": 7.630044849537037,
+            "reference_mae": 1.3378776041666667,
+            "components": {
+              "text": {
+                "pixels": 27040,
+                "source_to_reference_mae": 57.153944773175546,
+                "output_to_reference_mae": 7.7865877712031555,
+                "output_from_source_mae": 55.66913214990138,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 1949,
+                "source_to_reference_mae": 63.82093381221139,
+                "output_to_reference_mae": 9.48896870189841,
+                "output_from_source_mae": 61.660851718830166,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 30.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-1-measured/frame-1.ppm",
+            "sha256": "ccc675cf3f73658b77fa0c2b46d8255d50d9bb28132a20960328eec6c3fbc2b8",
+            "source_mae": 58.96197482638889,
+            "reference_mae": 8.982764756944444,
+            "components": {
+              "text": {
+                "pixels": 184669,
+                "source_to_reference_mae": 69.98630342215893,
+                "output_to_reference_mae": 9.79406938901494,
+                "output_from_source_mae": 68.38394641222945,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8029,
+                "source_to_reference_mae": 77.65363058911446,
+                "output_to_reference_mae": 10.334163656744302,
+                "output_from_source_mae": 76.04259559098269,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 60.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-1-measured/frame-2.ppm",
+            "sha256": "b2e944a7de5a47e5282e7e4f63920791d935af2a6b2810f737cfc2e0543152e4",
+            "source_mae": 53.18674768518518,
+            "reference_mae": 9.199049479166666,
+            "components": {
+              "text": {
+                "pixels": 182947,
+                "source_to_reference_mae": 64.45701214012801,
+                "output_to_reference_mae": 9.951095125910783,
+                "output_from_source_mae": 62.440848989051474,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8032,
+                "source_to_reference_mae": 59.69870517928287,
+                "output_to_reference_mae": 10.65952855245684,
+                "output_from_source_mae": 57.64790836653386,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 120.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-1-measured/frame-3.ppm",
+            "sha256": "c70012d62ffec75000713c7a8eb89ee633f1045bf722ba51dfa81133812b70db",
+            "source_mae": 53.956587094907405,
+            "reference_mae": 8.729056712962963,
+            "components": {
+              "text": {
+                "pixels": 184640,
+                "source_to_reference_mae": 63.397519497400346,
+                "output_to_reference_mae": 9.547978047371462,
+                "output_from_source_mae": 62.43868789716927,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8024,
+                "source_to_reference_mae": 65.61993187105351,
+                "output_to_reference_mae": 10.148762047191758,
+                "output_from_source_mae": 64.60543369890328,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 180.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-1-measured/frame-4.ppm",
+            "sha256": "51586e6befbce2b1fb1b43868fc07ce1579c02f3691ea7b77a371e5e2b5cc5e9",
+            "source_mae": 57.73705295138889,
+            "reference_mae": 8.710024594907408,
+            "components": {
+              "text": {
+                "pixels": 184351,
+                "source_to_reference_mae": 69.38995539306359,
+                "output_to_reference_mae": 9.560161503508706,
+                "output_from_source_mae": 67.54814638018418,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8029,
+                "source_to_reference_mae": 67.59455307842404,
+                "output_to_reference_mae": 10.27923776310873,
+                "output_from_source_mae": 66.18159172997882,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 240.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-1-measured/frame-5.ppm",
+            "sha256": "cfe005f81eb8375a6350d5af87090b966879e56afca33832e734a287d9028707",
+            "source_mae": 74.53973524305556,
+            "reference_mae": 8.625831886574074,
+            "components": {
+              "text": {
+                "pixels": 183967,
+                "source_to_reference_mae": 91.17695202581622,
+                "output_to_reference_mae": 9.617857188155122,
+                "output_from_source_mae": 88.50053179827542,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8025,
+                "source_to_reference_mae": 89.04203530633437,
+                "output_to_reference_mae": 10.311443406022846,
+                "output_from_source_mae": 87.0564901349948,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 298.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-1-measured/frame-6.ppm",
+            "sha256": "689d6f03ccb525a0045e74190242b4bbfcbface0456dfe2db643d3bdee191bd7",
+            "source_mae": 77.26304542824074,
+            "reference_mae": 9.049793113425926,
+            "components": {
+              "text": {
+                "pixels": 185526,
+                "source_to_reference_mae": 93.73568843899687,
+                "output_to_reference_mae": 9.960068489951095,
+                "output_from_source_mae": 90.84894659867979,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8036,
+                "source_to_reference_mae": 95.9785963165754,
+                "output_to_reference_mae": 10.748548199767711,
+                "output_from_source_mae": 93.72830595652896,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 299.9,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-1-measured/frame-7.ppm",
+            "sha256": "afe42e3cbc1a77f295d42cfe2ac2522c6e010ceb48a85e59a8a1f70253c4a9a2",
+            "source_mae": 77.8187890625,
+            "reference_mae": 9.809991319444444,
+            "components": {
+              "text": {
+                "pixels": 185491,
+                "source_to_reference_mae": 93.56512355496133,
+                "output_to_reference_mae": 10.389740382731956,
+                "output_from_source_mae": 91.29799109750158,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 7983,
+                "source_to_reference_mae": 90.50682700739071,
+                "output_to_reference_mae": 10.786713432711178,
+                "output_from_source_mae": 88.59739446323437,
+                "closer_than_missing_overlay": true
+              }
+            }
+          }
+        ]
+      },
+      "output_sha256": "b34d7733458742c6c1f87914610db321e17a1bb65d4540f2985621fe81487fb2"
+    },
+    {
+      "name": "pair-1-control",
+      "fixture": "full",
+      "measured": false,
+      "command": [
+        "/private/tmp/bsr-stage-profile/Current.app/Contents/MacOS/bili-shadowreplay",
+        "--scenario",
+        "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/scenario.json",
+        "--output",
+        "/private/tmp/bsr-stage-profile/macos/pair-1-control.mp4",
+        "--require-gpu"
+      ],
+      "process_wall_seconds": 115.89497008314356,
+      "exit_code": 0,
+      "diagnostics": {
+        "audio_mode": "copy",
+        "audio_samples": 0,
+        "counts": {
+          "image": 1200,
+          "text": 4800,
+          "total": 6000
+        },
+        "duration_seconds": 300.0,
+        "encoded_fps": 156.0102988768709,
+        "encoder_probe_ms": 385.51904199999996,
+        "export_ms": 115376.998375,
+        "filter_graph": "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=60,scale=out_color_matrix=bt709:out_range=tv,format=nv12[outv]\n",
+        "fps": 60.0,
+        "frames": 18000,
+        "height": 1080,
+        "implementation": "current-production",
+        "linked_ffmpeg_version": "9.0.2",
+        "output": "/private/tmp/bsr-stage-profile/macos/pair-1-control.mp4",
+        "platform": "macos",
+        "profile": {
+          "bit_rate": 10000000,
+          "encoder": "hevc_videotoolbox",
+          "frame_processor": true,
+          "gop": 120,
+          "options": {
+            "prio_speed": "1"
+          },
+          "renderer": "vulkan-nv12-overlay-v2"
+        },
+        "scenario": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/scenario.json",
+        "scenario_sha256": "c51f7f405fbe0b50d2165602c813ff5f11e4b5609919212e3682eaff214086f4",
+        "source": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/source-300s.mp4",
+        "source_audio_codec": "aac",
+        "stage_profile": null,
+        "wall_ms": 115786.428042,
+        "width": 1920
+      },
+      "resources": {
+        "path": "/private/tmp/bsr-stage-profile/macos/pair-1-control.time",
+        "raw": "      115.85 real        77.15 user        52.35 sys\n           217497600  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n               20090  page reclaims\n                 127  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                 325  voluntary context switches\n             2331654  involuntary context switches\n        911321837875  instructions retired\n        412374711951  cycles elapsed\n           414270544  peak memory footprint\n",
+        "user_seconds": 77.15,
+        "system_seconds": 52.35,
+        "mean_cpu_cores": 1.1173910300602012,
+        "maximum_resident_set_size_bytes": 217497600
+      },
+      "validation": {
+        "ok": true,
+        "video": {
+          "frames": 18000,
+          "first_pts": 0.0,
+          "last_pts": 299.983333,
+          "pts_grid_max_error": 3.333333467026023e-07,
+          "pts_sha256": "92357726c215888ce836de8068764b75bfdad79b10d07462564ae10c196d203d",
+          "stream": {
+            "codec_name": "hevc",
+            "profile": "Main",
+            "width": 1920,
+            "height": 1080,
+            "has_b_frames": 0,
+            "pix_fmt": "yuv420p",
+            "avg_frame_rate": "60/1",
+            "time_base": "1/15360",
+            "bit_rate": "10038841",
+            "disposition": {
+              "default": 1,
+              "dub": 0,
+              "original": 0,
+              "comment": 0,
+              "lyrics": 0,
+              "karaoke": 0,
+              "forced": 0,
+              "hearing_impaired": 0,
+              "visual_impaired": 0,
+              "clean_effects": 0,
+              "attached_pic": 0,
+              "timed_thumbnails": 0,
+              "non_diegetic": 0,
+              "captions": 0,
+              "descriptions": 0,
+              "metadata": 0,
+              "dependent": 0,
+              "still_image": 0,
+              "multilayer": 0
+            },
+            "tags": {
+              "language": "und",
+              "handler_name": "VideoHandler",
+              "encoder": "Lavc63.1.102 hevc_videotoolbox"
+            }
+          },
+          "format": {
+            "duration": "300.000000",
+            "size": "384055072",
+            "bit_rate": "10241468",
+            "tags": {
+              "major_brand": "isom",
+              "minor_version": "512",
+              "compatible_brands": "isomiso2mp41",
+              "title": "Big Buck Bunny, Sunflower version",
+              "artist": "Blender Foundation 2008, Janus Bager Kristensen 2013",
+              "composer": "Jan Morgenstern;Sacha Goedegebure",
+              "encoder": "Lavf63.1.102",
+              "comment": "Creative Commons Attribution 3.0 - http://bbb3d.renderfarming.net",
+              "genre": "Animation"
+            }
+          },
+          "picture_types": {
+            "I": 150,
+            "P": 17850
+          },
+          "keyframes": 150,
+          "keyframe_indices": [
+            0,
+            120,
+            240,
+            360,
+            480,
+            600,
+            720,
+            840,
+            960,
+            1080,
+            1200,
+            1320,
+            1440,
+            1560,
+            1680,
+            1800,
+            1920,
+            2040,
+            2160,
+            2280,
+            2400,
+            2520,
+            2640,
+            2760,
+            2880,
+            3000,
+            3120,
+            3240,
+            3360,
+            3480,
+            3600,
+            3720,
+            3840,
+            3960,
+            4080,
+            4200,
+            4320,
+            4440,
+            4560,
+            4680,
+            4800,
+            4920,
+            5040,
+            5160,
+            5280,
+            5400,
+            5520,
+            5640,
+            5760,
+            5880,
+            6000,
+            6120,
+            6240,
+            6360,
+            6480,
+            6600,
+            6720,
+            6840,
+            6960,
+            7080,
+            7200,
+            7320,
+            7440,
+            7560,
+            7680,
+            7800,
+            7920,
+            8040,
+            8160,
+            8280,
+            8400,
+            8520,
+            8640,
+            8760,
+            8880,
+            9000,
+            9120,
+            9240,
+            9360,
+            9480,
+            9600,
+            9720,
+            9840,
+            9960,
+            10080,
+            10200,
+            10320,
+            10440,
+            10560,
+            10680,
+            10800,
+            10920,
+            11040,
+            11160,
+            11280,
+            11400,
+            11520,
+            11640,
+            11760,
+            11880,
+            12000,
+            12120,
+            12240,
+            12360,
+            12480,
+            12600,
+            12720,
+            12840,
+            12960,
+            13080,
+            13200,
+            13320,
+            13440,
+            13560,
+            13680,
+            13800,
+            13920,
+            14040,
+            14160,
+            14280,
+            14400,
+            14520,
+            14640,
+            14760,
+            14880,
+            15000,
+            15120,
+            15240,
+            15360,
+            15480,
+            15600,
+            15720,
+            15840,
+            15960,
+            16080,
+            16200,
+            16320,
+            16440,
+            16560,
+            16680,
+            16800,
+            16920,
+            17040,
+            17160,
+            17280,
+            17400,
+            17520,
+            17640,
+            17760,
+            17880
+          ],
+          "gop_gaps": {
+            "120": 149
+          },
+          "maximum_gop_gap": 120
+        },
+        "audio": {
+          "stream": {
+            "codec_name": "aac",
+            "sample_rate": "48000",
+            "channels": 2,
+            "channel_layout": "stereo"
+          },
+          "packets": 14064,
+          "payload_bytes": 7260857,
+          "packet_hashes_sha256": "f97d4e07f9320cf73a44dff03152d7edc262020aa26a3b7892ecd3dd36ec5f93"
+        },
+        "audio_packets_identical": true,
+        "pcm_fallback": null,
+        "bytes": 384055072,
+        "sha256": "f80fc5921959bad899d6013979f03664f85b1f4a4764142a47ef13fedc7fb902",
+        "samples": [
+          {
+            "time": 2.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-1-control/frame-0.ppm",
+            "sha256": "c696f41372ecf2660214d76904729242125d62bc3b6775f4cd06b661f3510ffe",
+            "source_mae": 7.630044849537037,
+            "reference_mae": 1.3378776041666667,
+            "components": {
+              "text": {
+                "pixels": 27040,
+                "source_to_reference_mae": 57.153944773175546,
+                "output_to_reference_mae": 7.7865877712031555,
+                "output_from_source_mae": 55.66913214990138,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 1949,
+                "source_to_reference_mae": 63.82093381221139,
+                "output_to_reference_mae": 9.48896870189841,
+                "output_from_source_mae": 61.660851718830166,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 30.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-1-control/frame-1.ppm",
+            "sha256": "7501e78f5cd26b1c2bc02d1a1a85b9000c7d00c8d91295731cb7adc168a87407",
+            "source_mae": 58.967905092592595,
+            "reference_mae": 8.989348958333334,
+            "components": {
+              "text": {
+                "pixels": 184669,
+                "source_to_reference_mae": 69.98630342215893,
+                "output_to_reference_mae": 9.801663155880702,
+                "output_from_source_mae": 68.39258709727494,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8029,
+                "source_to_reference_mae": 77.65363058911446,
+                "output_to_reference_mae": 10.353800805413709,
+                "output_from_source_mae": 75.97031593805788,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 60.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-1-control/frame-2.ppm",
+            "sha256": "8bd463988b73b16dabaf4f5c8c80c798a467ec2d02084bd638fbd79fa3588159",
+            "source_mae": 53.18820457175926,
+            "reference_mae": 9.19568576388889,
+            "components": {
+              "text": {
+                "pixels": 182947,
+                "source_to_reference_mae": 64.45701214012801,
+                "output_to_reference_mae": 9.944470256413059,
+                "output_from_source_mae": 62.4426345699392,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8032,
+                "source_to_reference_mae": 59.69870517928287,
+                "output_to_reference_mae": 10.693019588313414,
+                "output_from_source_mae": 57.67816235059761,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 120.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-1-control/frame-3.ppm",
+            "sha256": "31e20778543b8391f5a0b1e1f0277419f13f337ab952f11f2ccd9610e1817b20",
+            "source_mae": 53.945847800925925,
+            "reference_mae": 8.729940682870371,
+            "components": {
+              "text": {
+                "pixels": 184640,
+                "source_to_reference_mae": 63.397519497400346,
+                "output_to_reference_mae": 9.54385470826112,
+                "output_from_source_mae": 62.424299537839396,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8024,
+                "source_to_reference_mae": 65.61993187105351,
+                "output_to_reference_mae": 10.150465270854104,
+                "output_from_source_mae": 64.5673396477235,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 180.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-1-control/frame-4.ppm",
+            "sha256": "033ca3b725b07bd6a2ddfd45e35b46325bb1172549bb0f495319a601887ad563",
+            "source_mae": 57.71136284722222,
+            "reference_mae": 8.714322916666667,
+            "components": {
+              "text": {
+                "pixels": 184351,
+                "source_to_reference_mae": 69.38995539306359,
+                "output_to_reference_mae": 9.570368481863403,
+                "output_from_source_mae": 67.51871882080017,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8029,
+                "source_to_reference_mae": 67.59455307842404,
+                "output_to_reference_mae": 10.242869597708307,
+                "output_from_source_mae": 66.23971436874663,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 240.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-1-control/frame-5.ppm",
+            "sha256": "a4074a36e0dfbc22e1d61e18f03d4e15ee914c24d87d5fd9742b7718c16faa5d",
+            "source_mae": 74.554921875,
+            "reference_mae": 8.616901041666667,
+            "components": {
+              "text": {
+                "pixels": 183967,
+                "source_to_reference_mae": 91.17695202581622,
+                "output_to_reference_mae": 9.602502985136827,
+                "output_from_source_mae": 88.51793346995204,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8025,
+                "source_to_reference_mae": 89.04203530633437,
+                "output_to_reference_mae": 10.290093457943925,
+                "output_from_source_mae": 87.05482866043614,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 298.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-1-control/frame-6.ppm",
+            "sha256": "d81603826fb56954ffe762b3b295474ae5b54a75a1e7281aa016a91ccd00c16e",
+            "source_mae": 77.24111979166666,
+            "reference_mae": 9.027890625,
+            "components": {
+              "text": {
+                "pixels": 185526,
+                "source_to_reference_mae": 93.73568843899687,
+                "output_to_reference_mae": 9.945448796035775,
+                "output_from_source_mae": 90.83956606261836,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8036,
+                "source_to_reference_mae": 95.9785963165754,
+                "output_to_reference_mae": 10.754811680769869,
+                "output_from_source_mae": 93.63833582213373,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 299.9,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-1-control/frame-7.ppm",
+            "sha256": "8fb169a2592bd06c296f8a91c6e2cc02a13af7beecff95b5656f3aa0fdb58061",
+            "source_mae": 77.80856770833333,
+            "reference_mae": 9.763074363425925,
+            "components": {
+              "text": {
+                "pixels": 185491,
+                "source_to_reference_mae": 93.56512355496133,
+                "output_to_reference_mae": 10.368158023839431,
+                "output_from_source_mae": 91.320554636074,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 7983,
+                "source_to_reference_mae": 90.50682700739071,
+                "output_to_reference_mae": 10.803415591465196,
+                "output_from_source_mae": 88.63981794646958,
+                "closer_than_missing_overlay": true
+              }
+            }
+          }
+        ]
+      },
+      "output_sha256": "f80fc5921959bad899d6013979f03664f85b1f4a4764142a47ef13fedc7fb902"
+    },
+    {
+      "name": "pair-2-control",
+      "fixture": "full",
+      "measured": false,
+      "command": [
+        "/private/tmp/bsr-stage-profile/Current.app/Contents/MacOS/bili-shadowreplay",
+        "--scenario",
+        "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/scenario.json",
+        "--output",
+        "/private/tmp/bsr-stage-profile/macos/pair-2-control.mp4",
+        "--require-gpu"
+      ],
+      "process_wall_seconds": 117.29127862490714,
+      "exit_code": 0,
+      "diagnostics": {
+        "audio_mode": "copy",
+        "audio_samples": 0,
+        "counts": {
+          "image": 1200,
+          "text": 4800,
+          "total": 6000
+        },
+        "duration_seconds": 300.0,
+        "encoded_fps": 154.22434015786595,
+        "encoder_probe_ms": 420.645625,
+        "export_ms": 116713.094584,
+        "filter_graph": "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=60,scale=out_color_matrix=bt709:out_range=tv,format=nv12[outv]\n",
+        "fps": 60.0,
+        "frames": 18000,
+        "height": 1080,
+        "implementation": "current-production",
+        "linked_ffmpeg_version": "9.0.2",
+        "output": "/private/tmp/bsr-stage-profile/macos/pair-2-control.mp4",
+        "platform": "macos",
+        "profile": {
+          "bit_rate": 10000000,
+          "encoder": "hevc_videotoolbox",
+          "frame_processor": true,
+          "gop": 120,
+          "options": {
+            "prio_speed": "1"
+          },
+          "renderer": "vulkan-nv12-overlay-v2"
+        },
+        "scenario": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/scenario.json",
+        "scenario_sha256": "c51f7f405fbe0b50d2165602c813ff5f11e4b5609919212e3682eaff214086f4",
+        "source": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/source-300s.mp4",
+        "source_audio_codec": "aac",
+        "stage_profile": null,
+        "wall_ms": 117160.93075,
+        "width": 1920
+      },
+      "resources": {
+        "path": "/private/tmp/bsr-stage-profile/macos/pair-2-control.time",
+        "raw": "      117.26 real        77.11 user        52.69 sys\n           216711168  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n               20050  page reclaims\n                 127  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                 418  voluntary context switches\n             2346508  involuntary context switches\n        911288298672  instructions retired\n        414811930195  cycles elapsed\n           413746280  peak memory footprint\n",
+        "user_seconds": 77.11,
+        "system_seconds": 52.69,
+        "mean_cpu_cores": 1.1066466451874506,
+        "maximum_resident_set_size_bytes": 216711168
+      },
+      "validation": {
+        "ok": true,
+        "video": {
+          "frames": 18000,
+          "first_pts": 0.0,
+          "last_pts": 299.983333,
+          "pts_grid_max_error": 3.333333467026023e-07,
+          "pts_sha256": "92357726c215888ce836de8068764b75bfdad79b10d07462564ae10c196d203d",
+          "stream": {
+            "codec_name": "hevc",
+            "profile": "Main",
+            "width": 1920,
+            "height": 1080,
+            "has_b_frames": 0,
+            "pix_fmt": "yuv420p",
+            "avg_frame_rate": "60/1",
+            "time_base": "1/15360",
+            "bit_rate": "10038998",
+            "disposition": {
+              "default": 1,
+              "dub": 0,
+              "original": 0,
+              "comment": 0,
+              "lyrics": 0,
+              "karaoke": 0,
+              "forced": 0,
+              "hearing_impaired": 0,
+              "visual_impaired": 0,
+              "clean_effects": 0,
+              "attached_pic": 0,
+              "timed_thumbnails": 0,
+              "non_diegetic": 0,
+              "captions": 0,
+              "descriptions": 0,
+              "metadata": 0,
+              "dependent": 0,
+              "still_image": 0,
+              "multilayer": 0
+            },
+            "tags": {
+              "language": "und",
+              "handler_name": "VideoHandler",
+              "encoder": "Lavc63.1.102 hevc_videotoolbox"
+            }
+          },
+          "format": {
+            "duration": "300.000000",
+            "size": "384060967",
+            "bit_rate": "10241625",
+            "tags": {
+              "major_brand": "isom",
+              "minor_version": "512",
+              "compatible_brands": "isomiso2mp41",
+              "title": "Big Buck Bunny, Sunflower version",
+              "artist": "Blender Foundation 2008, Janus Bager Kristensen 2013",
+              "composer": "Jan Morgenstern;Sacha Goedegebure",
+              "encoder": "Lavf63.1.102",
+              "comment": "Creative Commons Attribution 3.0 - http://bbb3d.renderfarming.net",
+              "genre": "Animation"
+            }
+          },
+          "picture_types": {
+            "I": 150,
+            "P": 17850
+          },
+          "keyframes": 150,
+          "keyframe_indices": [
+            0,
+            120,
+            240,
+            360,
+            480,
+            600,
+            720,
+            840,
+            960,
+            1080,
+            1200,
+            1320,
+            1440,
+            1560,
+            1680,
+            1800,
+            1920,
+            2040,
+            2160,
+            2280,
+            2400,
+            2520,
+            2640,
+            2760,
+            2880,
+            3000,
+            3120,
+            3240,
+            3360,
+            3480,
+            3600,
+            3720,
+            3840,
+            3960,
+            4080,
+            4200,
+            4320,
+            4440,
+            4560,
+            4680,
+            4800,
+            4920,
+            5040,
+            5160,
+            5280,
+            5400,
+            5520,
+            5640,
+            5760,
+            5880,
+            6000,
+            6120,
+            6240,
+            6360,
+            6480,
+            6600,
+            6720,
+            6840,
+            6960,
+            7080,
+            7200,
+            7320,
+            7440,
+            7560,
+            7680,
+            7800,
+            7920,
+            8040,
+            8160,
+            8280,
+            8400,
+            8520,
+            8640,
+            8760,
+            8880,
+            9000,
+            9120,
+            9240,
+            9360,
+            9480,
+            9600,
+            9720,
+            9840,
+            9960,
+            10080,
+            10200,
+            10320,
+            10440,
+            10560,
+            10680,
+            10800,
+            10920,
+            11040,
+            11160,
+            11280,
+            11400,
+            11520,
+            11640,
+            11760,
+            11880,
+            12000,
+            12120,
+            12240,
+            12360,
+            12480,
+            12600,
+            12720,
+            12840,
+            12960,
+            13080,
+            13200,
+            13320,
+            13440,
+            13560,
+            13680,
+            13800,
+            13920,
+            14040,
+            14160,
+            14280,
+            14400,
+            14520,
+            14640,
+            14760,
+            14880,
+            15000,
+            15120,
+            15240,
+            15360,
+            15480,
+            15600,
+            15720,
+            15840,
+            15960,
+            16080,
+            16200,
+            16320,
+            16440,
+            16560,
+            16680,
+            16800,
+            16920,
+            17040,
+            17160,
+            17280,
+            17400,
+            17520,
+            17640,
+            17760,
+            17880
+          ],
+          "gop_gaps": {
+            "120": 149
+          },
+          "maximum_gop_gap": 120
+        },
+        "audio": {
+          "stream": {
+            "codec_name": "aac",
+            "sample_rate": "48000",
+            "channels": 2,
+            "channel_layout": "stereo"
+          },
+          "packets": 14064,
+          "payload_bytes": 7260857,
+          "packet_hashes_sha256": "f97d4e07f9320cf73a44dff03152d7edc262020aa26a3b7892ecd3dd36ec5f93"
+        },
+        "audio_packets_identical": true,
+        "pcm_fallback": null,
+        "bytes": 384060967,
+        "sha256": "46c61c12fd7de09d1eb6c22447e72904de22d78f28812152fa0527de1ad9b419",
+        "samples": [
+          {
+            "time": 2.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-2-control/frame-0.ppm",
+            "sha256": "80c6788991b711d119ceace5e374c2a21359b22e85863e012ae5f2b282a794b5",
+            "source_mae": 7.629592013888889,
+            "reference_mae": 1.3368113425925925,
+            "components": {
+              "text": {
+                "pixels": 27040,
+                "source_to_reference_mae": 57.153944773175546,
+                "output_to_reference_mae": 7.7823717948717945,
+                "output_from_source_mae": 55.66888560157791,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 1949,
+                "source_to_reference_mae": 63.82093381221139,
+                "output_to_reference_mae": 9.484179921327176,
+                "output_from_source_mae": 61.66632461091158,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 30.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-2-control/frame-1.ppm",
+            "sha256": "89e2002b1b6007162d8c40de31c3b3b2b3697d18a5601a5e51323f715521d488",
+            "source_mae": 58.963292824074074,
+            "reference_mae": 8.985732060185185,
+            "components": {
+              "text": {
+                "pixels": 184669,
+                "source_to_reference_mae": 69.98630342215893,
+                "output_to_reference_mae": 9.80055125657257,
+                "output_from_source_mae": 68.38688319822674,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8029,
+                "source_to_reference_mae": 77.65363058911446,
+                "output_to_reference_mae": 10.33474488313198,
+                "output_from_source_mae": 76.02316602316603,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 60.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-2-control/frame-2.ppm",
+            "sha256": "36dd83adf6e71d7ac70ba4c4171fa9e9eaa4fe0b4ef584ccea497fb9484cf1a0",
+            "source_mae": 53.18402199074074,
+            "reference_mae": 9.193716724537037,
+            "components": {
+              "text": {
+                "pixels": 182947,
+                "source_to_reference_mae": 64.45701214012801,
+                "output_to_reference_mae": 9.945583511435917,
+                "output_from_source_mae": 62.44141928172276,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8032,
+                "source_to_reference_mae": 59.69870517928287,
+                "output_to_reference_mae": 10.698539176626825,
+                "output_from_source_mae": 57.680278884462155,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 120.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-2-control/frame-3.ppm",
+            "sha256": "014fbc43140c84d33c42ac3f61bd157db00e1831e27bd9e805305eadfd9f9604",
+            "source_mae": 53.949147858796294,
+            "reference_mae": 8.726932870370371,
+            "components": {
+              "text": {
+                "pixels": 184640,
+                "source_to_reference_mae": 63.397519497400346,
+                "output_to_reference_mae": 9.54724328422877,
+                "output_from_source_mae": 62.43265272963605,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8024,
+                "source_to_reference_mae": 65.61993187105351,
+                "output_to_reference_mae": 10.152210036556996,
+                "output_from_source_mae": 64.59434197407776,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 180.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-2-control/frame-4.ppm",
+            "sha256": "240239c343c3768b21f137a947f72e94ce10ecb1d4e52a575a0d195e3b74bad5",
+            "source_mae": 57.72547019675926,
+            "reference_mae": 8.7008984375,
+            "components": {
+              "text": {
+                "pixels": 184351,
+                "source_to_reference_mae": 69.38995539306359,
+                "output_to_reference_mae": 9.55145528547897,
+                "output_from_source_mae": 67.53387107564735,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8029,
+                "source_to_reference_mae": 67.59455307842404,
+                "output_to_reference_mae": 10.280151118860797,
+                "output_from_source_mae": 66.23016564952049,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 240.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-2-control/frame-5.ppm",
+            "sha256": "e5c6a62a57e71ea25b3ab3121f090772f9106f7671f9241ec6ecef9802cedcee",
+            "source_mae": 74.56743489583333,
+            "reference_mae": 8.603763020833334,
+            "components": {
+              "text": {
+                "pixels": 183967,
+                "source_to_reference_mae": 91.17695202581622,
+                "output_to_reference_mae": 9.588500473816863,
+                "output_from_source_mae": 88.54181818840698,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8025,
+                "source_to_reference_mae": 89.04203530633437,
+                "output_to_reference_mae": 10.335659397715473,
+                "output_from_source_mae": 86.97827622014537,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 298.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-2-control/frame-6.ppm",
+            "sha256": "e901272b940b29d2ec50f89e2d72a2831485374998e2ff233562257eabc51740",
+            "source_mae": 77.27035011574074,
+            "reference_mae": 9.035222800925926,
+            "components": {
+              "text": {
+                "pixels": 185526,
+                "source_to_reference_mae": 93.73568843899687,
+                "output_to_reference_mae": 9.939507131075969,
+                "output_from_source_mae": 90.85558358397206,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8036,
+                "source_to_reference_mae": 95.9785963165754,
+                "output_to_reference_mae": 10.71876555500249,
+                "output_from_source_mae": 93.74863115978098,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 299.9,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-2-control/frame-7.ppm",
+            "sha256": "d349b451e43632ba054be2371ecab62092c3abd0757ba9e5b0019f5db8256be7",
+            "source_mae": 77.85652054398147,
+            "reference_mae": 9.798506944444444,
+            "components": {
+              "text": {
+                "pixels": 185491,
+                "source_to_reference_mae": 93.56512355496133,
+                "output_to_reference_mae": 10.367954959180409,
+                "output_from_source_mae": 91.33739462651377,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 7983,
+                "source_to_reference_mae": 90.50682700739071,
+                "output_to_reference_mae": 10.763121633471126,
+                "output_from_source_mae": 88.6356006513842,
+                "closer_than_missing_overlay": true
+              }
+            }
+          }
+        ]
+      },
+      "output_sha256": "46c61c12fd7de09d1eb6c22447e72904de22d78f28812152fa0527de1ad9b419"
+    },
+    {
+      "name": "pair-2-measured",
+      "fixture": "full",
+      "measured": true,
+      "command": [
+        "/private/tmp/bsr-stage-profile/Current.app/Contents/MacOS/bili-shadowreplay",
+        "--scenario",
+        "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/scenario.json",
+        "--output",
+        "/private/tmp/bsr-stage-profile/macos/pair-2-measured.mp4",
+        "--require-gpu",
+        "--measure-stages"
+      ],
+      "process_wall_seconds": 123.33661370794289,
+      "exit_code": 0,
+      "diagnostics": {
+        "audio_mode": "copy",
+        "audio_samples": 0,
+        "counts": {
+          "image": 1200,
+          "text": 4800,
+          "total": 6000
+        },
+        "duration_seconds": 300.0,
+        "encoded_fps": 146.59036869664797,
+        "encoder_probe_ms": 392.260875,
+        "export_ms": 122791.150333,
+        "filter_graph": "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=60,scale=out_color_matrix=bt709:out_range=tv,format=nv12[outv]\n",
+        "fps": 60.0,
+        "frames": 18000,
+        "height": 1080,
+        "implementation": "current-production",
+        "linked_ffmpeg_version": "9.0.2",
+        "output": "/private/tmp/bsr-stage-profile/macos/pair-2-measured.mp4",
+        "platform": "macos",
+        "profile": {
+          "bit_rate": 10000000,
+          "encoder": "hevc_videotoolbox",
+          "frame_processor": true,
+          "gop": 120,
+          "options": {
+            "prio_speed": "1"
+          },
+          "renderer": "vulkan-nv12-overlay-v2"
+        },
+        "scenario": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/scenario.json",
+        "scenario_sha256": "c51f7f405fbe0b50d2165602c813ff5f11e4b5609919212e3682eaff214086f4",
+        "source": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/source-300s.mp4",
+        "source_audio_codec": "aac",
+        "stage_profile": {
+          "metadata": {
+            "compositor_counters": "submitted=18000, output=18000, uploaded=18000, in_flight_peak=3",
+            "decoder_0_0": "thread_count=1, active_thread_type=0",
+            "vulkan_submission": "Asynchronous"
+          },
+          "observations": {
+            "metal_blit_gpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 1334.433632,
+              "max_ms": 2.349542,
+              "p50_upper_ms": 0.027554493735033717,
+              "p95_upper_ms": 0.15587175497763664
+            },
+            "metal_cleanup_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 72.543959,
+              "max_ms": 0.222375,
+              "p50_upper_ms": 0.0037560485609663334,
+              "p95_upper_ms": 0.007512097121932667
+            },
+            "metal_commit_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 85.981084,
+              "max_ms": 0.209041,
+              "p50_upper_ms": 0.004466719672996895,
+              "p95_upper_ms": 0.00893343934599379
+            },
+            "metal_prepare_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 599.932014,
+              "max_ms": 0.527625,
+              "p50_upper_ms": 0.032768,
+              "p95_upper_ms": 0.055108987470067435
+            },
+            "metal_texture_views_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 180.803199,
+              "max_ms": 0.39304100000000003,
+              "p50_upper_ms": 0.00893343934599379,
+              "p95_upper_ms": 0.016384
+            },
+            "metal_wait_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 5463.194636,
+              "max_ms": 3.898042,
+              "p50_upper_ms": 0.22043594988026974,
+              "p95_upper_ms": 0.8085626292314785
+            },
+            "skia_flush_submit_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 5558.6674729999995,
+              "max_ms": 8.983792000000001,
+              "p50_upper_ms": 0.20214065730786962,
+              "p95_upper_ms": 0.8085626292314785
+            },
+            "skia_image_prepare_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 2.3079989999999997,
+              "max_ms": 0.270959,
+              "p50_upper_ms": 1.0905077326652576e-06,
+              "p95_upper_ms": 1.0905077326652576e-06
+            },
+            "skia_scene_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 4367.231941,
+              "max_ms": 9.314417,
+              "p50_upper_ms": 0.20214065730786962,
+              "p95_upper_ms": 0.4408718997605395
+            },
+            "skia_text_layout_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 616.557264,
+              "max_ms": 8.5295,
+              "p50_upper_ms": 1.0905077326652576e-06,
+              "p95_upper_ms": 0.14293502953590065
+            },
+            "skia_text_sprite_cpu": {
+              "calls": 18000,
+              "exclusive_ms": 0.0,
+              "inclusive_ms": 369.159304,
+              "max_ms": 2.672583,
+              "p50_upper_ms": 1.0905077326652576e-06,
+              "p95_upper_ms": 0.08498967705360856
+            }
+          },
+          "spans": {
+            "acquire_frame": {
+              "calls": 18000,
+              "exclusive_ms": 254.70892899999998,
+              "inclusive_ms": 342.689816,
+              "max_ms": 0.252291,
+              "p50_upper_ms": 0.01786687869198758,
+              "p95_upper_ms": 0.032768
+            },
+            "compositor_feed": {
+              "calls": 36000,
+              "exclusive_ms": 26.892518,
+              "inclusive_ms": 26.892518,
+              "max_ms": 0.065375,
+              "p50_upper_ms": 0.0005583399591246119,
+              "p95_upper_ms": 0.0017221558584396073
+            },
+            "cpu_filter": {
+              "calls": 276183,
+              "exclusive_ms": 3170.892303,
+              "inclusive_ms": 3170.892303,
+              "max_ms": 2.7520000000000002,
+              "p50_upper_ms": 9.050966799187809e-05,
+              "p95_upper_ms": 0.14293502953590065
+            },
+            "decode_receive": {
+              "calls": 36001,
+              "exclusive_ms": 17.924191,
+              "inclusive_ms": 17.924191,
+              "max_ms": 0.032958,
+              "p50_upper_ms": 0.00043053896460990183,
+              "p95_upper_ms": 0.001024
+            },
+            "decode_send": {
+              "calls": 18001,
+              "exclusive_ms": 43549.011235000005,
+              "inclusive_ms": 43549.011235000005,
+              "max_ms": 46.337292000000005,
+              "p50_upper_ms": 1.9230968632147627,
+              "p95_upper_ms": 4.9878961592843725
+            },
+            "demux_read": {
+              "calls": 32065,
+              "exclusive_ms": 241.973191,
+              "inclusive_ms": 241.973191,
+              "max_ms": 0.18375,
+              "p50_upper_ms": 0.004466719672996895,
+              "p95_upper_ms": 0.025267582163483703
+            },
+            "encode_eof": {
+              "calls": 1,
+              "exclusive_ms": 4.754458,
+              "inclusive_ms": 4.754458,
+              "max_ms": 4.754458,
+              "p50_upper_ms": 4.9878961592843725,
+              "p95_upper_ms": 4.9878961592843725
+            },
+            "encode_receive": {
+              "calls": 36001,
+              "exclusive_ms": 10.332328,
+              "inclusive_ms": 10.332328,
+              "max_ms": 0.030333,
+              "p50_upper_ms": 0.000256,
+              "p95_upper_ms": 0.000512
+            },
+            "encode_send": {
+              "calls": 18000,
+              "exclusive_ms": 3883.4599289999996,
+              "inclusive_ms": 3883.4599289999996,
+              "max_ms": 25.405416,
+              "p50_upper_ms": 0.22043594988026974,
+              "p95_upper_ms": 0.3117435099552733
+            },
+            "encoder_frame_bridge": {
+              "calls": 18001,
+              "exclusive_ms": 54.862293,
+              "inclusive_ms": 39188.943160999996,
+              "max_ms": 8.027625,
+              "p50_upper_ms": 1.763487599042158,
+              "p95_upper_ms": 4.194304
+            },
+            "frame_slot_wait": {
+              "calls": 18000,
+              "exclusive_ms": 88.862928,
+              "inclusive_ms": 88.862928,
+              "max_ms": 0.87675,
+              "p50_upper_ms": 0.004466719672996895,
+              "p95_upper_ms": 0.008192
+            },
+            "initialize_graph": {
+              "calls": 1,
+              "exclusive_ms": 0.526292,
+              "inclusive_ms": 26.986292,
+              "max_ms": 26.986292,
+              "p50_upper_ms": 28.215801584674526,
+              "p95_upper_ms": 28.215801584674526
+            },
+            "libplacebo_pull": {
+              "calls": 36001,
+              "exclusive_ms": 18213.426133999998,
+              "inclusive_ms": 18213.426133999998,
+              "max_ms": 96.851667,
+              "p50_upper_ms": 0.4408718997605395,
+              "p95_upper_ms": 1.2469740398210931
+            },
+            "mux_finalize": {
+              "calls": 1,
+              "exclusive_ms": 1.45525,
+              "inclusive_ms": 1.45525,
+              "max_ms": 1.45525,
+              "p50_upper_ms": 1.4829104003789306,
+              "p95_upper_ms": 1.4829104003789306
+            },
+            "mux_write": {
+              "calls": 32064,
+              "exclusive_ms": 665.8506950000001,
+              "inclusive_ms": 665.8506950000001,
+              "max_ms": 7.131958,
+              "p50_upper_ms": 0.01062370963170107,
+              "p95_upper_ms": 0.04634095001184158
+            },
+            "nv12_upload": {
+              "calls": 18000,
+              "exclusive_ms": 2647.459608,
+              "inclusive_ms": 2647.459608,
+              "max_ms": 1.42075,
+              "p50_upper_ms": 0.14293502953590065,
+              "p95_upper_ms": 0.24038710790184534
+            },
+            "process_frame": {
+              "calls": 18000,
+              "exclusive_ms": 114.689002,
+              "inclusive_ms": 70801.62976699999,
+              "max_ms": 100.56045800000001,
+              "p50_upper_ms": 3.8461937264295254,
+              "p95_upper_ms": 6.468501033851828
+            },
+            "setup": {
+              "calls": 1,
+              "exclusive_ms": 20.646333,
+              "inclusive_ms": 20.646333,
+              "max_ms": 20.646333,
+              "p50_upper_ms": 21.75735732572379,
+              "p95_upper_ms": 21.75735732572379
+            },
+            "skia_render": {
+              "calls": 18000,
+              "exclusive_ms": 10163.399989,
+              "inclusive_ms": 10163.399989,
+              "max_ms": 15.963375,
+              "p50_upper_ms": 0.4408718997605395,
+              "p95_upper_ms": 1.2469740398210931
+            },
+            "vt_allocate_iosurface": {
+              "calls": 18000,
+              "exclusive_ms": 23.522274,
+              "inclusive_ms": 23.522274,
+              "max_ms": 0.303,
+              "p50_upper_ms": 0.0011166799182492238,
+              "p95_upper_ms": 0.0022333598364984476
+            },
+            "vt_export_textures": {
+              "calls": 18000,
+              "exclusive_ms": 10.73179,
+              "inclusive_ms": 10.73179,
+              "max_ms": 0.027084,
+              "p50_upper_ms": 0.0004695060701207917,
+              "p95_upper_ms": 0.0011166799182492238
+            },
+            "vt_metal_copy": {
+              "calls": 18000,
+              "exclusive_ms": 6295.935868,
+              "inclusive_ms": 6295.935868,
+              "max_ms": 3.9579999999999997,
+              "p50_upper_ms": 0.262144,
+              "p95_upper_ms": 0.881743799521079
+            },
+            "vt_vulkan_wait": {
+              "calls": 18000,
+              "exclusive_ms": 32803.890936,
+              "inclusive_ms": 32803.890936,
+              "max_ms": 6.770792,
+              "p50_upper_ms": 1.4829104003789306,
+              "p95_upper_ms": 3.8461937264295254
+            },
+            "vulkan_publish": {
+              "calls": 18000,
+              "exclusive_ms": 105.566289,
+              "inclusive_ms": 105.566289,
+              "max_ms": 0.130417,
+              "p50_upper_ms": 0.004870992343051145,
+              "p95_upper_ms": 0.01062370963170107
+            },
+            "worker": {
+              "calls": 1,
+              "exclusive_ms": 418.775779,
+              "inclusive_ms": 122789.550542,
+              "max_ms": 122789.550542,
+              "p50_upper_ms": 126032.07602764269,
+              "p95_upper_ms": 126032.07602764269
+            }
+          }
+        },
+        "wall_ms": 123211.16954100001,
+        "width": 1920
+      },
+      "resources": {
+        "path": "/private/tmp/bsr-stage-profile/macos/pair-2-measured.time",
+        "raw": "      123.28 real        78.55 user        52.30 sys\n           221167616  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n                   0  average unshared stack size\n               21119  page reclaims\n                 128  page faults\n                   0  swaps\n                   0  block input operations\n                   0  block output operations\n                   0  messages sent\n                   0  messages received\n                   0  signals received\n                 331  voluntary context switches\n             2280623  involuntary context switches\n        911141742793  instructions retired\n        417242426377  cycles elapsed\n           417776768  peak memory footprint\n",
+        "user_seconds": 78.55,
+        "system_seconds": 52.3,
+        "mean_cpu_cores": 1.0609177280466655,
+        "maximum_resident_set_size_bytes": 221167616
+      },
+      "profile_validation": {
+        "worker_partition_error_ms": 1.4551915228366852e-11,
+        "profiled_frames": 18000
+      },
+      "validation": {
+        "ok": true,
+        "video": {
+          "frames": 18000,
+          "first_pts": 0.0,
+          "last_pts": 299.983333,
+          "pts_grid_max_error": 3.333333467026023e-07,
+          "pts_sha256": "92357726c215888ce836de8068764b75bfdad79b10d07462564ae10c196d203d",
+          "stream": {
+            "codec_name": "hevc",
+            "profile": "Main",
+            "width": 1920,
+            "height": 1080,
+            "has_b_frames": 0,
+            "pix_fmt": "yuv420p",
+            "avg_frame_rate": "60/1",
+            "time_base": "1/15360",
+            "bit_rate": "10039075",
+            "disposition": {
+              "default": 1,
+              "dub": 0,
+              "original": 0,
+              "comment": 0,
+              "lyrics": 0,
+              "karaoke": 0,
+              "forced": 0,
+              "hearing_impaired": 0,
+              "visual_impaired": 0,
+              "clean_effects": 0,
+              "attached_pic": 0,
+              "timed_thumbnails": 0,
+              "non_diegetic": 0,
+              "captions": 0,
+              "descriptions": 0,
+              "metadata": 0,
+              "dependent": 0,
+              "still_image": 0,
+              "multilayer": 0
+            },
+            "tags": {
+              "language": "und",
+              "handler_name": "VideoHandler",
+              "encoder": "Lavc63.1.102 hevc_videotoolbox"
+            }
+          },
+          "format": {
+            "duration": "300.000000",
+            "size": "384063869",
+            "bit_rate": "10241703",
+            "tags": {
+              "major_brand": "isom",
+              "minor_version": "512",
+              "compatible_brands": "isomiso2mp41",
+              "title": "Big Buck Bunny, Sunflower version",
+              "artist": "Blender Foundation 2008, Janus Bager Kristensen 2013",
+              "composer": "Jan Morgenstern;Sacha Goedegebure",
+              "encoder": "Lavf63.1.102",
+              "comment": "Creative Commons Attribution 3.0 - http://bbb3d.renderfarming.net",
+              "genre": "Animation"
+            }
+          },
+          "picture_types": {
+            "I": 150,
+            "P": 17850
+          },
+          "keyframes": 150,
+          "keyframe_indices": [
+            0,
+            120,
+            240,
+            360,
+            480,
+            600,
+            720,
+            840,
+            960,
+            1080,
+            1200,
+            1320,
+            1440,
+            1560,
+            1680,
+            1800,
+            1920,
+            2040,
+            2160,
+            2280,
+            2400,
+            2520,
+            2640,
+            2760,
+            2880,
+            3000,
+            3120,
+            3240,
+            3360,
+            3480,
+            3600,
+            3720,
+            3840,
+            3960,
+            4080,
+            4200,
+            4320,
+            4440,
+            4560,
+            4680,
+            4800,
+            4920,
+            5040,
+            5160,
+            5280,
+            5400,
+            5520,
+            5640,
+            5760,
+            5880,
+            6000,
+            6120,
+            6240,
+            6360,
+            6480,
+            6600,
+            6720,
+            6840,
+            6960,
+            7080,
+            7200,
+            7320,
+            7440,
+            7560,
+            7680,
+            7800,
+            7920,
+            8040,
+            8160,
+            8280,
+            8400,
+            8520,
+            8640,
+            8760,
+            8880,
+            9000,
+            9120,
+            9240,
+            9360,
+            9480,
+            9600,
+            9720,
+            9840,
+            9960,
+            10080,
+            10200,
+            10320,
+            10440,
+            10560,
+            10680,
+            10800,
+            10920,
+            11040,
+            11160,
+            11280,
+            11400,
+            11520,
+            11640,
+            11760,
+            11880,
+            12000,
+            12120,
+            12240,
+            12360,
+            12480,
+            12600,
+            12720,
+            12840,
+            12960,
+            13080,
+            13200,
+            13320,
+            13440,
+            13560,
+            13680,
+            13800,
+            13920,
+            14040,
+            14160,
+            14280,
+            14400,
+            14520,
+            14640,
+            14760,
+            14880,
+            15000,
+            15120,
+            15240,
+            15360,
+            15480,
+            15600,
+            15720,
+            15840,
+            15960,
+            16080,
+            16200,
+            16320,
+            16440,
+            16560,
+            16680,
+            16800,
+            16920,
+            17040,
+            17160,
+            17280,
+            17400,
+            17520,
+            17640,
+            17760,
+            17880
+          ],
+          "gop_gaps": {
+            "120": 149
+          },
+          "maximum_gop_gap": 120
+        },
+        "audio": {
+          "stream": {
+            "codec_name": "aac",
+            "sample_rate": "48000",
+            "channels": 2,
+            "channel_layout": "stereo"
+          },
+          "packets": 14064,
+          "payload_bytes": 7260857,
+          "packet_hashes_sha256": "f97d4e07f9320cf73a44dff03152d7edc262020aa26a3b7892ecd3dd36ec5f93"
+        },
+        "audio_packets_identical": true,
+        "pcm_fallback": null,
+        "bytes": 384063869,
+        "sha256": "e4afff2b41a7ce12e562abc65fbac71e70b2760cc70a5c39134351b650c73d6f",
+        "samples": [
+          {
+            "time": 2.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-2-measured/frame-0.ppm",
+            "sha256": "059acb2d46c984384127dcb957cbe2b3b24238ff39045f6dc5a65a5fb1714581",
+            "source_mae": 7.630934606481482,
+            "reference_mae": 1.3378327546296296,
+            "components": {
+              "text": {
+                "pixels": 27040,
+                "source_to_reference_mae": 57.153944773175546,
+                "output_to_reference_mae": 7.784134615384615,
+                "output_from_source_mae": 55.67585059171598,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 1949,
+                "source_to_reference_mae": 63.82093381221139,
+                "output_to_reference_mae": 9.49615187275526,
+                "output_from_source_mae": 61.644433042585945,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 30.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-2-measured/frame-1.ppm",
+            "sha256": "023040fa7a822a1a68bb91809534e44e210f19f1db7c689bf3da054dbae7aade",
+            "source_mae": 58.94754050925926,
+            "reference_mae": 8.984343171296297,
+            "components": {
+              "text": {
+                "pixels": 184669,
+                "source_to_reference_mae": 69.98630342215893,
+                "output_to_reference_mae": 9.800300357215702,
+                "output_from_source_mae": 68.37470465174627,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8029,
+                "source_to_reference_mae": 77.65363058911446,
+                "output_to_reference_mae": 10.347407315149251,
+                "output_from_source_mae": 75.97944949557852,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 60.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-2-measured/frame-2.ppm",
+            "sha256": "de6b44c4e4b0b3266fa668016179c551ae54978ce323b7bee4462276baa8ee1d",
+            "source_mae": 53.19050925925926,
+            "reference_mae": 9.22637008101852,
+            "components": {
+              "text": {
+                "pixels": 182947,
+                "source_to_reference_mae": 64.45701214012801,
+                "output_to_reference_mae": 9.976415756111516,
+                "output_from_source_mae": 62.439130822952364,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8032,
+                "source_to_reference_mae": 59.69870517928287,
+                "output_to_reference_mae": 10.718417994687915,
+                "output_from_source_mae": 57.69011454183267,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 120.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-2-measured/frame-3.ppm",
+            "sha256": "33b0504662ca0c9a9787b35334189beb8398767dae38ec1f224b26fdeaa656e1",
+            "source_mae": 53.94490885416667,
+            "reference_mae": 8.725804398148147,
+            "components": {
+              "text": {
+                "pixels": 184640,
+                "source_to_reference_mae": 63.397519497400346,
+                "output_to_reference_mae": 9.54174610051993,
+                "output_from_source_mae": 62.4217865395725,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8024,
+                "source_to_reference_mae": 65.61993187105351,
+                "output_to_reference_mae": 10.140702891326022,
+                "output_from_source_mae": 64.59920239282154,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 180.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-2-measured/frame-4.ppm",
+            "sha256": "dcddd7ae450d7bda7cf3b264bda09dbc3e1ef0e7732cf47b828c5f0a29079d4b",
+            "source_mae": 57.71251880787037,
+            "reference_mae": 8.709877025462964,
+            "components": {
+              "text": {
+                "pixels": 184351,
+                "source_to_reference_mae": 69.38995539306359,
+                "output_to_reference_mae": 9.562841174353995,
+                "output_from_source_mae": 67.52827486696573,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8029,
+                "source_to_reference_mae": 67.59455307842404,
+                "output_to_reference_mae": 10.296591522397973,
+                "output_from_source_mae": 66.07547639805705,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 240.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-2-measured/frame-5.ppm",
+            "sha256": "5060e8320b15787e5f233548f6bee3b2d9a03d30ccdab365488a38e9c0d69283",
+            "source_mae": 74.56474681712963,
+            "reference_mae": 8.622235243055556,
+            "components": {
+              "text": {
+                "pixels": 183967,
+                "source_to_reference_mae": 91.17695202581622,
+                "output_to_reference_mae": 9.602117046354328,
+                "output_from_source_mae": 88.53418819679617,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8025,
+                "source_to_reference_mae": 89.04203530633437,
+                "output_to_reference_mae": 10.391692627206647,
+                "output_from_source_mae": 86.94026998961579,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 298.0,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-2-measured/frame-6.ppm",
+            "sha256": "8b2242f626fad137099445f30c14c08a2b24a8779dce5dd9eba45c4c984fb289",
+            "source_mae": 77.29562789351851,
+            "reference_mae": 9.031157407407408,
+            "components": {
+              "text": {
+                "pixels": 185526,
+                "source_to_reference_mae": 93.73568843899687,
+                "output_to_reference_mae": 9.939668833478866,
+                "output_from_source_mae": 90.88847025933472,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 8036,
+                "source_to_reference_mae": 95.9785963165754,
+                "output_to_reference_mae": 10.662518666002986,
+                "output_from_source_mae": 93.74083291853327,
+                "closer_than_missing_overlay": true
+              }
+            }
+          },
+          {
+            "time": 299.9,
+            "path": "/private/tmp/bsr-stage-profile/macos/verify-pair-2-measured/frame-7.ppm",
+            "sha256": "3d269228bff459ee0c02873a37f184973dafd811f7d9c402c11167b8b2aae0ec",
+            "source_mae": 77.82275752314816,
+            "reference_mae": 9.784532696759259,
+            "components": {
+              "text": {
+                "pixels": 185491,
+                "source_to_reference_mae": 93.56512355496133,
+                "output_to_reference_mae": 10.366831813942456,
+                "output_from_source_mae": 91.31217687111504,
+                "closer_than_missing_overlay": true
+              },
+              "image": {
+                "pixels": 7983,
+                "source_to_reference_mae": 90.50682700739071,
+                "output_to_reference_mae": 10.820952858156916,
+                "output_from_source_mae": 88.57050398764041,
+                "closer_than_missing_overlay": true
+              }
+            }
+          }
+        ]
+      },
+      "output_sha256": "e4afff2b41a7ce12e562abc65fbac71e70b2760cc70a5c39134351b650c73d6f"
+    }
+  ],
+  "metadata": {
+    "revision": "ca699326d5658e6881ecee9ad87bdc11062ccb06",
+    "platform": "macOS-27.0.1-arm64-arm-64bit",
+    "pairs": 3,
+    "started_at": "2026-10-31T04:41:09.951212+00:00",
+    "removed_environment_names": [
+      "CODEX_PERMISSION_PROFILE",
+      "RUST_LOG"
+    ],
+    "binary_sha256": "b8a6b0888057bd3d695fa2684fb77c906fb6a89286842a584ff03926c4e24fbb",
+    "method_sha256": {
+      "stages.py": "7632eb53c9073a93acd3c1fcf79c8119faf630edbbd83ccfccf3668710741681",
+      "run.py": "8486a410a4e058b02968adc75554148044985f78adc8111a0405c9adfc5caea1",
+      "verify.py": "b20eefe1e74d3bbd189c64e7a131051d63f89811c78ccdb8330b9eb14e6ef613"
+    },
+    "timing": "External process wall; validation excluded. Same binary, alternating profiling off/on.",
+    "span_semantics": "Worker API wall including blocking; exclusive spans partition worker wall.",
+    "observation_semantics": "Overlapping supplemental intervals; only metal_blit_gpu is a device timestamp.",
+    "unavailable_device_timings": [
+      "Skia Vulkan",
+      "libplacebo",
+      "NV12 upload",
+      "hardware encode"
+    ]
+  },
+  "references": {
+    "full": {
+      "source": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/source-300s.mp4",
+      "source_sha256": "e99d957cabd2d7346b50c29d6ca50df6ae23fffca9fcff63ee27c7bb77407580",
+      "video": {
+        "frames": 18000,
+        "first_pts": 0.0,
+        "last_pts": 299.983333,
+        "pts_grid_max_error": 3.333333467026023e-07,
+        "pts_sha256": "92357726c215888ce836de8068764b75bfdad79b10d07462564ae10c196d203d",
+        "stream": {
+          "codec_name": "h264",
+          "profile": "High",
+          "width": 1920,
+          "height": 1080,
+          "has_b_frames": 2,
+          "pix_fmt": "yuv420p",
+          "avg_frame_rate": "60/1",
+          "time_base": "1/15360",
+          "bit_rate": "4979317",
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0,
+            "multilayer": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "GPAC ISO Video Handler",
+            "encoder": "Lavc63.1.102 libx264"
+          }
+        },
+        "format": {
+          "duration": "300.000000",
+          "size": "194461081",
+          "bit_rate": "5185628",
+          "tags": {
+            "major_brand": "isom",
+            "minor_version": "512",
+            "compatible_brands": "isomiso2avc1mp41",
+            "title": "Big Buck Bunny, Sunflower version",
+            "artist": "Blender Foundation 2008, Janus Bager Kristensen 2013",
+            "composer": "Jan Morgenstern;Sacha Goedegebure",
+            "encoder": "Lavf63.1.102",
+            "comment": "Creative Commons Attribution 3.0 - http://bbb3d.renderfarming.net",
+            "genre": "Animation"
+          }
+        },
+        "picture_types": {
+          "I": 190,
+          "B": 12706,
+          "P": 5104
+        },
+        "keyframes": 184,
+        "keyframe_indices": [
+          0,
+          28,
+          148,
+          268,
+          304,
+          424,
+          491,
+          611,
+          731,
+          828,
+          941,
+          1061,
+          1181,
+          1196,
+          1316,
+          1436,
+          1461,
+          1581,
+          1701,
+          1821,
+          1941,
+          2048,
+          2148,
+          2268,
+          2388,
+          2508,
+          2628,
+          2648,
+          2768,
+          2888,
+          3008,
+          3128,
+          3248,
+          3368,
+          3423,
+          3543,
+          3663,
+          3741,
+          3861,
+          3916,
+          4036,
+          4071,
+          4191,
+          4276,
+          4396,
+          4516,
+          4636,
+          4756,
+          4876,
+          4996,
+          5116,
+          5236,
+          5356,
+          5446,
+          5566,
+          5609,
+          5729,
+          5849,
+          5969,
+          6024,
+          6144,
+          6264,
+          6314,
+          6402,
+          6462,
+          6582,
+          6637,
+          6744,
+          6837,
+          6957,
+          7077,
+          7197,
+          7231,
+          7328,
+          7448,
+          7493,
+          7613,
+          7733,
+          7821,
+          7941,
+          8024,
+          8144,
+          8194,
+          8314,
+          8344,
+          8407,
+          8421,
+          8479,
+          8599,
+          8654,
+          8774,
+          8894,
+          8914,
+          9019,
+          9112,
+          9196,
+          9316,
+          9361,
+          9481,
+          9601,
+          9721,
+          9841,
+          9894,
+          9931,
+          10051,
+          10091,
+          10211,
+          10239,
+          10359,
+          10459,
+          10579,
+          10611,
+          10731,
+          10851,
+          10971,
+          11091,
+          11186,
+          11274,
+          11394,
+          11514,
+          11634,
+          11709,
+          11784,
+          11884,
+          11984,
+          12084,
+          12184,
+          12234,
+          12334,
+          12434,
+          12534,
+          12634,
+          12754,
+          12874,
+          12994,
+          13114,
+          13221,
+          13339,
+          13446,
+          13547,
+          13667,
+          13746,
+          13866,
+          13986,
+          14106,
+          14196,
+          14316,
+          14396,
+          14490,
+          14610,
+          14676,
+          14796,
+          14916,
+          14975,
+          15095,
+          15164,
+          15284,
+          15404,
+          15524,
+          15644,
+          15696,
+          15816,
+          15936,
+          15994,
+          16086,
+          16206,
+          16326,
+          16446,
+          16566,
+          16686,
+          16724,
+          16844,
+          16876,
+          16888,
+          17008,
+          17049,
+          17169,
+          17289,
+          17409,
+          17529,
+          17649,
+          17769,
+          17889,
+          17995
+        ],
+        "gop_gaps": {
+          "12": 1,
+          "14": 1,
+          "15": 1,
+          "20": 2,
+          "25": 1,
+          "28": 2,
+          "30": 1,
+          "32": 2,
+          "34": 1,
+          "35": 1,
+          "36": 1,
+          "37": 1,
+          "38": 1,
+          "40": 1,
+          "41": 1,
+          "43": 1,
+          "45": 2,
+          "50": 3,
+          "52": 1,
+          "53": 1,
+          "55": 5,
+          "58": 2,
+          "59": 1,
+          "60": 1,
+          "63": 1,
+          "66": 1,
+          "67": 1,
+          "69": 1,
+          "75": 2,
+          "78": 1,
+          "79": 1,
+          "80": 1,
+          "83": 1,
+          "84": 1,
+          "85": 1,
+          "88": 3,
+          "90": 2,
+          "92": 1,
+          "93": 2,
+          "94": 1,
+          "95": 1,
+          "97": 2,
+          "100": 10,
+          "101": 1,
+          "105": 1,
+          "106": 1,
+          "107": 4,
+          "113": 1,
+          "118": 1,
+          "120": 105
+        },
+        "maximum_gop_gap": 120
+      },
+      "audio": {
+        "stream": {
+          "codec_name": "aac",
+          "sample_rate": "48000",
+          "channels": 2,
+          "channel_layout": "stereo"
+        },
+        "packets": 14064,
+        "payload_bytes": 7260857,
+        "packet_hashes_sha256": "f97d4e07f9320cf73a44dff03152d7edc262020aa26a3b7892ecd3dd36ec5f93"
+      },
+      "samples": [
+        {
+          "time": 2.0,
+          "source": "/private/tmp/bsr-stage-profile/macos/reference-full/source-0.ppm",
+          "expected": "/private/tmp/bsr-stage-profile/macos/reference-full/expected-0.ppm",
+          "mask": "/private/tmp/bsr-stage-profile/macos/reference-full/mask-0.json",
+          "overlay": "/private/tmp/bsr-stage-profile/macos/reference-full/overlay-0.png",
+          "renderer": {
+            "height": 1080,
+            "missingGlyphs": 0,
+            "mode": "render-reference",
+            "output": "/private/tmp/bsr-stage-profile/macos/reference-full/overlay-0.png",
+            "png_sha256": "119766e269466d67a1a83ece5db690a30730c24632073fd2170a2f33e2c2a867",
+            "render_time_seconds": 2.0,
+            "scenario": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/scenario.json",
+            "scenario_sha256": "c51f7f405fbe0b50d2165602c813ff5f11e4b5609919212e3682eaff214086f4",
+            "time_seconds": 2.0,
+            "width": 1920
+          }
+        },
+        {
+          "time": 30.0,
+          "source": "/private/tmp/bsr-stage-profile/macos/reference-full/source-1.ppm",
+          "expected": "/private/tmp/bsr-stage-profile/macos/reference-full/expected-1.ppm",
+          "mask": "/private/tmp/bsr-stage-profile/macos/reference-full/mask-1.json",
+          "overlay": "/private/tmp/bsr-stage-profile/macos/reference-full/overlay-1.png",
+          "renderer": {
+            "height": 1080,
+            "missingGlyphs": 0,
+            "mode": "render-reference",
+            "output": "/private/tmp/bsr-stage-profile/macos/reference-full/overlay-1.png",
+            "png_sha256": "3ca088eec6fc16682e2281d0512476d5aab9330c26ef12bdd277aa374c1d1bb4",
+            "render_time_seconds": 30.0,
+            "scenario": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/scenario.json",
+            "scenario_sha256": "c51f7f405fbe0b50d2165602c813ff5f11e4b5609919212e3682eaff214086f4",
+            "time_seconds": 30.0,
+            "width": 1920
+          }
+        },
+        {
+          "time": 60.0,
+          "source": "/private/tmp/bsr-stage-profile/macos/reference-full/source-2.ppm",
+          "expected": "/private/tmp/bsr-stage-profile/macos/reference-full/expected-2.ppm",
+          "mask": "/private/tmp/bsr-stage-profile/macos/reference-full/mask-2.json",
+          "overlay": "/private/tmp/bsr-stage-profile/macos/reference-full/overlay-2.png",
+          "renderer": {
+            "height": 1080,
+            "missingGlyphs": 0,
+            "mode": "render-reference",
+            "output": "/private/tmp/bsr-stage-profile/macos/reference-full/overlay-2.png",
+            "png_sha256": "00a509ee705185081179d6686844179447ff23e2504c7835c51c85e2060d3271",
+            "render_time_seconds": 60.0,
+            "scenario": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/scenario.json",
+            "scenario_sha256": "c51f7f405fbe0b50d2165602c813ff5f11e4b5609919212e3682eaff214086f4",
+            "time_seconds": 60.0,
+            "width": 1920
+          }
+        },
+        {
+          "time": 120.0,
+          "source": "/private/tmp/bsr-stage-profile/macos/reference-full/source-3.ppm",
+          "expected": "/private/tmp/bsr-stage-profile/macos/reference-full/expected-3.ppm",
+          "mask": "/private/tmp/bsr-stage-profile/macos/reference-full/mask-3.json",
+          "overlay": "/private/tmp/bsr-stage-profile/macos/reference-full/overlay-3.png",
+          "renderer": {
+            "height": 1080,
+            "missingGlyphs": 0,
+            "mode": "render-reference",
+            "output": "/private/tmp/bsr-stage-profile/macos/reference-full/overlay-3.png",
+            "png_sha256": "7a0e312f0c5686ee04d75612a1d463340720df144ae72c139d492cbbf720b26a",
+            "render_time_seconds": 120.0,
+            "scenario": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/scenario.json",
+            "scenario_sha256": "c51f7f405fbe0b50d2165602c813ff5f11e4b5609919212e3682eaff214086f4",
+            "time_seconds": 120.0,
+            "width": 1920
+          }
+        },
+        {
+          "time": 180.0,
+          "source": "/private/tmp/bsr-stage-profile/macos/reference-full/source-4.ppm",
+          "expected": "/private/tmp/bsr-stage-profile/macos/reference-full/expected-4.ppm",
+          "mask": "/private/tmp/bsr-stage-profile/macos/reference-full/mask-4.json",
+          "overlay": "/private/tmp/bsr-stage-profile/macos/reference-full/overlay-4.png",
+          "renderer": {
+            "height": 1080,
+            "missingGlyphs": 0,
+            "mode": "render-reference",
+            "output": "/private/tmp/bsr-stage-profile/macos/reference-full/overlay-4.png",
+            "png_sha256": "ca7f4688bccd21b27729ea0f0ac913f966eac625b6b147807cf832cf958ab019",
+            "render_time_seconds": 180.0,
+            "scenario": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/scenario.json",
+            "scenario_sha256": "c51f7f405fbe0b50d2165602c813ff5f11e4b5609919212e3682eaff214086f4",
+            "time_seconds": 180.0,
+            "width": 1920
+          }
+        },
+        {
+          "time": 240.0,
+          "source": "/private/tmp/bsr-stage-profile/macos/reference-full/source-5.ppm",
+          "expected": "/private/tmp/bsr-stage-profile/macos/reference-full/expected-5.ppm",
+          "mask": "/private/tmp/bsr-stage-profile/macos/reference-full/mask-5.json",
+          "overlay": "/private/tmp/bsr-stage-profile/macos/reference-full/overlay-5.png",
+          "renderer": {
+            "height": 1080,
+            "missingGlyphs": 0,
+            "mode": "render-reference",
+            "output": "/private/tmp/bsr-stage-profile/macos/reference-full/overlay-5.png",
+            "png_sha256": "a3d380fb6a7b18bae2653494f375a54659a906a60a775e13a5b03e96b1bd5ac8",
+            "render_time_seconds": 240.0,
+            "scenario": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/scenario.json",
+            "scenario_sha256": "c51f7f405fbe0b50d2165602c813ff5f11e4b5609919212e3682eaff214086f4",
+            "time_seconds": 240.0,
+            "width": 1920
+          }
+        },
+        {
+          "time": 298.0,
+          "source": "/private/tmp/bsr-stage-profile/macos/reference-full/source-6.ppm",
+          "expected": "/private/tmp/bsr-stage-profile/macos/reference-full/expected-6.ppm",
+          "mask": "/private/tmp/bsr-stage-profile/macos/reference-full/mask-6.json",
+          "overlay": "/private/tmp/bsr-stage-profile/macos/reference-full/overlay-6.png",
+          "renderer": {
+            "height": 1080,
+            "missingGlyphs": 0,
+            "mode": "render-reference",
+            "output": "/private/tmp/bsr-stage-profile/macos/reference-full/overlay-6.png",
+            "png_sha256": "a4b2b2f5c2693bc6b23df9004e6dde08c575658968922f527f1d5738846d8de2",
+            "render_time_seconds": 298.0,
+            "scenario": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/scenario.json",
+            "scenario_sha256": "c51f7f405fbe0b50d2165602c813ff5f11e4b5609919212e3682eaff214086f4",
+            "time_seconds": 298.0,
+            "width": 1920
+          }
+        },
+        {
+          "time": 299.9,
+          "source": "/private/tmp/bsr-stage-profile/macos/reference-full/source-7.ppm",
+          "expected": "/private/tmp/bsr-stage-profile/macos/reference-full/expected-7.ppm",
+          "mask": "/private/tmp/bsr-stage-profile/macos/reference-full/mask-7.json",
+          "overlay": "/private/tmp/bsr-stage-profile/macos/reference-full/overlay-7.png",
+          "renderer": {
+            "height": 1080,
+            "missingGlyphs": 0,
+            "mode": "render-reference",
+            "output": "/private/tmp/bsr-stage-profile/macos/reference-full/overlay-7.png",
+            "png_sha256": "0b05b31a775bd69e0cbff4ffaf7f0ce040d7d0d9e30a705e8cfcaf2bf9fe7472",
+            "render_time_seconds": 299.9,
+            "scenario": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/scenario.json",
+            "scenario_sha256": "c51f7f405fbe0b50d2165602c813ff5f11e4b5609919212e3682eaff214086f4",
+            "time_seconds": 299.9,
+            "width": 1920
+          }
+        }
+      ]
+    },
+    "warmup": {
+      "source": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/source-10s.mp4",
+      "source_sha256": "e7ec32f16beae7fcbd22727f03b244ff169d25176b54f159e59fae12e4f4e32e",
+      "video": {
+        "frames": 600,
+        "first_pts": 0.0,
+        "last_pts": 9.983333,
+        "pts_grid_max_error": 3.333333342681044e-07,
+        "pts_sha256": "cb7785bcab16f0361c3a45fcf4bbb2b8b44ea5e654588c7c34812ec0f2b62d07",
+        "stream": {
+          "codec_name": "h264",
+          "profile": "High",
+          "width": 1920,
+          "height": 1080,
+          "has_b_frames": 2,
+          "pix_fmt": "yuv420p",
+          "avg_frame_rate": "60/1",
+          "time_base": "1/15360",
+          "bit_rate": "2784492",
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0,
+            "multilayer": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "GPAC ISO Video Handler",
+            "encoder": "Lavc63.1.102 libx264"
+          }
+        },
+        "format": {
+          "duration": "10.000000",
+          "size": "3737990",
+          "bit_rate": "2990392",
+          "tags": {
+            "major_brand": "isom",
+            "minor_version": "512",
+            "compatible_brands": "isomiso2avc1mp41",
+            "title": "Big Buck Bunny, Sunflower version",
+            "artist": "Blender Foundation 2008, Janus Bager Kristensen 2013",
+            "composer": "Jan Morgenstern;Sacha Goedegebure",
+            "encoder": "Lavf63.1.102",
+            "comment": "Creative Commons Attribution 3.0 - http://bbb3d.renderfarming.net",
+            "genre": "Animation"
+          }
+        },
+        "picture_types": {
+          "I": 7,
+          "P": 201,
+          "B": 392
+        },
+        "keyframes": 7,
+        "keyframe_indices": [
+          0,
+          28,
+          148,
+          268,
+          304,
+          424,
+          491
+        ],
+        "gop_gaps": {
+          "28": 1,
+          "36": 1,
+          "67": 1,
+          "120": 3
+        },
+        "maximum_gop_gap": 120
+      },
+      "audio": {
+        "stream": {
+          "codec_name": "aac",
+          "sample_rate": "48000",
+          "channels": 2,
+          "channel_layout": "stereo"
+        },
+        "packets": 469,
+        "payload_bytes": 239767,
+        "packet_hashes_sha256": "a22b2a7ea448e908e74c71eeec665db005edeb974519da04d81e66cc8cfb453f"
+      },
+      "samples": [
+        {
+          "time": 2.0,
+          "source": "/private/tmp/bsr-stage-profile/macos/reference-warmup/source-0.ppm",
+          "expected": "/private/tmp/bsr-stage-profile/macos/reference-warmup/expected-0.ppm",
+          "mask": "/private/tmp/bsr-stage-profile/macos/reference-warmup/mask-0.json",
+          "overlay": "/private/tmp/bsr-stage-profile/macos/reference-warmup/overlay-0.png",
+          "renderer": {
+            "height": 1080,
+            "missingGlyphs": 0,
+            "mode": "render-reference",
+            "output": "/private/tmp/bsr-stage-profile/macos/reference-warmup/overlay-0.png",
+            "png_sha256": "119766e269466d67a1a83ece5db690a30730c24632073fd2170a2f33e2c2a867",
+            "render_time_seconds": 2.0,
+            "scenario": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/warmup.json",
+            "scenario_sha256": "53f090b3948b2171d7e8a4ae0e1bb138ea297641fb9c076bf3f3898fd8a5663c",
+            "time_seconds": 2.0,
+            "width": 1920
+          }
+        },
+        {
+          "time": 5.0,
+          "source": "/private/tmp/bsr-stage-profile/macos/reference-warmup/source-1.ppm",
+          "expected": "/private/tmp/bsr-stage-profile/macos/reference-warmup/expected-1.ppm",
+          "mask": "/private/tmp/bsr-stage-profile/macos/reference-warmup/mask-1.json",
+          "overlay": "/private/tmp/bsr-stage-profile/macos/reference-warmup/overlay-1.png",
+          "renderer": {
+            "height": 1080,
+            "missingGlyphs": 0,
+            "mode": "render-reference",
+            "output": "/private/tmp/bsr-stage-profile/macos/reference-warmup/overlay-1.png",
+            "png_sha256": "4961c46ae4ab5162309582c41f4b7969975d629ca89d0be938841e91929f8d96",
+            "render_time_seconds": 5.0,
+            "scenario": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/warmup.json",
+            "scenario_sha256": "53f090b3948b2171d7e8a4ae0e1bb138ea297641fb9c076bf3f3898fd8a5663c",
+            "time_seconds": 5.0,
+            "width": 1920
+          }
+        },
+        {
+          "time": 9.9,
+          "source": "/private/tmp/bsr-stage-profile/macos/reference-warmup/source-2.ppm",
+          "expected": "/private/tmp/bsr-stage-profile/macos/reference-warmup/expected-2.ppm",
+          "mask": "/private/tmp/bsr-stage-profile/macos/reference-warmup/mask-2.json",
+          "overlay": "/private/tmp/bsr-stage-profile/macos/reference-warmup/overlay-2.png",
+          "renderer": {
+            "height": 1080,
+            "missingGlyphs": 0,
+            "mode": "render-reference",
+            "output": "/private/tmp/bsr-stage-profile/macos/reference-warmup/overlay-2.png",
+            "png_sha256": "dc94df1cc67d1e956e54e798da1a039144413ee8397276e9bda3b729b8a6d4c7",
+            "render_time_seconds": 9.9,
+            "scenario": "/Users/xinreasuper/Desktop/Projects/bili-shadowreplay/scripts/export-comparison/assets/warmup.json",
+            "scenario_sha256": "53f090b3948b2171d7e8a4ae0e1bb138ea297641fb9c076bf3f3898fd8a5663c",
+            "time_seconds": 9.9,
+            "width": 1920
+          }
+        }
+      ]
+    }
+  },
+  "summary": {
+    "control": {
+      "wall_seconds": [
+        106.50993183301762,
+        115.89497008314356,
+        117.29127862490714
+      ],
+      "median_wall_seconds": 115.89497008314356
+    },
+    "measured": {
+      "wall_seconds": [
+        113.57086908398196,
+        120.01545850001276,
+        123.33661370794289
+      ],
+      "median_wall_seconds": 120.01545850001276
+    },
+    "observer_overhead_percent": 3.555364321603549
+  },
+  "finished_at": "2026-10-31T05:03:35.139750+00:00"
+}

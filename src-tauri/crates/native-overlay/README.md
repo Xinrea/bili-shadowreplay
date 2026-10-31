@@ -104,11 +104,7 @@ cargo fmt --manifest-path src-tauri/crates/native-overlay/Cargo.toml --check
 
 Tests cover parsing, cache eviction/redecode pixel stability, active indexing/backwards seeks, layout/collision semantics, actual color emoji pixels, all Unicode 16 fully-qualified emoji shaping, PNG/raw parity, allocating/reused-buffer parity and invalid buffer rejection for both formats, explicit non-gray BGRA channel order with both RGBA/BGRA surface storage, zero/partial/full alpha and straight/premultiplied rounding, translucent text/outline/shadow/image pixels, nonfatal missing glyphs, image containment/movement, path-and-rounded-size sprite sharing with exact cache counters, and opt-in profiling with PNG excluded from timings/frame counts. Assets with pinned upstream URLs, SHA-256 hashes and licenses are listed in `assets/README.md`.
 
-## Verified integration
-
-- macOS: application GUI/headless compilation, renderer tests and main application tests; real FFmpeg workflows include standalone SRT, text/image danmaku, delayed video clocks, project clips/audio, segment caching and generated subtitles crossing segment boundaries.
-- Windows x64: the independent prototype completed both 1080p60 videos and alpha/time checks; this production renderer crate compiled and passed 21 tests with Rust 1.89 / MSVC 14.42.34433. Whole Windows GUI installer/manual interaction is not covered by those results.
-- Linux: CI checks the Ubuntu 24.04 source/system-library configuration, including actual color pixels and full application linking. Manual desktop acceptance, long-video sustained memory, 4K and all hardware encoders are not covered by those checks.
+## Application integration tests
 
 Useful integration commands from the repository root:
 
@@ -120,8 +116,8 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features -
 
 The last command deliberately runs FFmpeg-dependent tests normally marked ignored;
 it requires matching linked FFmpeg libraries and the CLI test oracles. Windows
-GPU export tests require a Vulkan Video-capable device; see the application
-validation commands in `scripts/vulkan-video-poc/README.md`.
+GPU export tests require a Vulkan Video-capable device; macOS uses MoltenVK and
+VideoToolbox. See the [application GPU regression commands](../../../docs/development/native-overlay.md#共享-shader-与回归测试).
 
 The CPU export backend supplies premultiplied BGRA through a bounded native frame
 channel, composites in RGB, then converts to NV12 for hardware encoding (yuv420p

@@ -6,7 +6,7 @@
 
 上游 Windows 预编译包的 `skunicode_icu.lib` 与 V8（`deno_core` 依赖）都内置了 ICU 74。Skia 的 ICU 关闭了版本化重命名，而 `ulocimp_getParent` 等少数 ICU 内部符号在 V8 的 ICU 中同样没有版本后缀，两边定义同名符号。MSVC 链接时会报 `LNK2005 ulocimp_getParent already defined`，未报错的同名符号也可能让 Skia 的 ICU 调用到 V8 的实现。
 
-Vulkan 渲染还会从 `skia.lib` 拉入 `SkExecutor`，其中无异常 STL 的 `std::terminate()` 与 V8 的实现同名，完整应用会出现 `LNK2005`。准备脚本同样隔离这个符号的定义和引用，保留各库自己的实现。独立 Vulkan PoC 没有链接 V8，无法替代这项完整应用链接验证。
+Vulkan 渲染还会从 `skia.lib` 拉入 `SkExecutor`，其中无异常 STL 的 `std::terminate()` 与 V8 的实现同名，完整应用会出现 `LNK2005`。准备脚本同样隔离这个符号的定义和引用，保留各库自己的实现；更新依赖后须验证完整应用链接。
 
 `scripts/prepare-windows-skia.mjs` 下载同版本、同目标、同 feature 的官方压缩包并校验 SHA-256，用 `llvm-objcopy --redefine-sym` 把这些共有符号在 Skia 库中的定义和引用统一加上 `bsr_skia_` 前缀，再重新打包，最后输出 `SKIA_BINARIES_URL`。构建前在 **Windows 构建终端**中运行：
 
@@ -49,11 +49,7 @@ yarn tauri build
 
 默认的速度优先导出先用一个小样本实际渲染、编码和解码检查蓝色底图与半透明红色叠层，成功后自动选择 Vulkan；设备或编码器不支持时在启动前选择现有 CPU 合成路径。质量优先保留已有编码策略；明确不符合受支持 SDR 范围（BT.709 色域、BT.709/sRGB 传递曲线）的源在启动前选择 CPU 合成。执行中的错误不会静默重跑。CPU 与 Vulkan 分片使用不同缓存身份。Windows 与 macOS 默认包含 Vulkan 渲染后端；macOS 通过下述 VideoToolbox 适配器编码，Linux 保留已有路径。
 
-需要匹配的 FFmpeg 9 开发 SDK、Vulkan Video 编码器与驱动。FFmpeg 9.0.2 仍有已知的 Vulkan 编码器退出图片视图清理问题；源码回补及校验说明见 [`scripts/ffmpeg-sdk-patches`](../../scripts/ffmpeg-sdk-patches/README.md)。功能测试通过不等于旧 SDK 的 Vulkan validation 全量无错误。实际运行与验证记录见独立工具的 [README](../../scripts/vulkan-video-poc/README.md)。
-
-Windows 的 Skia GPU → FFmpeg Vulkan Video 独立验证入口位于仓库的 [`scripts/vulkan-video-poc`](https://github.com/Xinrea/bili-shadowreplay/blob/main/scripts/vulkan-video-poc/README.md)。它与应用共享 Vulkan 合成器，保留生成底图的独立性能基线，并提供 API 跟踪、输出视频与画面内容的独立校验。正式导出回归记录见 [Windows 验证回执](../../scripts/vulkan-video-poc/validation/windows-production-export-2026-10-30.json)。
-
-Windows 默认构建验证见 [2026-10-31 回执](../../scripts/vulkan-video-poc/validation/windows-default-export-2026-10-31.json)，包含普通 GUI 编译与实际链接、headless 导出回归，以及默认 HEVC/H.264 后端的自动选择断言，全程无需额外 GPU feature。
+需要匹配的 FFmpeg 9 开发 SDK、Vulkan Video 编码器与驱动。FFmpeg 9.0.2 有已知的 Vulkan 编码器退出图片视图清理问题；源码回补及校验说明见 [`scripts/ffmpeg-sdk-patches`](https://github.com/Xinrea/bili-shadowreplay/tree/main/scripts/ffmpeg-sdk-patches)。升级 SDK 后应执行原生 GPU 回归和 Vulkan validation，功能测试不能替代驱动层验证。
 
 ## macOS：MoltenVK 渲染与 VideoToolbox 编码
 
@@ -66,7 +62,7 @@ MediaPlan 解码/滤镜 → NV12 底图上传 → Skia Vulkan + Vulkan compute �
                                                 → IOSurface/CVPixelBuffer → VideoToolbox
 ```
 
-macOS 使用 `VK_EXT_metal_objects` 导出两个独立 GPU 纹理，复制到 FFmpeg VideoToolbox 帧池提供的 IOSurface。它不使用 Skia Metal 渲染后端，也不要求 Vulkan Video。桥接先等待 Vulkan 写入完成，再提交 Metal GPU blit；第一版等待 blit 完成后交给原 `MediaPlan` 编码器。没有 `readPixels`、`hwdownload` 或 CVPixelBuffer CPU 映射，但每帧仍有一次 GPU 内部复制及完成等待，并非严格的零拷贝。底图目前仍由 CPU 解码并上传一次。
+macOS 使用 `VK_EXT_metal_objects` 导出两个独立 GPU 纹理，复制到 FFmpeg VideoToolbox 帧池提供的 IOSurface。它不使用 Skia Metal 渲染后端，也不要求 Vulkan Video。桥接默认采用最多三帧的异步交接队列：检查 Vulkan 写入完成后提交 Metal GPU blit，复制完成的帧按顺序交给原 `MediaPlan` 编码器；队列满、收尾或取消时才阻塞推进。没有 `readPixels`、`hwdownload` 或 CVPixelBuffer CPU 映射，但每帧仍有一次 GPU 内部复制，并非严格的零拷贝。底图目前仍由 CPU 多线程解码并上传一次。
 
 开发依赖：
 
@@ -84,9 +80,27 @@ Skia 默认构建 `textlayout-vulkan`，无需新增 Cargo feature 开关。普�
 
 发布 hook 将 MoltenVK 复制为 `Contents/Frameworks/libvulkan.dylib`，统一重定位 SDK 内 Vulkan 动态依赖（完整 FFmpeg SDK 若包含 libplacebo，也会处理它的依赖；合成器不再调用该滤镜），并使用适合 FFmpeg `dlopen` 的 install-name。应用从包内绝对路径加载，所有 dylib 继续执行架构、最低系统版本与签名检查。安装后的应用无需 Vulkan SDK、ICD 文件或环境变量。`BSR_MOLTENVK_LIBRARY` 仅指定构建时的库；`BSR_VULKAN_LIBRARY` 是未打包验证工具的加载覆盖，必须指向绝对路径 `libvulkan.dylib`，可用于 Vulkan loader/API capture，打包应用优先使用自己的库。
 
-验证与已知 SDK 限制见 [跨平台 GPU 导出验证](../../scripts/vulkan-video-poc/MACOS_VIDEOTOOLBOX.md)。
+FFmpeg 9.0.2 在 MoltenVK 设备创建时存在 Vulkan 1.2 features 与独立 timeline semaphore features 重复声明的已知验证层诊断（`VUID-VkDeviceCreateInfo-pNext-02830`）。SDK 升级后需重新验证设备初始化与实际导出，不应屏蔽验证层来替代修复。
 
-最新的共享 compute shader 使用 BT.709 预乘透明度和 2×2 色度采样，源码与嵌入式 SPIR-V 一起维护，不需要运行时 GLSL 编译器。颜色、透明度、CPU 帧回读审计与五分钟 #459 对照见 [macOS compute 报告](../../scripts/export-comparison/REPORT-macos-compute.md)。上面的 Windows 回执是此前 libplacebo 实现的验证；新 compute 路径本轮只在 macOS 执行设备验证。
+## 共享 shader 与回归测试
+
+共享 compute shader 使用 BT.709 预乘透明度和 2×2 色度采样，源码与嵌入式 SPIR-V 位于 `src-tauri/crates/ffmpeg_utils/src/vulkan_video/shaders/`，不需要运行时 GLSL 编译器。修改 shader 时，用 `glslang` 和 `spirv-val` 重新编译、验证并检查提交产物：
+
+```sh
+scripts/build-vulkan-shader.sh --write
+scripts/build-vulkan-shader.sh --check
+```
+
+可通过 `GLSLANG` 和 `SPIRV_VAL` 指定工具路径。纯参数、颜色与所有权回归跟随普通测试；实际 GPU 测试显式执行，需要匹配的 FFmpeg SDK、驱动和运行库：
+
+```sh
+cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --features headless native_gpu_ -- --ignored --test-threads=1
+cargo test --locked --manifest-path src-tauri/Cargo.toml -p ffmpeg_utils --features vulkan-video vulkan_video:: -- --ignored --test-threads=1
+```
+
+测试覆盖颜色与透明度、BT.709/sRGB 转换、H.264/HEVC、短尾排空、帧时间戳、音频、取消及帧资源生命周期。输出校验使用独立参考；正式导出仍只调用 FFmpeg 库。
+
+共享 compute 支持 `iec61966-2-1`（sRGB）视频输入：在 GPU 内先将视频的 sRGB 传递曲线转换为 BT.709，再合成现有 Skia 预乘 RGBA 叠层，输出 BT.709 NV12。转换按实际 AVFrame 判断，支持拼接时切换传递曲线，不新增 CPU 帧回读。整场录播/弹幕压制和仅使用原生 Skia 叠层的项目可走此路径；带前置 CPU 图片/视频叠层或外部 libass 字幕的项目仍保留 BT.709 预检，避免对已经混合的颜色执行错误转换。
 
 ## Linux：Ubuntu 24.04 起
 
@@ -136,5 +150,3 @@ AppImage 也受到构建系统 ABI 和系统运行库的限制，不代表兼容
 Docker 的构建阶段与运行阶段应保持在同一 **Debian trixie** 基线上，分别安装对应的开发包和运行库。不要只升级 builder 后继续使用旧版 Debian runtime，也不要把 Ubuntu 构建出的二进制直接复制到 Debian 镜像中。容器使用自身的用户态运行库，不要求宿主机安装上述 Ubuntu 桌面依赖；使用方式见 [Docker 部署](../getting-started/installation/docker.md)。
 
 发布前仍需在 Linux CI 或对应系统上完成实际源码编译、原生渲染测试和安装包冒烟测试，并检查二进制的动态依赖（例如 `ldd`）是否都能在目标系统解析。仅检查 workflow、配置或文档不能替代这些验证。
-
-共享 compute 已支持 `iec61966-2-1`（sRGB）视频输入：在 GPU 内先将视频的 sRGB 传递曲线转换为 BT.709，再合成现有 Skia 预乘 RGBA 叠层，输出 BT.709 NV12。转换按实际 AVFrame 判断，支持拼接时切换传递曲线，不新增 CPU 帧回读。整场录播/弹幕压制和仅使用原生 Skia 叠层的项目可走此路径；带前置 CPU 图片/视频叠层或外部 libass 字幕的项目仍保留 BT.709 预检，避免对已经混合的颜色执行错误转换。验证与边界见 [sRGB 验证报告](../../scripts/vulkan-compute-validation/REPORT-macos-srgb.md)。

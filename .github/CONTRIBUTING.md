@@ -2,6 +2,15 @@
 
 ## Project Setup
 
+首次克隆请包含 Whisper 子模块：
+
+```bash
+git clone --recurse-submodules https://github.com/Xinrea/bili-shadowreplay.git
+cd bili-shadowreplay
+```
+
+已有 checkout 如未初始化子模块，先运行 `git submodule update --init --recursive`，再按平台准备基础编译工具。
+
 ### MacOS
 
 准备 Rust、Node/Yarn 和 Xcode Command Line Tools 后，在仓库目录运行：

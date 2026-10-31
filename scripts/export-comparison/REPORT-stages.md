@@ -2,6 +2,8 @@
 
 2026-10-31，源码 `ca699326d5658e6881ecee9ad87bdc11062ccb06`。结论：**优先验证解码并行，其次解除 macOS 的逐帧交接等待，再深入分析 libplacebo。** Metal 纹理包装／缓存清理和文字排版不是本轮的主要耗时项。
 
+后续已完成默认自动解码线程及两端 A/B 验证，见 [解码优化实测](REPORT-decoder.md)。本页保留优化前的数据；解码供给加快后，Windows 的主要阻塞已转向帧槽复用与编码消费等待。
+
 沿用生产 MediaPlan、Skia Vulkan、Windows Vulkan Video / macOS MoltenVK + VideoToolbox，没有修改解码线程、编码参数或同步策略。计时工具不增加 GPU 同步，不回读像素。
 
 ## 场景与方法

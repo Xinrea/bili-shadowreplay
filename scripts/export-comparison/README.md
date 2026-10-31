@@ -1,5 +1,9 @@
 # Five-minute production export comparison
 
+Latest macOS-only same-batch results, after automatic decoding and asynchronous
+VideoToolbox handoff: [current versus PR #459](REPORT-macos-pr459.md), using
+current media commit `5b8df157` and PR head `c73c7aaf`.
+
 Measured results and caveats: [shared GPU pipeline comparison](REPORT-shared-gpu.md).
 The [earlier CPU-on-macOS comparison](REPORT.md) is preserved as historical
 data, with its original source revisions and validation receipts.

@@ -87,3 +87,5 @@ macOS 总 CPU 时间增加约 3.6%，峰值 RSS 增加约 8.3 MiB，工作在更
 复现方法：[HANDOFF.md](HANDOFF.md)。计时口径：[STAGES.md](STAGES.md)。前一轮解码优化：[REPORT-decoder.md](REPORT-decoder.md)。
 
 原始回执：[macOS](validation/macos-handoff-5b8df157.json)、[Windows](validation/windows-handoff-5b8df157.json)；[源码哈希、硬件、SDK、校验及聚合](validation/handoff-source-5b8df157.json)。
+
+后续已单独完成 [macOS 当前实现与 #459 的同批复测](REPORT-macos-pr459.md)。该实验重新交替运行两种实现，取代使用不同批次数据估算当前与 #459 差距的做法；没有重测 Windows。

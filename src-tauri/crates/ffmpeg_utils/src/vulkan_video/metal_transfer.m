@@ -1,6 +1,11 @@
 #import <CoreVideo/CoreVideo.h>
 #import <Metal/Metal.h>
 #include <stdio.h>
+#include <time.h>
+
+static double bsr_profile_now(void) {
+    return (double)clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9;
+}
 
 // This bridge only copies between GPU textures. Pixel buffer base addresses
 // are never locked or mapped, including on failure.
@@ -35,7 +40,7 @@ void bsr_metal_transfer_destroy(void *context) {
 }
 
 int bsr_metal_transfer_copy(void *context, void *luma, void *chroma,
-                            void *pixel_buffer, char *error, size_t capacity) {
+                            void *pixel_buffer, char *error, size_t capacity, double *timings) {
     @autoreleasepool {
         BSRMetalTransfer *transfer = (__bridge BSRMetalTransfer *)context;
         CVPixelBufferRef pixel = (CVPixelBufferRef)pixel_buffer;
@@ -47,6 +52,8 @@ int bsr_metal_transfer_copy(void *context, void *luma, void *chroma,
             return -1;
         }
         int result = -1;
+        double started = timings ? bsr_profile_now() : 0;
+        double mark = started;
         id<MTLCommandBuffer> command = [transfer.queue commandBuffer];
         id<MTLBlitCommandEncoder> blit = [command blitCommandEncoder];
         if (!blit) {
@@ -63,9 +70,11 @@ int bsr_metal_transfer_copy(void *context, void *luma, void *chroma,
                 snprintf(error, capacity, "MoltenVK plane %zu has incompatible device/size/format", plane);
                 goto cleanup;
             }
+            double view_start = timings ? bsr_profile_now() : 0;
             CVReturn status = CVMetalTextureCacheCreateTextureFromImage(
                 NULL, transfer.cache, pixel, NULL, format, width, height, plane, &planes[plane]);
             id<MTLTexture> target = planes[plane] ? CVMetalTextureGetTexture(planes[plane]) : nil;
+            if (timings) timings[1] += bsr_profile_now() - view_start;
             if (status != kCVReturnSuccess || !target) {
                 snprintf(error, capacity, "Create IOSurface Metal plane %zu (%d)", plane, status);
                 goto cleanup;
@@ -77,19 +86,29 @@ int bsr_metal_transfer_copy(void *context, void *luma, void *chroma,
         }
         [blit endEncoding];
         blit = nil;
+        if (timings) { mark = bsr_profile_now(); timings[0] = mark - started; }
         [command commit];
+        if (timings) { double now = bsr_profile_now(); timings[2] = now - mark; mark = now; }
         // Completion wait only: no GPU pixels cross into CPU memory. Keep
         // source AVFrame and both CVMetalTextures alive until the copy ends.
         [command waitUntilCompleted];
+        if (timings) {
+            timings[3] = bsr_profile_now() - mark;
+            // Device timestamp interval, not host wait time. No extra wait added.
+            double begin = command.GPUStartTime, end = command.GPUEndTime;
+            if (begin > 0 && end >= begin) timings[5] = end - begin;
+        }
         if (command.status != MTLCommandBufferStatusCompleted) {
             snprintf(error, capacity, "Metal copy failed: %s", command.error.description.UTF8String);
             goto cleanup;
         }
         result = 0;
     cleanup:
+        if (timings) mark = bsr_profile_now();
         if (blit) [blit endEncoding];
         for (size_t plane = 0; plane < 2; ++plane) if (planes[plane]) CFRelease(planes[plane]);
         CVMetalTextureCacheFlush(transfer.cache, 0);
+        if (timings) timings[4] = bsr_profile_now() - mark;
         return result;
     }
 }

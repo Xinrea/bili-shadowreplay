@@ -16,6 +16,7 @@ mod image;
 mod media;
 mod metadata;
 mod output;
+pub mod profiling;
 mod video_frame;
 
 #[cfg(all(feature = "vulkan-video", not(bsr_ffmpeg_9_0)))]

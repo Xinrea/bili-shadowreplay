@@ -1,6 +1,7 @@
 //! Multi-input demand scheduler and shared complex filter graph. All native
 //! contexts and scratch leases live on one blocking worker; only packet/frame
 //! references cross the small bounded startup queues.
+use crate::profiling as perf;
 use super::{
     audio::AudioStage,
     audio_encoder::AudioEncoderStage,
@@ -54,8 +55,12 @@ pub(super) async fn run(
             .collect(),
     );
     let mut completed = run_media(move |cancelled| {
-        validate(&plan, &sources)?;
-        Job::new(plan, sources, progress, cancelled)?.run()
+        let _session = sources.profiler.as_ref().map(|profile| profile.start());
+        crate::profiling::measure("worker", || {
+            validate(&plan, &sources)?;
+            let job = crate::profiling::measure("setup", || Job::new(plan, sources, progress, cancelled))?;
+            job.run()
+        })
     })
     .await?;
     // Every encoder/AVIO is closed before publishing any output. Publication
@@ -578,8 +583,7 @@ impl Output {
         }
         self.last[stream] = packet.dts();
         progress.packet(&packet, base);
-        packet
-            .write_interleaved(&mut self.native.output)
+        perf::measure("mux_write", || packet.write_interleaved(&mut self.native.output))
             .map_err(|e| util::error("写入多输入媒体包失败", e))
     }
 }
@@ -1310,7 +1314,7 @@ impl Job {
             return Ok(false);
         }
         let mut packet = Packet::empty();
-        match packet.read(&mut file.context) {
+        match perf::measure("demux_read", || packet.read(&mut file.context)) {
             Ok(()) => (),
             Err(ffmpeg::Error::Eof) => {
                 file.eof = true;
@@ -1522,13 +1526,13 @@ impl Job {
                     Mode::Audio(_) => DecodedFrame::Audio(frame::Audio::empty()),
                     _ => return Err("共享图输出路由类型不匹配".into()),
                 };
-                let result = unsafe {
+                let result = perf::measure("cpu_filter", || unsafe {
                     ffi::av_buffersink_get_frame_flags(
                         sink.as_mut_ptr(),
                         frame.as_mut_ptr(),
                         ffi::AV_BUFFERSINK_FLAG_NO_REQUEST,
                     )
-                };
+                });
                 if result < 0 {
                     let error = ffmpeg::Error::from(result);
                     if error == ffmpeg::Error::Eof {
@@ -1637,13 +1641,13 @@ impl Job {
                 .graph
                 .get(&graph.sources[index])
                 .ok_or("共享图输入不存在")?;
-            let result = unsafe {
+            let result = perf::measure("cpu_filter", || unsafe {
                 ffi::av_buffersrc_add_frame_flags(
                     source.as_mut_ptr(),
                     frame.as_mut_ptr(),
                     ffi::AV_BUFFERSRC_FLAG_KEEP_REF as i32,
                 )
-            };
+            });
             if result < 0 && result != ffi::AVERROR_EOF {
                 return Err(util::error(
                     "提交共享图输入失败",
@@ -1668,10 +1672,11 @@ impl Job {
         Ok(false)
     }
     fn run(mut self) -> Result<Completed, String> {
-        self.headers()?;
-        if self.plan.filter_graph.is_some() {
-            self.initialize_graph()?;
-        }
+        perf::measure("initialize_graph", || {
+            self.headers()?;
+            if self.plan.filter_graph.is_some() { self.initialize_graph()?; }
+            Ok::<_, String>(())
+        })?;
         let mut round_robin = 0usize;
         loop {
             util::check(&self.cancelled)?;
@@ -1682,11 +1687,11 @@ impl Job {
             if self.graph.is_some() {
                 self.pull_graph()?;
                 if !self.graph.as_ref().unwrap().finished.iter().all(|v| *v) {
-                    let status = unsafe {
+                    let status = perf::measure("cpu_filter", || unsafe {
                         ffi::avfilter_graph_request_oldest(
                             self.graph.as_mut().unwrap().graph.as_mut_ptr(),
                         )
-                    };
+                    });
                     if status >= 0 {
                         continue;
                     }
@@ -1760,6 +1765,7 @@ impl Job {
         }
         self.headers()?;
         self.progress.emit(MediaStage::Finalizing, true);
+        let finalizing = perf::span("mux_finalize");
         for output in &mut self.outputs {
             util::check(&self.cancelled)?;
             if !output.header {
@@ -1772,6 +1778,7 @@ impl Job {
                 .map_err(|e| util::error("写入媒体文件尾失败", e))?;
             output.native.close()?;
         }
+        drop(finalizing);
         util::check(&self.cancelled)?;
         let mut video_frames = 0;
         let mut audio_samples = 0;

@@ -1,4 +1,5 @@
 //! Shared filtered-video encoder and FPS conversion, independent of demuxers.
+use crate::profiling as perf;
 use super::{
     util::{self, Device, Limits},
     video_clock::FrameSync,
@@ -370,14 +371,11 @@ impl VideoEncoderStage {
             (*frame.as_mut_ptr()).quality =
                 (*self.encoder.as_ref().unwrap().as_ptr()).global_quality;
         }
-        match self.encoder.as_mut().unwrap().send_frame(frame) {
+        match perf::measure("encode_send", || self.encoder.as_mut().unwrap().send_frame(frame)) {
             Ok(()) => (),
             Err(e) if util::again(e) => {
                 self.drain(packets)?;
-                self.encoder
-                    .as_mut()
-                    .unwrap()
-                    .send_frame(frame)
+                perf::measure("encode_send", || self.encoder.as_mut().unwrap().send_frame(frame))
                     .map_err(|e| util::error("提交视频编码帧失败", e))?;
             }
             Err(e) => return Err(util::error("提交视频编码帧失败", e)),
@@ -389,7 +387,7 @@ impl VideoEncoderStage {
         loop {
             util::check(&self.cancelled)?;
             let mut packet = Packet::empty();
-            match self.encoder.as_mut().unwrap().receive_packet(&mut packet) {
+            match perf::measure("encode_receive", || self.encoder.as_mut().unwrap().receive_packet(&mut packet)) {
                 Ok(()) => packets(packet, self.encoder_base())?,
                 Err(ffmpeg::Error::Eof) => return Ok(true),
                 Err(e) if util::again(e) => return Ok(false),
@@ -418,14 +416,11 @@ impl VideoEncoderStage {
                 return Err("视频帧处理器结束后仍有未输出帧".into());
             }
         }
-        match self.encoder.as_mut().unwrap().send_eof() {
+        match perf::measure("encode_eof", || self.encoder.as_mut().unwrap().send_eof()) {
             Ok(()) | Err(ffmpeg::Error::Eof) => (),
             Err(e) if util::again(e) => {
                 self.drain(output)?;
-                self.encoder
-                    .as_mut()
-                    .unwrap()
-                    .send_eof()
+                perf::measure("encode_eof", || self.encoder.as_mut().unwrap().send_eof())
                     .map_err(|e| util::error("结束视频编码失败", e))?;
             }
             Err(e) => return Err(util::error("结束视频编码失败", e)),

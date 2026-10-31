@@ -177,6 +177,8 @@ impl fmt::Debug for MediaResourceLease {
 }
 #[derive(Default)]
 pub struct MediaBindings {
+    /// Optional diagnostic collector for the complex graph worker.
+    pub profiler: Option<crate::profiling::MediaProfiler>,
     pub raw_video: Vec<(usize, RawVideoInput)>,
     /// Original plan route index. Factories cross into the media worker; their
     /// thread-affine processors and GPU handles are created and dropped there.

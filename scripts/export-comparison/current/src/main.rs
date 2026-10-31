@@ -156,7 +156,12 @@ fn overlay_media_plan(
     }
 }
 
-async fn run(scenario_path: &Path, output: &Path, require_gpu: bool) -> Result<Value, String> {
+async fn run(
+    scenario_path: &Path,
+    output: &Path,
+    require_gpu: bool,
+    measure_stages: bool,
+) -> Result<Value, String> {
     let wall = Instant::now();
     let scenario_path = scenario_path.canonicalize().map_err(|e| e.to_string())?;
     let root = scenario_path.parent().ok_or("Scenario has no parent")?;
@@ -205,22 +210,37 @@ async fn run(scenario_path: &Path, output: &Path, require_gpu: bool) -> Result<V
     eprintln!("current_export_profile={profile}");
     let media = overlay_media_plan(source.clone(), output.clone(), graph.clone(), "outv", video);
     let started = Instant::now();
-    let result = ffmpeg::native_overlay::run_overlay_plan(
-        media,
-        ffmpeg::native_overlay::OverlaySpec {
-            input,
-            width: 1920,
-            height: 1080,
-            fps,
-            start: number(&scenario, "start")?,
-            duration,
-        },
-        1,
-        ffmpeg::runner::ProgressMode::None,
-        "Full export comparison",
-        None::<&stubs::Silent>,
-    )
-    .await?;
+    let profiler = measure_stages.then(ffmpeg_utils::profiling::MediaProfiler::default);
+    let spec = ffmpeg::native_overlay::OverlaySpec {
+        input,
+        width: 1920,
+        height: 1080,
+        fps,
+        start: number(&scenario, "start")?,
+        duration,
+    };
+    let result = if let Some(profiler) = &profiler {
+        if !pipeline.uses_gpu() {
+            return Err("Stage profiling requires the GPU graph".into());
+        }
+        ffmpeg::native_gpu::run_overlay_plan_measured(
+            media,
+            spec,
+            profiler.clone(),
+            None::<&stubs::Silent>,
+        )
+        .await?
+    } else {
+        ffmpeg::native_overlay::run_overlay_plan(
+            media,
+            spec,
+            1,
+            ffmpeg::runner::ProgressMode::None,
+            "Full export comparison",
+            None::<&stubs::Silent>,
+        )
+        .await?
+    };
     let export_ms = started.elapsed().as_secs_f64() * 1000.0;
     let expected_frames = (duration * fps).round() as u64;
     if result.video_frames != expected_frames {
@@ -236,6 +256,7 @@ async fn run(scenario_path: &Path, output: &Path, require_gpu: bool) -> Result<V
         "scenario_sha256": format!("{:x}", Sha256::digest(&bytes)),
         "source": source, "output": output, "platform": std::env::consts::OS,
         "linked_ffmpeg_version": ffmpeg_utils::linked_ffmpeg_version(),
+        "stage_profile": profiler.map(|p| p.report()),
         "profile": profile, "filter_graph": graph, "width": 1920, "height": 1080,
         "fps": fps, "duration_seconds": duration, "frames": result.video_frames,
         "audio_mode": "copy", "source_audio_codec": metadata.audio_codec,
@@ -301,10 +322,15 @@ async fn main() {
     let mut output = None;
     let mut reference = false;
     let mut require_gpu = false;
+    let mut measure_stages = false;
     let mut time = None;
     let mut args = std::env::args_os().skip(1);
     let result = (|| -> Result<(), String> {
         while let Some(arg) = args.next() {
+            if arg == "--measure-stages" {
+                measure_stages = true;
+                continue;
+            }
             if arg == "--require-gpu" {
                 require_gpu = true;
                 continue;
@@ -351,7 +377,7 @@ async fn main() {
     let result = match (result, scenario, output) {
         (Ok(()), Some(scenario), Some(output)) => match (reference, time) {
             (true, Some(time)) => render_reference(&scenario, time, &output),
-            (false, None) => run(&scenario, &output, require_gpu).await,
+            (false, None) => run(&scenario, &output, require_gpu, measure_stages).await,
             _ => Err("--render-reference and --time must be used together".into()),
         },
         (Err(error), _, _) => Err(error),

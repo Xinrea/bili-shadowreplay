@@ -1,5 +1,6 @@
 //! Demand-fed decoders for complex graphs. Only requested inputs are read;
 //! pending frames from other streams of the same demuxer have a fixed bound.
+use crate::profiling as perf;
 use super::{audio_encoder::layout_name, util, video_clock::VideoClock, MediaInput};
 use crate::audio::{AudioClock, AudioFormat};
 use ffmpeg_next::{self as ffmpeg, codec, ffi, filter, format, frame, media, Packet, Rational};
@@ -169,6 +170,12 @@ impl GraphDecoder {
         let base = stream.time_base();
         let parameters = stream.parameters();
         let decoder = util::open_decoder(parameters, base, source)?;
+        if perf::enabled() {
+            perf::annotate(&format!("decoder_{input}_{stream_index}", stream_index = stream.index()), || unsafe {
+                let context = &*decoder.as_ptr();
+                format!("thread_count={}, active_thread_type={}", context.thread_count, context.active_thread_type)
+            });
+        }
         let mut rate = Rational(0, 1);
         let mut rotation = None;
         let decoder = match stream.parameters().medium() {
@@ -266,7 +273,7 @@ impl GraphDecoder {
         packet: Option<&Packet>,
         cancelled: &AtomicBool,
     ) -> Result<(), String> {
-        let result = match &mut self.decoder {
+        let result = perf::measure("decode_send", || match &mut self.decoder {
             Decoder::Audio(d, _) => match packet {
                 Some(p) => d.send_packet(p),
                 None => d.send_eof(),
@@ -275,7 +282,7 @@ impl GraphDecoder {
                 Some(p) => d.send_packet(p),
                 None => d.send_eof(),
             },
-        };
+        });
         match result {
             Ok(()) => (),
             Err(ffmpeg::Error::Eof) if packet.is_none() => {
@@ -284,7 +291,7 @@ impl GraphDecoder {
             }
             Err(e) if util::again(e) => {
                 self.receive(cancelled)?;
-                let retry = match &mut self.decoder {
+                let retry = perf::measure("decode_send", || match &mut self.decoder {
                     Decoder::Audio(d, _) => match packet {
                         Some(p) => d.send_packet(p),
                         None => d.send_eof(),
@@ -293,7 +300,7 @@ impl GraphDecoder {
                         Some(p) => d.send_packet(p),
                         None => d.send_eof(),
                     },
-                };
+                });
                 retry.map_err(|e| util::error("提交复杂图解码输入失败", e))?;
             }
             Err(e) => return Err(util::error("提交复杂图解码输入失败", e)),
@@ -311,11 +318,11 @@ impl GraphDecoder {
                 Decoder::Audio(..) => DecodedFrame::Audio(frame::Audio::empty()),
                 Decoder::Video(..) => DecodedFrame::Video(frame::Video::empty()),
             };
-            let result = match (&mut self.decoder, &mut output) {
+            let result = perf::measure("decode_receive", || match (&mut self.decoder, &mut output) {
                 (Decoder::Audio(d, _), DecodedFrame::Audio(f)) => d.receive_frame(f),
                 (Decoder::Video(d, _), DecodedFrame::Video(f)) => d.receive_frame(f),
                 _ => unreachable!(),
-            };
+            });
             match result {
                 Ok(()) => (),
                 Err(ffmpeg::Error::Eof) => {

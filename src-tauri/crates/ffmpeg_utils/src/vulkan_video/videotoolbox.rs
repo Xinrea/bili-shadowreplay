@@ -4,6 +4,7 @@
 //! blit. Completion waits do not map/download pixels. Encoding and muxing stay
 //! in MediaPlan; this adapter owns neither a codec nor an output file.
 
+use crate::profiling as perf;
 use super::*;
 
 // VK_EXT_metal_objects ABI, deliberately independent of a Vulkan SDK header
@@ -45,6 +46,7 @@ unsafe extern "C" {
         pixel_buffer: *mut c_void,
         error: *mut std::ffi::c_char,
         capacity: usize,
+        timings: *mut f64,
     ) -> i32;
 }
 
@@ -160,6 +162,7 @@ impl VideoToolboxFrameBridge {
                 return Err("VideoToolbox bridge received a foreign GPU frame".into());
             }
             let vk = &*raw.data[0].cast::<ffi::AVVkFrame>();
+            let waiting = perf::span("vt_vulkan_wait");
             for plane in 0..2 {
                 if vk.img[plane] == 0 {
                     return Err("MoltenVK NV12 requires separate R8/RG8 images".into());
@@ -169,6 +172,8 @@ impl VideoToolboxFrameBridge {
                     .sync
                     .wait(vk.sem[plane], vk.sem_value[plane])?;
             }
+            drop(waiting);
+            let export = perf::span("vt_export_textures");
             let mut chroma = ExportTextureInfo {
                 s_type: 1_000_311_006,
                 next: ptr::null(),
@@ -193,6 +198,8 @@ impl VideoToolboxFrameBridge {
             if luma.texture.is_null() || chroma.texture.is_null() {
                 return Err("MoltenVK could not export both NV12 Metal planes".into());
             }
+            drop(export);
+            let allocate = perf::span("vt_allocate_iosurface");
             let mut error = [0 as std::ffi::c_char; 1024];
             if self.transfer.is_null() {
                 self.transfer =
@@ -216,15 +223,29 @@ impl VideoToolboxFrameBridge {
             if pixel_buffer.is_null() {
                 return Err("VideoToolbox frame has no CVPixelBuffer".into());
             }
-            if bsr_metal_transfer_copy(
+            drop(allocate);
+            let _copy = perf::span("vt_metal_copy");
+            let mut timings = [0.0; 6];
+            let measuring = perf::enabled();
+            let status = bsr_metal_transfer_copy(
                 self.transfer,
                 luma.texture,
                 chroma.texture,
                 pixel_buffer,
                 error.as_mut_ptr(),
                 error.len(),
-            ) != 0
-            {
+                if measuring { timings.as_mut_ptr() } else { ptr::null_mut() },
+            );
+            if measuring {
+                for (name, seconds) in ["metal_prepare_cpu", "metal_texture_views_cpu",
+                    "metal_commit_cpu", "metal_wait_cpu", "metal_cleanup_cpu", "metal_blit_gpu"]
+                    .into_iter().zip(timings) {
+                    if seconds.is_finite() && seconds > 0.0 {
+                        perf::observe(name, std::time::Duration::from_secs_f64(seconds));
+                    }
+                }
+            }
+            if status != 0 {
                 return Err(CStr::from_ptr(error.as_ptr())
                     .to_string_lossy()
                     .into_owned());

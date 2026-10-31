@@ -3,6 +3,7 @@
 //! The worker retains decoding, frame scheduling, audio, encoding and muxing.
 //! This adapter only supplies a GPU frame processor for one video route.
 
+use ffmpeg_utils::profiling as perf;
 use std::sync::{atomic::AtomicBool, Arc};
 
 use ffmpeg_utils::{
@@ -76,6 +77,25 @@ pub(super) async fn run_overlay_plan<R: ProgressReporterTrait>(
 ) -> Result<ffmpeg_utils::MediaJobResult, String> {
     let bindings = bind_overlay(&mut plan, spec)?;
     run_native_media_with_sources(plan, bindings, progress, context, reporter).await
+}
+
+/// Same production binding, with an explicit collector isolated from capability probes.
+pub(crate) async fn run_overlay_plan_measured<R: ProgressReporterTrait>(
+    mut plan: MediaPlan,
+    spec: OverlaySpec,
+    profiler: perf::MediaProfiler,
+    reporter: Option<&R>,
+) -> Result<ffmpeg_utils::MediaJobResult, String> {
+    let mut bindings = bind_overlay(&mut plan, spec)?;
+    bindings.profiler = Some(profiler);
+    run_native_media_with_sources(
+        plan,
+        bindings,
+        ProgressMode::None,
+        "Measured GPU export",
+        reporter,
+    )
+    .await
 }
 
 // An explicit per-job baseline keeps concurrent tests and capability probes
@@ -173,7 +193,7 @@ impl VulkanOverlayProcessor {
             )
         }?;
         renderer.set_async_submission(mode == VulkanSubmissionMode::Asynchronous);
-        renderer.set_profiling(log::log_enabled!(log::Level::Debug));
+        renderer.set_profiling(perf::enabled() || log::log_enabled!(log::Level::Debug));
         Ok(Self {
             renderer,
             encoder_frames,
@@ -194,7 +214,8 @@ impl VideoFrameProcessor for VulkanOverlayProcessor {
     fn process(&mut self, frame: VideoFrame) -> Result<Vec<VideoFrame>, String> {
         let pts = frame.pts().ok_or("GPU video frame has no timestamp")?;
         let time = self.timeline_start + pts as f64 * self.seconds_per_tick;
-        let lease = self.compositor.acquire_frame(pts)?;
+        let _frame = perf::span("process_frame");
+        let lease = perf::measure("acquire_frame", || self.compositor.acquire_frame(pts))?;
         let image = lease.image();
         let target = ExternalVulkanImage {
             image: image.image,
@@ -207,7 +228,34 @@ impl VideoFrameProcessor for VulkanOverlayProcessor {
             queue_family: image.queue_family,
             sharing_mode: image.sharing_mode,
         };
-        let state = unsafe { self.renderer.render_into(time, &target, [0, 0, 0, 0]) }?;
+        let before = perf::enabled().then(|| self.renderer.stats());
+        let state = perf::measure("skia_render", || unsafe {
+            self.renderer.render_into(time, &target, [0, 0, 0, 0])
+        })?;
+        if let Some(before) = before {
+            let after = self.renderer.stats();
+            for (name, elapsed) in [
+                ("skia_scene_cpu", after.composition - before.composition),
+                (
+                    "skia_flush_submit_cpu",
+                    after.submit_and_wait - before.submit_and_wait,
+                ),
+                (
+                    "skia_text_layout_cpu",
+                    after.scene.text_layout - before.scene.text_layout,
+                ),
+                (
+                    "skia_text_sprite_cpu",
+                    after.scene.text_raster - before.scene.text_raster,
+                ),
+                (
+                    "skia_image_prepare_cpu",
+                    after.scene.image_prepare - before.scene.image_prepare,
+                ),
+            ] {
+                perf::observe(name, elapsed);
+            }
+        }
         let frames = unsafe {
             self.compositor.submit_frame(
                 lease,
@@ -218,12 +266,16 @@ impl VideoFrameProcessor for VulkanOverlayProcessor {
                 Some(&frame),
             )
         }?;
-        self.encoder_frames.convert(frames)
+        perf::measure("encoder_frame_bridge", || {
+            self.encoder_frames.convert(frames)
+        })
     }
 
     fn flush(&mut self) -> Result<Vec<VideoFrame>, String> {
         let frames = self.compositor.flush()?;
-        self.encoder_frames.convert(frames)
+        perf::measure("encoder_frame_bridge", || {
+            self.encoder_frames.convert(frames)
+        })
     }
 }
 
@@ -234,6 +286,19 @@ impl Drop for VulkanOverlayProcessor {
         if let Err(error) = self.compositor.synchronize() {
             log::error!("Vulkan export synchronization during cleanup failed: {error}");
         }
+        perf::annotate("vulkan_submission", || {
+            format!("{:?}", self.compositor.submission_mode())
+        });
+        perf::annotate("compositor_counters", || {
+            let stats = self.compositor.stats();
+            format!(
+                "submitted={}, output={}, uploaded={}, in_flight_peak={}",
+                stats.submitted_frames,
+                stats.output_frames,
+                stats.uploaded_frames,
+                stats.in_flight_peak
+            )
+        });
         #[cfg(test)]
         eprintln!(
             "native_gpu_backend=vulkan mode={:?} renderer={:?} compositor={:?}",

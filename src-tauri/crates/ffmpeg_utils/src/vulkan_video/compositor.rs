@@ -2,6 +2,7 @@
 //! CPU-decoded NV12 is uploaded once, composed with Skia's premultiplied RGBA
 //! image on the shared Vulkan device, and returned as hardware NV12 AVFrames.
 
+use crate::profiling as perf;
 use super::*;
 use std::collections::{BTreeMap, VecDeque};
 
@@ -251,11 +252,12 @@ impl VulkanCompositor {
         let started = Instant::now();
         // Complete/unlock Skia's graphics submission before asking FFmpeg to
         // upload on the shared device; transfer_data takes queue locks itself.
-        let (overlay, wait) = complete_pool_frame(&self.pool, lease, state)?;
+        let (overlay, wait) = perf::measure("vulkan_publish", || complete_pool_frame(&self.pool, lease, state))?;
         self.stats.gpu_wait += wait;
         let mut retained_base = None;
         if let Some(base) = base {
             let upload = Instant::now();
+            let upload_span = perf::span("nv12_upload");
             let mut video = if base.format() == ffmpeg::format::Pixel::VULKAN {
                 reference_video_frame(base)?
             } else {
@@ -281,6 +283,7 @@ impl VulkanCompositor {
                 set_output_properties(&mut *video.as_mut_ptr(), self.options.rate(), pts, duration);
             }
             self.stats.upload += upload.elapsed();
+            drop(upload_span);
             self.feed("video_in", &video)?;
             retained_base = Some(video);
         }
@@ -337,6 +340,7 @@ impl VulkanCompositor {
     }
 
     fn retire_oldest(&mut self, reusing_slot: bool) -> Result<(), String> {
+        let _span = perf::span("frame_slot_wait");
         let pending = self
             .in_flight
             .front()
@@ -408,6 +412,7 @@ impl VulkanCompositor {
     }
 
     fn feed(&mut self, name: &str, frame: &frame::Video) -> Result<(), String> {
+        let _span = perf::span("compositor_feed");
         let mut source = self.graph.get(name).ok_or("Vulkan source missing")?;
         let result = unsafe {
             ffi::av_buffersrc_add_frame_flags(
@@ -433,7 +438,11 @@ impl VulkanCompositor {
         let mut frames = Vec::new();
         loop {
             let mut frame = frame::Video::empty();
-            match self.output_sink()?.sink().frame(&mut frame) {
+            let result = {
+                let mut sink = self.output_sink()?;
+                perf::measure("libplacebo_pull", || sink.sink().frame(&mut frame))
+            };
+            match result {
                 Ok(()) => {
                     if frame.format() != ffmpeg::format::Pixel::VULKAN {
                         return Err("Vulkan compositor unexpectedly downloaded a CPU frame".into());

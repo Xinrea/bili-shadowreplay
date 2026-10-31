@@ -6,7 +6,7 @@
 use std::sync::{atomic::AtomicBool, Arc};
 
 use ffmpeg_utils::{
-    vulkan_video::{VulkanCompositor, VulkanImageState, VulkanSubmissionMode, VulkanVideoOptions},
+    vulkan_video::{VulkanCompositor, VulkanImageState, VulkanRenderOptions, VulkanSubmissionMode},
     MediaBindings, MediaPlan, MediaResourceLease, StreamMode, VideoEncodeOptions, VideoFrame,
     VideoFrameInfo, VideoFrameProcessor,
 };
@@ -110,7 +110,7 @@ impl VulkanOverlayProcessor {
     fn new(
         info: VideoFrameInfo,
         spec: OverlaySpec,
-        options: VideoEncodeOptions,
+        _options: VideoEncodeOptions,
         resources: Vec<MediaResourceLease>,
         cancelled: Arc<AtomicBool>,
         mode: VulkanSubmissionMode,
@@ -129,15 +129,12 @@ impl VulkanOverlayProcessor {
             return Err("Invalid GPU video or overlay timeline".into());
         }
         let compositor = VulkanCompositor::new_with_mode(
-            VulkanVideoOptions {
+            VulkanRenderOptions {
                 width: info.width,
                 height: info.height,
                 fps_num: info.frame_rate.numerator() as u32,
                 fps_den: info.frame_rate.denominator() as u32,
-                encoder: options.encoder,
                 device_selector: "0".into(),
-                bit_rate: options.bit_rate.unwrap_or(8_000_000),
-                gop: options.gop.unwrap_or(120),
             },
             true,
             cancelled,

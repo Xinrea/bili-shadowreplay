@@ -39,7 +39,7 @@ pub struct VulkanCompositor {
     pool: Rc<FramePool>,
     base_pool: Option<Rc<FramePool>>,
     device: VulkanDevice,
-    options: VulkanVideoOptions,
+    options: VulkanRenderOptions,
     cancelled: Arc<AtomicBool>,
     stats: VulkanCompositorStats,
     images: BTreeSet<u64>,
@@ -64,7 +64,7 @@ impl Drop for VulkanCompositor {
 
 impl VulkanCompositor {
     pub fn new(
-        options: VulkanVideoOptions,
+        options: VulkanRenderOptions,
         composite_video: bool,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Self, String> {
@@ -77,7 +77,7 @@ impl VulkanCompositor {
     }
 
     pub fn new_with_mode(
-        options: VulkanVideoOptions,
+        options: VulkanRenderOptions,
         composite_video: bool,
         cancelled: Arc<AtomicBool>,
         mode: VulkanSubmissionMode,
@@ -106,7 +106,7 @@ impl VulkanCompositor {
             None
         };
         let mut graph = build_graph(&device, &pool, base_pool.as_deref(), &options)?;
-        prepare_nv12_encode_pool(&mut graph)?;
+        prepare_nv12_pool(&mut graph)?;
         let output_pool = unsafe {
             let mut sink = graph.get("gpu_out").ok_or("Vulkan sink missing")?;
             let frames = ffi::av_buffersink_get_hw_frames_ctx(sink.as_mut_ptr());
@@ -483,7 +483,7 @@ fn validate_pts(previous: Option<i64>, pts: i64, flushed: bool) -> Result<(), St
 
 fn validate_base(
     frame: &frame::Video,
-    options: &VulkanVideoOptions,
+    options: &VulkanRenderOptions,
     device: &VulkanDevice,
 ) -> Result<(), String> {
     if frame.width() != options.width || frame.height() != options.height {

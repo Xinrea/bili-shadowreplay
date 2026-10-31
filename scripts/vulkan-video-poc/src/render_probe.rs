@@ -3,7 +3,7 @@
 //! download pixels or establish visual correctness or encoder interoperability.
 mod scene;
 
-use ffmpeg_utils::vulkan_video::{VulkanCompositor, VulkanImageState, VulkanVideoOptions};
+use ffmpeg_utils::vulkan_video::{VulkanCompositor, VulkanImageState, VulkanRenderOptions};
 use native_overlay::{ExternalVulkanImage, NativeVulkanDevice, VulkanProcAddress, VulkanRenderer};
 use serde_json::json;
 use std::sync::{atomic::AtomicBool, Arc};
@@ -12,7 +12,7 @@ fn run() -> Result<(), String> {
     let assets = tempfile::tempdir().map_err(|error| error.to_string())?;
     let red = assets.path().join("red.png");
     std::fs::write(&red, include_bytes!("../assets/red.png")).map_err(|error| error.to_string())?;
-    let options = VulkanVideoOptions::default();
+    let options = VulkanRenderOptions::default();
     let frame_count = 60;
     let mut compositor =
         VulkanCompositor::new(options.clone(), false, Arc::new(AtomicBool::new(false)))?;

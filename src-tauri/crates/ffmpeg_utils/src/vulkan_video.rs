@@ -54,6 +54,53 @@ use tempfile::NamedTempFile;
 use crate::output::NativeOutput;
 
 #[derive(Clone, Debug)]
+pub struct VulkanRenderOptions {
+    pub width: u32,
+    pub height: u32,
+    pub fps_num: u32,
+    pub fps_den: u32,
+    pub device_selector: String,
+}
+
+impl Default for VulkanRenderOptions {
+    fn default() -> Self {
+        Self {
+            width: 1920,
+            height: 1080,
+            fps_num: 60,
+            fps_den: 1,
+            device_selector: "0".into(),
+        }
+    }
+}
+
+impl VulkanRenderOptions {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.width == 0
+            || self.height == 0
+            || self.width > 8192
+            || self.height > 8192
+            || !self.width.is_multiple_of(2)
+            || !self.height.is_multiple_of(2)
+            || self.fps_num == 0
+            || self.fps_den == 0
+            || self.fps_num > i32::MAX as u32
+            || self.fps_den > i32::MAX as u32
+            || u64::from(self.fps_num) > 240 * u64::from(self.fps_den)
+        {
+            return Err("Invalid Vulkan render size or frame rate".into());
+        }
+        CString::new(self.device_selector.as_str()).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    fn rate(&self) -> Rational {
+        Rational(self.fps_num as i32, self.fps_den as i32)
+    }
+}
+
+/// Encoding settings belong to the standalone Vulkan Video producer, not the
+/// shared renderer/compositor. Production MediaPlan owns its encoder settings.
+#[derive(Clone, Debug)]
 pub struct VulkanVideoOptions {
     pub width: u32,
     pub height: u32,
@@ -67,13 +114,14 @@ pub struct VulkanVideoOptions {
 
 impl Default for VulkanVideoOptions {
     fn default() -> Self {
+        let render = VulkanRenderOptions::default();
         Self {
-            width: 1920,
-            height: 1080,
-            fps_num: 60,
-            fps_den: 1,
+            width: render.width,
+            height: render.height,
+            fps_num: render.fps_num,
+            fps_den: render.fps_den,
+            device_selector: render.device_selector,
             encoder: "h264_vulkan".into(),
-            device_selector: "0".into(),
             bit_rate: 8_000_000,
             gop: 120,
         }
@@ -81,31 +129,29 @@ impl Default for VulkanVideoOptions {
 }
 
 impl VulkanVideoOptions {
+    pub fn render_options(&self) -> VulkanRenderOptions {
+        VulkanRenderOptions {
+            width: self.width,
+            height: self.height,
+            fps_num: self.fps_num,
+            fps_den: self.fps_den,
+            device_selector: self.device_selector.clone(),
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
-        if self.width == 0
-            || self.height == 0
-            || self.width > 8192
-            || self.height > 8192
-            || !self.width.is_multiple_of(2)
-            || !self.height.is_multiple_of(2)
-            || self.fps_num == 0
-            || self.fps_den == 0
-            || self.fps_num > i32::MAX as u32
-            || self.fps_den > i32::MAX as u32
-            || u64::from(self.fps_num) > 240 * u64::from(self.fps_den)
-            || self.bit_rate == 0
-            || self.bit_rate > i64::MAX as u64
-            || self.gop == 0
-            || self.gop > i32::MAX as u32
+        self.render_options().validate()?;
+        if self.bit_rate == 0 || self.bit_rate > i64::MAX as u64
+            || self.gop == 0 || self.gop > i32::MAX as u32
         {
-            return Err("Invalid Vulkan video size, rate, bitrate or GOP".into());
+            return Err("Invalid Vulkan video bitrate or GOP".into());
         }
         if !matches!(self.encoder.as_str(), "h264_vulkan" | "hevc_vulkan") {
             return Err("Vulkan PoC requires h264_vulkan or hevc_vulkan".into());
         }
-        CString::new(self.device_selector.as_str()).map_err(|e| e.to_string())?;
         Ok(())
     }
+
     fn rate(&self) -> Rational {
         Rational(self.fps_num as i32, self.fps_den as i32)
     }
@@ -297,7 +343,7 @@ struct FramePool {
     queue_locked: Cell<bool>,
 }
 impl FramePool {
-    fn new(device: VulkanDevice, options: &VulkanVideoOptions) -> Result<Rc<Self>, String> {
+    fn new(device: VulkanDevice, options: &VulkanRenderOptions) -> Result<Rc<Self>, String> {
         Self::new_format(
             device,
             options,
@@ -307,7 +353,7 @@ impl FramePool {
     }
     fn new_format(
         device: VulkanDevice,
-        options: &VulkanVideoOptions,
+        options: &VulkanRenderOptions,
         format: ffi::AVPixelFormat,
         usage: u32,
     ) -> Result<Rc<Self>, String> {
@@ -412,7 +458,7 @@ impl Drop for VulkanFrameLease {
 
 fn acquire_pool_frame(
     pool: &Rc<FramePool>,
-    options: &VulkanVideoOptions,
+    options: &VulkanRenderOptions,
     pts: i64,
 ) -> Result<VulkanFrameLease, String> {
     if pool.active_lease.get() {
@@ -563,6 +609,7 @@ pub struct VulkanVideoSession {
     pool: Rc<FramePool>,
     device: VulkanDevice,
     options: VulkanVideoOptions,
+    render: VulkanRenderOptions,
     cancelled: Arc<AtomicBool>,
     stats: VulkanVideoStats,
     images: BTreeSet<u64>,
@@ -588,9 +635,10 @@ impl VulkanVideoSession {
             return Err("Vulkan output cannot replace a directory".into());
         }
         let device = VulkanDevice::new(&options.device_selector)?;
-        let pool = FramePool::new(device.clone(), &options)?;
-        let mut graph = build_graph(&device, &pool, None, &options)?;
-        prepare_nv12_encode_pool(&mut graph)?;
+        let render = options.render_options();
+        let pool = FramePool::new(device.clone(), &render)?;
+        let mut graph = build_graph(&device, &pool, None, &render)?;
+        prepare_nv12_pool(&mut graph)?;
         let encoder = open_encoder(&mut graph, &device, &options)?;
         let parent = target
             .parent()
@@ -620,6 +668,7 @@ impl VulkanVideoSession {
             pool,
             device,
             options,
+            render,
             cancelled,
             stats: VulkanVideoStats::default(),
             images: BTreeSet::new(),
@@ -640,7 +689,7 @@ impl VulkanVideoSession {
         if pts != self.stats.submitted_frames as i64 {
             return Err("Vulkan frames must be supplied with consecutive frame-index PTS".into());
         }
-        let lease = acquire_pool_frame(&self.pool, &self.options, pts)?;
+        let lease = acquire_pool_frame(&self.pool, &self.render, pts)?;
         self.images.insert(lease.image.image);
         self.stats.unique_rgb_images = self.images.len();
         Ok(lease)
@@ -782,7 +831,7 @@ impl VulkanVideoSession {
 fn add_vulkan_source(
     graph: &mut filter::Graph,
     pool: &FramePool,
-    options: &VulkanVideoOptions,
+    options: &VulkanRenderOptions,
     name: &CStr,
     rgb: bool,
 ) -> Result<(), String> {
@@ -836,7 +885,7 @@ fn build_graph(
     device: &VulkanDevice,
     pool: &FramePool,
     base_pool: Option<&FramePool>,
-    options: &VulkanVideoOptions,
+    options: &VulkanRenderOptions,
 ) -> Result<filter::Graph, String> {
     let mut graph = filter::Graph::new();
     unsafe {
@@ -903,7 +952,7 @@ fn build_graph(
     Ok(graph)
 }
 
-fn prepare_nv12_encode_pool(graph: &mut filter::Graph) -> Result<(), String> {
+fn prepare_nv12_pool(graph: &mut filter::Graph) -> Result<(), String> {
     let mut sink = graph.get("gpu_out").unwrap();
     let frames = unsafe { ffi::av_buffersink_get_hw_frames_ctx(sink.as_mut_ptr()) };
     if frames.is_null() {
@@ -917,7 +966,7 @@ fn prepare_nv12_encode_pool(graph: &mut filter::Graph) -> Result<(), String> {
     }
     let vk = unsafe { &mut *pool.hwctx.cast::<ffi::AVVulkanFramesContext>() };
     if vk.format[0] != 1_000_156_003 || vk.format[1] != 0 {
-        return Err("Vulkan PoC requires one G8_B8R8_2PLANE_420_UNORM image per NV12 frame".into());
+        return Err("Vulkan compositor requires one G8_B8R8_2PLANE_420_UNORM image per NV12 frame".into());
     }
     if pool.initial_pool_size != 0 {
         return Err("Cannot configure a Vulkan conversion pool with preallocated frames".into());

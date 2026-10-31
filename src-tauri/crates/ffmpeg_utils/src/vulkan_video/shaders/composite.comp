@@ -1,0 +1,39 @@
+#version 450
+// One invocation owns one NV12 2x2 block. All RGB values are nonlinear BT.709
+// with premultiplied alpha. No full-frame RGB intermediate or CPU mapping.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D base_y;
+layout(binding = 1) uniform sampler2D base_uv;
+layout(binding = 2) uniform sampler2D overlay_rgba;
+layout(binding = 3) uniform writeonly image2D output_y;
+layout(binding = 4) uniform writeonly image2D output_uv;
+layout(push_constant) uniform Options { uint width; uint height; uint has_base; } opt;
+
+void main() {
+    ivec2 uv_pos = ivec2(gl_GlobalInvocationID.xy);
+    if (uv_pos.x >= int(opt.width / 2) || uv_pos.y >= int(opt.height / 2)) return;
+    const vec3 krgb = vec3(0.2126, 0.7152, 0.0722);
+    const float y_scale = 219.0 / 255.0;
+    const float uv_scale = 224.0 / 255.0;
+    vec4 coverage = vec4(0.0);
+    for (int y = 0; y < 2; ++y) {
+        for (int x = 0; x < 2; ++x) {
+            ivec2 pos = uv_pos * 2 + ivec2(x, y);
+            vec4 layer = texelFetch(overlay_rgba, pos, 0);
+            float base = opt.has_base != 0 ? texelFetch(base_y, pos, 0).r : 16.0 / 255.0;
+            float luma = base * (1.0 - layer.a)
+                + y_scale * dot(layer.rgb, krgb) + (16.0 / 255.0) * layer.a;
+            imageStore(output_y, pos, vec4(luma, 0.0, 0.0, 1.0));
+            coverage += layer * 0.25;
+        }
+    }
+    // Coverage-weighted 2x2 chroma: the affine RGB->YCbCr transform commutes
+    // with premultiplied blending and averaging, so the base stays in NV12.
+    float luma = dot(coverage.rgb, krgb);
+    vec2 foreground = vec2((coverage.b - luma) / (2.0 * (1.0 - krgb.b)),
+                           (coverage.r - luma) / (2.0 * (1.0 - krgb.r)));
+    vec2 base = opt.has_base != 0 ? texelFetch(base_uv, uv_pos, 0).rg : vec2(128.0 / 255.0);
+    vec2 chroma = base * (1.0 - coverage.a) + uv_scale * foreground
+        + vec2(128.0 / 255.0) * coverage.a;
+    imageStore(output_uv, uv_pos, vec4(chroma, 0.0, 1.0));
+}

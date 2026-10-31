@@ -1,12 +1,13 @@
 //! Shared Vulkan rendering/composition with platform-specific encoder frames.
 //!
-//! A borrowed renderer writes the RGB frame pool; libplacebo composites on the
+//! A borrowed renderer writes the RGB frame pool; a compute shader composites on the
 //! same device into NV12. Vulkan Video consumes that pool directly; macOS
 //! exports MoltenVK textures for a GPU copy into VideoToolbox IOSurfaces.
 //! The compositor can upload a CPU-decoded NV12 base once. Rendered/composited
 //! pixels remain GPU images and are never read back by this bridge.
 
 mod compositor;
+mod compute;
 #[cfg(target_os = "macos")]
 mod macos_runtime;
 mod sync;
@@ -140,7 +141,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ffmpeg_next::{self as ffmpeg, codec, ffi, filter, frame, Packet, Rational};
+use ffmpeg_next::{self as ffmpeg, codec, ffi, frame, Packet, Rational};
 use tempfile::NamedTempFile;
 
 use crate::output::NativeOutput;
@@ -328,9 +329,6 @@ impl Drop for DeviceInner {
 #[derive(Clone)]
 pub struct VulkanDevice(Rc<DeviceInner>);
 impl VulkanDevice {
-    fn new(selector: &str) -> Result<Self, String> {
-        Self::new_with_mode(selector, VulkanSubmissionMode::Synchronous)
-    }
     fn new_with_mode(selector: &str, mode: VulkanSubmissionMode) -> Result<Self, String> {
         #[cfg(target_os = "macos")]
         macos_runtime::prepare()?;
@@ -509,6 +507,23 @@ impl FramePool {
             active_lease: Cell::new(false),
             queue_locked: Cell::new(false),
         }))
+    }
+    fn new_nv12(device: VulkanDevice, options: &VulkanRenderOptions, encoder_output: bool)
+        -> Result<Rc<Self>, String>
+    {
+        let mut usage = 0x4 | 0x8; // SAMPLED | STORAGE (+ transfers from FFmpeg)
+        if encoder_output && !cfg!(target_os = "macos") {
+            usage |= 0x4000; // VIDEO_ENCODE_SRC_KHR, used by the native encoder.
+        }
+        let pool = Self::new_format(device, options, ffi::AVPixelFormat::AV_PIX_FMT_NV12, usage)?;
+        unsafe {
+            let vk = &mut *(*pool.context()).hwctx.cast::<ffi::AVVulkanFramesContext>();
+            // Dynamic independent images: no aliasing. Keep FFmpeg's mutable
+            // plane-view and video-profile flags; the Mac adapter may still
+            // append Metal export declarations before the first allocation.
+            vk.img_flags &= !0x400;
+        }
+        Ok(pool)
     }
     fn context(&self) -> *mut ffi::AVHWFramesContext {
         unsafe { (*self.raw.0).data.cast() }
@@ -709,14 +724,13 @@ fn reference_video_frame(source: &frame::Video) -> Result<frame::Video, String> 
 
 pub struct VulkanVideoSession {
     encoder: Option<codec::encoder::video::Encoder>,
-    graph: Option<filter::Graph>,
+    compositor: VulkanCompositor,
     output: NativeOutput,
     temporary: Option<NamedTempFile>,
     target: PathBuf,
     pool: Rc<FramePool>,
     device: VulkanDevice,
     options: VulkanVideoOptions,
-    render: VulkanRenderOptions,
     cancelled: Arc<AtomicBool>,
     stats: VulkanVideoStats,
     images: BTreeSet<u64>,
@@ -726,7 +740,7 @@ impl Drop for VulkanVideoSession {
     fn drop(&mut self) {
         // A caller can still own a lease when finish rejects it, or can drop
         // a cancelled session first. Release the shared graphics lock before
-        // graph destruction: libplacebo may flush commands while dropping.
+        // compositor destruction may wait for pending commands.
         // The lease retains the pool/device and later observes the same flag,
         // so it cannot unlock an already released queue a second time.
         self.pool.wait_and_unlock_queue();
@@ -741,12 +755,11 @@ impl VulkanVideoSession {
         if target.is_dir() {
             return Err("Vulkan output cannot replace a directory".into());
         }
-        let device = VulkanDevice::new(&options.device_selector)?;
-        let render = options.render_options();
-        let pool = FramePool::new(device.clone(), &render)?;
-        let mut graph = build_graph(&device, &pool, None, &render)?;
-        prepare_nv12_pool(&mut graph)?;
-        let encoder = open_encoder(&mut graph, &device, &options)?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let compositor = VulkanCompositor::new(options.render_options(), false, cancelled.clone())?;
+        let device = compositor.device().clone();
+        let pool = compositor.overlay_pool();
+        let encoder = open_encoder(&compositor.output_template()?, &device, &options)?;
         let parent = target
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -756,7 +769,6 @@ impl VulkanVideoSession {
             .suffix(".mp4")
             .tempfile_in(parent)
             .map_err(|e| e.to_string())?;
-        let cancelled = Arc::new(AtomicBool::new(false));
         let mut output = NativeOutput::new(temporary.path(), "mp4", cancelled.clone())?;
         let mut stream = output
             .output
@@ -768,14 +780,13 @@ impl VulkanVideoSession {
         output.output.write_header().map_err(|e| e.to_string())?;
         Ok(Self {
             encoder: Some(encoder),
-            graph: Some(graph),
+            compositor,
             output,
             temporary: Some(temporary),
             target: target.to_owned(),
             pool,
             device,
             options,
-            render,
             cancelled,
             stats: VulkanVideoStats::default(),
             images: BTreeSet::new(),
@@ -796,7 +807,7 @@ impl VulkanVideoSession {
         if pts != self.stats.submitted_frames as i64 {
             return Err("Vulkan frames must be supplied with consecutive frame-index PTS".into());
         }
-        let lease = acquire_pool_frame(&self.pool, &self.render, pts)?;
+        let lease = self.compositor.acquire_frame(pts)?;
         self.images.insert(lease.image.image);
         self.stats.unique_rgb_images = self.images.len();
         Ok(lease)
@@ -814,26 +825,10 @@ impl VulkanVideoSession {
     ) -> Result<(), String> {
         self.check_cancelled()?;
         let started = Instant::now();
-        let (frame, wait) = complete_pool_frame(&self.pool, lease, state)?;
-        self.stats.gpu_wait += wait;
-        unsafe {
-            let source = self
-                .graph
-                .as_mut()
-                .unwrap()
-                .get("gpu_in")
-                .ok_or("Vulkan source missing")?;
-            check(
-                ffi::av_buffersrc_add_frame_flags(
-                    source.as_ptr() as *mut _,
-                    frame.as_ptr() as *mut _,
-                    ffi::AV_BUFFERSRC_FLAG_KEEP_REF as i32,
-                ),
-                "Feed Vulkan frame",
-            )?;
-        }
+        let frames = unsafe { self.compositor.submit_frame(lease, state, None)? };
+        self.stats.gpu_wait = self.compositor.stats().gpu_wait;
         self.stats.submitted_frames += 1;
-        self.drain_filter()?;
+        self.encode_frames(frames)?;
         self.stats.filter_and_encode += started.elapsed();
         self.check_cancelled()
     }
@@ -846,15 +841,8 @@ impl VulkanVideoSession {
         if self.stats.submitted_frames == 0 {
             return Err("Cannot publish an empty Vulkan video".into());
         }
-        self.graph
-            .as_mut()
-            .unwrap()
-            .get("gpu_in")
-            .ok_or("Vulkan source missing")?
-            .source()
-            .flush()
-            .map_err(|e| e.to_string())?;
-        self.drain_filter()?;
+        let frames = self.compositor.flush()?;
+        self.encode_frames(frames)?;
         self.encoder
             .as_mut()
             .unwrap()
@@ -868,7 +856,7 @@ impl VulkanVideoSession {
         self.output.close()?;
         self.check_cancelled()?;
         self.encoder.take();
-        self.graph.take();
+        self.compositor.synchronize()?;
         self.temporary
             .take()
             .unwrap()
@@ -883,34 +871,15 @@ impl VulkanVideoSession {
             Ok(())
         }
     }
-    fn drain_filter(&mut self) -> Result<(), String> {
-        loop {
-            let mut frame = frame::Video::empty();
-            match self
-                .graph
-                .as_mut()
-                .unwrap()
-                .get("gpu_out")
-                .ok_or("Vulkan sink missing")?
-                .sink()
-                .frame(&mut frame)
-            {
-                Ok(()) => {
-                    if frame.format() != ffmpeg::format::Pixel::VULKAN {
-                        return Err("GPU graph unexpectedly produced a CPU frame".into());
-                    }
-                    self.encoder
-                        .as_mut()
-                        .unwrap()
-                        .send_frame(&frame)
-                        .map_err(|e| e.to_string())?;
-                    self.drain_packets()?;
-                }
-                Err(ffmpeg::Error::Eof) => return Ok(()),
-                Err(ffmpeg::Error::Other { errno }) if errno == ffi::EAGAIN => return Ok(()),
-                Err(error) => return Err(format!("Convert Vulkan RGB to NV12: {error}")),
+    fn encode_frames(&mut self, frames: Vec<frame::Video>) -> Result<(), String> {
+        for frame in frames {
+            if frame.format() != ffmpeg::format::Pixel::VULKAN {
+                return Err("GPU compositor unexpectedly produced a CPU frame".into());
             }
+            self.encoder.as_mut().unwrap().send_frame(&frame).map_err(|e| e.to_string())?;
+            self.drain_packets()?;
         }
+        Ok(())
     }
     fn drain_packets(&mut self) -> Result<(), String> {
         loop {
@@ -935,172 +904,12 @@ impl VulkanVideoSession {
     }
 }
 
-fn add_vulkan_source(
-    graph: &mut filter::Graph,
-    pool: &FramePool,
-    options: &VulkanRenderOptions,
-    name: &CStr,
-    rgb: bool,
-) -> Result<(), String> {
-    unsafe {
-        let buffer = ffi::avfilter_get_by_name(c"buffer".as_ptr());
-        if buffer.is_null() {
-            return Err("FFmpeg build lacks the buffer filter".into());
-        }
-        let source = ffi::avfilter_graph_alloc_filter(graph.as_mut_ptr(), buffer, name.as_ptr());
-        if source.is_null() {
-            return Err("Allocate Vulkan buffer source".into());
-        }
-        let params = ffi::av_buffersrc_parameters_alloc();
-        if params.is_null() {
-            return Err("Allocate Vulkan buffer source parameters".into());
-        }
-        (*params).format = ffi::AVPixelFormat::AV_PIX_FMT_VULKAN as i32;
-        (*params).width = options.width as i32;
-        (*params).height = options.height as i32;
-        (*params).time_base = options.rate().invert().into();
-        (*params).frame_rate = options.rate().into();
-        (*params).sample_aspect_ratio = ffi::AVRational { num: 1, den: 1 };
-        (*params).hw_frames_ctx = pool.raw.0;
-        (*params).color_space = if rgb {
-            ffi::AVColorSpace::AVCOL_SPC_RGB
-        } else {
-            ffi::AVColorSpace::AVCOL_SPC_BT709
-        };
-        (*params).color_range = if rgb {
-            ffi::AVColorRange::AVCOL_RANGE_JPEG
-        } else {
-            ffi::AVColorRange::AVCOL_RANGE_MPEG
-        };
-        (*params).alpha_mode = if rgb {
-            ffi::AVAlphaMode::AVALPHA_MODE_PREMULTIPLIED
-        } else {
-            ffi::AVAlphaMode::AVALPHA_MODE_UNSPECIFIED
-        };
-        let result = ffi::av_buffersrc_parameters_set(source, params);
-        ffi::av_free(params.cast());
-        check(result, "Set Vulkan buffer source parameters")?;
-        check(
-            ffi::avfilter_init_str(source, ptr::null()),
-            "Initialize Vulkan buffer source",
-        )?;
-    }
-    Ok(())
-}
-
-fn build_graph(
-    device: &VulkanDevice,
-    pool: &FramePool,
-    base_pool: Option<&FramePool>,
-    options: &VulkanRenderOptions,
-) -> Result<filter::Graph, String> {
-    let mut graph = filter::Graph::new();
-    unsafe {
-        (*graph.as_mut_ptr()).nb_threads = 1;
-        // Reject any graph negotiation that would insert software scaling or
-        // another implicit format converter into this GPU-only path.
-        ffi::avfilter_graph_set_auto_convert(
-            graph.as_mut_ptr(),
-            ffi::AVFILTER_AUTO_CONVERT_NONE as u32,
-        );
-    }
-    add_vulkan_source(&mut graph, pool, options, c"gpu_in", true)?;
-    if let Some(base_pool) = base_pool {
-        add_vulkan_source(&mut graph, base_pool, options, c"video_in", false)?;
-    }
-    // libplacebo imports its device in its init callback. Graph::add would
-    // initialize first and create a second VkDevice before we can attach the
-    // shared context, so attach the device between allocation and init.
-    unsafe {
-        let filter = ffi::avfilter_get_by_name(c"libplacebo".as_ptr());
-        if filter.is_null() {
-            return Err("FFmpeg build lacks the libplacebo GPU filter".into());
-        }
-        let context =
-            ffi::avfilter_graph_alloc_filter(graph.as_mut_ptr(), filter, c"gpu_convert".as_ptr());
-        if context.is_null() {
-            return Err("Allocate libplacebo GPU conversion".into());
-        }
-        (*context).hw_device_ctx = ffi::av_buffer_ref(device.0.raw.0);
-        if (*context).hw_device_ctx.is_null() {
-            return Err("Retain shared libplacebo Vulkan device".into());
-        }
-        let args = if base_pool.is_some() {
-            // Both sources already use the output geometry and SDR BT.709 clock.
-            // Disable linear-light blending/tone mapping and extra image effects
-            // to match the existing nonlinear premultiplied-overlay contract.
-            c"inputs=2:format=nv12:colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv:disable_linear=1:peak_detect=0:apply_dolbyvision=0:apply_filmgrain=0:deband=0:dithering=none:sigmoid=0"
-        } else {
-            c"format=nv12:colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv"
-        };
-        check(
-            ffi::avfilter_init_str(context, args.as_ptr()),
-            "Initialize libplacebo GPU conversion",
-        )?;
-    }
-    let mut placebo = graph.get("gpu_convert").unwrap();
-    let mut sink = graph
-        .add(
-            &filter::find("buffersink").ok_or("FFmpeg build lacks buffersink")?,
-            "gpu_out",
-            "pixel_formats=vulkan",
-        )
-        .map_err(|e| e.to_string())?;
-    if base_pool.is_some() {
-        graph.get("video_in").unwrap().link(0, &mut placebo, 0);
-        graph.get("gpu_in").unwrap().link(0, &mut placebo, 1);
-    } else {
-        graph.get("gpu_in").unwrap().link(0, &mut placebo, 0);
-    }
-    placebo.link(0, &mut sink, 0);
-    graph
-        .validate()
-        .map_err(|e| format!("Configure Vulkan GPU graph: {e}"))?;
-    Ok(graph)
-}
-
-fn prepare_nv12_pool(graph: &mut filter::Graph) -> Result<(), String> {
-    let mut sink = graph.get("gpu_out").unwrap();
-    let frames = unsafe { ffi::av_buffersink_get_hw_frames_ctx(sink.as_mut_ptr()) };
-    if frames.is_null() {
-        return Err("Vulkan conversion did not produce a hardware pool".into());
-    }
-    let pool = unsafe { &*(*frames).data.cast::<ffi::AVHWFramesContext>() };
-    if pool.format != ffi::AVPixelFormat::AV_PIX_FMT_VULKAN
-        || pool.sw_format != ffi::AVPixelFormat::AV_PIX_FMT_NV12
-    {
-        return Err("Vulkan conversion must output GPU NV12 frames".into());
-    }
-    let vk = unsafe { &mut *pool.hwctx.cast::<ffi::AVVulkanFramesContext>() };
-    #[cfg(target_os = "macos")]
-    let supported = vk.format[0] == 9 && vk.format[1] == 16 && vk.format[2] == 0;
-    #[cfg(not(target_os = "macos"))]
-    let supported = vk.format[0] == 1_000_156_003 && vk.format[1] == 0;
-    if !supported {
-        return Err("Vulkan compositor received an unsupported NV12 image-plane layout".into());
-    }
-    if pool.initial_pool_size != 0 {
-        return Err("Cannot configure a Vulkan conversion pool with preallocated frames".into());
-    }
-    // Configure the public pool before its first AVFrame is allocated, as
-    // libplacebo does when adding COLOR_ATTACHMENT usage during graph config.
-    // This single-image pool allocates independent memory for each frame and
-    // does not alias VkImages. FFmpeg's default ALIAS flag is unnecessary here
-    // and is absent from the NVIDIA driver's VideoFormatProperties flags;
-    // retaining it triggers the profile-compatibility VUID 08206 at encode.
-    // Keep MUTABLE_FORMAT, EXTENDED_USAGE and VIDEO_PROFILE_INDEPENDENT flags,
-    // plus every usage bit needed to render NV12 planes and encode the image.
-    vk.img_flags &= !0x400; // VK_IMAGE_CREATE_ALIAS_BIT
-    Ok(())
-}
-
 fn open_encoder(
-    graph: &mut filter::Graph,
+    template: &frame::Video,
     device: &VulkanDevice,
     options: &VulkanVideoOptions,
 ) -> Result<codec::encoder::video::Encoder, String> {
-    let mut sink = graph.get("gpu_out").unwrap();
-    let frames = unsafe { ffi::av_buffersink_get_hw_frames_ctx(sink.as_mut_ptr()) };
+    let frames = unsafe { (*template.as_ptr()).hw_frames_ctx };
     if frames.is_null() {
         return Err("Vulkan conversion did not produce a hardware pool".into());
     }
@@ -1224,7 +1033,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires a Vulkan Video GPU and FFmpeg 9 built with libplacebo"]
+    #[ignore = "requires a Vulkan Video GPU and FFmpeg 9"]
     fn vulkan_gpu_frame_lease_lifecycle_keeps_existing_output() {
         let directory = tempfile::tempdir().unwrap();
         let target = directory.path().join("existing.mp4");
@@ -1257,8 +1066,8 @@ mod tests {
         drop(session);
         assert_unpublished();
 
-        // finish consumes the session, including the graph, while the caller
-        // still owns a lease. Its Drop must unlock before libplacebo teardown,
+        // finish consumes the session, including the compositor, while the caller
+        // still owns a lease. Its Drop must unlock before compute teardown,
         // and the later lease Drop must not unlock the queue a second time.
         let mut session = VulkanVideoSession::new(&target, options.clone()).unwrap();
         let lease = session.acquire_frame(0).unwrap();
@@ -1282,7 +1091,7 @@ mod tests {
         drop(session);
         assert_unpublished();
 
-        // No unrendered image may enter the graph: cancellation is checked at
+        // No unrendered image may enter the compositor: cancellation is checked at
         // the very start of submit, which consumes and drops the locked lease.
         let mut session = VulkanVideoSession::new(&target, options).unwrap();
         let lease = session.acquire_frame(0).unwrap();

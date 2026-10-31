@@ -802,8 +802,8 @@ mod tests {
             fn process(&mut self, frame: VideoFrame) -> Result<Vec<VideoFrame>, String> {
                 let ready = self.inner.process(frame)?;
                 self.seen += 1;
-                // libplacebo buffers the initial base frame. Reach actual
-                // encoder handoffs before interrupting a live export.
+                // Reach actual encoder handoffs and slot reuse before
+                // interrupting a live export.
                 if self.seen < 4 {
                     return Ok(ready);
                 }

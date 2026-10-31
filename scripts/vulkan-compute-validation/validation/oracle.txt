@@ -1,0 +1,6 @@
+
+running 1 test
+GPU compute oracle: 38 frames, 10260 samples, maximum byte error 0; transparent identity exact
+test vulkan_video::compute::tests::gpu_compute_matches_bt709_premultiplied_reference ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 148 filtered out; finished in 0.44s

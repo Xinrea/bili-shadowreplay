@@ -127,6 +127,6 @@ The CPU export backend supplies premultiplied BGRA through a bounded native fram
 channel, composites in RGB, then converts to NV12 for hardware encoding (yuv420p
 for software). Failed/cancelled jobs signal the worker and release the channel
 after native processing stops. Windows GPU exports instead draw on shared Vulkan
-images, combine the video base and overlay in libplacebo, and pass hardware NV12
+images, combine the video base and overlay with the shared Vulkan NV12 compute shader, and pass hardware NV12
 frames to the same native MediaPlan encoder. Neither backend invokes an external
 FFmpeg child or writes an intermediate raw-video file.

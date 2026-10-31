@@ -107,7 +107,7 @@ impl RenderPipeline {
     }
     pub fn cache_identity(self) -> &'static str {
         if self.uses_gpu() {
-            "vulkan-nv12-overlay-v2"
+            "vulkan-nv12-compute-v3"
         } else {
             "cpu-bgra-overlay-v1"
         }

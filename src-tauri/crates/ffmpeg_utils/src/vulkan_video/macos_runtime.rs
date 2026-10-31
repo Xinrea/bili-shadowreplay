@@ -40,7 +40,7 @@ pub(super) fn prepare() -> Result<(), String> {
             let name = CString::new(path.as_os_str().as_encoded_bytes())
                 .map_err(|error| error.to_string())?;
             unsafe {
-                // Keep this reference for the process lifetime: Skia/libplacebo
+                // Keep this reference for the process lifetime: Skia/compute
                 // retain borrowed dispatch pointers beyond individual frames.
                 let loaded = dlopen(name.as_ptr(), 2 | 4); // RTLD_NOW | RTLD_LOCAL on Darwin
                 if loaded.is_null() {

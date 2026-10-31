@@ -1,0 +1,52 @@
+{
+  "platform": "macOS-27.0.1-arm64-arm-64bit",
+  "device": "Apple M2 Max, 38 GPU cores",
+  "ffmpeg": "9.0.2",
+  "moltenvk": "1.4.2",
+  "parent_revision": "83290094",
+  "shader_sha256": {
+    "src-tauri/crates/ffmpeg_utils/src/vulkan_video/shaders/composite.comp": "8d3d78bffc7bf445c7a8468315196f545f3a137a7521224424efd11e39c61af8",
+    "src-tauri/crates/ffmpeg_utils/src/vulkan_video/shaders/composite.spv": "581bec85b5812f372c6dbb21d65285457cbf628c33a6bab14f474de34d7339cb"
+  },
+  "raw_oracle": {
+    "frames": 38,
+    "samples": 10260,
+    "max_byte_error": 0,
+    "transparent_identity": "exact",
+    "dimensions": [
+      18,
+      10
+    ],
+    "cases": "varying NV12 base and no-base; transparent, opaque, half alpha and mixed per-pixel coverage; primary colors, white, black, blue-green"
+  },
+  "audit_positive_control": {
+    "uploads": 39,
+    "downloads": 38,
+    "maps": 0,
+    "hardware_transfers": 0
+  },
+  "production_warmup_audit": {
+    "uploads": 603,
+    "downloads": 0,
+    "maps": 0,
+    "hardware_transfers": 0
+  },
+  "audit_scope": "FFmpeg hardware transfers/maps; Skia and Metal adapter readback absence also inspected. CPU input upload and GPU blit remain. Test-only oracle intentionally downloads.",
+  "integration_tests": {
+    "passed": 7,
+    "log": "integration-tests.txt"
+  },
+  "native_regression": {
+    "passed": 147,
+    "ignored": 2,
+    "log_sha256": "3f940c10f6e87d6ce0e5999a8db83bbb274024f5ba33ab5e49c8e6716ad1043f"
+  },
+  "validation_layer": {
+    "compute_oracle": "passed with no additional diagnostics",
+    "sdk_diagnostic": "VUID-VkDeviceCreateInfo-pNext-02830",
+    "independent_device_only_reproduction": true,
+    "log": "validation-layer.txt",
+    "device_only_log": "ffmpeg-device-validation.txt"
+  },
+  "windows_device_validation": false
+}

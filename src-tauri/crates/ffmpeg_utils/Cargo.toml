@@ -10,10 +10,11 @@ path = "src/lib.rs"
 [features]
 # External executable oracles only; production media paths use linked libraries.
 cli-test-oracles = ["tokio/process"]
-# GPU-frame bridge; requires FFmpeg 9 with Vulkan and libplacebo.
-vulkan-video = []
+# GPU-frame bridge and shared compute compositor; requires FFmpeg 9 with Vulkan.
+vulkan-video = ["dep:ash"]
 
 [dependencies]
+ash = { version = "=0.38.0", default-features = false, features = ["std"], optional = true }
 ffmpeg-next = { version = "=9.0.0", default-features = false, features = ["format", "software-resampling", "filter"] }
 ffmpeg-sys-next = { version = "=9.0.1", default-features = false }
 flate2 = "1.1"

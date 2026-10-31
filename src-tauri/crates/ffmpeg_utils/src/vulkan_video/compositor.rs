@@ -4,7 +4,8 @@
 
 use crate::profiling as perf;
 use super::*;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
+use super::compute::ComputeCompositor;
 
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct VulkanCompositorStats {
@@ -22,12 +23,11 @@ pub struct VulkanCompositorStats {
 }
 
 struct InFlightFrame {
-    pts: i64,
     overlay: frame::Video,
     base: Option<frame::Video>,
     // The same AVVkFrame state is shared with the native encoder. Its most
     // recent timeline includes the encoder's queued read before slot reuse.
-    output: Option<frame::Video>,
+    output: frame::Video,
 }
 
 /// The media worker creates this together with its borrowed Skia context,
@@ -36,9 +36,9 @@ struct InFlightFrame {
 pub struct VulkanCompositor {
     #[cfg(target_os = "macos")]
     pub(super) encoder_bridge_created: bool,
-    // The graph must release its frame references before the pools/device.
-    graph: filter::Graph,
-    output_pool: BufferRef,
+    // Release compute commands/views before the pools and shared device.
+    compute: ComputeCompositor,
+    output_pool: Rc<FramePool>,
     pool: Rc<FramePool>,
     base_pool: Option<Rc<FramePool>>,
     device: VulkanDevice,
@@ -47,7 +47,6 @@ pub struct VulkanCompositor {
     stats: VulkanCompositorStats,
     images: BTreeSet<u64>,
     last_pts: Option<i64>,
-    timings: BTreeMap<i64, i64>,
     flushed: bool,
     mode: VulkanSubmissionMode,
     in_flight: VecDeque<InFlightFrame>,
@@ -58,7 +57,7 @@ impl Drop for VulkanCompositor {
         // A failed renderer can leave a live lease outside this object. Its
         // pool keeps the device alive, and observes the same queue-lock flag.
         self.pool.wait_and_unlock_queue();
-        // This must precede dropping the graph and all pool references, also
+        // This must precede dropping the compute commands and pool references, also
         // after cancellation or a renderer error following an async submit.
         let _ = self.synchronize();
         self.in_flight.clear();
@@ -93,39 +92,15 @@ impl VulkanCompositor {
         let device = VulkanDevice::new_with_mode(&options.device_selector, mode)?;
         let pool = FramePool::new(device.clone(), &options)?;
         let base_pool = if composite_video {
-            let pool = FramePool::new_format(
-                device.clone(),
-                &options,
-                ffi::AVPixelFormat::AV_PIX_FMT_NV12,
-                0x4 | 0x8,
-            )?;
-            // No pool image aliases memory. Set this before the first upload,
-            // just as for the encoder's NV12 output pool.
-            unsafe {
-                (*(*pool.context()).hwctx.cast::<ffi::AVVulkanFramesContext>()).img_flags &= !0x400;
-            }
-            Some(pool)
-        } else {
-            None
-        };
-        let mut graph = build_graph(&device, &pool, base_pool.as_deref(), &options)?;
-        prepare_nv12_pool(&mut graph)?;
-        let output_pool = unsafe {
-            let mut sink = graph.get("gpu_out").ok_or("Vulkan sink missing")?;
-            let frames = ffi::av_buffersink_get_hw_frames_ctx(sink.as_mut_ptr());
-            if frames.is_null() {
-                return Err("Vulkan compositor has no output hardware pool".into());
-            }
-            let retained = ffi::av_buffer_ref(frames);
-            if retained.is_null() {
-                return Err("Retain Vulkan compositor output pool".into());
-            }
-            BufferRef(retained)
-        };
+            Some(FramePool::new_nv12(device.clone(), &options, false)?)
+        } else { None };
+        let output_pool = FramePool::new_nv12(device.clone(), &options, true)?;
+        let compute = ComputeCompositor::new(device.clone(), mode.max_in_flight())?;
+        perf::annotate("gpu_compositor", || "vulkan-compute-nv12-v1".into());
         let compositor = Self {
             #[cfg(target_os = "macos")]
             encoder_bridge_created: false,
-            graph,
+            compute,
             output_pool,
             pool,
             base_pool,
@@ -135,7 +110,6 @@ impl VulkanCompositor {
             stats: VulkanCompositorStats::default(),
             images: BTreeSet::new(),
             last_pts: None,
-            timings: BTreeMap::new(),
             flushed: false,
             mode,
             in_flight: VecDeque::new(),
@@ -146,6 +120,10 @@ impl VulkanCompositor {
             &compositor.device,
         )?;
         Ok(compositor)
+    }
+
+    pub(super) fn overlay_pool(&self) -> Rc<FramePool> {
+        self.pool.clone()
     }
 
     pub fn submission_mode(&self) -> VulkanSubmissionMode {
@@ -165,6 +143,7 @@ impl VulkanCompositor {
         // Preserve a live lease's graphics-queue lock. It can still be
         // submitted after this wait; only terminal Drop releases that lock.
         self.device.0.sync.wait_idle()?;
+        self.compute.drain()?;
         self.device.0.sync.drain()
     }
 
@@ -174,12 +153,6 @@ impl VulkanCompositor {
 
     pub fn stats(&self) -> &VulkanCompositorStats {
         &self.stats
-    }
-
-    pub fn output_sink(&mut self) -> Result<filter::Context, String> {
-        self.graph
-            .get("gpu_out")
-            .ok_or("Vulkan sink missing".into())
     }
 
     /// An owning description for opening the existing MediaPlan encoder. No
@@ -192,7 +165,7 @@ impl VulkanCompositor {
             raw.format = ffi::AVPixelFormat::AV_PIX_FMT_VULKAN as i32;
             raw.width = self.options.width as i32;
             raw.height = self.options.height as i32;
-            raw.hw_frames_ctx = ffi::av_buffer_ref(self.output_pool.0);
+            raw.hw_frames_ctx = ffi::av_buffer_ref(self.output_pool.raw.0);
             if raw.hw_frames_ctx.is_null() {
                 return Err("Retain Vulkan compositor output pool".into());
             }
@@ -217,6 +190,7 @@ impl VulkanCompositor {
         {
             self.retire_oldest(true)?;
         }
+        self.compute.collect_completed()?;
         let mut lease = acquire_pool_frame(&self.pool, &self.options, pts)?;
         if self.base_pool.is_some() {
             // Skia's unmanaged premultiplied RGB values use the same SDR
@@ -289,26 +263,29 @@ impl VulkanCompositor {
             }
             self.stats.upload += upload.elapsed();
             drop(upload_span);
-            self.feed("video_in", &video)?;
             retained_base = Some(video);
         }
-        self.feed("gpu_in", &overlay)?;
+        let mut output = frame::Video::empty();
+        unsafe {
+            check(ffi::av_hwframe_get_buffer(self.output_pool.raw.0, output.as_mut_ptr(), 0),
+                "Acquire compute NV12 output")?;
+            set_output_properties(&mut *output.as_mut_ptr(), self.options.rate(), pts, duration);
+        }
+        self.compute.submit(&overlay, retained_base.as_ref(), &output)?;
         if self.mode == VulkanSubmissionMode::Asynchronous {
             self.in_flight.push_back(InFlightFrame {
-                pts,
-                overlay,
-                base: retained_base,
-                output: None,
+                overlay, base: retained_base, output: reference_video_frame(&output)?,
             });
             self.stats.in_flight_peak = self.stats.in_flight_peak.max(self.in_flight.len());
+        } else {
+            self.wait_frame_uses(&output)?;
         }
         self.last_pts = Some(pts);
-        self.timings.insert(pts, duration);
         self.stats.submitted_frames += 1;
-        let frames = self.drain()?;
+        self.stats.output_frames += 1;
         self.stats.composition += started.elapsed();
         self.check_cancelled()?;
-        Ok(frames)
+        Ok(vec![output])
     }
 
     pub fn flush(&mut self) -> Result<Vec<frame::Video>, String> {
@@ -316,32 +293,11 @@ impl VulkanCompositor {
         if self.pool.active_lease.get() {
             return Err("Cannot flush while a Vulkan frame lease is active".into());
         }
-        if !self.flushed {
-            if self.base_pool.is_some() {
-                self.graph
-                    .get("video_in")
-                    .ok_or("Vulkan video source missing")?
-                    .source()
-                    .flush()
-                    .map_err(|e| e.to_string())?;
-            }
-            self.graph
-                .get("gpu_in")
-                .ok_or("Vulkan overlay source missing")?
-                .source()
-                .flush()
-                .map_err(|e| e.to_string())?;
-            self.flushed = true;
-        }
-        let frames = self.drain()?;
-        if !self.timings.is_empty() {
-            return Err("Vulkan compositor did not drain every submitted video frame".into());
-        }
-        while !self.in_flight.is_empty() {
-            self.retire_oldest(false)?;
-        }
+        self.flushed = true;
+        while !self.in_flight.is_empty() { self.retire_oldest(false)?; }
+        self.compute.drain()?;
         self.device.0.sync.drain()?;
-        Ok(frames)
+        Ok(Vec::new())
     }
 
     fn retire_oldest(&mut self, reusing_slot: bool) -> Result<(), String> {
@@ -350,10 +306,7 @@ impl VulkanCompositor {
             .in_flight
             .front()
             .ok_or("No Vulkan frame slot to retire")?;
-        let output = pending
-            .output
-            .as_ref()
-            .ok_or("Vulkan compositor exceeded the three-frame input buffering limit")?;
+        let output = &pending.output;
         let started = Instant::now();
         perf::measure("slot_overlay_wait", || self.wait_frame_uses(&pending.overlay))?;
         if let Some(base) = &pending.base {
@@ -385,7 +338,7 @@ impl VulkanCompositor {
         if let Some(lock) = hw.lock_frame {
             unsafe { lock(pool, vk) };
         }
-        // Capture the latest value, including libplacebo/encoder consumers,
+        // Capture the latest value, including compute/encoder consumers,
         // without retaining the frame lock across a host wait.
         let signals: Vec<_> = unsafe {
             (*vk)
@@ -416,77 +369,6 @@ impl VulkanCompositor {
         }
     }
 
-    fn feed(&mut self, name: &str, frame: &frame::Video) -> Result<(), String> {
-        let _span = perf::span("compositor_feed");
-        let mut source = self.graph.get(name).ok_or("Vulkan source missing")?;
-        let result = unsafe {
-            ffi::av_buffersrc_add_frame_flags(
-                source.as_mut_ptr(),
-                frame.as_ptr() as *mut _,
-                ffi::AV_BUFFERSRC_FLAG_KEEP_REF as i32,
-            )
-        };
-        if result < 0 {
-            let raw = unsafe { &*frame.as_ptr() };
-            Err(format!(
-                "Feed Vulkan compositor {name} frame: {} (FFmpeg code {result}, buf0={}, hw_pool={})",
-                ffmpeg::Error::from(result),
-                !raw.buf[0].is_null(),
-                !raw.hw_frames_ctx.is_null(),
-            ))
-        } else {
-            Ok(())
-        }
-    }
-
-    fn drain(&mut self) -> Result<Vec<frame::Video>, String> {
-        let mut frames = Vec::new();
-        loop {
-            let mut frame = frame::Video::empty();
-            let result = {
-                let mut sink = self.output_sink()?;
-                perf::measure("libplacebo_pull", || sink.sink().frame(&mut frame))
-            };
-            match result {
-                Ok(()) => {
-                    if frame.format() != ffmpeg::format::Pixel::VULKAN {
-                        return Err("Vulkan compositor unexpectedly downloaded a CPU frame".into());
-                    }
-                    validate_base(&frame, &self.options, &self.device)?;
-                    let base = self.output_sink()?.sink().time_base();
-                    let pts = frame.pts().ok_or("Vulkan compositor output PTS missing")?;
-                    let pts = unsafe {
-                        ffi::av_rescale_q(pts, base.into(), self.options.rate().invert().into())
-                    };
-                    let duration = self
-                        .timings
-                        .remove(&pts)
-                        .ok_or("Vulkan compositor changed or duplicated a video timestamp")?;
-                    unsafe {
-                        set_output_properties(
-                            &mut *frame.as_mut_ptr(),
-                            self.options.rate(),
-                            pts,
-                            duration,
-                        );
-                    }
-                    if self.mode == VulkanSubmissionMode::Asynchronous {
-                        let pending = self
-                            .in_flight
-                            .iter_mut()
-                            .find(|pending| pending.pts == pts)
-                            .ok_or("Vulkan output has no in-flight frame transaction")?;
-                        pending.output = Some(reference_video_frame(&frame)?);
-                    }
-                    self.stats.output_frames += 1;
-                    frames.push(frame);
-                }
-                Err(ffmpeg::Error::Eof) => return Ok(frames),
-                Err(ffmpeg::Error::Other { errno }) if errno == ffi::EAGAIN => return Ok(frames),
-                Err(error) => return Err(format!("Read Vulkan compositor output: {error}")),
-            }
-        }
-    }
 }
 
 fn validate_pts(previous: Option<i64>, pts: i64, flushed: bool) -> Result<(), String> {

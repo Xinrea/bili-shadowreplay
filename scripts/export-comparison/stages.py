@@ -23,8 +23,11 @@ def check_profile(report, frames):
         raise ValueError(f'Worker partition differs: {total} vs {exclusive} ms')
     if spans['process_frame']['calls'] != frames or spans['skia_render']['calls'] != frames:
         raise ValueError('Profiler did not observe every video frame')
+    composition = 'compute_submit' if 'compute_submit' in spans else 'libplacebo_pull'
+    if composition == 'compute_submit' and spans[composition]['calls'] != frames:
+        raise ValueError('Compute compositor did not observe every video frame')
     for name in ('decode_send', 'decode_receive', 'cpu_filter', 'nv12_upload',
-                 'libplacebo_pull', 'encode_send', 'encode_receive', 'mux_write'):
+                 composition, 'encode_send', 'encode_receive', 'mux_write'):
         if spans[name]['calls'] < 1:
             raise ValueError(f'Missing stage {name}')
     return {'worker_partition_error_ms': abs(total - exclusive), 'profiled_frames': frames}

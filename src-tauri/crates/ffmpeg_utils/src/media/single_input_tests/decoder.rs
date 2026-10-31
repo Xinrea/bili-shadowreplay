@@ -119,3 +119,46 @@ async fn parallel_video_decode_preserves_b_frames_trims_audio_and_eof_without_cl
         }
     }
 }
+
+#[tokio::test]
+async fn parallel_video_decode_drains_high_resolution_tail_with_bounded_pending_frames() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/video/test.mp4");
+    let output = directory.path().join("downscaled.mp4");
+    // 3240x2160 H.264. A frame-threaded EOF burst exceeds the graph's 64 MiB
+    // pending-frame budget even though the output is small; drain incrementally.
+    let mut request = plan(
+        &source,
+        &output,
+        StreamMode::Video(VideoEncodeOptions {
+            threads: Some(1),
+            options: [("preset".into(), "ultrafast".into())].into(),
+            ..Default::default()
+        }),
+        StreamMode::Copy,
+    );
+    request.routes[0].source = StreamSource::Filter { label: "v".into() };
+    request.filter_graph = Some(FilterGraphPlan {
+        spec: "[0:v]scale=64:48[v]".into(),
+        inputs: vec![GraphInput {
+            input: 0,
+            selector: StreamSelector::FirstVideo,
+            label: "0:v".into(),
+            required: true,
+        }],
+        outputs: vec![GraphOutput {
+            label: "v".into(),
+            kind: MediaKind::Video,
+        }],
+    });
+    let result = execute_media_plan(request, None).await.unwrap();
+    assert_eq!(result.video_frames, 327);
+    let movie = snapshot(&output);
+    assert_eq!(movie.streams[0].packets.len(), 327);
+    assert_eq!(movie.streams[0].size, (64, 48));
+    assert!(movie.streams[0]
+        .packets
+        .windows(2)
+        .all(|p| p[0].pts < p[1].pts));
+    assert_clean(directory.path());
+}

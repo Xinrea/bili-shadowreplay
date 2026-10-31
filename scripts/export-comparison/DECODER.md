@@ -13,7 +13,10 @@ chooses the thread count from CPU availability when `thread_count=0`, with its
 Frame threading buffers extra decoded frames, increasing memory use and startup
 delay. The native regression covers a short 11-frame H.264/B-frame clip, both
 MediaPlan executors, accurate input seek, output trim, copied AAC and EOF drain;
-its encoded packets and timestamps must match a single-thread run.
+its encoded packets and timestamps must match a single-thread run. A separate
+3240×2160 / 327-frame regression verifies high-resolution EOF output. The graph
+drains buffered EOF frames on demand instead of enqueueing the complete threaded
+tail at once, retaining its existing 64 MiB pending-frame limit.
 
 `decoder.py` compares the prior single-thread behavior with the new production
 default using **one release binary**. `--decoder-threads 1` sets the existing

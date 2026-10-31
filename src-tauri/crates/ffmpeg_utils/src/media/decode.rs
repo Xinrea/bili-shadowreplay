@@ -158,6 +158,7 @@ pub(super) struct GraphDecoder {
     packets: VecDeque<Packet>,
     packet_bytes: usize,
     input_ended: bool,
+    draining: bool,
     pub(super) eof: bool,
 }
 impl GraphDecoder {
@@ -224,6 +225,7 @@ impl GraphDecoder {
             packets: VecDeque::new(),
             packet_bytes: 0,
             input_ended: false,
+            draining: false,
             eof: false,
         })
     }
@@ -256,6 +258,10 @@ impl GraphDecoder {
     pub(super) fn advance(&mut self, cancelled: &AtomicBool) -> Result<bool, String> {
         if self.eof {
             return Ok(false);
+        }
+        if self.draining {
+            self.receive(cancelled)?;
+            return Ok(true);
         }
         if let Some(packet) = self.packets.pop_front() {
             self.packet_bytes -= packet.size();
@@ -305,10 +311,8 @@ impl GraphDecoder {
             }
             Err(e) => return Err(util::error("提交复杂图解码输入失败", e)),
         }
+        self.draining = packet.is_none();
         self.receive(cancelled)?;
-        if packet.is_none() && !self.eof {
-            return Err("复杂图解码器结束后仍要求输入".into());
-        }
         Ok(())
     }
     fn receive(&mut self, cancelled: &AtomicBool) -> Result<(), String> {
@@ -329,7 +333,12 @@ impl GraphDecoder {
                     self.eof = true;
                     break;
                 }
-                Err(e) if util::again(e) => break,
+                Err(e) if util::again(e) => {
+                    if self.draining {
+                        return Err("复杂图解码器结束后仍要求输入".into());
+                    }
+                    break;
+                }
                 Err(e) => return Err(util::error("复杂图解码失败", e)),
             }
             match (&mut self.decoder, &mut output) {
@@ -372,6 +381,12 @@ impl GraphDecoder {
                 return Err("复杂图同一输入的流读取速度不匹配，帧队列超出上限".into());
             }
             self.pending.push_back(output);
+            // Frame threading holds a tail of decoded frames inside libavcodec.
+            // Let the scheduler consume each EOF frame before receiving another,
+            // keeping the pending budget independent of decoder thread count.
+            if self.draining {
+                break;
+            }
         }
         Ok(())
     }

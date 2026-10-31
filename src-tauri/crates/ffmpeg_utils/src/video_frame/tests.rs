@@ -144,12 +144,15 @@ async fn cancelled_jpeg_read_interrupts_worker_and_keeps_previous_output_without
         connection.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\nContent-Type: video/mp4\r\nConnection: close\r\n\r\n").await.unwrap();
         ready.send(()).unwrap();
         let mut byte = [0];
-        assert_eq!(
-            timeout(Duration::from_secs(5), connection.read(&mut byte))
-                .await
-                .unwrap()
-                .unwrap(),
-            0
+        let closed = timeout(Duration::from_secs(5), connection.read(&mut byte))
+            .await
+            .expect("cancelled JPEG worker did not close its input");
+        // Closing with unread response bytes may reset the socket instead of sending EOF.
+        assert!(
+            matches!(closed, Ok(0))
+                || matches!(&closed, Err(error) if matches!(error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted)),
+            "expected the cancelled JPEG worker to close its input, got {closed:?}"
         );
     });
     let task_target = target.clone();

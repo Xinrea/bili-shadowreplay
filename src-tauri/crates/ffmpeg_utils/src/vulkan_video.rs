@@ -41,7 +41,9 @@ impl HardwareEncoderFrames {
     }
 
     pub fn new_with_handoff(
-        compositor: &mut VulkanCompositor, encoder: &str, handoff: EncoderFrameHandoff,
+        compositor: &mut VulkanCompositor,
+        encoder: &str,
+        handoff: EncoderFrameHandoff,
     ) -> Result<Self, String> {
         // Vulkan Video consumes frames and their timeline dependencies directly.
         let _ = handoff;
@@ -52,7 +54,8 @@ impl HardwareEncoderFrames {
             }
             #[cfg(target_os = "macos")]
             "h264_videotoolbox" | "hevc_videotoolbox" => {
-                VideoToolboxFrameBridge::new_with_handoff(compositor, handoff).map(Self::VideoToolbox)
+                VideoToolboxFrameBridge::new_with_handoff(compositor, handoff)
+                    .map(Self::VideoToolbox)
             }
             _ => Err(format!("No GPU frame adapter for {encoder}")),
         }
@@ -432,9 +435,11 @@ impl FramePool {
             queue_locked: Cell::new(false),
         }))
     }
-    fn new_nv12(device: VulkanDevice, options: &VulkanRenderOptions, encoder_output: bool)
-        -> Result<Rc<Self>, String>
-    {
+    fn new_nv12(
+        device: VulkanDevice,
+        options: &VulkanRenderOptions,
+        encoder_output: bool,
+    ) -> Result<Rc<Self>, String> {
         let mut usage = 0x4 | 0x8; // SAMPLED | STORAGE (+ transfers from FFmpeg)
         if encoder_output && !cfg!(target_os = "macos") {
             usage |= 0x4000; // VIDEO_ENCODE_SRC_KHR, used by the native encoder.
@@ -803,7 +808,8 @@ mod tests {
                 None,
             )
         }
-        .err().unwrap();
+        .err()
+        .unwrap();
         assert!(error.contains("cancelled"), "{error}");
         assert_eq!(compositor.stats().submitted_frames, 0);
         assert!(!pool.active_lease.get());

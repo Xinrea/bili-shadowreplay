@@ -1,5 +1,8 @@
 # 共享 GPU 导出与 PR #459：五分钟真实场景对照
 
+本文保留旧版 `94b0a322` 的历史结果。完成解码与 compute 优化后的最新对照见
+[Windows 三轮重测](REPORT-windows-compute.md)和[macOS compute 对照](REPORT-macos-compute.md)。
+
 2026-10-31，以正式生产源码的 release runner 重新实测。**#459 在两台测试机上仍更快**。
 后续已完成[当前实现的分阶段测量](REPORT-stages.md)，用于定位解码、提交和交接等待的占比。
 主指标是三组交替运行的进程耗时中位数，包括启动、场景解析、能力探测、解码、渲染、编码、封装、关闭及退出。

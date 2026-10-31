@@ -1,8 +1,12 @@
 # Five-minute production export comparison
 
-Latest macOS-only same-batch results, after automatic decoding and asynchronous
-VideoToolbox handoff: [current versus PR #459](REPORT-macos-pr459.md), using
-current media commit `5b8df157` and PR head `c73c7aaf`.
+Latest Windows same-machine results with the shared compute compositor:
+[three alternating control and stage-profile pairs](REPORT-windows-compute.md),
+using current media commit `1cd0c881` and PR #459 head `c73c7aaf`.
+
+Latest macOS compute results: [current versus PR #459](REPORT-macos-compute.md),
+using current media commit `8c9016cf` and the same PR head. These are separate
+platform-specific experiments; do not compare their absolute times as an OS effect.
 
 Measured results and caveats: [shared GPU pipeline comparison](REPORT-shared-gpu.md).
 The [earlier CPU-on-macOS comparison](REPORT.md) is preserved as historical

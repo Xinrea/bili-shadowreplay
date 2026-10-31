@@ -43,27 +43,62 @@ pub fn available_video_encoders() -> Vec<String> {
 /// other primaries must use a pipeline that performs their colour conversion.
 /// The worker still validates actual filtered frames, including stream changes.
 pub async fn video_is_sdr_bt709(path: &Path) -> Result<bool, String> {
+    video_has_supported_sdr_transfer(path, false).await
+}
+
+/// Header preflight for the shared GPU compositor, which converts sRGB video
+/// to BT.709 before blending. Actual filtered frames are validated separately.
+pub async fn video_supports_gpu_sdr(path: &Path) -> Result<bool, String> {
+    video_has_supported_sdr_transfer(path, true).await
+}
+
+async fn video_has_supported_sdr_transfer(path: &Path, allow_srgb: bool) -> Result<bool, String> {
     let path = path.to_owned();
     crate::metadata::run_media(move |cancelled| {
         let input = crate::metadata::open_input(&path, Arc::clone(&cancelled))?;
         for stream in input.streams() {
             let parameters = stream.parameters();
             if parameters.medium() != ffmpeg_next::media::Type::Video
-                || stream.disposition().contains(ffmpeg_next::format::stream::Disposition::ATTACHED_PIC)
-            { continue; }
+                || stream
+                    .disposition()
+                    .contains(ffmpeg_next::format::stream::Disposition::ATTACHED_PIC)
+            {
+                continue;
+            }
             let raw = unsafe { &*parameters.as_ptr() };
-            if !sdr_bt709(raw.color_primaries, raw.color_trc) { return Ok(false); }
+            match gpu_sdr_transfer(raw.color_primaries, raw.color_trc) {
+                Some(SdrTransfer::Bt709) => {}
+                Some(SdrTransfer::Srgb) if allow_srgb => {}
+                _ => return Ok(false),
+            }
         }
         Ok(true)
-    }).await
+    })
+    .await
 }
 
-fn sdr_bt709(primaries: ffi::AVColorPrimaries, transfer: ffi::AVColorTransferCharacteristic) -> bool {
-    matches!(primaries, ffi::AVColorPrimaries::AVCOL_PRI_UNSPECIFIED
-        | ffi::AVColorPrimaries::AVCOL_PRI_BT709)
-        && matches!(transfer,
-            ffi::AVColorTransferCharacteristic::AVCOL_TRC_UNSPECIFIED
-            | ffi::AVColorTransferCharacteristic::AVCOL_TRC_BT709)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SdrTransfer {
+    Bt709,
+    Srgb,
+}
+
+pub(crate) fn gpu_sdr_transfer(
+    primaries: ffi::AVColorPrimaries,
+    transfer: ffi::AVColorTransferCharacteristic,
+) -> Option<SdrTransfer> {
+    if !matches!(
+        primaries,
+        ffi::AVColorPrimaries::AVCOL_PRI_UNSPECIFIED | ffi::AVColorPrimaries::AVCOL_PRI_BT709
+    ) {
+        return None;
+    }
+    match transfer {
+        ffi::AVColorTransferCharacteristic::AVCOL_TRC_UNSPECIFIED
+        | ffi::AVColorTransferCharacteristic::AVCOL_TRC_BT709 => Some(SdrTransfer::Bt709),
+        ffi::AVColorTransferCharacteristic::AVCOL_TRC_IEC61966_2_1 => Some(SdrTransfer::Srgb),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -86,10 +121,34 @@ mod tests {
     #[test]
     fn gpu_colour_preflight_keeps_hdr_and_other_primaries_on_the_cpu_path() {
         use ffi::{AVColorPrimaries::*, AVColorTransferCharacteristic::*};
-        assert!(sdr_bt709(AVCOL_PRI_UNSPECIFIED, AVCOL_TRC_UNSPECIFIED));
-        assert!(sdr_bt709(AVCOL_PRI_BT709, AVCOL_TRC_BT709));
-        assert!(!sdr_bt709(AVCOL_PRI_BT2020, AVCOL_TRC_SMPTE2084));
-        assert!(!sdr_bt709(AVCOL_PRI_BT709, AVCOL_TRC_ARIB_STD_B67));
-        assert!(!sdr_bt709(AVCOL_PRI_SMPTE170M, AVCOL_TRC_BT709));
+        assert_eq!(
+            gpu_sdr_transfer(AVCOL_PRI_UNSPECIFIED, AVCOL_TRC_UNSPECIFIED),
+            Some(SdrTransfer::Bt709)
+        );
+        assert_eq!(
+            gpu_sdr_transfer(AVCOL_PRI_BT709, AVCOL_TRC_BT709),
+            Some(SdrTransfer::Bt709)
+        );
+        assert_eq!(
+            gpu_sdr_transfer(AVCOL_PRI_BT709, AVCOL_TRC_IEC61966_2_1),
+            Some(SdrTransfer::Srgb)
+        );
+        assert_eq!(
+            gpu_sdr_transfer(AVCOL_PRI_UNSPECIFIED, AVCOL_TRC_IEC61966_2_1),
+            Some(SdrTransfer::Srgb)
+        );
+        assert_eq!(
+            gpu_sdr_transfer(AVCOL_PRI_BT2020, AVCOL_TRC_SMPTE2084),
+            None
+        );
+        assert_eq!(
+            gpu_sdr_transfer(AVCOL_PRI_BT709, AVCOL_TRC_ARIB_STD_B67),
+            None
+        );
+        assert_eq!(gpu_sdr_transfer(AVCOL_PRI_SMPTE170M, AVCOL_TRC_BT709), None);
+        assert_eq!(
+            gpu_sdr_transfer(AVCOL_PRI_BT2020, AVCOL_TRC_IEC61966_2_1),
+            None
+        );
     }
 }

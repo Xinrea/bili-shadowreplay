@@ -194,7 +194,7 @@ async fn run(
     }
     let probe = Instant::now();
     let mut pipeline = ffmpeg::hwaccel::get_render_pipeline(&settings).await;
-    if pipeline.uses_gpu() && !ffmpeg_utils::video_is_sdr_bt709(&source).await? {
+    if pipeline.uses_gpu() && !ffmpeg_utils::video_supports_gpu_sdr(&source).await? {
         pipeline =
             ffmpeg::hwaccel::RenderPipeline::cpu(ffmpeg::get_cpu_render_encoder(&settings).await);
     }

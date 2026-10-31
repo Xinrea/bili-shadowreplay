@@ -2,16 +2,18 @@
 //! CPU-decoded NV12 is uploaded once, composed with Skia's premultiplied RGBA
 //! image on the shared Vulkan device, and returned as hardware NV12 AVFrames.
 
-use crate::profiling as perf;
-use super::*;
-use std::collections::VecDeque;
 use super::compute::ComputeCompositor;
+use super::*;
+use crate::capabilities::{gpu_sdr_transfer, SdrTransfer};
+use crate::profiling as perf;
+use std::collections::VecDeque;
 
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct VulkanCompositorStats {
     pub submitted_frames: u64,
     pub output_frames: u64,
     pub uploaded_frames: u64,
+    pub srgb_frames: u64,
     pub unique_rgb_images: usize,
     pub gpu_wait: Duration,
     pub upload: Duration,
@@ -93,10 +95,12 @@ impl VulkanCompositor {
         let pool = FramePool::new(device.clone(), &options)?;
         let base_pool = if composite_video {
             Some(FramePool::new_nv12(device.clone(), &options, false)?)
-        } else { None };
+        } else {
+            None
+        };
         let output_pool = FramePool::new_nv12(device.clone(), &options, true)?;
         let compute = ComputeCompositor::new(device.clone(), mode.max_in_flight())?;
-        perf::annotate("gpu_compositor", || "vulkan-compute-nv12-v1".into());
+        perf::annotate("gpu_compositor", || "vulkan-compute-nv12-v2-srgb".into());
         let compositor = Self {
             #[cfg(target_os = "macos")]
             encoder_bridge_created: false,
@@ -223,15 +227,20 @@ impl VulkanCompositor {
         }
         let pts = lease.frame.pts().ok_or("Vulkan overlay PTS missing")?;
         validate_pts(self.last_pts, pts, self.flushed)?;
-        if let Some(base) = base {
-            validate_base(base, &self.options, &self.device)?;
+        let transfer = if let Some(base) = base {
+            let transfer = validate_base(base, &self.options, &self.device)?;
             unsafe { (*lease.frame.as_mut_ptr()).duration = (*base.as_ptr()).duration };
-        }
+            transfer
+        } else {
+            SdrTransfer::Bt709
+        };
         let duration = unsafe { (*lease.frame.as_ptr()).duration };
         let started = Instant::now();
         // Complete/unlock Skia's graphics submission before asking FFmpeg to
         // upload on the shared device; transfer_data takes queue locks itself.
-        let (overlay, wait) = perf::measure("vulkan_publish", || complete_pool_frame(&self.pool, lease, state))?;
+        let (overlay, wait) = perf::measure("vulkan_publish", || {
+            complete_pool_frame(&self.pool, lease, state)
+        })?;
         self.stats.gpu_wait += wait;
         let mut retained_base = None;
         if let Some(base) = base {
@@ -260,6 +269,9 @@ impl VulkanCompositor {
             };
             unsafe {
                 set_output_properties(&mut *video.as_mut_ptr(), self.options.rate(), pts, duration);
+                // Upload does not copy AVFrame properties. Keep the real input
+                // transfer; only the compute output is normalized to BT.709.
+                (*video.as_mut_ptr()).color_trc = (*base.as_ptr()).color_trc;
             }
             self.stats.upload += upload.elapsed();
             drop(upload_span);
@@ -267,14 +279,25 @@ impl VulkanCompositor {
         }
         let mut output = frame::Video::empty();
         unsafe {
-            check(ffi::av_hwframe_get_buffer(self.output_pool.raw.0, output.as_mut_ptr(), 0),
-                "Acquire compute NV12 output")?;
-            set_output_properties(&mut *output.as_mut_ptr(), self.options.rate(), pts, duration);
+            check(
+                ffi::av_hwframe_get_buffer(self.output_pool.raw.0, output.as_mut_ptr(), 0),
+                "Acquire compute NV12 output",
+            )?;
+            set_output_properties(
+                &mut *output.as_mut_ptr(),
+                self.options.rate(),
+                pts,
+                duration,
+            );
         }
-        self.compute.submit(&overlay, retained_base.as_ref(), &output)?;
+        self.compute
+            .submit(&overlay, retained_base.as_ref(), &output, transfer)?;
+        self.stats.srgb_frames += u64::from(transfer == SdrTransfer::Srgb);
         if self.mode == VulkanSubmissionMode::Asynchronous {
             self.in_flight.push_back(InFlightFrame {
-                overlay, base: retained_base, output: reference_video_frame(&output)?,
+                overlay,
+                base: retained_base,
+                output: reference_video_frame(&output)?,
             });
             self.stats.in_flight_peak = self.stats.in_flight_peak.max(self.in_flight.len());
         } else {
@@ -294,7 +317,9 @@ impl VulkanCompositor {
             return Err("Cannot flush while a Vulkan frame lease is active".into());
         }
         self.flushed = true;
-        while !self.in_flight.is_empty() { self.retire_oldest(false)?; }
+        while !self.in_flight.is_empty() {
+            self.retire_oldest(false)?;
+        }
         self.compute.drain()?;
         self.device.0.sync.drain()?;
         Ok(Vec::new())
@@ -308,7 +333,9 @@ impl VulkanCompositor {
             .ok_or("No Vulkan frame slot to retire")?;
         let output = &pending.output;
         let started = Instant::now();
-        perf::measure("slot_overlay_wait", || self.wait_frame_uses(&pending.overlay))?;
+        perf::measure("slot_overlay_wait", || {
+            self.wait_frame_uses(&pending.overlay)
+        })?;
         if let Some(base) = &pending.base {
             perf::measure("slot_base_wait", || self.wait_frame_uses(base))?;
         }
@@ -368,7 +395,6 @@ impl VulkanCompositor {
             Ok(())
         }
     }
-
 }
 
 fn validate_pts(previous: Option<i64>, pts: i64, flushed: bool) -> Result<(), String> {
@@ -385,7 +411,7 @@ fn validate_base(
     frame: &frame::Video,
     options: &VulkanRenderOptions,
     device: &VulkanDevice,
-) -> Result<(), String> {
+) -> Result<SdrTransfer, String> {
     if frame.width() != options.width || frame.height() != options.height {
         return Err("Vulkan video base must match the compositor dimensions".into());
     }
@@ -396,18 +422,13 @@ fn validate_base(
     ) || !matches!(
         raw.color_range,
         ffi::AVColorRange::AVCOL_RANGE_UNSPECIFIED | ffi::AVColorRange::AVCOL_RANGE_MPEG
-    ) || !matches!(
-        raw.color_primaries,
-        ffi::AVColorPrimaries::AVCOL_PRI_UNSPECIFIED | ffi::AVColorPrimaries::AVCOL_PRI_BT709
-    ) || !matches!(
-        raw.color_trc,
-        ffi::AVColorTransferCharacteristic::AVCOL_TRC_UNSPECIFIED
-            | ffi::AVColorTransferCharacteristic::AVCOL_TRC_BT709
     ) {
-        return Err("Vulkan video base must be SDR BT.709 limited-range NV12".into());
+        return Err("Vulkan video base must use the BT.709 matrix and limited-range NV12".into());
     }
+    let transfer = gpu_sdr_transfer(raw.color_primaries, raw.color_trc)
+        .ok_or("Vulkan video base requires BT.709 primaries and BT.709 or sRGB transfer")?;
     match frame.format() {
-        ffmpeg::format::Pixel::NV12 => Ok(()),
+        ffmpeg::format::Pixel::NV12 => Ok(transfer),
         ffmpeg::format::Pixel::VULKAN => {
             if raw.hw_frames_ctx.is_null() {
                 return Err("Vulkan video base has no hardware pool".into());
@@ -424,7 +445,7 @@ fn validate_base(
             if hw.act_dev != device.0.hw().act_dev {
                 return Err("Vulkan video base belongs to another device".into());
             }
-            Ok(())
+            Ok(transfer)
         }
         _ => Err("Vulkan video base must be NV12 or shared-device Vulkan NV12".into()),
     }

@@ -2,6 +2,7 @@
 //! device, queue locks, frame locks and timelines; ash only supplies ABI types
 //! and dispatch tables (no loader, device creation or ownership of VkDevice).
 use super::*;
+use crate::capabilities::SdrTransfer;
 use ash::vk::{self, Handle};
 use std::collections::{BTreeMap, HashSet};
 
@@ -112,7 +113,7 @@ impl ComputeCompositor {
         let sets = [self.descriptors];
         let constants = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::COMPUTE)
-            .size(12)];
+            .size(16)];
         self.layout = vk_result(
             self.api.create_pipeline_layout(
                 &vk::PipelineLayoutCreateInfo::default()
@@ -267,6 +268,7 @@ impl ComputeCompositor {
         overlay: &frame::Video,
         base: Option<&frame::Video>,
         output: &frame::Video,
+        transfer: SdrTransfer,
     ) -> Result<(), String> {
         let _span = crate::profiling::span("compute_submit");
         let slot = &mut self.slots[self.next];
@@ -445,7 +447,12 @@ impl ComputeCompositor {
                 &[slot.descriptors],
                 &[],
             );
-            let words = [output.width(), output.height(), u32::from(base.is_some())];
+            let words = [
+                output.width(),
+                output.height(),
+                u32::from(base.is_some()),
+                u32::from(base.is_some() && transfer == SdrTransfer::Srgb),
+            ];
             let constants: Vec<u8> = words.iter().flat_map(|v| v.to_ne_bytes()).collect();
             self.api.cmd_push_constants(
                 slot.command,
@@ -789,7 +796,12 @@ mod tests {
                 let overlay = upload(&rgb_pool, &rgba);
                 let output = allocate(&nv12_pool);
                 compute
-                    .submit(&overlay, with_base.then_some(&gpu_base), &output)
+                    .submit(
+                        &overlay,
+                        with_base.then_some(&gpu_base),
+                        &output,
+                        SdrTransfer::Bt709,
+                    )
                     .unwrap();
                 pending.push((case, rgba, output));
                 // Three in-flight submissions and a one-frame tail. Reusing
@@ -889,3 +901,7 @@ mod tests {
         println!("GPU compute oracle: 38 frames, {checked} samples, maximum byte error {maximum_error}; transparent identity exact");
     }
 }
+
+#[cfg(test)]
+#[path = "compute_srgb_tests.rs"]
+mod srgb_tests;

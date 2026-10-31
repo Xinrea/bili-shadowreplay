@@ -31,7 +31,9 @@ pub use audio::{
     encode_opus_upload, import_audio, AudioDecodeOptions, AudioDecodeResult, AudioRange, AudioSink,
     AudioTiming, ImportAudioMode,
 };
-pub use capabilities::{available_video_encoders, linked_ffmpeg_version, video_is_sdr_bt709};
+pub use capabilities::{
+    available_video_encoders, linked_ffmpeg_version, video_is_sdr_bt709, video_supports_gpu_sdr,
+};
 pub use command::path_str;
 #[cfg(any(test, feature = "cli-test-oracles"))]
 pub use command::{ffmpeg_command, ffmpeg_path, ffprobe_command, ffprobe_path};

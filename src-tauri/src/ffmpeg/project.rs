@@ -1593,8 +1593,19 @@ async fn render_with_pipeline_and_resources<R: ProgressReporterTrait>(
                 sources.insert(layer.path.clone());
             }
         }
+        // CPU overlay/libass has already blended its pixels before the GPU
+        // sees a frame. A final transfer conversion cannot recover mixed-TRC
+        // layers. Pure clip concat and native Skia overlays keep per-frame TRC
+        // and can use the shared sRGB conversion safely.
+        let allow_srgb =
+            job.overlays.is_empty() && (job.generated_subtitle || job.subtitle_ass.is_none());
         for source in sources {
-            if !ffmpeg_utils::video_is_sdr_bt709(&source).await? {
+            let supported = if allow_srgb {
+                ffmpeg_utils::video_supports_gpu_sdr(&source).await?
+            } else {
+                ffmpeg_utils::video_is_sdr_bt709(&source).await?
+            };
+            if !supported {
                 log::info!(
                     "Project source colour metadata selects the existing CPU composition backend"
                 );

@@ -409,7 +409,7 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
         .map_err(|error| format!("Failed to inspect source video: {error}"))?;
     let fps = danmu_output_fps(metadata.fps);
     let mut pipeline = hwaccel::material_overlay_pipeline(settings).await;
-    if pipeline.uses_gpu() && !ffmpeg_utils::video_is_sdr_bt709(file).await? {
+    if pipeline.uses_gpu() && !ffmpeg_utils::video_supports_gpu_sdr(file).await? {
         log::info!("Source colour metadata selects the existing CPU composition backend");
         pipeline = hwaccel::RenderPipeline::cpu(match settings {
             Some(settings) => hwaccel::get_cpu_render_encoder(settings).await,
@@ -575,7 +575,7 @@ mod tests {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/video/subtitle-black.mp4");
         std::fs::copy(fixture, &source).unwrap();
         if settings.is_some() {
-            assert!(ffmpeg_utils::video_is_sdr_bt709(&source).await.unwrap());
+            assert!(ffmpeg_utils::video_supports_gpu_sdr(&source).await.unwrap());
         }
         let options = Danmu2AssOptions::default();
         let plan = DanmuRenderPlan {

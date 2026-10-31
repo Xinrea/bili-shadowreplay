@@ -329,10 +329,11 @@ impl Drop for VulkanOverlayProcessor {
         perf::annotate("compositor_counters", || {
             let stats = self.compositor.stats();
             format!(
-                "submitted={}, output={}, uploaded={}, in_flight_peak={}",
+                "submitted={}, output={}, uploaded={}, srgb={}, in_flight_peak={}",
                 stats.submitted_frames,
                 stats.output_frames,
                 stats.uploaded_frames,
+                stats.srgb_frames,
                 stats.in_flight_peak
             )
         });
@@ -895,7 +896,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let source = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("crates/ffmpeg_utils/src/hls/fixtures/live.flv");
-        assert!(ffmpeg_utils::video_is_sdr_bt709(&source).await.unwrap());
+        assert!(ffmpeg_utils::video_supports_gpu_sdr(&source).await.unwrap());
         let duration = super::super::danmu::probe_overlay_duration(&source, 6.0)
             .await
             .unwrap();
@@ -1067,6 +1068,145 @@ mod tests {
         io::stdout().flush().unwrap();
     }
 
+    #[tokio::test]
+    #[ignore = "Requires a GPU render/encode backend and FFmpeg 9 SDK"]
+    async fn native_gpu_srgb_file_and_mixed_transfer_concat_keep_colour_and_alpha() {
+        let directory = tempfile::tempdir().unwrap();
+        let srgb = directory.path().join("srgb.mp4");
+        let bt709 = directory.path().join("bt709.mp4");
+        for (path, transfer) in [(&srgb, "iec61966-2-1"), (&bt709, "bt709")] {
+            let mut plan = super::probe_plan("libx264", path).unwrap();
+            plan.inputs[0].duration = Some(0.5);
+            plan.filter_graph.as_mut().unwrap().spec = format!(
+                "[0:v]format=yuv420p,geq=lum=128:cb=128:cr=128,\
+                 setparams=colorspace=bt709:range=limited:color_primaries=bt709:color_trc={transfer}[outv]"
+            );
+            if let StreamMode::Video(video) = &mut plan.routes[0].mode {
+                video.frame_processor = false;
+                video.options.insert("crf".into(), "0".into());
+            }
+            assert_eq!(
+                ffmpeg_utils::execute_media_plan(plan, None)
+                    .await
+                    .unwrap()
+                    .video_frames,
+                15
+            );
+        }
+        assert!(ffmpeg_utils::video_supports_gpu_sdr(&srgb).await.unwrap());
+        assert!(!ffmpeg_utils::video_is_sdr_bt709(&srgb).await.unwrap());
+        assert!(ffmpeg_utils::video_is_sdr_bt709(&bt709).await.unwrap());
+        for encoder in ENCODERS {
+            for opacity in [0.0, 0.5, 1.0] {
+                let output = directory.path().join("composited.mp4");
+                let mut plan = moving_plan(&srgb, &output, encoder);
+                plan.inputs.push(ffmpeg_utils::MediaInput::file(&bt709));
+                let graph = plan.filter_graph.as_mut().unwrap();
+                let scale = super::super::hwaccel::GPU_SCALE_PAD_FILTER;
+                // No setparams override: decoder/filter/concat must preserve
+                // the changing transfer on each actual frame, not the first
+                // input's tag or a fixed flag selected when opening the job.
+                graph.spec = format!(
+                    "[0:v]{scale},fps=60[a];[1:v]{scale},fps=60[b];[a][b]concat=n=2:v=1:a=0[outv]"
+                );
+                graph.inputs.push(ffmpeg_utils::GraphInput {
+                    input: 1,
+                    selector: StreamSelector::FirstVideo,
+                    label: "1:v".into(),
+                    required: true,
+                });
+                let mut scene = super::probe_scene(directory.path()).unwrap();
+                scene.images[0].opacity = opacity;
+                let profiler = ffmpeg_utils::profiling::MediaProfiler::default();
+                let result = super::run_overlay_plan_measured(
+                    plan,
+                    super::OverlaySpec {
+                        input: scene,
+                        width: 1920,
+                        height: 1080,
+                        fps: 60.0,
+                        start: 0.0,
+                        duration: 1.0,
+                    },
+                    profiler.clone(),
+                    None::<&Silent>,
+                )
+                .await
+                .unwrap();
+                assert_eq!(result.video_frames, 60);
+                let report = profiler.report();
+                let counters = &report.metadata["compositor_counters"];
+                assert!(counters.contains("srgb=30,"), "{counters}");
+                assert!(ffmpeg_utils::video_is_sdr_bt709(&output).await.unwrap());
+                let raw_path = directory.path().join("pixels.nv12");
+                let mut raw_output = MediaOutput::file(&raw_path);
+                raw_output.format = Some("rawvideo".into());
+                let decode = ffmpeg_utils::MediaPlan {
+                    inputs: vec![ffmpeg_utils::MediaInput::file(&output)], outputs: vec![raw_output],
+                    routes: vec![StreamRoute {
+                        source: StreamSource::Input { input: 0, selector: StreamSelector::FirstVideo }, output: 0, required: true,
+                        mode: StreamMode::Video(VideoEncodeOptions {
+                            encoder: "rawvideo".into(), filter: Some("scale=64:36:in_color_matrix=bt709:out_color_matrix=bt709:in_range=tv:out_range=tv,format=nv12".into()),
+                            frame_rate: FrameRatePolicy::Passthrough, ..Default::default()
+                        }),
+                    }], ..Default::default()
+                };
+                assert_eq!(
+                    ffmpeg_utils::execute_media_plan(decode, None)
+                        .await
+                        .unwrap()
+                        .video_frames,
+                    60
+                );
+                let pixels = std::fs::read(raw_path).unwrap();
+                let encoded_gray: f64 = 112.0 / 219.0;
+                let linear = ((encoded_gray + 0.055) / 1.055).powf(2.4);
+                let converted = (1.099 * linear.powf(0.45) - 0.099) * 255.0;
+                let mut maximum_error: f64 = 0.0;
+                for (frame, gray) in [(5, converted), (35, encoded_gray * 255.0)] {
+                    let alpha = (opacity as f64 * 255.0).round() / 255.0;
+                    for (x, y, expected) in [
+                        (16, 4, [gray; 3]),
+                        (
+                            32,
+                            18,
+                            [
+                                255.0 * alpha + gray * (1.0 - alpha),
+                                gray * (1.0 - alpha),
+                                gray * (1.0 - alpha),
+                            ],
+                        ),
+                    ] {
+                        // Compare decoded NV12 directly. A second low-resolution
+                        // YUV->RGB swscale introduces avoidable integer errors.
+                        let [r, g, b] = expected.map(|c| c / 255.0);
+                        let expected = [
+                            16.0 + 219.0 * (0.2126 * r + 0.7152 * g + 0.0722 * b),
+                            128.0
+                                + 224.0 * (-0.11457210605734 * r - 0.38542789394266 * g + 0.5 * b),
+                            128.0
+                                + 224.0 * (0.5 * r - 0.454152908305817 * g - 0.045847091694183 * b),
+                        ];
+                        let start = frame * 64 * 36 * 3 / 2;
+                        let uv = start + 64 * 36 + (y / 2) * 64 + (x / 2) * 2;
+                        let actual = [pixels[start + y * 64 + x], pixels[uv], pixels[uv + 1]];
+                        for c in 0..3 {
+                            let error = (actual[c] as f64 - expected[c]).abs();
+                            maximum_error = maximum_error.max(error);
+                            assert!(
+                                error <= 2.0,
+                                "{encoder} opacity={opacity} frame={frame} ({x},{y},{c}): {} vs {}",
+                                actual[c],
+                                expected[c]
+                            );
+                        }
+                    }
+                }
+                eprintln!("sRGB MediaPlan {encoder} opacity={opacity}: {counters}; converted pixels and BT.709 tail verified, max YUV error {maximum_error:.3}");
+            }
+        }
+    }
+
     fn moving_spec(duration: f64) -> super::OverlaySpec {
         let ass = super::super::subtitle_native::srt_to_ass(
             "1\n00:00:00,000 --> 00:00:00,800\nGPU\n",
@@ -1095,7 +1235,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let source = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("crates/ffmpeg_utils/src/hls/fixtures/live.flv");
-        assert!(ffmpeg_utils::video_is_sdr_bt709(&source).await.unwrap());
+        assert!(ffmpeg_utils::video_supports_gpu_sdr(&source).await.unwrap());
         let duration = super::super::danmu::probe_overlay_duration(&source, 6.0)
             .await
             .unwrap();

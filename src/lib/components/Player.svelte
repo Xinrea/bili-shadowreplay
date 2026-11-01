@@ -83,6 +83,7 @@
     danmu_enabled?: boolean;
     local_offset?: number;
     volume?: number;
+    muted?: boolean;
     playback_rate?: number;
     is_playing?: boolean;
     playback_time?: number;
@@ -107,6 +108,7 @@
     danmu_enabled = $bindable(true),
     local_offset = $bindable(0),
     volume = $bindable(1),
+    muted = $bindable(false),
     playback_rate = $bindable(1),
     is_playing = $bindable(false),
     playback_time = $bindable(0),
@@ -143,7 +145,17 @@
   export function setVolume(nextVolume: number) {
     if (!video) return;
     volume = Math.min(1, Math.max(0, nextVolume));
+    if (volume > 0) last_nonzero_volume = volume;
     video.volume = volume;
+    video.muted = false;
+    muted = false;
+  }
+  export function toggleMute() {
+    if (!video) return;
+    const nextMuted = !video.muted && video.volume > 0;
+    if (!nextMuted && video.volume === 0) setVolume(last_nonzero_volume);
+    video.muted = nextMuted;
+    muted = nextMuted;
   }
   export function setPlaybackRate(rate: number) {
     if (!video || !PLAYBACK_RATES.some((preset) => preset === rate)) return;
@@ -168,6 +180,7 @@
     });
   }
   let video: HTMLVideoElement;
+  let last_nonzero_volume = 1;
   let shaka_player: any;
   let start = $state(0);
   let end = $state(0);
@@ -588,6 +601,8 @@ ${mediaPlaylistUrl}`;
 
     video.addEventListener("volumechange", (event) => {
       volume = video.volume;
+      muted = video.muted;
+      if (volume > 0) last_nonzero_volume = volume;
       localStorage.setItem(`volume:${room_id}`, volume.toString());
     });
     video.addEventListener("play", () => {

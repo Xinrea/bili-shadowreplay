@@ -41,6 +41,7 @@
     isPlaying?: boolean;
     isLive?: boolean;
     volume?: number;
+    muted?: boolean;
     playbackRate?: number;
     danmuEnabled?: boolean;
     danmuOffset?: number;
@@ -50,6 +51,7 @@
     onTogglePlayback?: () => void;
     onSeekLive?: () => void;
     onVolumeChange?: (volume: number) => void;
+    onToggleMute?: () => void;
     onPlaybackRateChange?: (rate: number) => void;
     onToggleDanmu?: () => void;
     onDanmuOffsetChange?: (offset: number) => void;
@@ -78,6 +80,7 @@
     isPlaying = false,
     isLive = false,
     volume = 1,
+    muted = false,
     playbackRate = 1,
     danmuEnabled = true,
     danmuOffset = 0,
@@ -87,6 +90,7 @@
     onTogglePlayback,
     onSeekLive,
     onVolumeChange,
+    onToggleMute,
     onPlaybackRateChange,
     onToggleDanmu,
     onDanmuOffsetChange,
@@ -99,6 +103,7 @@
   let danmu_message = $state("");
   let show_settings = $state(false);
   let settings_control: HTMLDivElement;
+  let isMuted = $derived(muted || volume === 0);
 
   let visibleHeatPoints = $derived(
     heatPoints.filter(
@@ -326,9 +331,12 @@
         <button
           type="button"
           class="control-icon volume-button"
-          aria-label={`音量 ${Math.round(volume * 100)}%`}
+          title={isMuted ? "取消静音" : "静音"}
+          aria-label={`${isMuted ? "取消静音" : "静音"}，音量 ${Math.round(volume * 100)}%`}
+          aria-pressed={isMuted}
+          onclick={onToggleMute}
         >
-          {#if volume === 0}
+          {#if isMuted}
             <VolumeX size={15} />
           {:else}
             <Volume2 size={15} />

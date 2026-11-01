@@ -39,6 +39,7 @@
     seek(offset: number): void;
     togglePlayback(): void;
     setVolume(volume: number): void;
+    toggleMute(): void;
     setPlaybackRate(rate: number): void;
     toggleDanmu(): void;
     setDanmuOffset(offset: number): void;
@@ -363,6 +364,7 @@
   let player_duration = $state(0);
   let selected_range_index = $state(-1);
   let player_volume = $state(1);
+  let player_muted = $state(false);
   let player_playback_rate = $state(1);
   let player_is_playing = $state(false);
   let player_is_live = $state(false);
@@ -671,6 +673,7 @@
           bind:danmu_enabled
           bind:local_offset={danmu_offset}
           bind:volume={player_volume}
+          bind:muted={player_muted}
           bind:playback_rate={player_playback_rate}
           bind:is_playing={player_is_playing}
           bind:playback_time={current_time}
@@ -722,6 +725,7 @@
         isPlaying={player_is_playing}
         isLive={player_is_live}
         volume={player_volume}
+        muted={player_muted}
         playbackRate={player_playback_rate}
         danmuEnabled={danmu_enabled}
         danmuOffset={danmu_offset}
@@ -735,6 +739,7 @@
         onTogglePlayback={() => player?.togglePlayback()}
         onSeekLive={() => player?.seekLive()}
         onVolumeChange={(value) => player?.setVolume(value)}
+        onToggleMute={() => player?.toggleMute()}
         onPlaybackRateChange={(value) => player?.setPlaybackRate(value)}
         onToggleDanmu={() => player?.toggleDanmu()}
         onDanmuOffsetChange={(value) => player?.setDanmuOffset(value)}

@@ -45,7 +45,7 @@ export async function draftUpload(pick: UploadPick, uploads: UploadItem[]): Prom
       (upload) =>
         upload.source === pick.source &&
         upload.source_id === pick.item.id &&
-        (upload.status === "draft" || upload.status === "failed"),
+        isUploadEditable(upload),
     );
     if (draft) return draft;
   }
@@ -116,6 +116,11 @@ export function projectSubtitleAss(project: ProjectItem, fps: number): string | 
 
 export function uploadTitle(upload: UploadItem) {
   return parseProfile(upload.profile).title || "未命名投稿";
+}
+
+/** Drafts and failed attempts can be edited and reused for another attempt. */
+export function isUploadEditable(upload: UploadItem) {
+  return upload.status === "draft" || upload.status === "failed";
 }
 
 export function isUploadActive(upload: UploadItem) {

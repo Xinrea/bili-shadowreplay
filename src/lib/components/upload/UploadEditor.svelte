@@ -19,6 +19,8 @@
   import { defaultRenderSettings, frameRateQuery, parseTimeline } from "../../project-timeline";
   import { announceTask, openTaskCenter, settleTask } from "../../stores/tasks";
   import {
+    isUploadActive,
+    isUploadEditable,
     parseProfile,
     projectSubtitleAss,
     saveRoomTemplate,
@@ -61,7 +63,7 @@
   let titleInput: HTMLInputElement | undefined = $state();
   let closeButton: HTMLButtonElement | undefined = $state();
 
-  let editable = $derived(upload.status === "draft" || upload.status === "failed");
+  let editable = $derived(isUploadEditable(upload));
   let savingDanmu = $state(false);
   let savingRenderSettings = $state(false);
   let renderSettings = $state(defaultRenderSettings());
@@ -73,7 +75,7 @@
   let canToggleDanmu = $derived(
     editable && !posting && (upload.danmu_available || upload.danmu) && !savingDanmu,
   );
-  let active = $derived(upload.status === "exporting" || upload.status === "posting");
+  let active = $derived(isUploadActive(upload));
   let blocker = $derived(
     upload.source_state === "missing"
       ? "来源已不存在"

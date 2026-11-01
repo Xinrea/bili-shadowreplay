@@ -26,6 +26,7 @@
   import {
     draftUpload,
     isUploadActive,
+    isUploadEditable,
     sourceLabels,
     uploadAccounts,
     uploadRequest,
@@ -318,7 +319,7 @@
             </thead>
             <tbody class="divide-y divide-line">
               {#each filtered as upload (upload.id)}
-                {@const editable = upload.status === "draft" || upload.status === "failed"}
+                {@const editable = isUploadEditable(upload)}
                 <tr class="group transition-colors hover:bg-control-hover/50 {selectedUploads.has(upload.id) ? 'bg-accent-soft/40' : ''}">
                   <td class="w-12 px-4 py-2.5">
                     <input

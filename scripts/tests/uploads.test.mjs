@@ -83,6 +83,21 @@ test("only projects with visible subtitles carry an ASS document", async () => {
   assert.match(ass, /^Dialogue: 0,0:00:01\.98,0:00:03\.98,.*你好$/m);
 });
 
+test("posted uploads stay read-only even though they are no longer active", async () => {
+  const api = await loadModule();
+  for (const [status, editable, active] of [
+    ["draft", true, false],
+    ["failed", true, false],
+    ["exporting", false, true],
+    ["posting", false, true],
+    ["posted", false, false],
+    ["unknown", false, false],
+  ]) {
+    assert.equal(api.isUploadEditable({ status }), editable, `${status}: editable`);
+    assert.equal(api.isUploadActive({ status }), active, `${status}: active`);
+  }
+});
+
 test("a source's unposted draft is reused, and a new one started once it is posted", async () => {
   const calls = [];
   const api = await loadModule({}, async (command, args) => {

@@ -13,7 +13,7 @@
     X,
   } from "lucide-svelte";
   import type { TaskRow } from "../lib/db";
-  import { taskTypeName } from "../lib/task-progress";
+  import { isActiveTaskStatus, taskTypeName } from "../lib/task-progress";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
   import { onMount } from "svelte";
   import { registerCommands } from "../lib/stores/commands";
@@ -152,11 +152,6 @@
     return tasks.filter((task) =>
       statuses.includes(task.status.toLowerCase()),
     ).length;
-  }
-
-  function is_cancelable_status(status: string) {
-    const normalized = status.toLowerCase();
-    return normalized === "pending" || normalized === "processing";
   }
 
   function format_date(date_str: string) {
@@ -442,7 +437,7 @@
                       )} {get_status_color(task.status)}"
                       title={task.status}
                     >
-                      {#if task.status.toLowerCase() === "pending" || task.status.toLowerCase() === "processing"}
+                      {#if isActiveTaskStatus(task.status)}
                         <Loader2 class="w-3 h-3 animate-spin" />
                       {:else}
                         {@const SvelteComponent = get_status_icon(task.status)}
@@ -464,22 +459,22 @@
                   <div class="flex justify-end">
                     <button
                       class={`flex h-7 min-w-[28px] items-center justify-center gap-1 rounded-[7px] px-1.5 transition-colors ${
-                        is_cancelable_status(task.status)
+                        isActiveTaskStatus(task.status)
                           ? "text-warning-fg hover:bg-warning-soft"
                           : "text-fg-faint hover:bg-danger-soft hover:text-danger-fg"
                       } ${actionTaskId === task.id ? "cursor-wait" : ""}`}
                       onclick={() =>
-                        is_cancelable_status(task.status)
+                        isActiveTaskStatus(task.status)
                           ? cancel_task(task.id)
                           : delete_task(task.id)}
                       disabled={actionTaskId === task.id}
-                      title={is_cancelable_status(task.status)
+                      title={isActiveTaskStatus(task.status)
                         ? "取消任务"
                         : "删除任务"}
                     >
                       {#if actionTaskId === task.id}
                         <Loader2 class="w-3.5 h-3.5 animate-spin" />
-                      {:else if is_cancelable_status(task.status)}
+                      {:else if isActiveTaskStatus(task.status)}
                         <XCircle class="w-3.5 h-3.5" />
                         <span class="text-[11px] font-medium">取消</span>
                       {:else}

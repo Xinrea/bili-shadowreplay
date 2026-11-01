@@ -60,3 +60,24 @@ test("structured media confirmations retain their operation parameters", async (
     } },
   ]);
 });
+
+test("argument keys stay data and canonical names win throughout nested parameters", async () => {
+  const source = `{"clipRangeParams": {
+    "__proto__": {"title": "inherited"}, "Title": "explicit", "Constructor": "metadata",
+    "roomId": "alias", "room_id": "canonical",
+    "ranges": [{"__proto__": {"start": 99}, "Start": 1, "End": 2}, {"Start": 4, "start": 3, "End": 5}]
+  }}`;
+  for (const args of [source, JSON.parse(source)]) {
+    const f = await fixture();
+    await f.invoke("clip_range", args);
+    const params = f.calls[0].args.params;
+    assert.deepEqual(JSON.parse(JSON.stringify(params)), {
+      ["__proto__"]: { title: "inherited" },
+      title: "explicit",
+      constructor: "metadata",
+      room_id: "canonical",
+      ranges: [{ ["__proto__"]: { start: 99 }, start: 1, end: 2 }, { start: 3, end: 5 }],
+    });
+    assert.equal(Object.getPrototypeOf(params.ranges[0]), Object.getPrototypeOf(f.calls[0].args));
+  }
+});

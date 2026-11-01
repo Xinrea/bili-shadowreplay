@@ -36,6 +36,11 @@ export function formatRemaining(seconds: number) {
 
 const ACTIVE_STATUSES = new Set(["pending", "processing"]);
 
+/** Backend task states that are still waiting or running. */
+export function isActiveTaskStatus(status: string): boolean {
+  return ACTIVE_STATUSES.has(status.toLowerCase());
+}
+
 export interface ActiveTask extends TaskRow {
   /** Latest live progress, or null until the task reports any. */
   update: ProgressUpdate | null;
@@ -52,7 +57,7 @@ export function mergeActiveTasks(
 ): ActiveTask[] {
   const listed = new Set(rows.map((row) => row.id));
   return [
-    ...rows.filter((row) => ACTIVE_STATUSES.has(row.status.toLowerCase())),
+    ...rows.filter((row) => isActiveTaskStatus(row.status)),
     ...announced.filter((task) => !listed.has(task.id)),
   ]
     .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))

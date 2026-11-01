@@ -247,18 +247,19 @@ function normalizeArgumentValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(normalizeArgumentValue);
   if (!isRecord(value)) return value;
 
-  const normalized: Record<string, unknown> = {};
+  // Treat every key as data, including __proto__ and constructor.
+  const normalized = new Map<string, unknown>();
   for (const [key, item] of Object.entries(value)) {
     const canonical = snakeCaseKey(key);
-    if (canonical === key) normalized[canonical] = normalizeArgumentValue(item);
+    if (canonical === key) normalized.set(canonical, normalizeArgumentValue(item));
   }
   for (const [key, item] of Object.entries(value)) {
     const canonical = snakeCaseKey(key);
-    if (!(canonical in normalized)) {
-      normalized[canonical] = normalizeArgumentValue(item);
+    if (!normalized.has(canonical)) {
+      normalized.set(canonical, normalizeArgumentValue(item));
     }
   }
-  return normalized;
+  return Object.fromEntries(normalized);
 }
 
 function messageContent(value: unknown): MessageContent {

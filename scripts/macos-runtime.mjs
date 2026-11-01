@@ -64,7 +64,7 @@ export function prepareMoltenVk(cache, { source, archive = MOLTENVK, download } 
   const directory = path.join(cache, `moltenvk-${identity}-v1`);
   const library = path.join(directory, "libvulkan.dylib");
   const receipt = path.join(directory, "runtime.json");
-  if (fs.existsSync(directory)) {
+  function cachedLibrary() {
     try {
       if (JSON.parse(fs.readFileSync(receipt, "utf8")).sha256 !== digest(library)) throw new Error("checksum mismatch");
       validateLibrary(library);
@@ -73,6 +73,7 @@ export function prepareMoltenVk(cache, { source, archive = MOLTENVK, download } 
       throw new Error(`Invalid MoltenVK cache; remove ${directory} and retry: ${error.message}`);
     }
   }
+  if (fs.existsSync(directory)) return cachedLibrary();
   fs.mkdirSync(cache, { recursive: true });
   const work = fs.mkdtempSync(path.join(cache, ".prepare-"));
   try {
@@ -102,8 +103,7 @@ export function prepareMoltenVk(cache, { source, archive = MOLTENVK, download } 
     try { fs.renameSync(prepared, directory); }
     catch (error) {
       if (!["EEXIST", "ENOTEMPTY"].includes(error.code)) throw error;
-      const existing = JSON.parse(fs.readFileSync(receipt, "utf8"));
-      if (existing.sha256 !== digest(library)) throw new Error(`Invalid MoltenVK cache; remove ${directory} and retry`);
+      return cachedLibrary();
     }
     return library;
   } finally {

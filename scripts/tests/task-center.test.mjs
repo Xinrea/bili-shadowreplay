@@ -97,6 +97,25 @@ test("only pending and processing tasks are listed, newest first", async () => {
   assert.equal(f.listeners.size, 0);
 });
 
+test("active statuses ignore case but display aliases do not create progress subscriptions", async () => {
+  const f = await fixture();
+  const created = "2026-10-18T12:00:00+00:00";
+  f.backend.rows = [
+    row("queued", "PENDING", created),
+    row("working", "Processing", created),
+    ...["success", "failed", "running", "waiting", "unknown", ""].map((status) => row(status, status, created)),
+  ];
+  await f.refresh();
+  assert.deepEqual(plain(f.tasks.map((task) => [task.id, task.status])), [
+    ["queued", "PENDING"],
+    ["working", "Processing"],
+  ]);
+  assert.deepEqual([...f.listeners.keys()].sort(), ["progress-update:queued", "progress-update:working"]);
+  f.unsubscribe();
+  await f.settle();
+  assert.equal(f.listeners.size, 0);
+});
+
 test("an announced task shows before the backend lists it and hands over to the backend row", async () => {
   const f = await fixture();
   f.store.announceTask({ id: "clip-1", task_type: "clip_range", metadata: "{}" });

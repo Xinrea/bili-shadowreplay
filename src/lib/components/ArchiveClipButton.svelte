@@ -39,7 +39,7 @@
 
   let showConfirm = $state(false);
   let clipNote = $state("");
-  let fixEncoding = $state(false);
+  let reencode = $state(false);
   let createProject = $state(true);
   /** Burn danmaku into the material instead of saving it alongside. */
   let embedDanmu = $state(false);
@@ -88,6 +88,7 @@
     if (!archive || activeRanges.length === 0) return;
     showConfirm = false;
     const merge = merged;
+    const shouldReencode = embedDanmu || reencode;
     const eventId = generateEventId();
     const params: ClipRangeParams = {
       title: archive.title,
@@ -99,14 +100,14 @@
       live_id: archive.live_id,
       ranges: activeRanges,
       danmu: embedDanmu,
-      render_settings: { ...renderSettings },
+      render_settings: shouldReencode ? { ...renderSettings } : undefined,
       local_offset:
         localOffset ??
         (parseInt(
           localStorage.getItem(`local_offset:${archive.live_id}`) || "0",
           10,
         ) || 0),
-      fix_encoding: fixEncoding,
+      fix_encoding: shouldReencode,
     };
     announceTask({
       id: eventId,
@@ -311,10 +312,24 @@
             </div>
 
             <div class="space-y-1.5">
-              <RenderSettingsFields bind:value={renderSettings} />
+              <label class="flex items-center gap-2.5">
+                <input
+                  type="checkbox"
+                  checked={embedDanmu || reencode}
+                  onchange={(event) => (reencode = event.currentTarget.checked)}
+                  disabled={embedDanmu}
+                  class="ui-checkbox"
+                />
+                <span class="text-[13px] text-fg-secondary">重新编码</span>
+              </label>
               <p class="text-[11px] text-fg-muted">
-                素材将按以上设置重新编码，无论是否内嵌弹幕。
+                {embedDanmu
+                  ? "内嵌弹幕需要重新编码，无法取消"
+                  : reencode
+                    ? "按以下设置重新编码，耗时较长"
+                    : "保留原始编码，直接复制并拼接片段"}
               </p>
+              <RenderSettingsFields bind:value={renderSettings} disabled={!embedDanmu && !reencode} />
             </div>
 
             <div class="space-y-2.5">
@@ -332,15 +347,6 @@
                       : "按选区顺序把生成的素材放入一个新切片，便于直接剪辑和投稿"}
                   </span>
                 </span>
-              </label>
-
-              <label class="flex cursor-pointer items-center gap-2.5">
-                <input
-                  type="checkbox"
-                  bind:checked={fixEncoding}
-                  class="ui-checkbox"
-                />
-                <span class="text-[13px] text-fg-secondary">修复编码（素材异常时使用）</span>
               </label>
             </div>
           </div>

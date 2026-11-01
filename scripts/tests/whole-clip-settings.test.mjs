@@ -8,8 +8,8 @@ const source = await readFile(new URL("../../src/lib/components/GenerateWholeCli
 const script = source.match(/<script lang="ts">([\s\S]*?)<\/script>/)[1];
 const output = ts.transpileModule(`${script}
   export { generateWholeClip, closeModal, loadWholeClipArchives };
-  export function configure(settings, danmu, ids = ["second", "first"]) {
-    renderSettings = settings; encodeDanmu = danmu; selectedLiveIds = ids;
+  export function configure(settings, danmu, ids = ["second", "first"], encode = true) {
+    renderSettings = settings; encodeDanmu = danmu; selectedLiveIds = ids; reencode = encode;
   }
   export function state() {
     return { showModal, isSubmitting, generationError, renderSettings };
@@ -60,12 +60,12 @@ async function fixture() {
   return { handlers: module.namespace, requests, generated };
 }
 
-test("complete recording generation sends HEVC/speed/10 Mbps defaults without danmaku", async () => {
+test("complete recording generation defaults to stream copy without danmaku", async () => {
   const f = await fixture();
   await f.handlers.loadWholeClipArchives("room", "parent");
   const completion = f.handlers.generateWholeClip();
   const request = f.requests[0];
-  assert.deepEqual(plain(request.args.renderSettings), defaults());
+  assert.equal(request.args.renderSettings, undefined);
   assert.deepEqual(plain(request.args.selectedLiveIds), ["first", "second"]);
   assert.equal(request.args.encodeDanmu, false);
   assert.equal(request.args.platform, "bilibili");
@@ -75,6 +75,24 @@ test("complete recording generation sends HEVC/speed/10 Mbps defaults without da
   await completion;
   assert.equal(f.handlers.state().showModal, false);
   assert.deepEqual(f.generated, [true]);
+});
+
+test("complete recording encoding is optional unless danmaku is embedded", async () => {
+  const f = await fixture();
+  for (const encode of [false, true]) {
+    for (const danmu of [false, true, false]) {
+      f.handlers.configure(defaults(), danmu, ["first", "second"], encode);
+      const completion = f.handlers.generateWholeClip();
+      const request = f.requests.at(-1);
+      assert.equal(request.args.encodeDanmu, danmu);
+      assert.deepEqual(
+        plain(request.args).renderSettings,
+        danmu || encode ? defaults() : undefined,
+      );
+      request.resolve({ id: "task" });
+      await completion;
+    }
+  }
 });
 
 for (const danmu of [false, true]) {

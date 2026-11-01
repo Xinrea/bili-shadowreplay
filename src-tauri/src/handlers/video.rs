@@ -449,7 +449,7 @@ fn unused_output_path(path: PathBuf) -> PathBuf {
 /// The recording ranges a material really covers. Stream copy starts a cut at
 /// the keyframe before the requested start while the end stays where it was
 /// asked, so a single-range material begins `duration - requested` earlier.
-/// Several ranges are joined by decoding and already measured by the cut.
+/// Multiple ranges already have their copy/encode boundaries measured by the cut.
 fn actual_material_ranges(ranges: &[ffmpeg::Range], duration: f64) -> Vec<ffmpeg::Range> {
     match ranges {
         [range] if duration - range.duration() > 0.05 => vec![ffmpeg::Range {

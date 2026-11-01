@@ -56,7 +56,9 @@ async function fixture({ variant = "primary" } = {}) {
   const script = source.match(/<script lang="ts">([\s\S]*?)<\/script>/)[1];
   const output = ts.transpileModule(`${script}
     export { generateClip };
-    export function configure(settings, danmu) { renderSettings = settings; embedDanmu = danmu; }
+    export function configure(settings, danmu, encode = true) {
+      renderSettings = settings; embedDanmu = danmu; reencode = encode;
+    }
   `, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
   }).outputText;
@@ -94,9 +96,9 @@ test("a started clip is announced, highlighted, and settled with its result", as
   assert.equal(f.announced[0].task_type, "generate_materials");
   // The cover is a data URL the task list never needs.
   assert.equal(JSON.parse(f.announced[0].metadata).params.cover, "");
-  assert.deepEqual(JSON.parse(f.announced[0].metadata).params.render_settings, {
-    codec: "hevc", priority: "speed", bitrate_kbps: 10000,
-  });
+  assert.equal(request.params.render_settings, undefined);
+  assert.equal(request.params.fix_encoding, false);
+  assert.equal(JSON.parse(f.announced[0].metadata).params.render_settings, undefined);
   assert.deepEqual(f.opened, [request.eventId]);
   assert.deepEqual(f.settled, []);
 
@@ -127,6 +129,24 @@ test("material settings are submitted independently of danmaku and snapshotted p
   first.request.resolve({ id: 1 });
   second.request.resolve({ id: 2 });
   await Promise.all([first.completion, second.completion]);
+});
+
+test("embedded danmaku forces encoding and external danmaku restores the optional choice", async () => {
+  const f = await fixture();
+  const settings = { codec: "h264", priority: "quality", bitrate_kbps: 16000 };
+  for (const encode of [false, true]) {
+    for (const danmu of [false, true, false]) {
+      f.handlers.configure(settings, danmu, encode);
+      const { completion, request } = await startClip(f);
+      assert.equal(request.params.fix_encoding, danmu || encode);
+      assert.deepEqual(
+        JSON.parse(JSON.stringify(request.params)).render_settings,
+        danmu || encode ? settings : undefined,
+      );
+      request.resolve({ id: 1 });
+      await completion;
+    }
+  }
 });
 
 test("clips can be generated while another is still running", async () => {

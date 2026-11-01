@@ -78,6 +78,28 @@ int main(int argc, char **argv) {
     assert.equal(fs.readFileSync(path.join(path.dirname(downloaded), "LICENSE"), "utf8"), "fixture license");
     assert.equal(prepareMoltenVk(cache, { archive, download: () => { throw new Error("offline"); } }), downloaded);
     assert.equal(downloads, 1);
+
+    // Another launcher publishes while this one downloads. Its receipt alone
+    // is insufficient: the winning library must pass the native checks too.
+    for (const invalid of [false, true]) {
+      const racingCache = path.join(directory, `racing-cache-${invalid}`);
+      const winner = path.join(racingCache, path.basename(path.dirname(downloaded)));
+      const racingOptions = { archive, download: (_url, file) => {
+        fs.copyFileSync(tar, file);
+        fs.cpSync(path.dirname(downloaded), winner, { recursive: true });
+        if (invalid) {
+          const contents = "not a dynamic library";
+          fs.writeFileSync(path.join(winner, "libvulkan.dylib"), contents);
+          fs.writeFileSync(path.join(winner, "runtime.json"), JSON.stringify({
+            sha256: createHash("sha256").update(contents).digest("hex"),
+          }));
+        }
+      } };
+      if (invalid) assert.throws(() => prepareMoltenVk(racingCache, racingOptions), /Invalid MoltenVK cache/);
+      else assert.equal(prepareMoltenVk(racingCache, racingOptions), path.join(winner, "libvulkan.dylib"));
+      assert.deepEqual(fs.readdirSync(racingCache), [path.basename(winner)], "temporary preparation files are removed");
+    }
+
     fs.appendFileSync(downloaded, "corruption");
     assert.throws(() => prepareMoltenVk(cache, options), /Invalid MoltenVK cache/);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }

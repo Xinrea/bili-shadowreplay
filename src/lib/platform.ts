@@ -1,18 +1,18 @@
-const labels: Record<string, string> = {
-  bilibili: "B站",
-  douyin: "抖音",
-  douyu: "斗鱼",
-  huya: "虎牙",
-  kuaishou: "快手",
-  tiktok: "TikTok",
-  twitch: "Twitch",
-  youtube: "YouTube",
-};
+const labels = new Map<string, string>([
+  ["bilibili", "B站"],
+  ["douyin", "抖音"],
+  ["douyu", "斗鱼"],
+  ["huya", "虎牙"],
+  ["kuaishou", "快手"],
+  ["tiktok", "TikTok"],
+  ["twitch", "Twitch"],
+  ["youtube", "YouTube"],
+]);
 
 /** Display name of a live platform, or the id itself for unknown platforms. */
 export function platformLabel(platform: string | undefined): string {
   if (!platform) return "未知";
-  return labels[platform.toLowerCase()] ?? platform;
+  return labels.get(platform.toLowerCase()) ?? platform;
 }
 
 /**

@@ -65,6 +65,7 @@
     addAudio,
     addOverlay,
     addSubtitle,
+    audioFades,
     canShiftOverlay,
     clipToOverlay,
     clipAt,
@@ -361,10 +362,6 @@
       const item = entry.item;
       const file = item.kind === "file" ? audioFiles.get(item.audio_id)?.file : materials.get(item.material_id)?.file;
       if (!file) continue;
-      // Shared out over the part heard, as export does.
-      const length = entry.end - entry.start;
-      const [fadeIn, fadeOut] = [Math.max(0, item.fade_in ?? 0), Math.max(0, item.fade_out ?? 0)];
-      const scale = fadeIn + fadeOut > length ? length / (fadeIn + fadeOut) : 1;
       result.push({
         id: item.id,
         file,
@@ -372,8 +369,7 @@
         end: entry.end,
         from: item.source_start + entry.skip,
         volume: item.volume,
-        fadeIn: fadeIn * scale,
-        fadeOut: fadeOut * scale,
+        ...audioFades(entry),
       });
     }
     return result;

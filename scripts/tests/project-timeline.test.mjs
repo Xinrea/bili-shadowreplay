@@ -584,6 +584,22 @@ test("sounds of deleted materials and audio files leave a timeline being edited"
   assert.equal(api.mergeRemoteTimeline(base, base, base), base);
 });
 
+test("audio fades use the heard duration without changing the saved item", () => {
+  for (const [fade_in, fade_out, length, expected] of [
+    [undefined, undefined, 4, { fadeIn: 0, fadeOut: 0 }],
+    [1, 2, 4, { fadeIn: 1, fadeOut: 2 }],
+    [6, 2, 4, { fadeIn: 3, fadeOut: 1 }],
+    [6, 2, 1, { fadeIn: 0.75, fadeOut: 0.25 }],
+    [-1, 6, 4, { fadeIn: 0, fadeOut: 4 }],
+    [6, -1, 4, { fadeIn: 4, fadeOut: 0 }],
+    [6, 2, 0, { fadeIn: 0, fadeOut: 0 }],
+  ]) {
+    const item = Object.freeze({ ...music(0, 20), fade_in, fade_out });
+    const placed = Object.freeze({ item, track: 0, start: 2, end: 2 + length, skip: 0 });
+    assert.deepEqual(plain(api.audioFades(placed)), expected);
+  }
+});
+
 test("an audio item fades over the part heard, as export fades it", () => {
   const placed = (fade_in, fade_out) => ({ item: { ...music(0, 4), fade_in, fade_out }, track: 0, start: 2, end: 6, skip: 0 });
   const gains = (item) => [2, 2.5, 3, 4, 5.5, 6].map((time) => api.fadeGain(item, time));

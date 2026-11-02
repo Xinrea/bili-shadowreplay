@@ -33,6 +33,7 @@
   import { onDestroy } from "svelte";
   import type { MaterialPeaks, ProjectTimeline, TrackKind } from "../../interface";
   import {
+    audioFades,
     canLiftClip,
     moveTimelineSelection,
     type TimelineSelection,
@@ -1021,14 +1022,6 @@
     return materials.get(item.material_id)?.name ?? "素材已删除";
   }
 
-  /** The fades of an audio item over its part heard, in seconds, as export shares them out. */
-  function fades(item: PlacedAudio) {
-    const length = item.end - item.start;
-    const [fadeIn, fadeOut] = [item.item.fade_in ?? 0, item.item.fade_out ?? 0];
-    const scale = fadeIn + fadeOut > length ? length / (fadeIn + fadeOut) : 1;
-    return { fadeIn: fadeIn * scale, fadeOut: fadeOut * scale };
-  }
-
   function overlayLabel(item: PlacedOverlay["item"]) {
     if (item.kind === "text") return item.element.content.replace(/\n/g, " ") || "文字";
     if (item.kind === "sticker") return "贴纸";
@@ -1429,7 +1422,7 @@
             {#each audio.filter((entry) => entry.track === track) as item (item.item.id)}
               {@const width = (item.end - item.start) * pxPerSecond}
               {@const sound = item.item}
-              {@const fade = fades(item)}
+              {@const fade = audioFades(item)}
               <div
                 class="sound"
                 class:labelled={width >= LABEL_MIN_PX}

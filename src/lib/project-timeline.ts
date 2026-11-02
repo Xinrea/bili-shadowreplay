@@ -1376,11 +1376,8 @@ export function withAudioFrom(current: ProjectTimeline, base: ProjectTimeline, i
   return original ? editAudio(current, id, () => original) : current;
 }
 
-/**
- * How loud an audio item's fades leave it at project time `time`, 0 to 1, as
- * export fades it: over the part heard, and together no longer than it.
- */
-export function fadeGain(placed: PlacedAudio, time: number): number {
+/** Nonnegative fades over the part heard, proportionally shortened to fit. */
+export function audioFades(placed: PlacedAudio): { fadeIn: number; fadeOut: number } {
   const length = placed.end - placed.start;
   let fadeIn = Math.max(0, placed.item.fade_in ?? 0);
   let fadeOut = Math.max(0, placed.item.fade_out ?? 0);
@@ -1389,6 +1386,15 @@ export function fadeGain(placed: PlacedAudio, time: number): number {
     fadeIn *= scale;
     fadeOut *= scale;
   }
+  return { fadeIn, fadeOut };
+}
+
+/**
+ * How loud an audio item's fades leave it at project time `time`, 0 to 1, as
+ * export fades it: over the part heard, and together no longer than it.
+ */
+export function fadeGain(placed: PlacedAudio, time: number): number {
+  const { fadeIn, fadeOut } = audioFades(placed);
   let gain = 1;
   if (fadeIn > 0) gain = Math.min(gain, (time - placed.start) / fadeIn);
   if (fadeOut > 0) gain = Math.min(gain, (placed.end - time) / fadeOut);

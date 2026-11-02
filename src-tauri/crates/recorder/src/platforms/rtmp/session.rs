@@ -67,8 +67,24 @@ pub(super) async fn receive(
 
 struct Recording {
     writer: Option<TcpStream>,
-    worker: JoinHandle<Result<(), RecorderError>>,
+    worker: Option<JoinHandle<Result<(), RecorderError>>>,
     enabled: Arc<AtomicBool>,
+}
+
+impl Recording {
+    async fn wait_for_worker(&mut self) {
+        if let Some(worker) = self.worker.as_mut() {
+            // Borrow the handle while waiting so cancellation leaves it available
+            // to finish(). Once joined, never poll the completed handle again.
+            let result = worker.await;
+            self.worker = None;
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => log::warn!("RTMP recording failed: {error}"),
+                Err(error) => log::error!("RTMP recording task failed: {error}"),
+            }
+        }
+    }
 }
 
 struct Connection {
@@ -187,8 +203,17 @@ impl Connection {
             if rejected {
                 return Ok(());
             }
-            let length =
-                timeout_at(self.io_deadline(auth_deadline), socket.read(&mut buffer)).await??;
+            let input = timeout_at(self.io_deadline(auth_deadline), socket.read(&mut buffer));
+            let length = match self.recording.as_mut() {
+                Some(recording) => tokio::select! {
+                    // Control traffic must not retain the publisher permit after
+                    // the native recorder has timed out or failed.
+                    biased;
+                    _ = recording.wait_for_worker() => return Ok(()),
+                    result = input => result??,
+                },
+                None => input.await??,
+            };
             if length == 0 {
                 return Ok(());
             }
@@ -241,7 +266,7 @@ impl Connection {
         self.recording = Some(Recording {
             writer: None,
             enabled,
-            worker: tokio::spawn(async move {
+            worker: Some(tokio::spawn(async move {
                 let result = flv.start().await;
                 // Push sources have no remote cover. Extract one from a local
                 // completed segment before publishing the finished archive.
@@ -259,7 +284,7 @@ impl Connection {
                     }
                 }
                 result
-            }),
+            })),
         });
         let (mut writer, _) = timeout(IO_TIMEOUT, bridge.accept()).await??;
         // FLV header: audio and video enabled, followed by PreviousTagSize0.
@@ -295,18 +320,14 @@ impl Connection {
         if self.publisher.is_none() {
             return;
         }
-        if let Some(recording) = self.recording.take() {
+        if let Some(mut recording) = self.recording.take() {
             if cancelled {
                 recording.enabled.store(false, Ordering::Release);
             }
-            drop(recording.writer);
+            drop(recording.writer.take());
             // Await the native worker, including the final segment's size delta,
             // before emitting RecordEnd/LiveEnd or accepting another publisher.
-            match recording.worker.await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => log::warn!("RTMP recording failed: {error}"),
-                Err(error) => log::error!("RTMP recording task failed: {error}"),
-            }
+            recording.wait_for_worker().await;
         }
         let recorder = &self.recorder;
         recorder.is_recording.store(false, Ordering::Release);

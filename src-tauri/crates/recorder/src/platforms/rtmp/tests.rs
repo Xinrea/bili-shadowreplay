@@ -440,6 +440,84 @@ async fn authenticated_publisher_stays_connected_past_the_authentication_deadlin
 }
 
 #[tokio::test]
+async fn media_timeout_ends_a_publisher_with_keepalives_and_allows_reconnection() {
+    let directory = tempfile::tempdir().unwrap();
+    let (recorder, address, mut events) = recorder(directory.path()).await;
+    let mut publisher = Publisher::connect(address, "live", &recorder.config().stream_key)
+        .await
+        .unwrap();
+    publisher.fixture().await;
+
+    // The native reader uses wall-clock time. Keep RTMP control traffic flowing
+    // while withholding media, so only the recording worker's timeout can end it.
+    let mut pings = tokio::time::interval(Duration::from_secs(1));
+    let mut buffer = [0; 4096];
+    let mut responses = 0;
+    timeout(Duration::from_secs(40), async {
+        'connected: loop {
+            tokio::select! {
+                _ = pings.tick() => {
+                    let (packet, _) = publisher.session.send_ping_request().unwrap();
+                    if publisher.socket.write_all(&packet.bytes).await.is_err() {
+                        break;
+                    }
+                }
+                result = publisher.socket.read(&mut buffer) => {
+                    let length = match result {
+                        Ok(0) | Err(_) => break,
+                        Ok(length) => length,
+                    };
+                    for result in publisher.session.handle_input(&buffer[..length]).unwrap() {
+                        match result {
+                            ClientSessionResult::RaisedEvent(
+                                ClientSessionEvent::PingResponseReceived { .. },
+                            ) => responses += 1,
+                            ClientSessionResult::OutboundResponse(packet) => {
+                                if publisher.socket.write_all(&packet.bytes).await.is_err() {
+                                    break 'connected;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("RTMP keepalives kept the publisher connected after its recording worker exited");
+    assert!(responses > 1);
+
+    let (first_id, duration, size) = ended(&mut events).await;
+    assert!((duration - 6.0).abs() < 0.2 && size > 0);
+    let work_dir = recorder.work_dir(&first_id).await.full_path();
+    let bytes = std::fs::read(work_dir.join("playlist.m3u8")).unwrap();
+    let (_, playlist) = m3u8_rs::parse_media_playlist(&bytes).unwrap();
+    assert!(playlist.end_list);
+    let actual_size: u64 = playlist
+        .segments
+        .iter()
+        .map(|segment| std::fs::metadata(work_dir.join(&segment.uri)).unwrap().len())
+        .sum();
+    assert_eq!(size, actual_size);
+    let idle = recorder.info().await;
+    assert!(!idle.recording && !idle.room_info.status);
+    assert!(idle.live_id.is_empty());
+    assert!(events.try_recv().is_err());
+
+    let mut replacement = Publisher::connect(address, "live", &recorder.config().stream_key)
+        .await
+        .unwrap();
+    assert!(recorder.info().await.recording);
+    replacement.fixture().await;
+    drop(replacement);
+    let (next_id, duration, size) = ended(&mut events).await;
+    assert_ne!(first_id, next_id);
+    assert!((duration - 6.0).abs() < 0.2 && size > 0);
+    recorder.stop().await;
+}
+
+#[tokio::test]
 async fn simultaneous_publishers_have_distinct_archive_ids_and_isolated_streams() {
     let first_dir = tempfile::tempdir().unwrap();
     let second_dir = tempfile::tempdir().unwrap();

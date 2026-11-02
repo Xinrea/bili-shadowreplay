@@ -142,6 +142,37 @@ function human(attachments = []) {
   return { kind: "human", content: "hello", timestamp: "2026-09-07T00:00:00.000Z", attachments };
 }
 
+test("attachments and message images preserve URLs and wrap raw Base64 identically", async () => {
+  const api = await loadModule("messages");
+  for (const [data, mimeType, expected] of [
+    ["cG5n", "image/png", "data:image/png;base64,cG5n"],
+    ["anBn", "image/jpeg", "data:image/jpeg;base64,anBn"],
+    ["data:image/gif;base64,Z2lm", "image/png", "data:image/gif;base64,Z2lm"],
+    ["https://example.com/image.png", "image/png", "https://example.com/image.png"],
+    ["http://example.com/image.png", "image/png", "http://example.com/image.png"],
+    ["blob:image-preview", "image/png", "blob:image-preview"],
+  ]) {
+    assert.equal(api.imageAttachmentSrc({ kind: "image", name: "image", data, mimeType }), expected);
+    for (const image of [
+      { type: "image", data, mimeType },
+      { type: "image", image_base64: data, mime_type: mimeType },
+      { type: "image_url", image_url: { url: data }, mimeType },
+    ]) {
+      const [part] = api.messageContentToDisplayParts([image]);
+      assert.equal(part.kind, "image");
+      assert.equal(part.src, expected);
+    }
+  }
+});
+
+test("message images retain the JPEG fallback for missing or invalid MIME types", async () => {
+  const api = await loadModule("messages");
+  for (const mimeType of [undefined, "text/plain", "image/png;bad"]) {
+    const [part] = api.messageContentToDisplayParts([{ type: "image", data: "anBn", mimeType }]);
+    assert.equal(part.src, "data:image/jpeg;base64,anBn");
+  }
+});
+
 async function storage(legacy) {
   const values = new Map(legacy === undefined ? [] : [["messages", JSON.stringify(legacy)]]);
   const indexedDB = new IDBFactory();

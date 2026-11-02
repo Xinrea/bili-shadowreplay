@@ -31,7 +31,7 @@ export interface HumanMessage {
   attachments: MessageAttachment[];
 }
 
-export function imageAttachmentSrc(attachment: ImageAttachment): string {
+export function imageAttachmentSrc(attachment: Pick<ImageAttachment, "data" | "mimeType">): string {
   if (attachment.data.startsWith("data:") || /^(https?:|blob:)/.test(attachment.data)) {
     return attachment.data;
   }
@@ -101,13 +101,9 @@ function imageDisplayPart(value: unknown): MessageImagePart | null {
   const safeMimeType = /^image\/[a-z0-9.+-]+$/i.test(mimeType)
     ? mimeType
     : "image/jpeg";
-  const src = source.startsWith("data:") || /^(https?:|blob:)/.test(source)
-    ? source
-    : `data:${safeMimeType};base64,${source}`;
-
   return {
     kind: "image",
-    src,
+    src: imageAttachmentSrc({ data: source, mimeType: safeMimeType }),
     alt: typeof value.alt === "string" ? value.alt : "消息图片",
   };
 }

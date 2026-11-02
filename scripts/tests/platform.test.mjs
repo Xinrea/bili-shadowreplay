@@ -25,6 +25,13 @@ test("platform labels fall back to the id, and to 未知 when missing", async ()
   assert.equal(platformLabel(""), "未知");
 });
 
+test("unknown platform labels cannot resolve inherited object properties", async () => {
+  const { platformLabel } = await loadModule();
+  for (const platform of ["constructor", "Constructor", "__proto__", "__PROTO__"]) {
+    assert.equal(platformLabel(platform), platform);
+  }
+});
+
 test("live room urls follow each platform's room page", async () => {
   const { liveRoomUrl } = await loadModule();
   assert.equal(liveRoomUrl("bilibili", "167537"), "https://live.bilibili.com/167537");

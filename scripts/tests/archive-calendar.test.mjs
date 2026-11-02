@@ -140,3 +140,28 @@ test("invalid scales and very long durations cannot create unbounded axes or tic
   assert.ok(layout.ticks.length < 100);
   assert.ok(layout.ticks.every(t => Number.isFinite(t.left) && t.left >= 0 && t.left <= layout.width));
 });
+
+test("latest archive, events and viewport share the safe date boundary", () => {
+  const limit = 8.64e15 - 366 * 24 * HOUR;
+  for (const timestamp of [0, 1 - limit, limit - 1]) {
+    const archive = record("edge", timestamp, 0);
+    const layout = buildArchiveCalendar([archive], timestamp, 8760);
+    assert.equal(latestArchiveDate([archive]), timestamp);
+    assert.equal(layout.events[0].start, timestamp);
+    assert.equal((layout.start + layout.end) / 2, timestamp);
+    assert.ok(layout.ticks.every(tick => Number.isFinite(new Date(tick.time).getTime())));
+  }
+  for (const timestamp of [NaN, Infinity, -Infinity, -limit, limit, -limit - 1, limit + 1]) {
+    const archive = record("invalid", at(1), 0, {
+      recording_started_at: timestamp,
+      created_at: Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : "invalid",
+    });
+    const before = Date.now();
+    const layout = buildArchiveCalendar([archive], timestamp);
+    const center = (layout.start + layout.end) / 2;
+    assert.equal(latestArchiveDate([archive]), null);
+    assert.equal(layout.count, 0);
+    assert.equal(layout.undated, 1);
+    assert.ok(center >= before && center <= Date.now());
+  }
+});

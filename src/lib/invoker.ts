@@ -131,14 +131,16 @@ async function set_title(title: string) {
   document.title = title;
 }
 
-let STATIC_PORT = 0;
+let staticPort: Promise<number> | null = null;
 
 async function static_origin() {
   if (TAURI_ENV) {
-    if (STATIC_PORT === 0) {
-      STATIC_PORT = await invoke("get_static_port");
-    }
-    return `http://localhost:${STATIC_PORT}`;
+    // Share the first lookup across concurrent assets; failures remain retryable.
+    staticPort ??= invoke<number>("get_static_port").catch((error) => {
+      staticPort = null;
+      throw error;
+    });
+    return `http://localhost:${await staticPort}`;
   }
   // In headless/web mode static assets are served by the same server as the
   // API, so follow the configured endpoint as-is. Rewriting the port here

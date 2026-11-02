@@ -1,6 +1,7 @@
 import type { RecordItem } from "./db";
 
 const HOUR = 3_600_000;
+// Reserve room for the viewport and ticks near JavaScript's date limits.
 const DATE_LIMIT = 8.64e15 - 366 * 24 * HOUR;
 export const ARCHIVE_CALENDAR_SPANS = [6, 12, 24, 72, 168, 720] as const;
 
@@ -36,7 +37,7 @@ export function latestArchiveDate(records: readonly RecordItem[]): number | null
   let latest: number | null = null;
   for (const record of records) {
     const start = archiveStart(record);
-    if (Number.isFinite(start) && Math.abs(start) < DATE_LIMIT && (latest === null || start > latest)) latest = start;
+    if (validTimestamp(start) && (latest === null || start > latest)) latest = start;
   }
   return latest;
 }
@@ -46,7 +47,7 @@ export function buildArchiveCalendar(records: readonly RecordItem[], center: num
   const width = Math.max(28, Math.min(16_000, Number.isFinite(plotWidth) ? plotWidth : 960));
   const spanHours = Number.isFinite(hours) && hours > 0 ? Math.min(8760, hours) : 24;
   const span = spanHours * HOUR;
-  const anchor = Number.isFinite(center) && Math.abs(center) < DATE_LIMIT ? center : Date.now();
+  const anchor = validTimestamp(center) ? center : Date.now();
   const start = anchor - span / 2;
   const end = anchor + span / 2;
   const x = (time: number) => (time - start) / span * width;
@@ -54,7 +55,7 @@ export function buildArchiveCalendar(records: readonly RecordItem[], center: num
   let undated = 0;
   for (const archive of records) {
     const from = archiveStart(archive);
-    if (!Number.isFinite(from) || Math.abs(from) >= DATE_LIMIT) { undated++; continue; }
+    if (!validTimestamp(from)) { undated++; continue; }
     const timingKnown = validTimestamp(archive.recording_started_at) &&
       validTimestamp(archive.recording_ended_at) && archive.recording_ended_at >= from;
     // Media duration excludes ads and outages. Missing clock data is a marker,

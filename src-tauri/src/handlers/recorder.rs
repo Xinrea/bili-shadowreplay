@@ -6,7 +6,9 @@ use crate::database::recorder::RecorderRow;
 use crate::database::task::TaskRow;
 use crate::progress::progress_reporter::ProgressReporter;
 use crate::progress::progress_reporter::ProgressReporterTrait;
-use crate::recorder_manager::{GenerateWholeClipParams, RecorderList};
+use crate::recorder_manager::{
+    ArchiveRecord, GenerateWholeClipParams, RecorderList, RecorderStatus,
+};
 use crate::state::State;
 use crate::state_type;
 use crate::task::Task;
@@ -219,16 +221,39 @@ pub async fn get_archive_disk_usage(state: state_type!()) -> Result<i64, String>
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_recorder_status(
+    state: state_type!(),
+    platform: String,
+    room_id: String,
+) -> Result<RecorderStatus, String> {
+    let platform = PlatformType::from_str(&platform).map_err(|error| error.to_string())?;
+    Ok(state
+        .recorder_manager
+        .get_recorder_status(platform, &room_id)
+        .await?)
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_archives(
     state: state_type!(),
     room_id: String,
     offset: i64,
     limit: i64,
-) -> Result<Vec<RecordRow>, String> {
-    Ok(state
-        .recorder_manager
-        .get_archives(&room_id, offset, limit)
-        .await?)
+    platform: Option<String>,
+) -> Result<Vec<ArchiveRecord>, String> {
+    let records = if let Some(platform) = platform {
+        let platform = PlatformType::from_str(&platform).map_err(|error| error.to_string())?;
+        state
+            .db
+            .get_room_records(platform.as_str(), &room_id, offset, limit)
+            .await?
+    } else {
+        state
+            .recorder_manager
+            .get_archives(&room_id, offset, limit)
+            .await?
+    };
+    Ok(state.recorder_manager.archive_records(records).await)
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]

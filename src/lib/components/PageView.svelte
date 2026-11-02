@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
+  import { providePageVisibility } from "../page-visibility";
   import {
     providePageTitlebar,
     type PageTitlebarContent,
@@ -18,9 +19,10 @@
   let { visible, titlebar = $bindable(), children }: Props = $props();
 
   providePageTitlebar((content) => (titlebar = content));
+  providePageVisibility(() => visible);
 </script>
 
-<div class="page" class:visible>
+<div class="page" class:visible inert={!visible}>
   {@render children()}
 </div>
 

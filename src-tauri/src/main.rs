@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agent;
+mod archive_timing;
 mod audio_utils;
 mod config;
 mod constants;
@@ -1021,6 +1022,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::recorder::add_recorder,
         crate::handlers::recorder::remove_recorder,
         crate::handlers::recorder::get_room_info,
+        crate::handlers::recorder::get_recorder_status,
         crate::handlers::recorder::get_archive_disk_usage,
         crate::handlers::recorder::get_archives,
         crate::handlers::recorder::get_archive,

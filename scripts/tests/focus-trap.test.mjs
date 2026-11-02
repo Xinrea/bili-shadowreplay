@@ -22,7 +22,10 @@ function fakeDom() {
     matches(selector) {
       return selector === ":disabled" && this.disabled;
     }
-    closest() {
+    closest(selector) {
+      for (let node = this; node; node = node.parent) {
+        if (selector === "[inert]" && node.inert) return node;
+      }
       return null;
     }
     getClientRects() {
@@ -145,4 +148,24 @@ test("only the topmost dialog holds Tab, and closing one gives focus back", asyn
   lowerTrap.destroy();
   assert.equal(listeners.size, 0);
   assert.equal(tab(), false);
+});
+
+test("dialogs on inactive pages neither take initial focus nor intercept navigation on another page", async () => {
+  const { Element, document, tab, trapFocus } = await loadTrap();
+  const visibleButton = new Element();
+  const visibleDialog = new Element([visibleButton]);
+  const hiddenButton = new Element();
+  const hiddenDialog = new Element([hiddenButton]);
+  const inactivePage = new Element([hiddenDialog]);
+  inactivePage.inert = true;
+  const visibleTrap = trapFocus(visibleDialog);
+  await settle();
+  const hiddenTrap = trapFocus(hiddenDialog);
+  await settle();
+  assert.equal(document.activeElement, visibleButton);
+  assert.equal(tab(), true);
+  assert.equal(document.activeElement, visibleButton);
+  visibleTrap.destroy();
+  assert.equal(tab(), false, "the hidden dialog must not block another page's Tab");
+  hiddenTrap.destroy();
 });

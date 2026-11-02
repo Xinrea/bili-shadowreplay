@@ -227,6 +227,8 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
         let room_id = self.room_id();
         let previous_room = self.room_info().read().await.clone();
         let pre_live_status = previous_room.status;
+        let check_started = std::time::Instant::now();
+        self.check_status().write().await.checking = true;
 
         match self.poll_room().await {
             Ok(poll) => {
@@ -247,13 +249,6 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                         || current.user_avatar != user.user_avatar;
                     *current = user;
                 }
-                if metadata_changed && pre_live_status == poll.live {
-                    let _ = self
-                        .event_channel()
-                        .send(RecorderEvent::RoomMetadataUpdated)
-                        .await;
-                }
-
                 if poll.live && !pre_live_status {
                     // A new live session: drop the previous one's state.
                     self.reset_live().await;
@@ -262,6 +257,16 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                     if let Some(platform_live_id) = poll.platform_live_id {
                         *self.platform_live_id().write().await = platform_live_id;
                     }
+                }
+                self.check_status()
+                    .write()
+                    .await
+                    .finish(check_started, None);
+                if metadata_changed && pre_live_status == poll.live {
+                    let _ = self
+                        .event_channel()
+                        .send(RecorderEvent::RoomMetadataUpdated)
+                        .await;
                 }
 
                 if pre_live_status != poll.live {
@@ -296,6 +301,10 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                 self.poll_stream().await
             }
             Err(error) => {
+                self.check_status()
+                    .write()
+                    .await
+                    .finish(check_started, Some(error.to_string()));
                 if self.is_throttled(&error) {
                     log::info!("[{platform}][{room_id}] Throttled, backing off");
                     return false;
@@ -686,7 +695,10 @@ mod tests {
     use tokio::sync::RwLock;
 
     #[derive(Clone)]
-    struct Metadata(Arc<RwLock<(String, String, Option<UserInfo>)>>);
+    struct Metadata(
+        Arc<RwLock<(String, String, Option<UserInfo>)>>,
+        Arc<std::sync::atomic::AtomicBool>,
+    );
 
     #[async_trait]
     impl RecorderTrait for Recorder<Metadata> {
@@ -696,6 +708,9 @@ mod tests {
     #[async_trait]
     impl PlatformApi for Recorder<Metadata> {
         async fn poll_room(&self) -> Result<RoomPoll, RecorderError> {
+            if self.extra.1.load(Ordering::Relaxed) {
+                return Err(RecorderError::NoStreamAvailable);
+            }
             let (title, cover, user) = self.extra.0.read().await.clone();
             Ok(RoomPoll {
                 live: true,
@@ -717,11 +732,10 @@ mod tests {
     #[tokio::test]
     async fn metadata_changes_notify_after_state_is_queryable_without_live_transition() {
         let (tx, mut rx) = recorder_event_channel(4);
-        let metadata = Metadata(Arc::new(RwLock::new((
-            "title".into(),
-            "cover".into(),
-            None,
-        ))));
+        let metadata = Metadata(
+            Arc::new(RwLock::new(("title".into(), "cover".into(), None))),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
         let recorder = Recorder::with_extra(
             PlatformType::Twitch,
             "room",
@@ -775,5 +789,57 @@ mod tests {
             .await
             .is_err());
         assert_eq!(recorder.info().await.user_info.user_name, "new name");
+    }
+
+    #[tokio::test]
+    async fn room_checks_report_failures_keep_cached_metadata_and_recover() {
+        let (tx, _rx) = recorder_event_channel(4);
+        let metadata = Metadata(
+            Arc::new(RwLock::new(("latest title".into(), "cover".into(), None))),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let recorder = Recorder::with_extra(
+            PlatformType::Twitch,
+            "room",
+            &Account::default(),
+            PathBuf::new(),
+            tx,
+            Arc::new(AtomicU64::new(10)),
+            false,
+            metadata.clone(),
+        );
+        assert!(recorder.check_status.read().await.checked_at.is_none());
+        assert!(recorder.check_live().await);
+        let success = recorder.check_status.read().await.clone();
+        assert!(success.checked_at.is_some());
+        assert_eq!(success.last_success_at, success.checked_at);
+        assert!(success.duration_ms.is_some());
+        assert!(!success.checking);
+        assert!(success.error.is_none());
+        assert_eq!(success.history.len(), 1);
+
+        metadata.1.store(true, Ordering::Relaxed);
+        metadata.0.write().await.0 = "unavailable title".into();
+        assert!(recorder.check_live().await);
+        let failed = recorder.check_status.read().await.clone();
+        assert!(failed.error.is_some());
+        assert!(!failed.checking);
+        assert_eq!(failed.last_success_at, success.last_success_at);
+        assert_eq!(failed.history.len(), 2);
+        assert!(failed.history.back().unwrap().error.is_some());
+        assert_eq!(recorder.info().await.room_info.room_title, "latest title");
+
+        metadata.1.store(false, Ordering::Relaxed);
+        assert!(recorder.check_live().await);
+        let recovered = recorder.check_status.read().await.clone();
+        assert!(recovered.error.is_none());
+        assert_eq!(recovered.last_success_at, recovered.checked_at);
+        assert_eq!(recovered.history.len(), 3);
+        assert!(recovered.history[1].error.is_some());
+        assert!(recovered.history.back().unwrap().error.is_none());
+        assert_eq!(
+            recorder.info().await.room_info.room_title,
+            "unavailable title"
+        );
     }
 }

@@ -46,8 +46,9 @@ use crate::{
             add_recorder, delete_archive, delete_archives, export_danmu, fetch_hls,
             generate_archive_subtitle, generate_whole_clip, get_archive, get_archive_disk_usage,
             get_archive_subtitle, get_archives, get_archives_by_parent_id, get_danmu_record,
-            get_recent_record, get_recorder_list, get_room_info, get_today_record_count,
-            get_total_length, remove_recorder, send_danmaku, set_enable, ExportDanmuOptions,
+            get_recent_record, get_recorder_list, get_recorder_status, get_room_info,
+            get_today_record_count, get_total_length, remove_recorder, send_danmaku, set_enable,
+            ExportDanmuOptions,
         },
         sticker::{add_cover_sticker, delete_cover_sticker, get_cover_stickers, CoverSticker},
         subtitle_fonts::{get_subtitle_font_families, SubtitleFontFamily},
@@ -76,7 +77,9 @@ use crate::{
     http_server::websocket,
     material::Peaks,
     project::{RenderSettings, Timeline},
-    recorder_manager::{ClipRangeParams, GenerateWholeClipParams, RecorderList},
+    recorder_manager::{
+        ArchiveRecord, ClipRangeParams, GenerateWholeClipParams, RecorderList, RecorderStatus,
+    },
     state::State,
 };
 use axum::extract::Query;
@@ -716,19 +719,35 @@ async fn handler_get_archive_disk_usage(
     Ok(Json(ApiResponse::success(disk_usage)))
 }
 
+async fn handler_get_recorder_status(
+    state: axum::extract::State<State>,
+    Json(param): Json<GetRoomInfoRequest>,
+) -> Result<Json<ApiResponse<RecorderStatus>>, ApiError> {
+    let status = get_recorder_status(state.0, param.platform, param.room_id).await?;
+    Ok(Json(ApiResponse::success(status)))
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GetArchivesRequest {
     room_id: String,
     offset: i64,
     limit: i64,
+    platform: Option<String>,
 }
 
 async fn handler_get_archives(
     state: axum::extract::State<State>,
     Json(param): Json<GetArchivesRequest>,
-) -> Result<Json<ApiResponse<Vec<RecordRow>>>, ApiError> {
-    let archives = get_archives(state.0, param.room_id, param.offset, param.limit).await?;
+) -> Result<Json<ApiResponse<Vec<ArchiveRecord>>>, ApiError> {
+    let archives = get_archives(
+        state.0,
+        param.room_id,
+        param.offset,
+        param.limit,
+        param.platform,
+    )
+    .await?;
     Ok(Json(ApiResponse::success(archives)))
 }
 
@@ -2676,6 +2695,10 @@ pub async fn start_api_server(state: State) {
         // Recorder commands
         .route("/api/get_recorder_list", post(handler_get_recorder_list))
         .route("/api/get_room_info", post(handler_get_room_info))
+        .route(
+            "/api/get_recorder_status",
+            post(handler_get_recorder_status),
+        )
         .route("/api/get_archives", post(handler_get_archives))
         .route("/api/get_archive", post(handler_get_archive))
         .route(

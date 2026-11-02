@@ -50,6 +50,25 @@ impl Database {
         .await?)
     }
 
+    pub async fn get_room_records(
+        &self,
+        platform: &str,
+        room_id: &str,
+        offset: i64,
+        limit: i64,
+    ) -> Result<Vec<RecordRow>, DatabaseError> {
+        Ok(sqlx::query_as::<_, RecordRow>(
+            "SELECT * FROM records WHERE platform = $1 AND room_id = $2 \
+             ORDER BY created_at DESC, live_id DESC LIMIT $3 OFFSET $4",
+        )
+        .bind(platform)
+        .bind(room_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     pub async fn get_archives_by_parent_id(
         &self,
         room_id: &str,

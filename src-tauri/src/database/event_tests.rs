@@ -35,6 +35,40 @@ async fn database() -> Database {
 }
 
 #[tokio::test]
+async fn room_records_filter_platform_and_room_with_stable_pagination() {
+    use ::recorder::platforms::PlatformType;
+
+    let db = database().await;
+    for (platform, room_id, live_id) in [
+        (PlatformType::BiliBili, "same", "1000"),
+        (PlatformType::BiliBili, "same", "2000"),
+        (PlatformType::Douyin, "same", "3000"),
+        (PlatformType::BiliBili, "other", "4000"),
+    ] {
+        db.add_record(platform, "parent", live_id, room_id, "title", None)
+            .await
+            .unwrap();
+    }
+    sqlx::query("UPDATE records SET created_at = '2026-11-01T00:00:00Z'")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let first = db.get_room_records("bilibili", "same", 0, 1).await.unwrap();
+    let second = db.get_room_records("bilibili", "same", 1, 1).await.unwrap();
+    assert_eq!(first[0].live_id, "2000");
+    assert_eq!(second[0].live_id, "1000");
+    assert!(db
+        .get_room_records("bilibili", "same", 2, 1)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        db.get_room_records("douyin", "same", 0, 20).await.unwrap()[0].live_id,
+        "3000"
+    );
+}
+
+#[tokio::test]
 async fn video_notifications_follow_committed_mutations() {
     let db = database().await;
     let mut changes = db.events.subscribe();

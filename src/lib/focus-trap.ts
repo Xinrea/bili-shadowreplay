@@ -33,7 +33,7 @@ function focusable(root: HTMLElement): HTMLElement[] {
 // command palette, keeps it for itself. So is one an input method is
 // composing with.
 function keepTabInside(event: KeyboardEvent) {
-  const top = traps.at(-1);
+  const top = [...traps].reverse().find((node) => !node.closest("[inert]"));
   if (event.key !== "Tab" || event.defaultPrevented || event.isComposing || !top) return;
   const elements = focusable(top);
   if (elements.length === 0) {
@@ -62,7 +62,7 @@ export function trapFocus(node: HTMLElement, options: FocusTrapOptions = {}) {
     traps.push(node);
     // After the update that shows it, such as dropping `inert`.
     queueMicrotask(() => {
-      if (!open || node.contains(document.activeElement)) return;
+      if (!open || node.closest("[inert]") || node.contains(document.activeElement)) return;
       (options.initial?.() ?? focusable(node)[0])?.focus();
     });
   }
@@ -73,7 +73,7 @@ export function trapFocus(node: HTMLElement, options: FocusTrapOptions = {}) {
     if (traps.length === 0) window.removeEventListener("keydown", keepTabInside, true);
     // Unless focus has already moved on elsewhere.
     const active = document.activeElement;
-    if (returnTo?.isConnected && (!active || active === document.body || node.contains(active))) {
+    if (returnTo?.isConnected && !returnTo.closest("[inert]") && (!active || active === document.body || node.contains(active))) {
       returnTo.focus();
     }
     returnTo = null;

@@ -6,7 +6,7 @@ use std::{
 use crate::platforms::PlatformType;
 use crate::{
     account::Account, danmu::DanmuStorage, events::RecorderEvent, CachePath, RecorderInfo,
-    RoomInfo, UserInfo,
+    RoomCheckStatus, RoomInfo, UserInfo,
 };
 use async_trait::async_trait;
 use tokio::{
@@ -29,6 +29,7 @@ pub trait RecorderBasicTrait {
     fn is_recording(&self) -> Arc<atomic::AtomicBool>;
     fn room_info(&self) -> Arc<RwLock<RoomInfo>>;
     fn user_info(&self) -> Arc<RwLock<UserInfo>>;
+    fn check_status(&self) -> Arc<RwLock<RoomCheckStatus>>;
     fn platform_live_id(&self) -> Arc<RwLock<String>>;
     fn live_id(&self) -> Arc<RwLock<String>>;
     fn danmu_task(&self) -> Arc<Mutex<Option<JoinHandle<()>>>>;

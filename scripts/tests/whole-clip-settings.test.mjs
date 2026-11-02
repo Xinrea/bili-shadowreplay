@@ -7,7 +7,7 @@ import ts from "typescript";
 const source = await readFile(new URL("../../src/lib/components/GenerateWholeClipModal.svelte", import.meta.url), "utf8");
 const script = source.match(/<script lang="ts">([\s\S]*?)<\/script>/)[1];
 const output = ts.transpileModule(`${script}
-  export { generateWholeClip, closeModal, loadWholeClipArchives };
+  export { generateWholeClip, closeModal, loadWholeClipArchives, handleKeydown };
   export function configure(settings, danmu, ids = ["second", "first"], encode = true) {
     renderSettings = settings; encodeDanmu = danmu; selectedLiveIds = ids; reencode = encode;
   }
@@ -20,6 +20,7 @@ const defaults = () => ({ codec: "hevc", priority: "speed", bitrate_kbps: 10000 
 
 async function fixture() {
   const requests = [], generated = [];
+  let visible = true;
   const context = vm.createContext({
     $state: (value) => value,
     $derived: (value) => value,
@@ -35,6 +36,7 @@ async function fixture() {
   });
   const dependencies = {
     svelte: { untrack: (fn) => fn() },
+    "../page-visibility": { pageVisibility: () => () => visible },
     "../project-timeline": { defaultRenderSettings: defaults },
     "../invoker": {
       get_static_url: async () => "",
@@ -57,7 +59,7 @@ async function fixture() {
     }, { context });
   });
   await module.evaluate();
-  return { handlers: module.namespace, requests, generated };
+  return { handlers: module.namespace, requests, generated, setVisible: value => { visible = value; } };
 }
 
 test("complete recording generation defaults to stream copy without danmaku", async () => {
@@ -75,6 +77,46 @@ test("complete recording generation defaults to stream copy without danmaku", as
   await completion;
   assert.equal(f.handlers.state().showModal, false);
   assert.deepEqual(f.generated, [true]);
+});
+
+test("Escape is consumed by the nested recording dialog and cannot dismiss its parent", async () => {
+  const f = await fixture();
+  let prevented = 0;
+  let stopped = 0;
+  const event = { key: "Escape", isComposing: false, preventDefault() { prevented++; }, stopPropagation() { stopped++; } };
+  f.handlers.handleKeydown({ ...event, isComposing: true });
+  assert.equal(f.handlers.state().showModal, true);
+  f.handlers.configure(defaults(), false, ["first"]);
+  const pending = f.handlers.generateWholeClip();
+  f.handlers.handleKeydown(event);
+  assert.equal(f.handlers.state().showModal, true, "submitting keeps the child dialog open");
+  assert.equal(prevented, 1);
+  assert.equal(stopped, 1);
+  f.requests[0].reject(new Error("retry"));
+  await pending;
+  f.handlers.handleKeydown(event);
+  assert.equal(f.handlers.state().showModal, false);
+  assert.equal(stopped, 2);
+});
+
+test("complete recording dialog ignores inactive-page and already handled Escape", async () => {
+  const f = await fixture();
+  let prevented = 0, stopped = 0;
+  const event = { key: "Escape", isComposing: false, preventDefault() { prevented++; }, stopPropagation() { stopped++; } };
+  f.setVisible(false);
+  f.handlers.handleKeydown(event);
+  assert.equal(f.handlers.state().showModal, true);
+  assert.equal(prevented, 0);
+  assert.equal(stopped, 0);
+  f.setVisible(true);
+  f.handlers.handleKeydown({ ...event, defaultPrevented: true });
+  assert.equal(f.handlers.state().showModal, true);
+  assert.equal(prevented, 0);
+  assert.equal(stopped, 0);
+  f.handlers.handleKeydown(event);
+  assert.equal(f.handlers.state().showModal, false);
+  assert.equal(prevented, 1);
+  assert.equal(stopped, 1);
 });
 
 test("complete recording encoding is optional unless danmaku is embedded", async () => {

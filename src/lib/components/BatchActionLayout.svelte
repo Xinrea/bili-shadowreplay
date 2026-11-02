@@ -7,15 +7,17 @@
     onclear: () => void;
     actions: Snippet;
     children: Snippet;
+    compact?: boolean;
+    scroll?: boolean;
   }
 
-  let { count, itemLabel, onclear, actions, children }: Props = $props();
+  let { count, itemLabel, onclear, actions, children, compact = false, scroll = true }: Props = $props();
   let barHeight = $state(0);
 </script>
 
-<div class="relative flex min-h-0 flex-1 flex-col bg-canvas">
+<div class="relative flex min-h-0 flex-1 flex-col {compact ? 'bg-surface' : 'bg-canvas'}">
   <div
-    class="min-h-0 flex-1 overflow-auto p-5 custom-scrollbar-light"
+    class="min-h-0 flex-1 custom-scrollbar-light {scroll ? 'overflow-auto' : 'flex flex-col overflow-hidden'} {compact ? 'p-4' : 'p-5'}"
     style:padding-bottom={count > 0 ? `${barHeight + 40}px` : undefined}
   >
     {@render children()}

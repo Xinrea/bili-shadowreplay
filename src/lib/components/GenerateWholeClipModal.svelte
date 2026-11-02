@@ -6,6 +6,8 @@
   import { X, FileVideo, Info } from "lucide-svelte";
   import { untrack } from "svelte";
   import { clickOutside } from "../actions/clickOutside";
+  import { trapFocus } from "../focus-trap";
+  import { pageVisibility } from "../page-visibility";
   import { defaultRenderSettings } from "../project-timeline";
   import RenderSettingsFields from "./RenderSettingsFields.svelte";
 
@@ -17,6 +19,7 @@
   }
 
   let { showModal = $bindable(false), archive = null, roomId, onGenerated }: Props = $props();
+  const pageVisible = pageVisibility();
   export const platform: string = "";
 
   let wholeClipArchives: RecordItem[] = $state([]);
@@ -180,6 +183,13 @@
     showSelectionHelp = false;
     generationError = "";
   }
+
+  function handleKeydown(event: KeyboardEvent) {
+    if (!pageVisible() || event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeModal();
+  }
   // 当modal显示且有archive时，加载相关片段。
   // 用 untrack 包住加载，避免 isLoading 等内部状态把 $effect 重新触发成死循环。
   $effect(() => {
@@ -207,8 +217,10 @@
     class="ui-modal-backdrop"
     transition:fade={{ duration: 200 }}
     onclick={closeModal}
-    onkeydown={(e) => e.key === "Escape" && closeModal()}
+    onkeydown={handleKeydown}
     role="dialog"
+    use:trapFocus={{ active: pageVisible() }}
+    aria-label="生成完整录播"
     tabindex="-1"
     aria-modal="true"
   >

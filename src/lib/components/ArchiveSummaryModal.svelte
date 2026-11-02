@@ -4,6 +4,7 @@
   import { AlertCircle, Loader2, RefreshCw, Sparkles, X } from "lucide-svelte";
   import { invoke } from "../invoker";
   import { trapFocus } from "../focus-trap";
+  import { pageVisibility } from "../page-visibility";
   import ArchiveClipButton from "./ArchiveClipButton.svelte";
   import CopyMarkdownButton from "./CopyMarkdownButton.svelte";
   import TaskCenterButton from "./TaskCenterButton.svelte";
@@ -23,6 +24,7 @@
   }
 
   let { showModal = $bindable(false), archive = null, onUpdated }: Props = $props();
+  const pageVisible = pageVisibility();
 
   let summary: RecordSummary | null = $state(null);
   let loading = $state(false);
@@ -51,6 +53,13 @@
     llmConfig = null;
     llmConfigLoading = true;
     llmConfigError = false;
+  }
+
+  function handleKeydown(event: KeyboardEvent) {
+    if (!showModal || !pageVisible() || event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    close();
   }
 
   function goToSettings() {
@@ -198,13 +207,7 @@
   let summaryMarkdown = $derived(summary?.summary_markdown || "");
 </script>
 
-<svelte:window onkeydown={(event) => {
-  if (showModal && event.key === "Escape" && !event.defaultPrevented && !event.isComposing) {
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    close();
-  }
-}} />
+<svelte:window onkeydown={handleKeydown} />
 
 {#if showModal && archive}
   <div class="ui-modal-backdrop p-6">

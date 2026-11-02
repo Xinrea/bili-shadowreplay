@@ -378,7 +378,7 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
             );
         }
 
-        let live_id = Utc::now().timestamp_millis().to_string();
+        let live_id = crate::new_recording_id();
         *self.pre_live_id().write().await = Some(live_id.clone());
         live_id
     }

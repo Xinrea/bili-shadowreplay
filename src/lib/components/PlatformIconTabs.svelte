@@ -8,6 +8,7 @@
   import TikTokIcon from "./TikTokIcon.svelte";
   import TwitchIcon from "./TwitchIcon.svelte";
   import YouTubeIcon from "./YouTubeIcon.svelte";
+  import RtmpIcon from "./RtmpIcon.svelte";
 
   interface PlatformOption {
     id: string;
@@ -31,6 +32,7 @@
     tiktok: TikTokIcon,
     twitch: TwitchIcon,
     youtube: YouTubeIcon,
+    rtmp: RtmpIcon,
   };
 
   function select(id: string) {

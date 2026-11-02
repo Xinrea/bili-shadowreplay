@@ -1019,6 +1019,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::message::read_message,
         crate::handlers::message::delete_message,
         crate::handlers::recorder::get_recorder_list,
+        crate::handlers::recorder::get_rtmp_ingest,
         crate::handlers::recorder::add_recorder,
         crate::handlers::recorder::remove_recorder,
         crate::handlers::recorder::get_room_info,

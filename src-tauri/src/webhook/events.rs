@@ -4,7 +4,7 @@ use crate::database::{
     account::AccountRow, record::RecordRow, recorder::RecorderRow, video::VideoRow,
 };
 
-use recorder::RecorderInfo;
+use recorder::{platforms::rtmp::RtmpConfig, RecorderInfo};
 
 pub const CLIP_GENERATED: &str = "clip.generated";
 pub const CLIP_DELETED: &str = "clip.deleted";
@@ -38,7 +38,23 @@ pub enum Payload {
     Archive(RecordRow),
 }
 
-pub fn new_webhook_event(event_type: &str, payload: Payload) -> WebhookEvent {
+pub fn new_webhook_event(event_type: &str, mut payload: Payload) -> WebhookEvent {
+    if let Payload::Recorder(recorder) = &mut payload {
+        if recorder.platform == "rtmp" {
+            // Both added/removed notifications contain a database row. Publish
+            // only public configuration; malformed stored data must not leak.
+            recorder.extra = RtmpConfig::parse(&recorder.extra)
+                .map(|config| {
+                    serde_json::json!({
+                        "name": config.name,
+                        "listen_addr": config.listen_addr,
+                        "port": config.port,
+                    })
+                    .to_string()
+                })
+                .unwrap_or_default();
+        }
+    }
     WebhookEvent {
         id: Uuid::new_v4().to_string(),
         event: event_type.to_string(),
@@ -120,5 +136,73 @@ mod tests {
         let deserialized: WebhookEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.event, "record.started");
         assert_eq!(deserialized.id, event.id);
+    }
+
+    #[test]
+    fn rtmp_notifications_omit_credentials_without_changing_stored_config() {
+        let config = RtmpConfig {
+            name: "OBS".into(),
+            port: 52137,
+            ..RtmpConfig::default()
+        };
+        let stored = RecorderRow {
+            room_id: "rtmp-obs".into(),
+            created_at: "2026-11-02T00:00:00Z".into(),
+            platform: "rtmp".into(),
+            auto_start: true,
+            extra: serde_json::to_string(&config).unwrap(),
+        };
+        for event_type in [RECORDER_ADDED, RECORDER_REMOVED] {
+            let event = new_webhook_event(event_type, Payload::Recorder(stored.clone()));
+            let json = serde_json::to_string(&event).unwrap();
+            assert!(!json.contains("stream_key"));
+            assert!(!json.contains(&config.stream_key));
+            let Payload::Recorder(public) = event.payload else {
+                panic!("expected recorder payload");
+            };
+            assert_eq!(public.room_id, stored.room_id);
+            let extra: serde_json::Value = serde_json::from_str(&public.extra).unwrap();
+            assert_eq!(
+                extra,
+                serde_json::json!({
+                    "name": "OBS", "listen_addr": "0.0.0.0", "port": 52137,
+                })
+            );
+        }
+        let loaded = RtmpConfig::parse(&stored.extra).unwrap();
+        assert_eq!(loaded.stream_key, config.stream_key);
+        assert_eq!(loaded.port, config.port);
+    }
+
+    #[test]
+    fn rtmp_notifications_do_not_fall_back_to_malformed_secret_data() {
+        let event = new_webhook_event(
+            RECORDER_ADDED,
+            Payload::Recorder(RecorderRow {
+                room_id: "rtmp-obs".into(),
+                created_at: String::new(),
+                platform: "rtmp".into(),
+                auto_start: true,
+                extra: r#"{"stream_key":"private-key""#.into(),
+            }),
+        );
+        let json = serde_json::to_value(event).unwrap();
+        assert_eq!(json["payload"]["extra"], "");
+    }
+
+    #[test]
+    fn ordinary_recorder_notifications_preserve_platform_metadata() {
+        let row = RecorderRow {
+            room_id: "room".into(),
+            created_at: String::new(),
+            platform: "douyin".into(),
+            auto_start: true,
+            extra: "platform-sec-uid".into(),
+        };
+        let event = new_webhook_event(RECORDER_ADDED, Payload::Recorder(row.clone()));
+        assert_eq!(
+            serde_json::to_value(event).unwrap()["payload"],
+            serde_json::to_value(row).unwrap()
+        );
     }
 }

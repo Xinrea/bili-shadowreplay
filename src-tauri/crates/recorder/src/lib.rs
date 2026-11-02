@@ -24,6 +24,21 @@ use tokio::{
     task::JoinHandle,
 };
 
+/// Archive IDs are global database keys as well as millisecond timestamps.
+/// Simultaneous push/pull sessions must not share an ID across rooms.
+pub(crate) fn new_recording_id() -> String {
+    static LAST_ID: atomic::AtomicI64 = atomic::AtomicI64::new(0);
+    let now = Utc::now().timestamp_millis();
+    let previous = LAST_ID
+        .fetch_update(
+            atomic::Ordering::Relaxed,
+            atomic::Ordering::Relaxed,
+            |last| Some(now.max(last.saturating_add(1))),
+        )
+        .expect("recording ID update always returns Some");
+    now.max(previous.saturating_add(1)).to_string()
+}
+
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 pub struct RecorderInfo {
     pub room_info: RoomInfo,

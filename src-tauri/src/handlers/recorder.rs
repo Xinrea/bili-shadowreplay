@@ -19,6 +19,7 @@ use recorder::danmu::DanmuEntry;
 use recorder::platforms::bilibili;
 use recorder::platforms::douyin;
 use recorder::platforms::douyu;
+use recorder::platforms::rtmp::{self, RtmpConfig};
 use recorder::platforms::twitch;
 use recorder::platforms::youtube;
 use recorder::platforms::PlatformType;
@@ -35,6 +36,42 @@ pub async fn get_recorder_list(state: state_type!()) -> Result<RecorderList, ()>
     Ok(state.recorder_manager.get_recorder_list().await)
 }
 
+#[derive(Serialize)]
+pub struct RtmpIngestInfo {
+    pub room_id: String,
+    #[serde(flatten)]
+    pub config: RtmpConfig,
+    pub listening: bool,
+    pub live: bool,
+    pub recording: bool,
+}
+
+/// Fetch credentials only on demand, keeping them out of room lifecycle events.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_rtmp_ingest(
+    state: state_type!(),
+    room_id: String,
+) -> Result<RtmpIngestInfo, String> {
+    let row = state
+        .db
+        .get_recorders()
+        .await?
+        .into_iter()
+        .find(|row| row.platform == "rtmp" && row.room_id == room_id)
+        .ok_or("RTMP 房间不存在")?;
+    let recorder = state
+        .recorder_manager
+        .get_recorder_info(PlatformType::Rtmp, &room_id)
+        .await;
+    Ok(RtmpIngestInfo {
+        room_id,
+        config: RtmpConfig::parse(&row.extra)?,
+        listening: recorder.is_some(),
+        live: recorder.as_ref().is_some_and(|info| info.room_info.status),
+        recording: recorder.as_ref().is_some_and(|info| info.recording),
+    })
+}
+
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn add_recorder(
     state: state_type!(),
@@ -43,6 +80,11 @@ pub async fn add_recorder(
     mut extra: String,
 ) -> Result<RecorderRow, String> {
     let platform = PlatformType::from_str(&platform).map_err(|e| e.to_string())?;
+    if platform == PlatformType::Rtmp {
+        room_id = rtmp::normalize_room_id(&room_id)?;
+        extra =
+            serde_json::to_string(&RtmpConfig::for_new_room(&extra)?).map_err(|e| e.to_string())?;
+    }
     if platform == PlatformType::Youtube {
         room_id = youtube::normalize_room_id(&room_id).map_err(|error| error.to_string())?;
     }
@@ -103,7 +145,7 @@ pub async fn add_recorder(
                 Ok(Account::default())
             }
         }
-        PlatformType::Twitch => Ok(Account::default()),
+        PlatformType::Twitch | PlatformType::Rtmp => Ok(Account::default()),
         PlatformType::Youtube => {
             if let Ok(account) = state.db.get_account_by_platform("youtube").await {
                 Ok(account.to_account())
@@ -133,8 +175,21 @@ pub async fn add_recorder(
             .add_recorder(&account, platform, &room_id, &extra, true)
             .await
         {
-            Ok(()) => {
-                let room = state.db.add_recorder(platform, &room_id, &extra).await?;
+            Ok(resolved_extra) => {
+                let room = match state
+                    .db
+                    .add_recorder(platform, &room_id, &resolved_extra)
+                    .await
+                {
+                    Ok(room) => room,
+                    Err(error) => {
+                        state
+                            .recorder_manager
+                            .discard_unpersisted_recorder(platform, &room_id)
+                            .await;
+                        return Err(error.to_string());
+                    }
+                };
                 state
                     .db
                     .new_message("添加直播间", &format!("添加了新直播间 {room_id}"))

@@ -20,6 +20,7 @@ test("platform labels fall back to the id, and to 未知 when missing", async ()
   assert.equal(platformLabel("bilibili"), "B站");
   assert.equal(platformLabel("Douyu"), "斗鱼");
   assert.equal(platformLabel("youtube"), "YouTube");
+  assert.equal(platformLabel("rtmp"), "RTMP 推流");
   assert.equal(platformLabel("someplace"), "someplace");
   assert.equal(platformLabel(undefined), "未知");
   assert.equal(platformLabel(""), "未知");
@@ -62,5 +63,6 @@ test("url room ids pass through and unknown platforms have no page", async () =>
   const url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
   assert.equal(liveRoomUrl("youtube", url), url);
   assert.equal(liveRoomUrl("imported", "123"), null);
+  assert.equal(liveRoomUrl("rtmp", "rtmp-obs"), null);
   assert.equal(liveRoomUrl(undefined, "123"), null);
 });

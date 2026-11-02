@@ -4,7 +4,7 @@ import { test } from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 
-async function loadInvoker({ tauri, endpoint = "" }) {
+async function loadInvoker({ tauri, endpoint = "", getStaticPort = async () => 41234 }) {
   const tauriCalls = [];
   const fetches = [];
   const context = vm.createContext({
@@ -19,7 +19,7 @@ async function loadInvoker({ tauri, endpoint = "" }) {
     "@tauri-apps/api/core": {
       invoke: async (command) => {
         tauriCalls.push(command);
-        if (command === "get_static_port") return 41234;
+        if (command === "get_static_port") return getStaticPort();
         throw new Error(`unexpected command ${command}`);
       },
     },
@@ -61,6 +61,41 @@ test("desktop static URLs ask only for the static port, once", async () => {
     "http://localhost:41234/output/clip.mp4",
   );
   assert.deepEqual(tauriCalls, ["get_static_port"]);
+});
+
+test("concurrent desktop assets and preview audio share the port lookup", async () => {
+  const { invoker, tauriCalls } = await loadInvoker({ tauri: true });
+  const urls = await Promise.all([
+    invoker.get_static_url("output", "clip.mp4"),
+    invoker.get_preview_audio_url("clip #1.mp4", 2),
+    invoker.get_static_url("cache", "cover.jpg"),
+  ]);
+  assert.deepEqual(urls, [
+    "http://localhost:41234/output/clip.mp4",
+    "http://localhost:41234/preview_audio?file=clip%20%231.mp4&chunk=2",
+    "http://localhost:41234/cache/cover.jpg",
+  ]);
+  assert.deepEqual(tauriCalls, ["get_static_port"]);
+});
+
+test("a failed shared port lookup is retried on the next request", async () => {
+  let attempts = 0;
+  const { invoker, tauriCalls } = await loadInvoker({ tauri: true, getStaticPort: async () => {
+    if (attempts++ === 0) throw new Error("port unavailable");
+    return 41234;
+  } });
+  const results = await Promise.allSettled([
+    invoker.get_static_url("output", "clip.mp4"),
+    invoker.get_preview_audio_url("clip.mp4", 0),
+  ]);
+  for (const result of results) {
+    assert.equal(result.status, "rejected");
+    assert.match(result.reason.message, /port unavailable/);
+  }
+  assert.deepEqual(tauriCalls, ["get_static_port"]);
+  assert.equal(await invoker.get_static_url("cache", "cover.jpg"), "http://localhost:41234/cache/cover.jpg");
+  await invoker.get_preview_audio_url("clip.mp4", 1);
+  assert.deepEqual(tauriCalls, ["get_static_port", "get_static_port"]);
 });
 
 test("web static URLs follow the configured endpoint without a request", async () => {

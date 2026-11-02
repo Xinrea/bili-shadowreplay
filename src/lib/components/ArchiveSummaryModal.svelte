@@ -3,6 +3,7 @@
   import { marked } from "marked";
   import { AlertCircle, Loader2, RefreshCw, Sparkles, X } from "lucide-svelte";
   import { invoke } from "../invoker";
+  import { trapFocus } from "../focus-trap";
   import ArchiveClipButton from "./ArchiveClipButton.svelte";
   import CopyMarkdownButton from "./CopyMarkdownButton.svelte";
   import TaskCenterButton from "./TaskCenterButton.svelte";
@@ -169,7 +170,7 @@
       case "summarizing":
         return "正在总结直播内容";
       default:
-        return "正在准备 Summary";
+        return "正在准备总结";
     }
   }
 
@@ -197,14 +198,22 @@
   let summaryMarkdown = $derived(summary?.summary_markdown || "");
 </script>
 
+<svelte:window onkeydown={(event) => {
+  if (showModal && event.key === "Escape" && !event.defaultPrevented && !event.isComposing) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    close();
+  }
+}} />
+
 {#if showModal && archive}
   <div class="ui-modal-backdrop p-6">
-    <div class="ui-modal max-h-[90vh] w-full max-w-4xl">
+    <div use:trapFocus role="dialog" aria-modal="true" aria-label="直播总结" tabindex="-1" class="ui-modal max-h-[90vh] w-full max-w-4xl">
       <div class="flex shrink-0 items-center justify-between gap-3 border-b border-line px-[18px] py-3">
         <div class="min-w-0">
           <div class="flex items-center gap-2">
             <Sparkles class="h-4 w-4 text-accent-fg" />
-            <h2 class="text-[14px] font-semibold text-fg">直播 Summary</h2>
+            <h2 class="text-[14px] font-semibold text-fg">直播总结</h2>
             {#if summary?.status === "success"}
               <CopyMarkdownButton content={summaryMarkdown} />
             {/if}
@@ -225,7 +234,7 @@
         {#if loading}
           <div class="flex min-h-[260px] items-center justify-center gap-2.5 text-[13px] text-fg-muted">
             <Loader2 class="h-5 w-5 animate-spin" />
-            <span>读取 Summary 中</span>
+            <span>正在读取总结</span>
           </div>
         {:else if summary?.status === "processing"}
           <div class="flex min-h-[260px] flex-col items-center justify-center gap-4 text-center">
@@ -283,7 +292,7 @@
           <div class="flex min-h-[260px] flex-col items-center justify-center gap-4 text-center">
             <AlertCircle class="h-8 w-8 text-danger-fg" />
             <div>
-              <p class="text-[13px] font-medium text-fg">Summary 生成失败</p>
+              <p class="text-[13px] font-medium text-fg">总结生成失败</p>
               <p class="mt-2 max-w-xl text-[12px] text-danger-fg">{summary.error_message || "未知错误"}</p>
             </div>
             <button class="ui-btn ui-btn-primary" onclick={() => generate(false)} disabled={actionLoading}>
@@ -295,13 +304,13 @@
           <div class="flex min-h-[260px] flex-col items-center justify-center gap-4 text-center">
             <Sparkles class="h-10 w-10 text-accent-fg" />
             <div>
-              <p class="text-[13px] font-medium text-fg">尚未生成 Summary</p>
+              <p class="text-[13px] font-medium text-fg">尚未生成总结</p>
               <p class="mt-1 text-[12px] text-fg-muted">将依次提取完整音频、生成字幕并总结直播内容。</p>
             </div>
             {#if needsApiKey}
               <div class="max-w-md rounded-[10px] border border-warning/40 bg-warning-soft px-3.5 py-3 text-left text-[12px] text-warning-fg">
                 <p class="font-medium">尚未配置 LLM API Key</p>
-                <p class="mt-1 leading-relaxed">生成 Summary 需要调用 LLM 接口。请在「设置」页填写 OpenAI 兼容接口的 API Key（若使用本地 Ollama 则无需配置）。</p>
+                <p class="mt-1 leading-relaxed">生成总结 需要调用 LLM 接口。请在「设置」页填写 OpenAI 兼容接口的 API Key（若使用本地 Ollama 则无需配置）。</p>
                 <button
                   class="mt-3 inline-flex h-[26px] items-center rounded-[7px] border border-warning/50 bg-warning/10 px-2.5 text-[11px] font-medium text-warning-fg transition-colors hover:bg-warning/20"
                   onclick={goToSettings}
@@ -327,7 +336,7 @@
               disabled={actionLoading || needsApiKey || llmConfigUnavailable}
               title={needsApiKey || llmConfigError ? "请先在设置中配置 LLM API Key" : ""}
             >
-              {actionLoading ? "正在创建任务…" : needsApiKey || llmConfigError ? "请先配置 LLM API Key" : llmConfigLoading ? "检测配置中…" : "生成 Summary"}
+              {actionLoading ? "正在创建任务…" : needsApiKey || llmConfigError ? "请先配置 LLM API Key" : llmConfigLoading ? "检测配置中…" : "生成总结"}
             </button>
           </div>
         {/if}

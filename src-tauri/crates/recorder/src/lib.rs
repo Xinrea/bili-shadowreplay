@@ -14,6 +14,7 @@ use crate::{account::Account, platforms::PlatformType};
 
 use chrono::Utc;
 use std::{
+    collections::VecDeque,
     fmt::Display,
     path::PathBuf,
     sync::{atomic, Arc},
@@ -31,6 +32,62 @@ pub struct RecorderInfo {
     pub live_id: String,
     pub recording: bool,
     pub enabled: bool,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
+pub struct RoomCheckSample {
+    pub checked_at: i64,
+    pub duration_ms: u64,
+    pub error: Option<String>,
+}
+
+/// Poll results are independent of cached metadata, including when a check fails.
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Default)]
+pub struct RoomCheckStatus {
+    /// Unix timestamps in milliseconds.
+    pub checked_at: Option<i64>,
+    pub last_success_at: Option<i64>,
+    pub duration_ms: Option<u64>,
+    pub error: Option<String>,
+    pub checking: bool,
+    /// Recent completed checks, retained even while the status dialog is closed.
+    #[serde(default)]
+    pub history: VecDeque<RoomCheckSample>,
+}
+
+impl RoomCheckStatus {
+    pub(crate) fn finish(&mut self, started: std::time::Instant, error: Option<String>) {
+        self.finish_at(
+            Utc::now().timestamp_millis(),
+            started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+            error,
+        );
+    }
+
+    fn finish_at(&mut self, checked_at: i64, duration_ms: u64, error: Option<String>) {
+        const HISTORY_WINDOW_MS: i64 = 5 * 60 * 1000;
+        const HISTORY_LIMIT: usize = 300;
+
+        self.checked_at = Some(checked_at);
+        self.duration_ms = Some(duration_ms);
+        self.checking = false;
+        if error.is_none() {
+            self.last_success_at = self.checked_at;
+        }
+        self.error = error.clone();
+        while self.history.len() >= HISTORY_LIMIT
+            || self.history.front().is_some_and(|sample| {
+                sample.checked_at < checked_at.saturating_sub(HISTORY_WINDOW_MS)
+            })
+        {
+            self.history.pop_front();
+        }
+        self.history.push_back(RoomCheckSample {
+            checked_at,
+            duration_ms,
+            error,
+        });
+    }
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Default)]
@@ -79,6 +136,8 @@ where
     room_info: Arc<RwLock<RoomInfo>>,
     /// The user info for the recorder
     user_info: Arc<RwLock<UserInfo>>,
+    /// Result of the latest room metadata check, including failures.
+    check_status: Arc<RwLock<RoomCheckStatus>>,
     /// The update interval for room status
     update_interval: Arc<atomic::AtomicU64>,
 
@@ -133,6 +192,7 @@ impl<T: Send + Sync> Recorder<T> {
             is_recording: Arc::new(atomic::AtomicBool::new(false)),
             room_info: Arc::new(RwLock::new(RoomInfo::default())),
             user_info: Arc::new(RwLock::new(UserInfo::default())),
+            check_status: Arc::new(RwLock::new(RoomCheckStatus::default())),
             platform_live_id: Arc::new(RwLock::new(String::new())),
             live_id: Arc::new(RwLock::new(String::new())),
             danmu_storage: Arc::new(RwLock::new(None)),
@@ -205,6 +265,10 @@ impl<T: Send + Sync> traits::RecorderBasicTrait for Recorder<T> {
 
     fn user_info(&self) -> Arc<RwLock<UserInfo>> {
         self.user_info.clone()
+    }
+
+    fn check_status(&self) -> Arc<RwLock<RoomCheckStatus>> {
+        self.check_status.clone()
     }
 
     fn platform_live_id(&self) -> Arc<RwLock<String>> {
@@ -313,6 +377,54 @@ impl Display for CachePath {
 mod tests {
     use super::*;
     use crate::traits::RecorderBasicTrait;
+
+    #[test]
+    fn room_check_history_keeps_failures_after_recovery() {
+        let mut status = RoomCheckStatus::default();
+        status.finish_at(1_000, 120, None);
+        status.checking = true;
+        status.finish_at(2_000, 940, Some("request failed".into()));
+        assert_eq!(status.last_success_at, Some(1_000));
+        assert!(!status.checking);
+        status.finish_at(3_000, 178, None);
+
+        assert_eq!(status.checked_at, Some(3_000));
+        assert_eq!(status.last_success_at, Some(3_000));
+        assert!(status.error.is_none());
+        assert_eq!(status.history.len(), 3);
+        assert_eq!(status.history[1].checked_at, 2_000);
+        assert_eq!(status.history[1].duration_ms, 940);
+        assert_eq!(status.history[1].error.as_deref(), Some("request failed"));
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["history"][1]["error"], "request failed");
+    }
+
+    #[test]
+    fn room_check_history_expires_old_samples_and_bounds_rapid_polls() {
+        let mut status = RoomCheckStatus::default();
+        status.finish_at(0, 1, None);
+        status.finish_at(1, 2, None);
+        status.finish_at(300_001, 3, None);
+        assert_eq!(status.history.len(), 2);
+        assert_eq!(status.history.front().unwrap().checked_at, 1);
+
+        for checked_at in 400_000..400_400 {
+            status.finish_at(checked_at, 10, None);
+        }
+        assert_eq!(status.history.len(), 300);
+        assert_eq!(status.history.front().unwrap().checked_at, 400_100);
+        assert_eq!(status.history.back().unwrap().checked_at, 400_399);
+    }
+
+    #[test]
+    fn room_check_history_accepts_legacy_status_snapshots() {
+        let status: RoomCheckStatus = serde_json::from_value(serde_json::json!({
+            "checked_at": 1000, "last_success_at": 1000, "duration_ms": 178,
+            "error": null, "checking": false,
+        }))
+        .unwrap();
+        assert!(status.history.is_empty());
+    }
 
     #[tokio::test]
     async fn preview_sink_is_shared_by_recorder_clones_and_bypasses_lifecycle_queue() {

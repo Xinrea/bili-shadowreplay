@@ -98,24 +98,25 @@ test("the UI exposes a spinner, live status, inline errors and disabled actions"
 });
 
 test("all destructive confirmation modals await their action through the shared component", async () => {
-  for (const page of ["Archive", "Material", "Clip", "Upload", "Room"]) {
+  for (const page of ["Material", "Clip", "Upload", "Room"]) {
     const text = await read(`src/page/${page}.svelte`);
     assert.match(text, /<DeleteConfirmActions[\s\S]*?onconfirm=/, page);
   }
+  assert.match(await read("src/lib/components/ArchiveList.svelte"), /<DeleteConfirmActions[\s\S]*?onconfirm=/);
   const room = await read("src/page/Room.svelte");
   assert.match(room, /bind:busy=\{deletingRoom\}/);
   assert.match(room, /if \(deleteModal\) \{\s*if \(deletingRoom\) return;/);
 });
 
 test("archive batch survives list refreshes and retries only unfinished deletions", async () => {
-  const text = await read("src/page/Archive.svelte");
+  const text = await read("src/lib/components/ArchiveList.svelte");
   const records = ["one", "two", "three"].map((live_id) => ({ live_id, room_id: "room", platform: "bilibili" }));
   const calls = [];
   let fail = true;
   const refresh = deferred();
   const context = vm.createContext({
     selectedArchives: new Set(records.map((record) => record.live_id)),
-    filteredArchives: records,
+    archives: records,
     showDeleteConfirm: true,
     archiveToDelete: null,
     invoke: async (command, args) => {
@@ -123,9 +124,9 @@ test("archive batch survives list refreshes and retries only unfinished deletion
       calls.push(args.liveId);
       if (args.liveId === "two" && fail) throw new Error("busy");
       // A deletion event replaces the list while the request is awaited.
-      context.filteredArchives = context.filteredArchives.filter((record) => record.live_id !== args.liveId);
+      context.archives = context.archives.filter((record) => record.live_id !== args.liveId);
     },
-    loadArchives: () => refresh.promise,
+    onrefresh: () => refresh.promise,
   });
   vm.runInContext(scriptCode(text, ["deleteSelectedArchives"]), context);
   await assert.rejects(context.deleteSelectedArchives(), /busy/);
@@ -143,19 +144,19 @@ test("archive batch survives list refreshes and retries only unfinished deletion
 });
 
 test("archive batch uses its initial targets even if a refresh replaces the entire visible page", async () => {
-  const text = await read("src/page/Archive.svelte");
+  const text = await read("src/lib/components/ArchiveList.svelte");
   const records = ["one", "two", "three"].map((live_id) => ({ live_id, room_id: "room", platform: "bilibili" }));
   const calls = [];
   const context = vm.createContext({
     selectedArchives: new Set(records.map((record) => record.live_id)),
-    filteredArchives: records,
+    archives: records,
     showDeleteConfirm: true,
     archiveToDelete: null,
     invoke: async (_command, args) => {
       calls.push(args.liveId);
-      context.filteredArchives = [];
+      context.archives = [];
     },
-    loadArchives: async () => {},
+    onrefresh: async () => {},
   });
   vm.runInContext(scriptCode(text, ["deleteSelectedArchives"]), context);
   await context.deleteSelectedArchives();

@@ -13,3 +13,12 @@ export function formatSize(size: number): string {
     return `${(size / 1024 / 1024 / 1024).toFixed(2)} GiB`;
   }
 }
+
+/** Average bitrate from recorded bytes and media duration, using decimal bits/s. */
+export function formatBitrate(size: number, duration: number): string {
+  if (!Number.isFinite(size) || !Number.isFinite(duration) || size <= 0 || duration <= 0) {
+    return "—";
+  }
+  const kbps = (size * 8) / duration / 1000;
+  return kbps >= 1000 ? `${(kbps / 1000).toFixed(2)} Mbps` : `${kbps.toFixed(0)} kbps`;
+}

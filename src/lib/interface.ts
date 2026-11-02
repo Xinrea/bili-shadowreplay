@@ -41,6 +41,27 @@ export interface RecorderInfo {
   enabled: boolean;
 }
 
+export interface RoomCheckSample {
+  checked_at: number;
+  duration_ms: number;
+  error: string | null;
+}
+
+export interface RecorderStatus {
+  recorder: RecorderInfo;
+  active: boolean;
+  check: {
+    checked_at: number | null;
+    last_success_at: number | null;
+    duration_ms: number | null;
+    error: string | null;
+    checking: boolean;
+    history: RoomCheckSample[];
+  };
+  check_interval_secs: number;
+  current_record: import("./db").RecordItem | null;
+}
+
 export interface RecorderList {
   count: number;
   recorders: RecorderInfo[];

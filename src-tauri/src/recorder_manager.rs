@@ -1,3 +1,4 @@
+use crate::archive_timing::ArchiveTimingCache;
 use crate::config::Config;
 use crate::database::record::RecordRow;
 use crate::database::recorder::RecorderRow;
@@ -32,7 +33,7 @@ use recorder::timeline::{align_danmus_to_recording, load_skipped_ad_ranges};
 use recorder::traits::RecorderTrait;
 use recorder::RoomInfo;
 use recorder::UserInfo;
-use recorder::{CachePath, RecorderInfo};
+use recorder::{CachePath, RecorderInfo, RoomCheckStatus};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU32;
@@ -54,6 +55,24 @@ use tauri::AppHandle;
 pub struct RecorderList {
     pub count: usize,
     pub recorders: Vec<RecorderInfo>,
+}
+
+#[derive(Serialize)]
+pub struct RecorderStatus {
+    pub recorder: RecorderInfo,
+    pub active: bool,
+    pub check: RoomCheckStatus,
+    pub check_interval_secs: u64,
+    pub current_record: Option<RecordRow>,
+}
+
+#[derive(Serialize)]
+pub struct ArchiveRecord {
+    #[serde(flatten)]
+    pub record: RecordRow,
+    /// Actual retained segment coverage in Unix milliseconds, when available.
+    pub recording_started_at: Option<i64>,
+    pub recording_ended_at: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -207,6 +226,7 @@ pub struct RecorderManager {
     is_migrating: Arc<AtomicBool>,
     webhook_poster: WebhookPoster,
     material_hook: Arc<std::sync::OnceLock<MaterialHook>>,
+    archive_timing: Arc<ArchiveTimingCache>,
 }
 
 #[derive(Error, Debug)]
@@ -311,6 +331,7 @@ impl RecorderManager {
             is_migrating: Arc::new(AtomicBool::new(false)),
             webhook_poster,
             material_hook: Arc::new(std::sync::OnceLock::new()),
+            archive_timing: Arc::new(ArchiveTimingCache::default()),
         };
 
         // Start event listener
@@ -1375,6 +1396,74 @@ impl RecorderManager {
 
     pub async fn get_archive_disk_usage(&self) -> Result<i64, RecorderManagerError> {
         Ok(self.db.get_record_disk_usage().await?)
+    }
+
+    pub async fn get_recorder_status(
+        &self,
+        platform: PlatformType,
+        room_id: &str,
+    ) -> Result<RecorderStatus, RecorderManagerError> {
+        let recorder_id = format!("{}:{room_id}", platform.as_str());
+        let recorder = self.recorders.read().await.get(&recorder_id).cloned();
+        let (info, check, check_interval_secs, active) = if let Some(recorder) = recorder {
+            (
+                recorder.info().await,
+                recorder.check_status().read().await.clone(),
+                recorder
+                    .update_interval()
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                true,
+            )
+        } else {
+            let info = self
+                .get_recorder_list()
+                .await
+                .recorders
+                .into_iter()
+                .find(|info| {
+                    info.room_info.platform == platform.as_str()
+                        && info.room_info.room_id == room_id
+                })
+                .ok_or_else(|| RecorderManagerError::NotFound {
+                    room_id: room_id.to_string(),
+                })?;
+            (info, RoomCheckStatus::default(), 0, false)
+        };
+        let current_record = if info.recording && !info.live_id.is_empty() {
+            match self.db.get_record(room_id, &info.live_id).await {
+                Ok(record) => Some(record),
+                // RecordStart may still be queued when the status is requested.
+                Err(DatabaseError::DB(sqlx::Error::RowNotFound)) => None,
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            None
+        };
+        Ok(RecorderStatus {
+            recorder: info,
+            active,
+            check,
+            check_interval_secs,
+            current_record,
+        })
+    }
+
+    pub async fn archive_records(&self, records: Vec<RecordRow>) -> Vec<ArchiveRecord> {
+        let cache_dir = PathBuf::from(self.config.read().await.cache.clone());
+        let mut archives = Vec::with_capacity(records.len());
+        for record in records {
+            let relative = format!("{}/{}/{}", record.platform, record.room_id, record.live_id);
+            let timing = match join_relative(&cache_dir, &relative) {
+                Some(directory) => self.archive_timing.get(&directory).await,
+                None => None,
+            };
+            archives.push(ArchiveRecord {
+                record,
+                recording_started_at: timing.map(|timing| timing.started_at),
+                recording_ended_at: timing.map(|timing| timing.ended_at),
+            });
+        }
+        archives
     }
 
     pub async fn get_archives(

@@ -31,3 +31,12 @@ test("larger sizes switch to binary units with two decimals", async () => {
   assert.equal(formatSize(1024 ** 3), "1.00 GiB");
   assert.equal(formatSize(2.5 * 1024 ** 4), "2560.00 GiB");
 });
+
+test("average bitrate uses recorded media duration and decimal units", async () => {
+  const { formatBitrate } = await loadModule();
+  assert.equal(formatBitrate(500_000, 10), "400 kbps");
+  assert.equal(formatBitrate(5_000_000, 10), "4.00 Mbps");
+  for (const [size, duration] of [[0, 0], [100, 0], [0, 10], [-1, 10], [100, -1], [Infinity, 10], [100, NaN]]) {
+    assert.equal(formatBitrate(size, duration), "—");
+  }
+});

@@ -33,6 +33,7 @@
   import GenerateWholeClipModal from "../lib/components/GenerateWholeClipModal.svelte";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
   import DeleteConfirmActions from "../lib/components/DeleteConfirmActions.svelte";
+  import RoomStatusModal from "../lib/components/RoomStatusModal.svelte";
   import { onMount } from "svelte";
   import { registerCommands } from "../lib/stores/commands";
 
@@ -186,6 +187,14 @@
   );
 
   // modals
+  let statusRoom: RecorderInfo | null = $state(null);
+  let roomMenuTrigger: HTMLButtonElement | null = null;
+
+  function closeRoomStatus() {
+    statusRoom = null;
+    queueMicrotask(() => roomMenuTrigger?.focus({ preventScroll: true }));
+  }
+
   let deleteModal = $state(false);
   let deletingRoom = $state(false);
   let deleteRoom = $state(null);
@@ -225,6 +234,7 @@
 
     try {
       let new_archives = (await invoke("get_archives", {
+        platform: archiveRoom.room_info.platform,
         roomId: archiveRoom.room_info.room_id,
         offset: currentPage * pageSize,
         limit: pageSize,
@@ -307,6 +317,7 @@
   }
 
   function handleModalClickOutside(event) {
+    if (statusRoom) return;
     // 检查点击是否在任何modal内部
     const clickedElement = event.target;
 
@@ -658,6 +669,9 @@
             {/if}
             <button
               class="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-[7px] bg-black/50 text-white backdrop-blur-sm transition-colors hover:bg-black/70"
+              aria-label={`管理直播间 ${room.user_info.user_name || room.room_info.room_id}`}
+              onfocus={(event) => (roomMenuTrigger = event.currentTarget)}
+              onpointerdown={(event) => (roomMenuTrigger = event.currentTarget)}
             >
               <Ellipsis class="h-4 w-4" />
             </button>
@@ -675,6 +689,10 @@
                   <span></span>
                 </label>
               </button>
+              <DropdownItem
+                defaultClass="ui-menu-item"
+                onclick={() => (statusRoom = room)}>状态</DropdownItem
+              >
               <DropdownItem
                 defaultClass="ui-menu-item"
                 onclick={() => {
@@ -1070,6 +1088,10 @@
       </div>
     </div>
   </div>
+{/if}
+
+{#if statusRoom}
+  <RoomStatusModal room={statusRoom} onclose={closeRoomStatus} />
 {/if}
 
 <!-- Generate Whole Clip Modal -->

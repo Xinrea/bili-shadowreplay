@@ -19,6 +19,9 @@ export interface RecordItem {
   size: number;
   created_at: string;
   cover: string;
+  /** Retained segment coverage in Unix milliseconds; older servers may omit it. */
+  recording_started_at?: number | null;
+  recording_ended_at?: number | null;
 }
 
 export interface AccountInfo {

@@ -4,6 +4,7 @@ pub mod douyin;
 pub mod douyu;
 pub mod huya;
 pub mod kuaishou;
+pub mod rtmp;
 pub mod tiktok;
 pub mod twitch;
 pub mod youtube;
@@ -21,13 +22,14 @@ pub enum PlatformType {
     TikTok,
     Twitch,
     Weibo,
+    Rtmp,
 }
 
 impl PlatformType {
     /// All known platforms. Keep in sync with the enum variants; used by
     /// cache directory migration to tell BSR-owned folders apart from
     /// pre-existing user files.
-    pub const ALL: [PlatformType; 10] = [
+    pub const ALL: [PlatformType; 11] = [
         PlatformType::BiliBili,
         PlatformType::Douyin,
         PlatformType::Douyu,
@@ -38,6 +40,7 @@ impl PlatformType {
         PlatformType::TikTok,
         PlatformType::Twitch,
         PlatformType::Weibo,
+        PlatformType::Rtmp,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -52,6 +55,7 @@ impl PlatformType {
             PlatformType::TikTok => "tiktok",
             PlatformType::Twitch => "twitch",
             PlatformType::Weibo => "weibo",
+            PlatformType::Rtmp => "rtmp",
         }
     }
 }
@@ -70,6 +74,7 @@ impl std::str::FromStr for PlatformType {
             "tiktok" => Ok(PlatformType::TikTok),
             "twitch" => Ok(PlatformType::Twitch),
             "weibo" => Ok(PlatformType::Weibo),
+            "rtmp" => Ok(PlatformType::Rtmp),
             _ => Err(format!("Invalid platform type: {s}")),
         }
     }
@@ -99,6 +104,7 @@ mod tests {
         assert_eq!(PlatformType::TikTok.as_str(), "tiktok");
         assert_eq!(PlatformType::Twitch.as_str(), "twitch");
         assert_eq!(PlatformType::Weibo.as_str(), "weibo");
+        assert_eq!(PlatformType::Rtmp.as_str(), "rtmp");
     }
 
     #[test]
@@ -122,6 +128,7 @@ mod tests {
         assert_eq!(PlatformType::from_str("tiktok"), Ok(PlatformType::TikTok));
         assert_eq!(PlatformType::from_str("twitch"), Ok(PlatformType::Twitch));
         assert_eq!(PlatformType::from_str("weibo"), Ok(PlatformType::Weibo));
+        assert_eq!(PlatformType::from_str("rtmp"), Ok(PlatformType::Rtmp));
     }
 
     #[test]
@@ -141,6 +148,7 @@ mod tests {
             "tiktok",
             "twitch",
             "weibo",
+            "rtmp",
         ] {
             assert!(names.contains(name), "ALL is missing {name}");
         }
@@ -166,6 +174,7 @@ mod tests {
             PlatformType::TikTok,
             PlatformType::Twitch,
             PlatformType::Weibo,
+            PlatformType::Rtmp,
         ];
         for p in platforms {
             assert_eq!(PlatformType::from_str(p.as_str()), Ok(p));

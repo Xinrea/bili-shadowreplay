@@ -92,14 +92,14 @@ impl FlvRecorder {
         // its pending final segment on a graceful stop. Account for it once.
         self.publish_updates(&playlist_path, &mut processed_segments)
             .await;
-        result.map_err(RecorderError::FfmpegError)?;
-
+        // A disconnected push source may report an I/O error after the native
+        // muxer has flushed its tail. Its replay must still be a closed VOD.
         if playlist_path.exists() {
             let mut playlist = HlsPlaylist::new(playlist_path.clone()).await?;
             playlist.close().await?;
         }
 
-        Ok(())
+        result.map_err(RecorderError::FfmpegError)
     }
 
     async fn publish_updates(&self, playlist_path: &Path, processed_segments: &mut usize) {

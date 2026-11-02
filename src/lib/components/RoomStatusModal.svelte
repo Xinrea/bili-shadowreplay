@@ -12,9 +12,11 @@
   import { archiveViewMode } from "../stores/archive-view";
   import type { RecordItem } from "../db";
   import type { RecorderInfo, RecorderStatus } from "../interface";
+  import type { RtmpIngestInfo } from "../rtmp";
   import ArchiveList from "./ArchiveList.svelte";
   import ArchiveCover from "./ArchiveCover.svelte";
   import RoomCheckTimeline from "./RoomCheckTimeline.svelte";
+  import RtmpIngestSettings from "./RtmpIngestSettings.svelte";
 
   interface Props { room: RecorderInfo; onclose: () => void; }
   let { room, onclose }: Props = $props();
@@ -22,6 +24,8 @@
   let loading = $state(true);
   let refreshing = $state(false);
   let statusError = $state("");
+  let rtmpIngest: RtmpIngestInfo | null = $state(null);
+  let rtmpError = $state("");
   let archives: RecordItem[] = $state([]);
   let archivesLoading = $state(true);
   let archivesLoaded = $state(false);
@@ -32,6 +36,7 @@
   let coverRequest = 0;
   let disposed = false;
   const pageVisible = pageVisibility();
+  const isRtmp = $derived(room.room_info.platform === "rtmp");
 
   const info = $derived(status?.recorder ?? room);
   const currentRecord = $derived(status?.current_record ?? null);
@@ -96,11 +101,24 @@
     }
   }
 
+  async function refreshIngest() {
+    if (!isRtmp || disposed) return;
+    try {
+      const result = await invoke<RtmpIngestInfo>("get_rtmp_ingest", { roomId: room.room_info.room_id });
+      if (disposed) return;
+      rtmpIngest = result;
+      rtmpError = "";
+    } catch (error) {
+      if (!disposed) rtmpError = `推流信息加载失败：${String(error)}`;
+    }
+  }
+
   const statusRefresh = createStateRefresh(refreshStatus, 500);
   const archivesRefresh = createStateRefresh(refreshArchives, 1000);
   function refresh() {
     void statusRefresh.run();
     void archivesRefresh.run();
+    void refreshIngest();
   }
 
   function formatTimestamp(value: string | number | null | undefined, timeOnly = false) {
@@ -110,6 +128,7 @@
   }
 
   onMount(() => {
+    void refreshIngest();
     const stopStatus = watchStateChanges(statusRefresh, ["recorders-changed", "records-changed"], 5000);
     const stopArchives = watchStateChanges(archivesRefresh, ["records-changed"]);
     return () => { disposed = true; ++coverRequest; releaseCover(); stopStatus(); stopArchives(); };
@@ -152,14 +171,14 @@
                   <div class="flex gap-2"><dt class="shrink-0 text-fg-muted">主播 ID</dt><dd class="select-text break-all text-fg">{info.user_info.user_id || "—"}</dd></div>
                   <div class="flex gap-2"><dt class="shrink-0 text-fg-muted">平台直播 ID</dt><dd class="select-text break-all text-fg">{info.platform_live_id || "—"}</dd></div>
                   <div class="flex gap-2"><dt class="shrink-0 text-fg-muted">录播 ID</dt><dd class="select-text break-all text-fg">{info.live_id || "—"}</dd></div>
-                  <div class="flex gap-2"><dt class="shrink-0 text-fg-muted">最近成功</dt><dd class="select-text tabular-nums text-fg">{formatTimestamp(check?.last_success_at)}</dd></div>
+                  {#if !isRtmp}<div class="flex gap-2"><dt class="shrink-0 text-fg-muted">最近成功</dt><dd class="select-text tabular-nums text-fg">{formatTimestamp(check?.last_success_at)}</dd></div>{/if}
                 </dl>
               </details>
             </div>
           </div>
         </div>
         <div class="flex items-center gap-2">
-          <span class="ui-badge" class:ui-badge-success={!!check?.last_success_at && info.room_info.status}>{check?.last_success_at ? info.room_info.status ? "直播中" : "未开播" : "直播状态未知"}</span>
+          <span class="ui-badge" class:ui-badge-success={(isRtmp || !!check?.last_success_at) && info.room_info.status}>{isRtmp ? info.room_info.status ? "已开播" : "未开播" : check?.last_success_at ? info.room_info.status ? "直播中" : "未开播" : "直播状态未知"}</span>
           <span class="ui-badge" class:ui-badge-accent={info.enabled}>{info.enabled ? "自动录制已启用" : "自动录制已停用"}</span>
         </div>
       </div>
@@ -185,7 +204,7 @@
 
         <section aria-labelledby="room-recording-title" class="min-w-0">
           <div class="flex min-h-5 flex-wrap items-center justify-between gap-2 text-[11px]">
-            <div class="flex items-center gap-2"><h3 id="room-recording-title" class="text-[12px] font-medium text-fg-secondary">本次录制</h3><span class="ui-badge" class:ui-badge-danger={info.recording}>{info.recording ? "录制中" : "未在录制"}</span></div>
+            <div class="flex items-center gap-2"><h3 id="room-recording-title" class="text-[12px] font-medium text-fg-secondary">本次录制</h3><span class="ui-badge" class:ui-badge-danger={info.recording}>{isRtmp ? info.recording ? "正在录制" : "未录制" : info.recording ? "录制中" : "未在录制"}</span></div>
             {#if info.recording}<span class="tabular-nums text-fg-muted" title={formatTimestamp(currentRecord?.created_at)}>开始于 {formatTimestamp(currentRecord?.created_at, true)}</span>{/if}
           </div>
           {#if info.recording}
@@ -200,6 +219,21 @@
         </section>
       </div>
 
+      {#if isRtmp}
+        <section class="mt-4 space-y-2.5 border-t border-line pt-3" aria-labelledby="room-rtmp-title">
+          <h3 id="room-rtmp-title" class="text-[12px] font-medium text-fg-secondary">RTMP 推流</h3>
+          {#if rtmpError}
+            <div class="flex items-start justify-between gap-2 text-[12px] text-danger" role="alert">
+              <span class="select-text break-words">{rtmpError}</span><button class="shrink-0 underline" onclick={refreshIngest}>重试</button>
+            </div>
+          {/if}
+          {#if rtmpIngest}
+            <RtmpIngestSettings info={{ ...rtmpIngest, listening: status?.active ?? rtmpIngest.listening }} />
+          {:else if !rtmpError}
+            <p class="text-[12px] text-fg-muted" role="status">正在加载推流信息…</p>
+          {/if}
+        </section>
+      {:else}
       <RoomCheckTimeline history={check?.history ?? []} {loading}>
         {#snippet statusBadge()}
           {#if loading || check?.checking}
@@ -215,8 +249,9 @@
           <span>检查间隔 <span class="tabular-nums text-fg-secondary">{status?.check_interval_secs ? `${status.check_interval_secs} 秒` : "—"}</span></span>
         {/snippet}
       </RoomCheckTimeline>
+      {/if}
 
-      {#if check?.error}
+      {#if !isRtmp && check?.error}
         <div role="alert" class="mt-3 rounded-[8px] bg-warning-soft p-2.5 text-[12px] text-warning-fg">
           <p class="select-text break-words">{check.error}</p>
           <p class="mt-1 text-[11px]">{check.last_success_at ? `房间信息保留自最近一次成功检查（${formatTimestamp(check.last_success_at)}）。` : "尚未成功获取房间信息。"}</p>

@@ -4,7 +4,7 @@ use recorder::platforms::PlatformType;
 #[test]
 fn test_platform_type_all_variants() {
     // Ensure ALL is in sync with enum variants
-    assert_eq!(PlatformType::ALL.len(), 10);
+    assert_eq!(PlatformType::ALL.len(), 11);
 
     // Verify all platforms can round-trip through string conversion
     for platform in PlatformType::ALL {
@@ -51,6 +51,7 @@ fn test_platform_type_as_str() {
     assert_eq!(PlatformType::Kuaishou.as_str(), "kuaishou");
     assert_eq!(PlatformType::TikTok.as_str(), "tiktok");
     assert_eq!(PlatformType::Twitch.as_str(), "twitch");
+    assert_eq!(PlatformType::Rtmp.as_str(), "rtmp");
 }
 
 #[test]
@@ -64,4 +65,5 @@ fn test_all_platforms_covered() {
     assert!(all_names.contains(&"kuaishou"));
     assert!(all_names.contains(&"tiktok"));
     assert!(all_names.contains(&"twitch"));
+    assert!(all_names.contains(&"rtmp"));
 }

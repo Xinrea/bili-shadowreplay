@@ -7,6 +7,7 @@ const labels = new Map<string, string>([
   ["tiktok", "TikTok"],
   ["twitch", "Twitch"],
   ["youtube", "YouTube"],
+  ["rtmp", "RTMP 推流"],
 ]);
 
 /** Display name of a live platform, or the id itself for unknown platforms. */

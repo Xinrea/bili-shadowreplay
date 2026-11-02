@@ -15,7 +15,7 @@ const code = ts.transpileModule(parsed.statements.filter((node) => !ts.isImportD
 const room = { room_info: { platform: "bilibili", room_id: "123" } };
 const records = (count) => Array.from({ length: count }, (_, index) => ({ live_id: String(count - index) }));
 
-function fixture(invoke, get = async () => { throw new Error("unexpected image request"); }) {
+function fixture(invoke, get = async () => { throw new Error("unexpected image request"); }, selectedRoom = room) {
   let mount;
   const subscriptions = [];
   const createdUrls = new Map();
@@ -34,7 +34,7 @@ function fixture(invoke, get = async () => { throw new Error("unexpected image r
       return active() ? result : [];
     },
     summarizeRoomArchives: () => ({ count: 0, length: 0, size: 0 }),
-    $props: () => ({ room, onclose() {} }),
+    $props: () => ({ room: selectedRoom, onclose() {} }),
     $state: (value) => value,
     $derived: (value) => value,
     onMount: (callback) => { mount = callback; },
@@ -180,4 +180,35 @@ test("closing stops subscriptions and ignores pending status and history respons
   assert.equal(f.get("status"), null);
   assert.equal(f.get("archives.length"), 0);
   assert.equal(f.get("archivesLoaded"), false);
+});
+
+test("only RTMP rooms fetch ingest credentials in the existing status window", async () => {
+  const requests = [];
+  const info = { port: 52137, stream_key: "fixture-key" };
+  const invoke = async (command, args) => { requests.push({ command, args: { ...args } }); return info; };
+  const ordinary = fixture(invoke);
+  await ordinary.context.refreshIngest();
+  assert.equal(requests.length, 0);
+  const rtmp = fixture(invoke, undefined, { room_info: { platform: "rtmp", room_id: "rtmp-obs" } });
+  await rtmp.context.refreshIngest();
+  assert.deepEqual(requests, [{ command: "get_rtmp_ingest", args: { roomId: "rtmp-obs" } }]);
+  assert.equal(rtmp.get("rtmpIngest"), info);
+});
+
+test("ingest loading can recover from failure and ignores results after closing", async () => {
+  let response = async () => { throw new Error("offline"); };
+  const f = fixture(() => response(), undefined, { room_info: { platform: "rtmp", room_id: "rtmp-obs" } });
+  await f.context.refreshIngest();
+  assert.match(f.get("rtmpError"), /offline/);
+  response = async () => ({ port: 52137 });
+  await f.context.refreshIngest();
+  assert.equal(f.get("rtmpError"), "");
+  assert.equal(f.get("rtmpIngest.port"), 52137);
+  let resolve;
+  response = () => new Promise(done => { resolve = done; });
+  const cleanup = f.mount();
+  cleanup();
+  resolve({ port: 53000 });
+  await new Promise(done => setImmediate(done));
+  assert.equal(f.get("rtmpIngest.port"), 52137);
 });

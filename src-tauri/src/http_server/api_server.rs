@@ -682,6 +682,20 @@ async fn handler_add_recorder(
     Ok(Json(ApiResponse::success(recorder)))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RtmpIngestRequest {
+    room_id: String,
+}
+
+async fn handler_get_rtmp_ingest(
+    state: axum::extract::State<State>,
+    Json(param): Json<RtmpIngestRequest>,
+) -> Result<Json<ApiResponse<crate::handlers::recorder::RtmpIngestInfo>>, ApiError> {
+    let info = crate::handlers::recorder::get_rtmp_ingest(state.0, param.room_id).await?;
+    Ok(Json(ApiResponse::success(info)))
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RemoveRecorderRequest {
@@ -2529,6 +2543,7 @@ pub async fn start_api_server(state: State) {
                 post(handler_update_clip_name_format),
             )
             .route("/api/add_recorder", post(handler_add_recorder))
+            .route("/api/get_rtmp_ingest", post(handler_get_rtmp_ingest))
             .route("/api/remove_recorder", post(handler_remove_recorder))
             .route("/api/delete_archive", post(handler_delete_archive))
             .route("/api/delete_archives", post(handler_delete_archives))

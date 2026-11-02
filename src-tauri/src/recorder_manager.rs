@@ -25,6 +25,7 @@ use recorder::platforms::douyin::DouyinRecorder;
 use recorder::platforms::douyu::DouyuRecorder;
 use recorder::platforms::huya::HuyaRecorder;
 use recorder::platforms::kuaishou::KuaishouRecorder;
+use recorder::platforms::rtmp::{RtmpConfig, RtmpRecorder};
 use recorder::platforms::tiktok::TikTokRecorder;
 use recorder::platforms::twitch::TwitchRecorder;
 use recorder::platforms::youtube::YoutubeRecorder;
@@ -671,6 +672,7 @@ impl RecorderManager {
                     && platform != PlatformType::TikTok
                     && platform != PlatformType::Twitch
                     && platform != PlatformType::Youtube
+                    && platform != PlatformType::Rtmp
                     && account.is_err()
                 {
                     log::warn!("Failed to find an account for {platform:?} {room_id}");
@@ -698,6 +700,7 @@ impl RecorderManager {
         }
     }
 
+    /// Returns the resolved configuration to persist (including any allocated port).
     pub async fn add_recorder(
         &self,
         account: &Account,
@@ -705,11 +708,13 @@ impl RecorderManager {
         room_id: &str,
         extra: &str,
         enabled: bool,
-    ) -> Result<(), RecorderManagerError> {
+    ) -> Result<String, RecorderManagerError> {
         let normalized_room_id = match platform {
             PlatformType::Twitch => recorder::platforms::twitch::api::normalize_channel(room_id)
                 .map_err(RecorderManagerError::RecorderError)?,
             PlatformType::Youtube => recorder::platforms::youtube::normalize_room_id(room_id)?,
+            PlatformType::Rtmp => recorder::platforms::rtmp::normalize_room_id(room_id)
+                .map_err(|error| RecorderError::ApiError { error })?,
             _ => room_id.to_string(),
         };
         let room_id = normalized_room_id.as_str();
@@ -725,7 +730,24 @@ impl RecorderManager {
 
         let event_tx = self.get_event_sender();
         let update_interval = self.config.read().await.update_interval.clone();
+        let mut resolved_extra = extra.to_string();
         let recorder_boxed: Box<dyn RecorderTrait + Send + Sync> = match platform {
+            PlatformType::Rtmp => {
+                let recorder = RtmpRecorder::new(
+                    room_id,
+                    RtmpConfig::parse(extra).map_err(|error| RecorderError::ApiError { error })?,
+                    cache_dir,
+                    event_tx,
+                    enabled,
+                )
+                .await?;
+                resolved_extra = serde_json::to_string(recorder.config()).map_err(|error| {
+                    RecorderError::ApiError {
+                        error: error.to_string(),
+                    }
+                })?;
+                Box::new(recorder)
+            }
             PlatformType::BiliBili => Box::new(BiliRecorder::new(
                 room_id,
                 account,
@@ -804,10 +826,17 @@ impl RecorderManager {
             events.publish_preview(&topic, &event);
         }));
         let recorder: Arc<dyn RecorderTrait + Send + Sync> = Arc::from(recorder_boxed);
-        self.recorders
-            .write()
-            .await
-            .insert(recorder_id.clone(), recorder.clone());
+        {
+            let mut recorders = self.recorders.write().await;
+            // Construction can await a port bind. Another add may have won
+            // while it was pending; never overwrite and orphan its listener.
+            if recorders.contains_key(&recorder_id) {
+                return Err(RecorderManagerError::AlreadyExisted {
+                    room_id: room_id.to_string(),
+                });
+            }
+            recorders.insert(recorder_id.clone(), recorder.clone());
+        }
         // Run without holding the map's read lock: run() awaits internal locks.
         recorder.run().await;
         self.db.notify_change(DataChange::Recorders);
@@ -817,7 +846,7 @@ impl RecorderManager {
         if !self.recorders.read().await.contains_key(&recorder_id) {
             recorder.stop().await;
         }
-        Ok(())
+        Ok(resolved_extra)
     }
 
     pub async fn stop_all(&self) {
@@ -829,6 +858,17 @@ impl RecorderManager {
             recorder.stop().await;
         }
         recorders.clear();
+    }
+
+    pub(crate) async fn discard_unpersisted_recorder(&self, platform: PlatformType, room_id: &str) {
+        let recorder = self
+            .recorders
+            .write()
+            .await
+            .remove(&format!("{}:{room_id}", platform.as_str()));
+        if let Some(recorder) = recorder {
+            recorder.stop().await;
+        }
     }
 
     /// Remove a recorder from the manager

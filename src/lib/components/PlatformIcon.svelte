@@ -8,11 +8,12 @@
   import TikTokIcon from "./TikTokIcon.svelte";
   import TwitchIcon from "./TwitchIcon.svelte";
   import YouTubeIcon from "./YouTubeIcon.svelte";
+  import RtmpIcon from "./RtmpIcon.svelte";
 
   let { platform, class: className = "h-4 w-4" }: { platform: string; class?: string } = $props();
   const icons = {
     bilibili: BilibiliIcon, douyin: DouyinIcon, douyu: DouyuIcon, huya: HuyaIcon,
-    kuaishou: KuaishouIcon, tiktok: TikTokIcon, twitch: TwitchIcon, youtube: YouTubeIcon,
+    kuaishou: KuaishouIcon, tiktok: TikTokIcon, twitch: TwitchIcon, youtube: YouTubeIcon, rtmp: RtmpIcon,
   };
   const Icon = $derived(icons[platform] ?? Globe);
 </script>

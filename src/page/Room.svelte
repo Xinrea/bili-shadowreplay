@@ -19,6 +19,7 @@
     History,
     PlayIcon,
     Globe,
+    Radio,
   } from "lucide-svelte";
   import BilibiliIcon from "../lib/components/BilibiliIcon.svelte";
   import DouyinIcon from "../lib/components/DouyinIcon.svelte";
@@ -70,6 +71,7 @@
       tiktok: "/imgs/tiktok.png",
       twitch: "/imgs/twitch.svg",
       youtube: "/imgs/youtube.svg",
+      rtmp: "/imgs/rtmp.svg",
     };
     return avatarMap[platform] || "/imgs/huya_avatar.png";
   }
@@ -84,6 +86,7 @@
       tiktok: "/imgs/tiktok.png",
       twitch: "/imgs/twitch.svg",
       youtube: "/imgs/youtube.svg",
+      rtmp: "/imgs/rtmp.svg",
     };
     return coverMap[platform] || "/imgs/huya.png";
   }
@@ -202,6 +205,7 @@
   let addModal = $state(false);
   let addRoom = $state("");
   let selectedPlatform = $state("bilibili");
+  let creatingRoom = $state(false);
 
   let archiveModal = $state(false);
   let archiveRoom: RecorderInfo = $state(null);
@@ -430,6 +434,7 @@
   }
 
   function addNewRecorder(room_id: string, platform: string) {
+    if (creatingRoom) return;
     const room_input = room_id.trim();
     const douyu_room_id =
       platform === "douyu"
@@ -500,10 +505,11 @@
         break;
     }
 
-    invoke("add_recorder", {
-      roomId: room_id,
+    creatingRoom = true;
+    invoke<{ room_id: string }>("add_recorder", {
+      roomId: platform === "rtmp" ? "" : room_id,
       platform: platform,
-      extra: "",
+      extra: platform === "rtmp" ? JSON.stringify({ name: room_input }) : "",
     })
       .then(() => {
         addModal = false;
@@ -511,7 +517,8 @@
       })
       .catch(async (e) => {
         await message(e);
-      });
+      })
+      .finally(() => { creatingRoom = false; });
   }
 
   let generateWholeClipModal = $state(false);
@@ -642,14 +649,16 @@
                   .room_id}</span
               >
             </div>
-            {#if room.enabled}
+            {#if room.enabled || room.room_info.platform === "rtmp"}
               <div
                 class={"absolute left-2 top-2 flex h-6 items-center justify-center gap-1 rounded-[6px] px-1.5 text-[11px] font-medium text-white " +
                   (room.recording ? "bg-danger" : "bg-black/50 backdrop-blur-sm")}
               >
                 <AutoRecordIcon class="h-4 w-4 text-white" />
                 {#if room.recording}
-                  <span class="text-white">录制中</span>
+                  <span class="text-white">{room.room_info.platform === "rtmp" ? "正在录制" : "录制中"}</span>
+                {:else if room.room_info.platform === "rtmp"}
+                  <span class="text-white">未录制</span>
                 {/if}
               </div>
             {/if}
@@ -657,14 +666,14 @@
               <div
                 class="absolute bottom-2 right-2 flex h-6 items-center justify-center rounded-[6px] bg-black/50 px-2 text-[11px] text-white/80 backdrop-blur-sm"
               >
-                <span>直播未开始</span>
+                <span>{room.room_info.platform === "rtmp" ? "未开播" : "直播未开始"}</span>
               </div>
             {:else}
               <div
                 class="absolute bottom-2 right-2 flex h-6 items-center justify-center gap-1.5 rounded-[6px] bg-black/50 px-2 text-[11px] font-medium text-white backdrop-blur-sm"
               >
                 <span class="h-1.5 w-1.5 rounded-full bg-success"></span>
-                <span>直播进行中</span>
+                <span>{room.room_info.platform === "rtmp" ? "已开播" : "直播进行中"}</span>
               </div>
             {/if}
             <button
@@ -683,7 +692,7 @@
                 class="ui-menu-item cursor-pointer justify-between gap-4"
                 onclick={() => toggleEnabled(room)}
               >
-                <span class="font-medium">启用直播间</span>
+                <span class="font-medium">启用</span>
                 <label class="ui-switch">
                   <input type="checkbox" checked={room.enabled} />
                   <span></span>
@@ -693,18 +702,15 @@
                 defaultClass="ui-menu-item"
                 onclick={() => (statusRoom = room)}>状态</DropdownItem
               >
-              <DropdownItem
-                defaultClass="ui-menu-item"
-                onclick={() => {
-                  openLiveUrl(room);
-                }}>打开网页直播间</DropdownItem
-              >
+              {#if room.room_info.platform !== "rtmp"}
+                <DropdownItem defaultClass="ui-menu-item" onclick={() => openLiveUrl(room)}>打开网页直播间</DropdownItem>
+              {/if}
               <DropdownItem
                 defaultClass="ui-menu-item danger"
                 onclick={() => {
                   deleteRoom = room;
                   deleteModal = true;
-                }}>移除直播间</DropdownItem
+                }}>移除</DropdownItem
               >
             </Dropdown>
           </div>
@@ -729,6 +735,8 @@
                       <TwitchIcon class="w-5 h-5 text-purple-600" />
                     {:else if room.room_info.platform === "youtube"}
                       <YouTubeIcon class="w-4 h-4" />
+                    {:else if room.room_info.platform === "rtmp"}
+                      <Radio class="w-4 h-4" />
                     {:else}
                       <Globe class="h-4 w-4 text-fg-faint" />
                     {/if}
@@ -860,21 +868,25 @@
             { id: "tiktok", label: "TikTok" },
             { id: "twitch", label: "Twitch" },
             { id: "youtube", label: "YouTube" },
+            { id: "rtmp", label: "RTMP 推流" },
           ]}
         />
 
         <div class="space-y-1.5">
           <label for="room_id" class="ui-label block">
-            直播间 ID 或链接
+            {selectedPlatform === "rtmp" ? "房间名称" : "直播间 ID 或链接"}
           </label>
           <input
             id="room_id"
             type="text"
             bind:value={addRoom}
             class="ui-input w-full"
-            placeholder="请输入直播间 ID 或链接"
+            placeholder={selectedPlatform === "rtmp" ? "例如：我的 OBS" : "请输入直播间 ID 或链接"}
           />
         </div>
+        {#if selectedPlatform === "rtmp"}
+          <p class="text-[12px] text-fg-muted">端口和推流密钥自动生成，创建后可在房间菜单的「状态」中查看。</p>
+        {/if}
       </div>
 
       <div class="ui-modal-footer">
@@ -888,14 +900,12 @@
         </button>
         <button
           class="ui-btn ui-btn-primary"
-          disabled={!addRoom}
+          disabled={creatingRoom || !addRoom.trim()}
           onclick={() => {
             addNewRecorder(addRoom, selectedPlatform);
-            addModal = false;
-            addRoom = "";
           }}
         >
-          添加
+          {creatingRoom ? "添加中…" : "添加"}
         </button>
       </div>
     </div>

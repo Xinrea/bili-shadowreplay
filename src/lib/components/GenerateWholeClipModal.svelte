@@ -7,6 +7,7 @@
   import { untrack } from "svelte";
   import { clickOutside } from "../actions/clickOutside";
   import { trapFocus } from "../focus-trap";
+  import { pageVisibility } from "../page-visibility";
   import { defaultRenderSettings } from "../project-timeline";
   import RenderSettingsFields from "./RenderSettingsFields.svelte";
 
@@ -18,6 +19,7 @@
   }
 
   let { showModal = $bindable(false), archive = null, roomId, onGenerated }: Props = $props();
+  const pageVisible = pageVisibility();
   export const platform: string = "";
 
   let wholeClipArchives: RecordItem[] = $state([]);
@@ -183,7 +185,7 @@
   }
 
   function handleKeydown(event: KeyboardEvent) {
-    if (event.key !== "Escape" || event.isComposing) return;
+    if (!pageVisible() || event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
     event.preventDefault();
     event.stopPropagation();
     closeModal();
@@ -217,7 +219,7 @@
     onclick={closeModal}
     onkeydown={handleKeydown}
     role="dialog"
-    use:trapFocus
+    use:trapFocus={{ active: pageVisible() }}
     aria-label="生成完整录播"
     tabindex="-1"
     aria-modal="true"

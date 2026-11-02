@@ -9,6 +9,7 @@
   import type { RecordItem, RecordSummaryStatus } from "../db";
   import type { RecorderInfo } from "../interface";
   import { trapFocus } from "../focus-trap";
+  import { pageVisibility } from "../page-visibility";
   import { invoke } from "../invoker";
   import { liveRoomUrl, platformLabel } from "../platform";
   import { formatBitrate, formatSize } from "../size-format";
@@ -38,6 +39,7 @@
     archives, rooms = [], loading = false, error = "", compact = false,
     filterRooms = false, dialogOpen = $bindable(false), onrefresh,
   }: Props = $props();
+  const pageVisible = pageVisibility();
 
   const sortOptions: { value: ArchiveSortField; label: string }[] = [
     { value: "created_at", label: "直播时间" }, { value: "title", label: "标题" },
@@ -175,15 +177,16 @@
     showDeleteConfirm = false;
     archiveToDelete = null;
   }
-</script>
 
-<svelte:window onkeydown={(event) => {
-  if (showDeleteConfirm && event.key === "Escape" && !event.defaultPrevented && !event.isComposing) {
+  function handleDeleteKeydown(event: KeyboardEvent) {
+    if (!showDeleteConfirm || !pageVisible() || event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
     event.preventDefault();
     event.stopImmediatePropagation();
     cancelDelete();
   }
-}} />
+</script>
+
+<svelte:window onkeydown={handleDeleteKeydown} />
 
 {#snippet deleteSelectedButton()}
   <button class="ui-btn ui-btn-danger" onclick={() => { archiveToDelete = null; showDeleteConfirm = true; }}>
@@ -329,7 +332,7 @@
 {#if showDeleteConfirm}
   <div class="ui-modal-backdrop">
     <button class="absolute inset-0" aria-label="取消删除" disabled={deleting} onclick={cancelDelete}></button>
-    <div use:trapFocus role="dialog" aria-modal="true" aria-labelledby="archive-delete-title" tabindex="-1" class="ui-modal relative w-[400px] max-w-full">
+    <div use:trapFocus={{ active: pageVisible() }} role="dialog" aria-modal="true" aria-labelledby="archive-delete-title" tabindex="-1" class="ui-modal relative w-[400px] max-w-full">
       <div class="ui-modal-header"><h3 id="archive-delete-title">确认删除</h3></div>
       <div class="ui-modal-body space-y-2">
         <p class="text-[13px] text-fg-secondary">{archiveToDelete ? `确定要删除录播「${archiveToDelete.title}」吗？` : `确定要删除选中的 ${selectedArchives.size} 个录播吗？`}</p>

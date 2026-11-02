@@ -211,7 +211,7 @@
 
 {#if showModal && archive}
   <div class="ui-modal-backdrop p-6">
-    <div use:trapFocus role="dialog" aria-modal="true" aria-label="直播总结" tabindex="-1" class="ui-modal max-h-[90vh] w-full max-w-4xl">
+    <div use:trapFocus={{ active: pageVisible() }} role="dialog" aria-modal="true" aria-label="直播总结" tabindex="-1" class="ui-modal max-h-[90vh] w-full max-w-4xl">
       <div class="flex shrink-0 items-center justify-between gap-3 border-b border-line px-[18px] py-3">
         <div class="min-w-0">
           <div class="flex items-center gap-2">

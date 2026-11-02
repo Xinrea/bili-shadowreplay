@@ -108,6 +108,65 @@ test("all destructive confirmation modals await their action through the shared 
   assert.match(room, /if \(deleteModal\) \{\s*if \(deletingRoom\) return;/);
 });
 
+async function archiveKeyboardFixture() {
+  const context = vm.createContext({
+    showDeleteConfirm: true, archiveToDelete: { live_id: "live" }, deleting: false,
+    pageVisible: () => true,
+  });
+  vm.runInContext(scriptCode(await read("src/lib/components/ArchiveList.svelte"), ["cancelDelete", "handleDeleteKeydown"]), context);
+  return context;
+}
+
+function escapeKey(changes = {}) {
+  return {
+    key: "Escape", defaultPrevented: false, isComposing: false,
+    prevented: 0, stopped: 0,
+    preventDefault() { this.prevented++; },
+    stopImmediatePropagation() { this.stopped++; },
+    ...changes,
+  };
+}
+
+test("a hidden archive confirmation preserves Escape for the active page and works again when revisited", async () => {
+  const f = await archiveKeyboardFixture();
+  f.pageVisible = () => false;
+  const hidden = escapeKey();
+  f.handleDeleteKeydown(hidden);
+  assert.equal(f.showDeleteConfirm, true);
+  assert.equal(f.archiveToDelete.live_id, "live");
+  assert.equal(hidden.prevented, 0);
+  assert.equal(hidden.stopped, 0);
+  f.pageVisible = () => true;
+  const visible = escapeKey();
+  f.handleDeleteKeydown(visible);
+  assert.equal(f.showDeleteConfirm, false);
+  assert.equal(f.archiveToDelete, null);
+  assert.equal(visible.prevented, 1);
+  assert.equal(visible.stopped, 1);
+});
+
+test("visible archive confirmation protects pending deletions and ignores composed or handled keys", async () => {
+  const f = await archiveKeyboardFixture();
+  for (const changes of [{ key: "Enter" }, { isComposing: true }, { defaultPrevented: true }]) {
+    const event = escapeKey(changes);
+    f.handleDeleteKeydown(event);
+    assert.equal(f.showDeleteConfirm, true);
+    assert.equal(event.prevented, 0);
+    assert.equal(event.stopped, 0);
+  }
+  f.deleting = true;
+  const busy = escapeKey();
+  f.handleDeleteKeydown(busy);
+  assert.equal(f.showDeleteConfirm, true);
+  assert.equal(busy.prevented, 1);
+  assert.equal(busy.stopped, 1);
+  f.showDeleteConfirm = false;
+  const closed = escapeKey();
+  f.handleDeleteKeydown(closed);
+  assert.equal(closed.prevented, 0);
+  assert.equal(closed.stopped, 0);
+});
+
 test("archive batch survives list refreshes and retries only unfinished deletions", async () => {
   const text = await read("src/lib/components/ArchiveList.svelte");
   const records = ["one", "two", "three"].map((live_id) => ({ live_id, room_id: "room", platform: "bilibili" }));

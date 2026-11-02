@@ -147,7 +147,7 @@
     if (selectedKey && !popover?.contains(target) && !trigger?.contains(target)) closeMenu();
   }}
   onkeydowncapture={(event) => {
-    if (!selectedKey || !popover?.contains(document.activeElement) || event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+    if (!pageVisible() || !selectedKey || !popover?.contains(document.activeElement) || event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
     event.preventDefault();
     event.stopImmediatePropagation();
     closeMenu();

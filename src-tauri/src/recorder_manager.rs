@@ -1965,7 +1965,7 @@ impl RecorderManager {
             Err(e) => {
                 log::error!("Failed to concat playlists: {e}");
                 return Err(RecorderManagerError::HLSError {
-                    err: "Failed to concat playlists".into(),
+                    err: format!("Failed to concat playlists: {e}"),
                 });
             }
         };
@@ -2283,6 +2283,14 @@ mod live_end_tests {
         assert!(
             finished.message.contains("Failed to concat playlists"),
             "{}",
+            finished.message
+        );
+        assert!(
+            finished.message.contains("playlist.m3u8")
+                && finished
+                    .message
+                    .contains("Failed to generate playlist video"),
+            "the task must retain the failing recording and its cause: {}",
             finished.message
         );
         assert_eq!(finished.metadata, queued.metadata);

@@ -39,6 +39,14 @@ write and close errors are propagated. Success publishes the file atomically
 before the final progress callback. Progress comes from media timestamps rather
 than parsing subprocess stderr.
 
+Native FFmpeg warnings and errors also reach the application logger with their
+codec/filter context. Each blocking job retains its first eight and last eight
+distinct consecutive error messages, including the cause preceding teardown
+failures, and appends them to returned errors. Individual messages are capped
+at 4096 bytes with an explicit truncation marker. Job captures are isolated by
+thread and cleared on success, failure and panic. Messages from FFmpeg-owned
+codec threads reach the log but are not attributed to another worker's job.
+
 Tests compare stream headers, metadata, dispositions and every packet with the
 original single-input and complex-graph commands on FFmpeg 6 and 9. The frame
 clock's exact CLI oracle is documented in video_clock/README.md. This module

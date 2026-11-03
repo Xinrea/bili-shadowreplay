@@ -57,10 +57,27 @@ pub async fn run_native_media_with_sources<R: ProgressReporterTrait>(
         };
     }
     let context = context.into();
+    let failure_context = format!(
+        "inputs={:?}, outputs={:?}, filter={:?}",
+        plan.inputs
+            .iter()
+            .map(|input| &input.source)
+            .collect::<Vec<_>>(),
+        plan.outputs
+            .iter()
+            .map(|output| &output.path)
+            .collect::<Vec<_>>(),
+        plan.filter_graph.as_ref().map(|graph| &graph.spec),
+    );
+    let report_error = |error: ffmpeg_utils::MediaError| {
+        let message = format!("{context}: {error}");
+        log::error!("{message}; {failure_context}");
+        message
+    };
     let Some(reporter) = reporter.filter(|_| !matches!(mode, ProgressMode::None)) else {
         return ffmpeg_utils::execute_with_sources(plan, bindings, None)
             .await
-            .map_err(|error| format!("{context}: {error}"));
+            .map_err(report_error);
     };
     let (sender, mut receiver) = tokio::sync::watch::channel(None::<ffmpeg_utils::MediaProgress>);
     let job = ffmpeg_utils::execute_with_sources(
@@ -76,7 +93,7 @@ pub async fn run_native_media_with_sources<R: ProgressReporterTrait>(
     loop {
         tokio::select! {
             result = &mut job => {
-                let result = result.map_err(|error| format!("{context}: {error}"))?;
+                let result = result.map_err(report_error)?;
                 let progress = receiver.borrow_and_update().clone().or(latest).unwrap_or(ffmpeg_utils::MediaProgress {
                     processed: result.processed,
                     total: None,

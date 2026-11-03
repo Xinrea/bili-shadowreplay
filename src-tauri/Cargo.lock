@@ -2436,6 +2436,7 @@ dependencies = [
  "ffmpeg-next",
  "ffmpeg-sys-next",
  "flate2",
+ "log",
  "serde",
  "serde_json",
  "tempfile",

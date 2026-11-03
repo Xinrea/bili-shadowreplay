@@ -69,6 +69,34 @@ fn output(label: &str, video: bool) -> GraphOutput {
 }
 
 #[tokio::test]
+async fn native_concat_failure_retains_sar_diagnostic_and_previous_output() {
+    let directory = tempfile::tempdir().unwrap();
+    let target = directory.path().join("previous.mp4");
+    fs::write(&target, b"previous recording").unwrap();
+    let input = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/video_frame/fixtures/seek.mp4");
+    let plan = graph_plan(
+        vec![MediaInput::file(&input), MediaInput::file(&input)],
+        vec![MediaOutput::file(&target)],
+        "[0:v]setsar=1[a];[1:v]setsar=2[b];[a][b]concat=n=2:v=1:a=0[v]",
+        vec![binding(0, true), binding(1, true)],
+        vec![graph_route("v", 0, StreamMode::Video(video_options()))],
+        vec![output("v", true)],
+    );
+    let error = execute_media_plan(plan, None)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("配置共享滤镜图失败"), "{error}");
+    assert!(
+        error.contains("Input link") && error.contains("SAR 2:1"),
+        "{error}"
+    );
+    assert!(error.contains("SAR 1:1"), "{error}");
+    assert_eq!(fs::read(&target).unwrap(), b"previous recording");
+    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+}
+
+#[tokio::test]
 async fn native_decoded_concat_and_crossfade_match_cli_packets_and_timing() {
     if !has_cli() {
         return;

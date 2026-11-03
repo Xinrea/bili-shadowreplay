@@ -361,6 +361,7 @@ pub async fn concat_playlists_to_video(
     let temp_dir = tempdir_in(output_dir)
         .map_err(|e| format!("Failed to create playlist concat directory: {e}"))?;
     let mut segments = Vec::new();
+    let mut failures = Vec::new();
     let mut burned = false;
     // If any source needs burning, encode all sources through the same overlay
     // path (including empty tracks) so matching outputs can be joined by copy.
@@ -375,7 +376,12 @@ pub async fn concat_playlists_to_video(
     for (i, playlist) in playlists.iter().enumerate() {
         let mut video_path = temp_dir.path().join(format!("playlist-{i}.mp4"));
         if let Err(e) = clip_from_playlist(reporter, playlist, &video_path, None).await {
-            log::error!("Failed to generate playlist video: {e}");
+            let error = format!(
+                "Failed to generate playlist video '{}': {e}",
+                playlist.display()
+            );
+            log::error!("{error}");
+            failures.push(error);
             continue;
         }
         let track = danmu_tracks.get(i).and_then(Option::as_ref);
@@ -401,6 +407,13 @@ pub async fn concat_playlists_to_video(
             burned |= danmus.iter().any(recorder::danmu::DanmuEntry::is_danmu);
         }
         segments.push(video_path);
+    }
+
+    if segments.is_empty() && !failures.is_empty() {
+        return Err(format!(
+            "No videos to concatenate:\n{}",
+            failures.join("\n")
+        ));
     }
 
     match settings {
@@ -592,7 +605,7 @@ seg-3.mp4
                 "-show_streams",
                 "-show_frames",
                 "-show_entries",
-                "stream=codec_name,width,height,pix_fmt,has_b_frames,time_base,r_frame_rate,avg_frame_rate,start_pts,start_time,duration_ts,duration,nb_frames:frame=pts,best_effort_timestamp,duration,pkt_duration",
+                "stream=codec_name,width,height,sample_aspect_ratio,pix_fmt,has_b_frames,time_base,r_frame_rate,avg_frame_rate,start_pts,start_time,duration_ts,duration,nb_frames:frame=pts,best_effort_timestamp,duration,pkt_duration",
                 "-of",
                 "json",
             ])
@@ -852,6 +865,97 @@ seg-3.mp4
         let metadata = ffmpeg_utils::extract_video_metadata(&legacy).await.unwrap();
         assert_eq!(metadata.video_codec, "h264");
         assert_eq!((metadata.width, metadata.height), (320, 180));
+    }
+
+    #[tokio::test]
+    async fn whole_clip_encodes_portrait_and_landscape_recordings_with_square_pixels() {
+        use crate::project::{EncodingPriority, RenderSettings, VideoCodec};
+        type Reporter = crate::progress::progress_reporter::ProgressReporter;
+
+        let portrait = tempfile::tempdir().unwrap();
+        let landscape = tempfile::tempdir().unwrap();
+        // Both sources have SAR 1:1. Fitting the portrait to 1080 pixels high
+        // rounds 607.5 to 608 pixels wide, producing SAR 1215:1216 unless reset.
+        let playlists = [
+            create_test_playlist_with_size(portrait.path(), 0.4, "1080x1920").await,
+            create_test_playlist_with_size(landscape.path(), 0.4, "1280x720").await,
+        ];
+        let settings = RenderSettings {
+            codec: VideoCodec::H264,
+            priority: EncodingPriority::Quality,
+            bitrate_kbps: 1000,
+        };
+        for order in [&[0, 1][..], &[1, 0][..], &[0, 1, 0][..]] {
+            let output = portrait.path().join(format!("mixed-{order:?}.mp4"));
+            let sources = order
+                .iter()
+                .map(|&i| playlists[i].as_path())
+                .collect::<Vec<_>>();
+            assert!(!concat_playlists_to_video(
+                None::<&Reporter>,
+                &sources,
+                vec![None; sources.len()],
+                &crate::danmu2ass::Danmu2AssOptions::default(),
+                &output,
+                Some(&settings),
+            )
+            .await
+            .unwrap());
+            let (stream, frames) = video_timeline(&output).await;
+            assert_eq!(stream["width"], 1920);
+            assert_eq!(stream["height"], 1080);
+            assert_eq!(stream["sample_aspect_ratio"], "1:1");
+            assert_eq!(
+                frames.len(),
+                12 * sources.len(),
+                "every segment must survive"
+            );
+            let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+            assert_eq!(metadata.audio_codec, "aac");
+            let decoded = ffmpeg_utils::ffmpeg_command()
+                .args(["-v", "error", "-i"])
+                .arg(&output)
+                .args(["-f", "null", "-"])
+                .output()
+                .await
+                .unwrap();
+            assert!(decoded.status.success());
+            assert!(
+                decoded.stderr.is_empty(),
+                "{}",
+                String::from_utf8_lossy(&decoded.stderr)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn whole_clip_preserves_errors_for_each_unreadable_playlist() {
+        type Reporter = crate::progress::progress_reporter::ProgressReporter;
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.m3u8");
+        let invalid = dir.path().join("invalid.m3u8");
+        std::fs::write(&invalid, [0; 128]).unwrap();
+        let output = dir.path().join("previous.mp4");
+        std::fs::write(&output, b"previous recording").unwrap();
+        let error = concat_playlists_to_video(
+            None::<&Reporter>,
+            &[&missing, &invalid],
+            vec![None; 2],
+            &crate::danmu2ass::Danmu2AssOptions::default(),
+            &output,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.contains("missing.m3u8") && error.contains("Failed to read playlist"),
+            "{error}"
+        );
+        assert!(
+            error.contains("invalid.m3u8") && error.contains("zero-filled"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&output).unwrap(), b"previous recording");
     }
 
     #[tokio::test]

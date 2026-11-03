@@ -93,9 +93,9 @@ mod tests {
 /// stutter.
 ///
 /// When `normalize` is true, video is scaled/padded to a common 1920x1080 canvas
-/// and audio is resampled first. Concat requires matching resolution; sample
-/// rate and layout are converted automatically, but `aresample` also absorbs
-/// leftover timestamp gaps on mismatched clips.
+/// with square pixels and audio is resampled first. Concat checks both size and
+/// SAR; sample rate and layout are converted automatically, but `aresample`
+/// also absorbs leftover timestamp gaps on mismatched clips.
 ///
 /// `silence[i]` is the duration of input `i` when it has no audio stream; that
 /// input contributes generated silence so later audio stays aligned. Inputs
@@ -618,11 +618,11 @@ mod transition_filter_tests {
     fn hardcut_concat_normalizes_mismatched_inputs() {
         let filter = build_hardcut_concat_filter_complex(2, true, &[]);
         assert!(
-            filter.contains("[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2[v0]"),
+            filter.contains("[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1[v0]"),
             "video 0 should scale/pad: {filter}"
         );
         assert!(
-            filter.contains("[1:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2[v1]"),
+            filter.contains("[1:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1[v1]"),
             "video 1 should scale/pad: {filter}"
         );
         assert!(
@@ -723,7 +723,7 @@ mod transition_filter_tests {
     fn mismatched_sizes_are_put_on_the_hardcut_canvas() {
         assert_eq!(
             transition_conform_filter(&[input(1280, 720, 30.0), input(1920, 1080, 30.0)]),
-            "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,settb=AVTB"
+            "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,settb=AVTB"
         );
     }
 

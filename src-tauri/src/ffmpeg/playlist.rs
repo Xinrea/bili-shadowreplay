@@ -885,6 +885,14 @@ seg-3.mp4
             priority: EncodingPriority::Quality,
             bitrate_kbps: 1000,
         };
+        let mut remuxed = Vec::new();
+        for playlist in &playlists {
+            let video = playlist.with_extension("mp4");
+            clip_from_playlist(None::<&Reporter>, playlist, &video, None)
+                .await
+                .unwrap();
+            remuxed.push(video);
+        }
         for order in [&[0, 1][..], &[1, 0][..], &[0, 1, 0][..]] {
             let output = portrait.path().join(format!("mixed-{order:?}.mp4"));
             let sources = order
@@ -905,9 +913,44 @@ seg-3.mp4
             assert_eq!(stream["width"], 1920);
             assert_eq!(stream["height"], 1080);
             assert_eq!(stream["sample_aspect_ratio"], "1:1");
-            assert_eq!(
-                frames.len(),
-                12 * sources.len(),
+            // AAC extends these HLS clips beyond their 12 video frames. FFmpeg
+            // 6 duplicates boundary frames while FFmpeg 9 keeps a VFR timeline,
+            // so compare with the installed CLI rather than a fixed frame count.
+            let oracle = portrait.path().join(format!("cli-mixed-{order:?}.mp4"));
+            let mut command = ffmpeg_utils::ffmpeg_command();
+            command.args(["-v", "error"]);
+            let mut filters = String::new();
+            let mut concat_inputs = String::new();
+            for (index, &source) in order.iter().enumerate() {
+                command.arg("-i").arg(&remuxed[source]);
+                filters.push_str(&format!(
+                    "[{index}:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1[v{index}];"
+                ));
+                concat_inputs.push_str(&format!("[v{index}][{index}:a]"));
+            }
+            let reference = command
+                .arg("-filter_complex")
+                .arg(format!(
+                    "{filters}{concat_inputs}concat=n={}:v=1:a=1[v][a]",
+                    order.len()
+                ))
+                .args([
+                    "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-b:v", "1000k", "-g", "120",
+                    "-c:a", "aac", "-y",
+                ])
+                .arg(&oracle)
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                reference.status.success(),
+                "{}",
+                String::from_utf8_lossy(&reference.stderr)
+            );
+            let (_, expected_frames) = video_timeline(&oracle).await;
+            assert_eq!(frames.len(), expected_frames.len(), "CLI frame count");
+            assert!(
+                frames.len() >= 12 * sources.len(),
                 "every segment must survive"
             );
             let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();

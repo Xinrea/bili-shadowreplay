@@ -1049,7 +1049,9 @@ pub(crate) async fn material_danmu_video(
     event_id: &str,
     id: i64,
     directory: &Path,
+    render_settings: RenderSettings,
 ) -> Result<(PathBuf, Option<oneshot::Receiver<Result<(), String>>>), String> {
+    render_settings.validate()?;
     let materials = materials_by_id(state, &[id]).await?;
     let material = materials
         .get(&id)
@@ -1074,6 +1076,7 @@ pub(crate) async fn material_danmu_video(
                 volume: 1.0,
             }],
             danmu: true,
+            render_settings,
             ..Timeline::default()
         },
         materials: &materials,
@@ -1752,6 +1755,7 @@ pub async fn create_legacy_projects(db: Arc<Database>, output: PathBuf) {
             cover43: String::new(),
             profile: project.profile.clone(),
             danmu: false,
+            render_settings_json: "{}".to_string(),
             status: "posted".to_string(),
             message: String::new(),
             bvid: project.bvid.clone(),
@@ -1896,6 +1900,7 @@ mod tests {
             codec: VideoCodec::H264,
             priority: EncodingPriority::Quality,
             bitrate_kbps: 12_000,
+            resolution: crate::project::RenderResolution::Original,
         };
         // Another dialog and the editor save after this export dialog opened.
         edit_project_timeline(&db, project.id, |timeline| {
@@ -2018,6 +2023,7 @@ mod tests {
                 codec: VideoCodec::H264,
                 priority: EncodingPriority::Quality,
                 bitrate_kbps: 12_000,
+                resolution: crate::project::RenderResolution::Original,
             };
             true
         })

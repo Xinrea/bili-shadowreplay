@@ -388,6 +388,7 @@ mod tests {
             cover43: String::new(),
             profile: "{}".into(),
             danmu: false,
+            render_settings_json: "{}".to_string(),
             status: "draft".into(),
             message: String::new(),
             bvid: String::new(),

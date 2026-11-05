@@ -13,6 +13,7 @@
     ELEMENT_SPACE,
     elementSize,
     scaledSize,
+    snapToCenter,
     withinBox,
     type TextElement,
   } from "../../cover-elements";
@@ -37,6 +38,8 @@
     waiting: boolean;
     /** Width of the preview frame in CSS pixels. */
     width: number;
+    /** Height of the selected output canvas in CSS pixels. */
+    height: number;
     selectedId: string | null;
     editingId: string | null;
     editSelectAll: boolean;
@@ -68,6 +71,7 @@
     playing,
     waiting,
     width,
+    height,
     selectedId,
     editingId,
     editSelectAll,
@@ -97,7 +101,10 @@
   let canvases: HTMLCanvasElement[] = $state([]);
   let guides = $state({ x: false, y: false });
 
-  let unit = $derived(width / ELEMENT_SPACE.width);
+  let unitX = $derived(width / ELEMENT_SPACE.width);
+  let unitY = $derived(height / ELEMENT_SPACE.height);
+  // Positions remain normalized; artwork and editing handles retain proportions.
+  let unit = $derived(Math.min(unitX, unitY));
   let active = $derived(placed.filter((p) => time >= p.start && time < p.end));
   let activeKey = $derived(active.map((p) => p.item.id).join());
   let videos = $derived(
@@ -116,11 +123,10 @@
   /** The overlay's box on the frame, before it is turned. */
   function boxOf(p: PlacedOverlay) {
     const { x, y, rotation } = p.item.element;
-    if (p.item.kind === "video") {
-      const { width } = p.item.element;
-      return { x, y, rotation, width, height: width / aspectOf(p.item.material_id) };
-    }
-    return { x, y, rotation, ...elementSize(p.item.element, measure) };
+    const size = p.item.kind === "video"
+      ? { width: p.item.element.width, height: p.item.element.width / aspectOf(p.item.material_id) }
+      : elementSize(p.item.element, measure);
+    return { x: x * unitX, y: y * unitY, rotation, width: size.width * unit, height: size.height * unit };
   }
 
   // Each track's texts and stickers are drawn again only when what shows changes.
@@ -128,6 +134,7 @@
     activeKey;
     placed;
     width;
+    height;
     stickerUrls;
     editingId;
     canvases.length;
@@ -143,7 +150,7 @@
       const canvas = canvases[track];
       if (!canvas) continue;
       const pixels = Math.max(1, Math.round(width * ratio));
-      const rows = Math.max(1, Math.round((pixels * ELEMENT_SPACE.height) / ELEMENT_SPACE.width));
+      const rows = Math.max(1, Math.round(height * ratio));
       if (canvas.width !== pixels) canvas.width = pixels;
       if (canvas.height !== rows) canvas.height = rows;
       const items = active
@@ -170,19 +177,19 @@
 
   let drag: Drag | null = null;
 
-  /** The point of the 1920×1080 frame under the pointer. */
+  /** The point on the output frame, in CSS pixels. */
   function toFrame(event: MouseEvent) {
     const rect = surface.getBoundingClientRect();
     return {
-      x: ((event.clientX - rect.left) / rect.width) * ELEMENT_SPACE.width,
-      y: ((event.clientY - rect.top) / rect.height) * ELEMENT_SPACE.height,
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
     };
   }
 
   /** The topmost overlay under the pointer: on the highest track, the last there. */
   function hitTest(event: MouseEvent): PlacedOverlay | null {
     const point = toFrame(event);
-    const slop = 4 / unit;
+    const slop = 4;
     for (let index = active.length - 1; index >= 0; index--) {
       if (withinBox(boxOf(active[index]), point.x, point.y, slop)) return active[index];
     }
@@ -226,7 +233,24 @@
     }
     const point = toFrame(event);
     const origin = drag.origin;
-    const update = dragChanges(drag.mode, origin, drag.start, point, unit, {
+    // Moves use normalized positions; rotation and scaling use undistorted
+    // screen geometry so the pointer stays on the handle in portrait canvases.
+    if (drag.mode === "move") {
+      const dx = point.x - drag.start.x;
+      const dy = point.y - drag.start.y;
+      if (!drag.moved && Math.hypot(dx, dy) < 3) return;
+      const snapped = snapToCenter(
+        clamp(origin.x * unitX + dx, 0, width),
+        clamp(origin.y * unitY + dy, 0, height),
+        { x: width / 2, y: height / 2 },
+        8,
+      );
+      guides = { x: snapped.snapX, y: snapped.snapY };
+      drag.moved = true;
+      onChange(drag.id, { x: Math.round(snapped.x / unitX), y: Math.round(snapped.y / unitY) });
+      return;
+    }
+    const update = dragChanges(drag.mode, { ...origin, x: origin.x * unitX, y: origin.y * unitY }, drag.start, point, 1, {
       moved: drag.moved,
       snapStep: event.shiftKey ? 15 : undefined,
     });
@@ -291,6 +315,8 @@
             {playing}
             {waiting}
             {unit}
+            {unitX}
+            {unitY}
             aspect={aspectOf(item.material_id)}
             onAspect={(aspect) => onAspect(item.material_id, aspect)}
           />
@@ -332,10 +358,10 @@
     {#if selected && !editing}
       {@const box = boxOf(selected)}
       <SelectionBox
-        left={box.x * unit}
-        top={box.y * unit}
-        width={box.width * unit}
-        height={box.height * unit}
+        left={box.x}
+        top={box.y}
+        width={box.width}
+        height={box.height}
         rotation={box.rotation}
         onDelete={() => onDelete(selected.item.id)}
         onRotate={(event) => beginDrag(event, "rotate", selected)}
@@ -349,8 +375,8 @@
           bind:this={editField}
           text={editing.item.element}
           {unit}
-          left={editing.item.element.x * unit}
-          top={editing.item.element.y * unit}
+          left={editing.item.element.x * unitX}
+          top={editing.item.element.y * unitY}
           selectAll={editSelectAll}
           onInput={onEditInput}
           onDone={(byKey) => {

@@ -8,9 +8,11 @@
     assContent: string;
     video?: HTMLVideoElement | MediaClock;
     fontName?: string;
+    width?: number;
+    height?: number;
   }
 
-  let { assContent, video, fontName = "Arial" }: Props = $props();
+  let { assContent, video, fontName = "Arial", width = 1920, height = 1080 }: Props = $props();
   let image = $state("");
   let loading = $state(false);
   let error = $state("");
@@ -24,6 +26,7 @@
   $effect(() => {
     const content = assContent;
     const family = fontName;
+    const dimensions = { width, height };
     const media = video;
     const attempt = retry;
     // Do not subscribe this effect to the reactive player's currentTime. Clock
@@ -43,7 +46,7 @@
         frame = 0;
         try {
           const time = media?.currentTime ?? 1;
-          queue.update(document.at(time), time, family, first && attempt > 0);
+          queue.update(document.at(time), time, family, first && attempt > 0, dimensions);
           first = false;
         } catch (cause) {
           queue.fail(cause);

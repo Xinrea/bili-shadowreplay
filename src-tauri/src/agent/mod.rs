@@ -533,6 +533,18 @@ impl BsrTool {
         let integer = || json!({ "type": "integer" });
         let number = || json!({ "type": "number" });
         let boolean = || json!({ "type": "boolean" });
+        let render_settings = || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "codec": { "type": "string", "enum": ["hevc", "h264"] },
+                    "priority": { "type": "string", "enum": ["speed", "quality"] },
+                    "bitrate_kbps": { "type": "integer", "minimum": 500, "maximum": 100000 },
+                    "resolution": { "type": "string", "enum": ["original", "4k", "2k", "1080p"], "default": "1080p", "description": "Original preserves source dimensions; presets follow the source orientation." }
+                },
+                "additionalProperties": false
+            })
+        };
         let transition = || {
             json!({
                 "type": "string",
@@ -663,7 +675,7 @@ impl BsrTool {
             Self::action_schema(
                 "encode_video_subtitle",
                 "Queue a subtitle burn-in job after user confirmation. Returns a pending task immediately; use get_background_tasks to check completion.",
-                json!({ "id": integer(), "srt_style": string() }),
+                json!({ "id": integer(), "srt_style": string(), "render_settings": render_settings() }),
                 &["id", "srt_style"],
             ),
             Self::action_schema(
@@ -688,7 +700,7 @@ impl BsrTool {
                         "properties": {
                             "room_id": string(), "live_id": string(),
                             "ranges": { "type": "array", "items": { "type": "object", "properties": { "start": number(), "end": number() }, "required": ["start", "end"], "additionalProperties": false } },
-                            "danmu": boolean(), "local_offset": number(), "title": string(), "note": string(), "cover": string(), "platform": platform(), "fix_encoding": boolean(), "transition": transition()
+                            "danmu": boolean(), "local_offset": number(), "title": string(), "note": string(), "cover": string(), "platform": platform(), "fix_encoding": boolean(), "transition": transition(), "render_settings": render_settings()
                         },
                         "required": ["room_id", "live_id", "ranges", "danmu", "local_offset", "title", "note", "cover", "platform", "fix_encoding"],
                         "additionalProperties": false
@@ -771,7 +783,7 @@ impl BsrTool {
             Self::action_schema(
                 "merge_videos",
                 "Merge videos after user confirmation.",
-                json!({ "video_ids": { "type": "array", "items": integer() }, "output_title": string(), "output_note": string(), "transition": transition() }),
+                json!({ "video_ids": { "type": "array", "items": integer() }, "output_title": string(), "output_note": string(), "transition": transition(), "render_settings": render_settings() }),
                 &["video_ids", "output_title", "output_note"],
             ),
             Self::action_schema(

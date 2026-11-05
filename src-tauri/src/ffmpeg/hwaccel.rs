@@ -17,12 +17,35 @@ const TARGET_ENCODERS: [&str; 14] = [
     "hevc_v4l2m2m",
 ];
 
+#[cfg(test)]
 pub const H264_SCALE_PAD_FILTER: &str =
-    "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2";
+    "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1";
 
 /// Normalize GPU inputs in one scaling/conversion pass before composition.
+#[cfg(test)]
 pub const GPU_SCALE_PAD_FILTER: &str =
-    "scale=1920:1080:force_original_aspect_ratio=decrease:out_color_matrix=bt709:out_range=tv,format=nv12,pad=1920:1080:(ow-iw)/2:(oh-ih)/2";
+    "scale=1920:1080:force_original_aspect_ratio=decrease:out_color_matrix=bt709:out_range=tv,format=nv12,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1";
+
+/// Scale without cropping, then letterbox to the selected output canvas.
+pub fn scale_pad_filter(width: u32, height: u32, gpu: bool) -> String {
+    let conversion = if gpu {
+        ":out_color_matrix=bt709:out_range=tv,format=nv12"
+    } else {
+        ""
+    };
+    format!("scale={width}:{height}:force_original_aspect_ratio=decrease{conversion},pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1")
+}
+
+pub async fn output_dimensions(
+    file: &std::path::Path,
+    settings: Option<&crate::project::RenderSettings>,
+) -> Result<(u32, u32), String> {
+    let metadata = ffmpeg_utils::extract_video_metadata(file).await?;
+    Ok(settings
+        .map(|settings| settings.resolution)
+        .unwrap_or_default()
+        .dimensions(metadata.width, metadata.height))
+}
 
 const VAAPI_ENCODER: &str = "h264_vaapi";
 const NVENC_ENCODER: &str = "h264_nvenc";
@@ -652,6 +675,7 @@ mod tests {
             codec: crate::project::VideoCodec::Hevc,
             priority: crate::project::EncodingPriority::Quality,
             bitrate_kbps: 6000,
+            ..Default::default()
         };
         let explicit = super::native_video_options(
             "libx265",

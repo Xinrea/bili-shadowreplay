@@ -140,7 +140,7 @@
       options: [
         { id: "auto-generate", title: "生成整场录播素材", keywords: ["auto", "material", "whole"] },
         { id: "auto-generate-danmu", title: "整场生成时压制弹幕", keywords: ["auto", "material", "danmaku"] },
-        { id: "auto-generate-encoding", title: "自动生成编码设置", keywords: ["auto", "codec", "hevc", "h264", "bitrate", "画质", "码率"] },
+        { id: "auto-generate-encoding", title: "自动生成编码设置", keywords: ["auto", "codec", "hevc", "h264", "bitrate", "resolution", "画质", "码率", "分辨率", "竖屏", "4k", "2k", "1080p"] },
       ],
     },
   ];
@@ -1701,7 +1701,7 @@
                     />
                   </div>
                   <p class="ui-hint">
-                    素材会按以上设置重新编码。修改自动保存，仅影响之后创建的任务。
+                    素材会按以上设置重新编码，分辨率跟随首个素材的横竖屏方向；使用原分辨率时保留其尺寸。修改自动保存，仅影响之后创建的任务。
                   </p>
                 </div>
               {/if}

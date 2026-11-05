@@ -105,6 +105,8 @@ async fn upload_view(state: &State, upload: UploadRow) -> UploadView {
                 view.danmu_available = crate::material::danmu_path(&file).is_file();
                 view.danmu_embedded = material.danmu_embedded;
                 view.danmu = view.upload.danmu;
+                view.render_settings =
+                    serde_json::from_str(&view.upload.render_settings_json).unwrap_or_default();
                 // Posting falls back to the file itself without saved danmaku.
                 view.source_state = if view.danmu && view.danmu_available {
                     "render"
@@ -274,6 +276,7 @@ pub async fn create_upload(
             cover43: String::new(),
             profile: profile.to_string(),
             danmu: false,
+            render_settings_json: "{}".to_string(),
             status: "draft".to_string(),
             message: String::new(),
             bvid: String::new(),
@@ -570,10 +573,21 @@ pub async fn update_upload_render_settings(
 ) -> Result<UploadView, String> {
     let upload = state.db.get_upload(id).await?;
     ensure_editable(&upload)?;
-    if upload.source != "project" {
-        return Err("只有切片项目可以设置画质和码率".to_string());
+    render_settings.validate()?;
+    match upload.source.as_str() {
+        "project" => set_project_render_settings(&state, upload.source_id, render_settings).await?,
+        "material" => {
+            let settings = serde_json::to_string(&render_settings).map_err(|e| e.to_string())?;
+            if !state
+                .db
+                .set_upload_render_settings(id, &settings, &Local::now().to_rfc3339())
+                .await?
+            {
+                return Err(not_editable(&state, id).await);
+            }
+        }
+        _ => return Err("视频文件直接投稿，无需设置压制参数".to_string()),
     }
-    set_project_render_settings(&state, upload.source_id, render_settings).await?;
     Ok(upload_view(&state, state.db.get_upload(id).await?).await)
 }
 
@@ -633,6 +647,8 @@ async fn post_upload_inner(
                     &format!("{event_id}-export"),
                     material.id,
                     &output.join(upload_dir(upload.id)),
+                    serde_json::from_str(&upload.render_settings_json)
+                        .map_err(|e| format!("素材压制设置无效: {e}"))?,
                 )
                 .await?;
                 (

@@ -40,7 +40,8 @@ function drawnBounds(element: CoverElement) {
 
 /**
  * The picture of each visible text and sticker overlay of `timeline`, cut to
- * the 1920×1080 frame. Throws `StickerLoadError` for a sticker that does not
+ * symmetric bounds around its saved center. The output canvas clips the
+ * composition after scaling. Throws `StickerLoadError` for a sticker that does not
  * load, rather than leaving it out.
  */
 export async function renderOverlayImages(
@@ -62,22 +63,24 @@ export async function renderOverlayImages(
       }
     }
     const bounds = drawnBounds(element);
-    const left = Math.max(0, Math.floor(bounds.left));
-    const top = Math.max(0, Math.floor(bounds.top));
-    const right = Math.min(ELEMENT_SPACE.width, Math.ceil(bounds.right));
-    const bottom = Math.min(ELEMENT_SPACE.height, Math.ceil(bounds.bottom));
-    // Off the frame altogether, it is a transparent pixel.
-    const visible = right > left && bottom > top;
-    const canvas = document.createElement("canvas");
-    canvas.width = visible ? right - left : 1;
-    canvas.height = visible ? bottom - top : 1;
-    const ctx = canvas.getContext("2d");
-    if (visible) {
-      ctx.translate(-left, -top);
-      if (element.kind === "text") drawText(ctx, element);
-      else drawSticker(ctx, element, picture);
+    // Keep the PNG centered on the element even when it crosses the frame.
+    // Its center is mapped to output coordinates while its dimensions scale
+    // uniformly; clipping before this step would move an offscreen element.
+    const radiusX = Math.ceil((bounds.right - bounds.left) / 2);
+    const radiusY = Math.ceil((bounds.bottom - bounds.top) / 2);
+    if (radiusX * 2 > 4096 || radiusY * 2 > 4096) {
+      throw new Error("文字或贴纸画面超过 4096 × 4096，请缩小元素后重试");
     }
-    images.push({ id: item.id, image: canvas.toDataURL("image/png"), x: visible ? left : 0, y: visible ? top : 0 });
+    const left = element.x - radiusX;
+    const top = element.y - radiusY;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, radiusX * 2);
+    canvas.height = Math.max(1, radiusY * 2);
+    const ctx = canvas.getContext("2d");
+    ctx.translate(-left, -top);
+    if (element.kind === "text") drawText(ctx, element);
+    else drawSticker(ctx, element, picture);
+    images.push({ id: item.id, image: canvas.toDataURL("image/png"), x: left, y: top });
   }
   return images;
 }
@@ -96,8 +99,9 @@ export function drawOverlays(
   const { width, height } = ctx.canvas;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, width, height);
-  const scale = width / ELEMENT_SPACE.width;
-  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  const sx = width / ELEMENT_SPACE.width;
+  const sy = height / ELEMENT_SPACE.height;
+  const scale = Math.min(sx, sy);
   const elements: CoverElement[] = [];
   for (const item of items) {
     if (item.id === skip) continue;
@@ -108,5 +112,8 @@ export function drawOverlays(
       if (src) elements.push({ ...item.element, src });
     }
   }
-  return drawElements(ctx, elements);
+  return elements.flatMap((element) => {
+    ctx.setTransform(scale, 0, 0, scale, element.x * (sx - scale), element.y * (sy - scale));
+    return drawElements(ctx, [element]);
+  });
 }

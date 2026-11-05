@@ -2244,6 +2244,7 @@ mod live_end_tests {
             codec: VideoCodec::H264,
             priority: EncodingPriority::Quality,
             bitrate_kbps: 16_000,
+            resolution: crate::project::RenderResolution::Original,
         };
         {
             let mut config = config.write().await;

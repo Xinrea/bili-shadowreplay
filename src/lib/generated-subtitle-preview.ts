@@ -60,6 +60,8 @@ export interface GeneratedPreviewRequest {
   assContent: string;
   time: number;
   fontName: string;
+  width: number;
+  height: number;
 }
 export interface GeneratedPreviewState {
   image: string;
@@ -84,9 +86,15 @@ export class GeneratedSubtitlePreviewQueue {
     private publish: (state: GeneratedPreviewState) => void,
   ) {}
 
-  update(assContent: string | null, time: number, fontName: string, retry = false) {
+  update(
+    assContent: string | null,
+    time: number,
+    fontName: string,
+    retry = false,
+    dimensions = { width: 1920, height: 1080 },
+  ) {
     if (this.disposed) return;
-    const key = assContent === null ? null : `${fontName}\0${assContent}`;
+    const key = assContent === null ? null : `${dimensions.width}x${dimensions.height}\0${fontName}\0${assContent}`;
     if (!retry && key === this.key) return;
     this.key = key;
     const generation = ++this.generation;
@@ -107,7 +115,7 @@ export class GeneratedSubtitlePreviewQueue {
       return;
     }
     this.publish({ image: "", loading: true, error: "" });
-    this.pending = { request: { assContent, time, fontName }, key, generation };
+    this.pending = { request: { assContent, time, fontName, ...dimensions }, key, generation };
     void this.drain();
   }
 

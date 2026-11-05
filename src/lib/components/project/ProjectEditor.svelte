@@ -55,6 +55,7 @@
     type OverlayItem,
     type ProjectItem,
     type ProjectTimeline,
+    type RenderResolution,
     type SubtitleStyle,
     type TimelineClip,
     type UploadItem,
@@ -70,6 +71,7 @@
     clipToOverlay,
     clipAt,
     defaultRenderSettings,
+    renderDimensions,
     duplicateOverlay,
     editAudio,
     editOverlay,
@@ -212,6 +214,7 @@
   let stickerUrls: Map<string, string> = $state.raw(new Map());
   /** Width over height of the materials, as their videos report. */
   let aspects: Map<number, number> = $state.raw(new Map());
+  let sourceDimensions: Map<number, { width: number; height: number }> = $state.raw(new Map());
   let showStyleEditor = $state(false);
   let showShortcutHelp = $state(false);
   let showAiModal = $state(false);
@@ -255,6 +258,16 @@
   let previewContainer: HTMLElement = $state();
   let stage: ReturnType<typeof OverlayStage> | undefined = $state();
   let previewFrameWidth = $state(0);
+  let firstMaterialId = $derived(timeline.clips[0]?.material_id);
+  let pendingResolution: RenderResolution | null = $state(null);
+  let resolutionSaving: Promise<void> | null = null;
+  let outputResolution = $derived(pendingResolution ?? timeline.render_settings?.resolution ?? "1080p");
+  let previewResolution = $derived(showExportSettings ? exportSettings.resolution : outputResolution);
+  let outputDimensions = $derived.by(() => {
+    const source = sourceDimensions.get(firstMaterialId);
+    return renderDimensions(previewResolution, source?.width ?? 1920, source?.height ?? 1080);
+  });
+  let previewAspect = $derived(outputDimensions.width / outputDimensions.height);
   let frame = 0;
   let stopRange: (() => void) | null = null;
   let editBefore: ProjectTimeline | null = null;
@@ -631,6 +644,7 @@
       finishEditing();
       settleOverlayEdit();
       await saveAll();
+      await resolutionSaving;
     });
   });
 
@@ -667,12 +681,20 @@
     if (player) previewAudio?.setVoices(next);
   });
 
-  // The encoder scales and pads to 1920×1080; preview the same frame.
+  // Use the first main-track material as the canvas, just as the encoder does.
+  $effect(() => {
+    const id = firstMaterialId;
+    const url = materials.get(id)?.url;
+    if (url) void probeAspect(id, url);
+  });
+
+  // Fit the selected output canvas inside the available preview area.
   $effect(() => {
     const container = previewContainer;
+    const aspect = previewAspect;
     if (!container) return;
     const resize = () => {
-      previewFrameWidth = Math.min(container.clientWidth, (container.clientHeight * 16) / 9);
+      previewFrameWidth = Math.min(container.clientWidth, container.clientHeight * aspect);
     };
     const observer = new ResizeObserver(resize);
     observer.observe(container);
@@ -997,7 +1019,7 @@
   /** Width over height of a material, read from its video. */
   function probeAspect(materialId: number, url: string): Promise<number> {
     const known = aspects.get(materialId);
-    if (known) return Promise.resolve(known);
+    if (known && sourceDimensions.has(materialId)) return Promise.resolve(known);
     return new Promise((resolve) => {
       const video = document.createElement("video");
       const done = (aspect: number) => {
@@ -1012,6 +1034,9 @@
       video.onloadedmetadata = () => {
         const aspect = video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : 16 / 9;
         setAspect(materialId, aspect);
+        if (video.videoWidth > 0 && video.videoHeight > 0) {
+          sourceDimensions = new Map(sourceDimensions).set(materialId, { width: video.videoWidth, height: video.videoHeight });
+        }
         done(aspect);
       };
       video.onerror = () => done(16 / 9);
@@ -1035,7 +1060,9 @@
 
   /** The element of a video of ratio `aspect` filling the picture. */
   function filledElement(aspect: number) {
-    const width = Math.round(Math.min(ELEMENT_SPACE.width, ELEMENT_SPACE.height * aspect));
+    const { width: canvasWidth, height: canvasHeight } = outputDimensions;
+    const scale = Math.min(canvasWidth / ELEMENT_SPACE.width, canvasHeight / ELEMENT_SPACE.height);
+    const width = Math.round(Math.min(canvasWidth, canvasHeight * aspect) / scale);
     return { ...ELEMENT_MIDDLE, width, rotation: 0 };
   }
 
@@ -1067,13 +1094,15 @@
     const info = await loadMaterial(materialId);
     if (!info) return;
     const aspect = await probeAspect(materialId, info.url);
-    const width = Math.round(ELEMENT_SPACE.width / 3);
-    const height = width / aspect;
-    const margin = 48;
+    const sx = outputDimensions.width / ELEMENT_SPACE.width;
+    const sy = outputDimensions.height / ELEMENT_SPACE.height;
+    const scale = Math.min(sx, sy);
+    const pictureWidth = outputDimensions.width / 3;
+    const margin = 48 * scale;
     const element = {
-      x: Math.round(ELEMENT_SPACE.width - margin - width / 2),
-      y: Math.round(ELEMENT_SPACE.height - margin - height / 2),
-      width,
+      x: Math.round((outputDimensions.width - margin - pictureWidth / 2) / sx),
+      y: Math.round((outputDimensions.height - margin - pictureWidth / aspect / 2) / sy),
+      width: Math.round(pictureWidth / scale),
       rotation: 0,
     };
     // As it is after the waits, which other edits may have changed.
@@ -1558,8 +1587,33 @@
 
   // ---- Export --------------------------------------------------------------
 
+  async function changeOutputResolution(resolution: RenderResolution) {
+    if (pendingResolution) return;
+    pendingResolution = resolution;
+    resolutionSaving = (async () => {
+      try {
+        finishEditing();
+        settleOverlayEdit();
+        await saveAll();
+        // Output options are saved separately: timeline saves deliberately keep
+        // the backend's current export/upload options.
+        await invoke("update_project_output_settings", {
+          id: projectId,
+          renderSettings: { ...(timeline.render_settings ?? defaultRenderSettings()), resolution },
+        });
+        await projectRefresh.run();
+      } catch (error) {
+        alert("保存分辨率失败：" + error);
+      } finally {
+        pendingResolution = null;
+      }
+    })();
+    await resolutionSaving;
+    resolutionSaving = null;
+  }
+
   async function openExportSettings() {
-    if (preparingExport || exporting) return;
+    if (preparingExport || exporting || pendingResolution) return;
     player?.pause();
     preparingExport = true;
     try {
@@ -1615,7 +1669,8 @@
     // Persist the complete encoding choice as one option.
     const renderSettings = exportSettings.codec !== exportBase.renderSettings.codec ||
         exportSettings.priority !== exportBase.renderSettings.priority ||
-        exportSettings.bitrate_kbps !== exportBase.renderSettings.bitrate_kbps
+        exportSettings.bitrate_kbps !== exportBase.renderSettings.bitrate_kbps ||
+        exportSettings.resolution !== exportBase.renderSettings.resolution
       ? $state.snapshot(exportSettings)
       : null;
     if (danmu !== null || renderSettings !== null) {
@@ -1720,7 +1775,7 @@
 
   /** Edit this project's unposted draft, starting one if it has none. */
   async function openUpload() {
-    if (openingUpload) return;
+    if (openingUpload || pendingResolution) return;
     openingUpload = true;
     try {
       // The draft takes its title and form from the saved project.
@@ -1848,7 +1903,9 @@
       }}
     />
     <span class="save-state" class:error={saveState === "error"}>
-      {#if saveState === "saved"}
+      {#if pendingResolution}
+        保存中…
+      {:else if saveState === "saved"}
         已保存
       {:else if saveState === "error"}
         保存失败
@@ -1873,7 +1930,7 @@
         type="button"
         class="titlebar-button"
         title="编辑这个切片的投稿草稿，没有未发布的草稿时新建一条投稿记录"
-        disabled={openingUpload || uploadDraft !== null || timeline.clips.length === 0}
+        disabled={openingUpload || pendingResolution !== null || uploadDraft !== null || timeline.clips.length === 0}
         onclick={openUpload}
       >
         <Upload class="h-3.5 w-3.5" />
@@ -1883,7 +1940,7 @@
         type="button"
         class="titlebar-button primary"
         title={TAURI_ENV ? "导出为视频文件" : "导出并下载视频文件"}
-        disabled={exporting !== null || preparingExport || timeline.clips.length === 0}
+        disabled={exporting !== null || preparingExport || pendingResolution !== null || timeline.clips.length === 0}
         onclick={openExportSettings}
       >
         {#if exporting}
@@ -2031,9 +2088,27 @@
           {/if}
         </div>
 
+        <div class="flex shrink-0 items-center gap-2 border-b border-line px-3 py-1.5 text-[11px]">
+          <label for="project-resolution" class="text-fg-muted">输出分辨率</label>
+          <select
+            id="project-resolution"
+            class="ui-input w-auto py-1 text-[11px]"
+            value={outputResolution}
+            disabled={pendingResolution !== null}
+            onchange={(event) => changeOutputResolution(event.currentTarget.value as RenderResolution)}
+          >
+            <option value="original">使用原分辨率</option>
+            <option value="4k">4K</option>
+            <option value="2k">2K</option>
+            <option value="1080p">1080p</option>
+          </select>
+          <span class="tabular-nums text-fg-muted" title="以主轨第一个素材确定画布方向，其他素材等比适应画布">
+            {outputDimensions.width} × {outputDimensions.height}
+          </span>
+        </div>
         <div class="relative min-h-0 flex-1 bg-black">
           <div bind:this={previewContainer} class="absolute inset-0 flex items-center justify-center">
-            <div class="relative aspect-video bg-black" style:width="{previewFrameWidth}px">
+            <div class="relative bg-black" style:aspect-ratio={previewAspect} style:width="{previewFrameWidth}px">
               <!-- svelte-ignore a11y_media_has_caption -->
               <video bind:this={videoA} class="preview-video" class:visible={activeVideo === 0 && !pastMain}></video>
               <!-- svelte-ignore a11y_media_has_caption -->
@@ -2046,6 +2121,7 @@
                 {playing}
                 {waiting}
                 width={previewFrameWidth}
+                height={previewFrameWidth / previewAspect}
                 selectedId={selectedOverlayId}
                 editingId={editingOverlayId}
                 {editSelectAll}
@@ -2066,7 +2142,7 @@
               >
                 {#snippet above()}
                   {#if player && subtitles.length > 0}
-                    <NativeSubtitlePreview assContent={subtitleAss} video={player} fontName={subtitleStyle.fontName} />
+                    <NativeSubtitlePreview assContent={subtitleAss} video={player} fontName={subtitleStyle.fontName} width={outputDimensions.width} height={outputDimensions.height} />
                   {/if}
                 {/snippet}
               </OverlayStage>

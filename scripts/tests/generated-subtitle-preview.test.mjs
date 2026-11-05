@@ -149,3 +149,24 @@ test("generated preview and export callers share the native subtitle document", 
   assert.match(project, /subtitleAss: exportedSubtitles \? exportedAss : null/);
   assert.match(upload, /subtitleAss, overlays/);
 });
+
+
+test("changing canvas size invalidates native preview cache and ignores stale landscape replies", async () => {
+  const h = harness();
+  h.queue.update("A", 1, "Arial");
+  h.queue.update("A", 1, "Arial", false, { width: 1080, height: 1920 });
+  assert.equal(h.requests.length, 1);
+  h.requests[0].resolve("landscape");
+  await flush();
+  assert.equal(h.latest().image, "");
+  assert.equal(h.requests[1].request.width, 1080);
+  assert.equal(h.requests[1].request.height, 1920);
+  h.requests[1].resolve("portrait");
+  await flush();
+  assert.equal(h.latest().image, "portrait");
+  h.queue.update("A", 1, "Arial");
+  assert.equal(h.latest().image, "landscape");
+  assert.equal(h.requests.length, 2);
+  h.queue.update("A", 1, "Arial", false, { width: 2160, height: 3840 });
+  assert.equal(h.requests.length, 3);
+});

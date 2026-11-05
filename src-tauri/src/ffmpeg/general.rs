@@ -100,16 +100,29 @@ mod tests {
 /// `silence[i]` is the duration of input `i` when it has no audio stream; that
 /// input contributes generated silence so later audio stays aligned. Inputs
 /// without an entry (or with `None`) use their own audio.
+#[cfg(test)]
 fn build_hardcut_concat_filter_complex(
     n: usize,
     normalize: bool,
     silence: &[Option<f64>],
 ) -> String {
+    build_hardcut_concat_filter_for_canvas(n, normalize, silence, (1920, 1080))
+}
+
+fn build_hardcut_concat_filter_for_canvas(
+    n: usize,
+    normalize: bool,
+    silence: &[Option<f64>],
+    (width, height): (u32, u32),
+) -> String {
     let mut parts = Vec::with_capacity(n * 2 + 1);
     let mut concat_inputs = String::new();
     for i in 0..n {
         if normalize {
-            parts.push(format!("[{i}:v]{}[v{i}]", hwaccel::H264_SCALE_PAD_FILTER));
+            parts.push(format!(
+                "[{i}:v]{}[v{i}]",
+                hwaccel::scale_pad_filter(width, height, false)
+            ));
             concat_inputs.push_str(&format!("[v{i}]"));
         } else {
             concat_inputs.push_str(&format!("[{i}:v]"));
@@ -135,7 +148,15 @@ fn build_hardcut_concat_filter_complex(
 /// frame rate only get a common time base, so their frames are left alone;
 /// otherwise they are resampled to the first clip's rate. Clips of different
 /// sizes are put on the canvas the hard-cut path uses.
+#[cfg(test)]
 fn transition_conform_filter(inputs: &[ffmpeg_utils::VideoMetadata]) -> String {
+    transition_conform_filter_with_settings(inputs, None)
+}
+
+fn transition_conform_filter_with_settings(
+    inputs: &[ffmpeg_utils::VideoMetadata],
+    settings: Option<&crate::project::RenderSettings>,
+) -> String {
     let same_size = inputs
         .windows(2)
         .all(|pair| pair[0].width == pair[1].width && pair[0].height == pair[1].height);
@@ -153,10 +174,25 @@ fn transition_conform_filter(inputs: &[ffmpeg_utils::VideoMetadata]) -> String {
             .unwrap_or(30.0);
         format!("fps={frame_rate}")
     };
-    if same_size {
+    let dimensions = inputs
+        .first()
+        .map(|input| {
+            settings
+                .map(|settings| settings.resolution)
+                .unwrap_or_default()
+                .dimensions(input.width, input.height)
+        })
+        .unwrap_or((1920, 1080));
+    let matches_target = inputs
+        .iter()
+        .all(|input| (input.width, input.height) == dimensions);
+    if same_size && (settings.is_none() || matches_target) {
         timing
     } else {
-        format!("{},{timing}", hwaccel::H264_SCALE_PAD_FILTER)
+        format!(
+            "{},{timing}",
+            hwaccel::scale_pad_filter(dimensions.0, dimensions.1, false)
+        )
     }
 }
 
@@ -276,7 +312,9 @@ async fn concat_mismatched_videos(
         let metadata = ffmpeg_utils::extract_video_metadata(video).await?;
         silence.push(metadata.audio_codec.is_empty().then_some(metadata.duration));
     }
-    let filter_complex = build_hardcut_concat_filter_complex(videos.len(), true, &silence);
+    let dimensions = hwaccel::output_dimensions(&videos[0], settings).await?;
+    let filter_complex =
+        build_hardcut_concat_filter_for_canvas(videos.len(), true, &silence, dimensions);
     encode_filter_concat(
         reporter,
         videos,
@@ -306,12 +344,9 @@ async fn concat_videos_with_demuxer(
 
     let (video, audio) = if should_encode {
         let encoder = hwaccel::material_encoder(settings).await;
-        let mut video = hwaccel::native_video_options(
-            encoder,
-            Some(hwaccel::H264_SCALE_PAD_FILTER),
-            None,
-            settings,
-        )?;
+        let (width, height) = hwaccel::output_dimensions(&videos[0], settings).await?;
+        let scale = hwaccel::scale_pad_filter(width, height, false);
+        let mut video = hwaccel::native_video_options(encoder, Some(&scale), None, settings)?;
         video.threads = Some(0);
         (
             ffmpeg_utils::StreamMode::Video(video),
@@ -532,13 +567,15 @@ pub async fn concat_videos_with_settings(
     // Concat demuxer + `-c copy` would dump those packets at every join.
     if transition.is_none() || transition == Some("none") {
         let video_refs: Vec<&Path> = videos.iter().map(|p| p.as_path()).collect();
-        let normalize = !super::check_videos(&video_refs).await;
+        let normalize = settings.is_some() || !super::check_videos(&video_refs).await;
         let mut silence = Vec::with_capacity(videos.len());
         for video in videos {
             let metadata = ffmpeg_utils::extract_video_metadata(video).await?;
             silence.push(metadata.audio_codec.is_empty().then_some(metadata.duration));
         }
-        let filter_complex = build_hardcut_concat_filter_complex(videos.len(), normalize, &silence);
+        let dimensions = hwaccel::output_dimensions(&videos[0], settings).await?;
+        let filter_complex =
+            build_hardcut_concat_filter_for_canvas(videos.len(), normalize, &silence, dimensions);
         return encode_filter_concat(
             reporter,
             videos,
@@ -564,7 +601,7 @@ pub async fn concat_videos_with_settings(
         &durations,
         transition_type,
         transition_duration,
-        &transition_conform_filter(&inputs),
+        &transition_conform_filter_with_settings(&inputs, settings),
     );
     // Each transition overlaps the neighbouring clips by its duration.
     let output_duration =
@@ -603,6 +640,31 @@ mod transition_filter_tests {
     }
 
     #[test]
+    fn explicit_resolution_conforms_even_matching_transition_inputs() {
+        use crate::project::{RenderResolution, RenderSettings};
+        let inputs = [input(720, 1280, 30.0), input(720, 1280, 30.0)];
+        let settings = RenderSettings {
+            resolution: RenderResolution::Qhd2k,
+            ..Default::default()
+        };
+        let filter = super::transition_conform_filter_with_settings(&inputs, Some(&settings));
+        assert!(filter.starts_with("scale=1440:2560:"), "{filter}");
+        let original = RenderSettings {
+            resolution: RenderResolution::Original,
+            ..Default::default()
+        };
+        assert_eq!(
+            super::transition_conform_filter_with_settings(&inputs, Some(&original)),
+            "settb=AVTB"
+        );
+        let mixed = [input(720, 1280, 30.0), input(1920, 1080, 30.0)];
+        let filter = super::transition_conform_filter_with_settings(&mixed, Some(&original));
+        assert!(filter.starts_with("scale=720:1280:"), "{filter}");
+        let hardcut = super::build_hardcut_concat_filter_for_canvas(2, true, &[], (720, 1280));
+        assert_eq!(hardcut.matches("pad=720:1280:").count(), 2);
+    }
+
+    #[test]
     fn hardcut_concat_maps_all_streams_in_order() {
         assert_eq!(
             build_hardcut_concat_filter_complex(2, false, &[]),
@@ -618,11 +680,11 @@ mod transition_filter_tests {
     fn hardcut_concat_normalizes_mismatched_inputs() {
         let filter = build_hardcut_concat_filter_complex(2, true, &[]);
         assert!(
-            filter.contains("[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2[v0]"),
+            filter.contains("[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1[v0]"),
             "video 0 should scale/pad: {filter}"
         );
         assert!(
-            filter.contains("[1:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2[v1]"),
+            filter.contains("[1:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1[v1]"),
             "video 1 should scale/pad: {filter}"
         );
         assert!(
@@ -723,7 +785,7 @@ mod transition_filter_tests {
     fn mismatched_sizes_are_put_on_the_hardcut_canvas() {
         assert_eq!(
             transition_conform_filter(&[input(1280, 720, 30.0), input(1920, 1080, 30.0)]),
-            "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,settb=AVTB"
+            "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,settb=AVTB"
         );
     }
 

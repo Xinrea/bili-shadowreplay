@@ -28,8 +28,8 @@ const sub = (id, clip_id, start, end, text = id) => ({ id, clip_id, start, end, 
 
 test("output settings default for old projects and merge without losing local edits", () => {
   const base = api.parseTimeline('{"clips":[{"id":"a","material_id":1,"start":0,"end":30}]}');
-  assert.deepEqual(plain(base.render_settings), { codec: "hevc", priority: "speed", bitrate_kbps: 10000 });
-  const remote = { ...base, render_settings: { codec: "h264", priority: "quality", bitrate_kbps: 12000 } };
+  assert.deepEqual(plain(base.render_settings), { codec: "hevc", priority: "speed", bitrate_kbps: 10000, resolution: "1080p" });
+  const remote = { ...base, render_settings: { codec: "h264", priority: "quality", bitrate_kbps: 12000, resolution: "2k" } };
   const local = api.trimClip(base, "a", "end", 20, 30);
   const merged = api.mergeRemoteTimeline(local, base, remote);
   assert.equal(merged.clips[0].end, 20);
@@ -45,13 +45,14 @@ test("legacy render settings gain codec and priority without losing a chosen bit
         codec: "hevc",
         priority: quality === "high" ? "quality" : "speed",
         bitrate_kbps: bitrate_kbps || 10000,
+        resolution: "1080p",
       });
     }
   }
-  const explicit = { codec: "h264", priority: "speed", bitrate_kbps: 6000 };
+  const explicit = { codec: "h264", priority: "speed", bitrate_kbps: 6000, resolution: "1080p" };
   assert.deepEqual(plain(api.normalizeRenderSettings({ ...explicit, quality: "high" })), explicit);
   assert.deepEqual(plain(api.normalizeRenderSettings({ codec: "h264", quality: "high", bitrate_kbps: 0 })), {
-    codec: "h264", priority: "speed", bitrate_kbps: 0,
+    codec: "h264", priority: "speed", bitrate_kbps: 0, resolution: "1080p",
   });
 });
 
@@ -911,4 +912,15 @@ test("batch movement no-ops retain identity and ignore unknown or hidden IDs", (
   const moved = api.moveTimelineSelection(t, selection({ overlays: ["missing", "v", "v"] }), 2);
   assert.equal(api.placeOverlays(moved)[0].start, 2);
   assert.equal(api.findOverlay(moved, "hidden-v"), api.findOverlay(t, "hidden-v"));
+});
+
+test("resolution choices preserve source orientation and original dimensions", () => {
+  for (const [resolution, width, height] of [["original", 1280, 720], ["4k", 3840, 2160], ["2k", 2560, 1440], ["1080p", 1920, 1080]]) {
+    assert.deepEqual(plain(api.renderDimensions(resolution, 1280, 720)), { width, height });
+    assert.deepEqual(plain(api.renderDimensions(resolution, 720, 1280)), { width: height, height: width });
+    assert.equal(api.parseTimeline(JSON.stringify({ render_settings: { resolution } })).render_settings.resolution, resolution);
+  }
+  assert.deepEqual(plain(api.renderDimensions("original", 853, 479)), { width: 854, height: 480 });
+  assert.deepEqual(plain(api.renderDimensions("original", 1080, 1080)), { width: 1080, height: 1080 });
+  assert.equal(api.normalizeRenderSettings({ resolution: "unknown" }).resolution, "1080p");
 });

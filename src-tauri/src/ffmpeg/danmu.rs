@@ -241,16 +241,28 @@ async fn prepare_images(danmus: &[DanmuEntry], directory: &Path) -> HashMap<Url,
         .await
 }
 
+#[cfg(test)]
 pub(super) fn overlay_graph(fps: f64, pipeline: hwaccel::RenderPipeline) -> String {
+    overlay_graph_for_canvas(fps, pipeline, (1920, 1080))
+}
+
+fn overlay_graph_for_canvas(
+    fps: f64,
+    pipeline: hwaccel::RenderPipeline,
+    (width, height): (u32, u32),
+) -> String {
     if pipeline.uses_gpu() {
-        return format!("[0:v]{},fps={fps}[outv]\n", hwaccel::GPU_SCALE_PAD_FILTER,);
+        return format!(
+            "[0:v]{},fps={fps}[outv]\n",
+            hwaccel::scale_pad_filter(width, height, true),
+        );
     }
     // Change FPS before compositing, not only at the encoder, so motion is
     // actually evaluated at 60+ FPS rather than duplicating already-drawn frames.
     let mut filter = format!(
         "[0:v]{},fps={fps},format=bgra[base];\n\
          [base][1:v]overlay=shortest=1:format=rgb:alpha=premultiplied[composited];\n",
-        hwaccel::H264_SCALE_PAD_FILTER,
+        hwaccel::scale_pad_filter(width, height, false),
     );
     // Keep the premultiplied colours in RGB until they have been composited;
     // converting the transparent layer to subsampled YUV first damages edges.
@@ -416,7 +428,11 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
             None => hwaccel::get_x264_encoder().await,
         });
     }
-    let graph = overlay_graph(fps, pipeline);
+    let (width, height) = settings
+        .map(|settings| settings.resolution)
+        .unwrap_or_default()
+        .dimensions(metadata.width, metadata.height);
+    let graph = overlay_graph_for_canvas(fps, pipeline, (width, height));
     let spec = OverlaySpec {
         input: native_overlay::RenderInput {
             documents: vec![native_overlay::AssSource {
@@ -425,8 +441,8 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
             }],
             images: image_events(&plan.images, options.opacity),
         },
-        width: 1920,
-        height: 1080,
+        width,
+        height,
         fps,
         start: 0.0,
         duration: probe_overlay_duration(file, metadata.duration).await?,
@@ -567,6 +583,72 @@ mod tests {
             eprintln!("native_gpu_danmu_export backend=vulkan encoder={expected}");
             assert_danmu_export(Some(settings)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn native_burns_keep_original_portrait_resolution() {
+        use crate::project::{RenderResolution, RenderSettings, VideoCodec};
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("portrait.mp4");
+        let generated = ffmpeg_utils::ffmpeg_command()
+            .args([
+                "-f",
+                "lavfi",
+                "-i",
+                "color=black:s=180x320:r=30:d=0.2",
+                "-c:v",
+                "libx264",
+                "-y",
+            ])
+            .arg(&source)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            generated.status.success(),
+            "{}",
+            String::from_utf8_lossy(&generated.stderr)
+        );
+        let settings = RenderSettings {
+            codec: VideoCodec::H264,
+            resolution: RenderResolution::Original,
+            ..Default::default()
+        };
+        let srt = "1\n00:00:00,000 --> 00:00:00,200\nNative\n";
+        let ass =
+            super::super::subtitle_native::srt_to_ass(srt, "FontName=Arial,FontSize=36").unwrap();
+        let burned = encode_danmu_plan(
+            None::<&NoopReporter>,
+            &source,
+            DanmuRenderPlan {
+                ass,
+                images: vec![],
+            },
+            &Danmu2AssOptions::default(),
+            None,
+            None,
+            Some(&settings),
+        )
+        .await
+        .unwrap();
+        let metadata = ffmpeg_utils::extract_video_metadata(&burned).await.unwrap();
+        assert_eq!((metadata.width, metadata.height), (180, 320));
+        let subtitle = directory.path().join("subtitle.srt");
+        std::fs::write(&subtitle, srt).unwrap();
+        let name = super::super::subtitle::encode_video_subtitle_with_settings(
+            &NoopReporter,
+            &source,
+            &subtitle,
+            "FontName=Arial,FontSize=36".into(),
+            vec![],
+            Some(&settings),
+        )
+        .await
+        .unwrap();
+        let metadata = ffmpeg_utils::extract_video_metadata(&directory.path().join(name))
+            .await
+            .unwrap();
+        assert_eq!((metadata.width, metadata.height), (180, 320));
     }
 
     async fn assert_danmu_export(settings: Option<crate::project::RenderSettings>) {
@@ -824,6 +906,19 @@ mod tests {
             urls,
             vec![Url::parse("https://i0.hdslb.com/a.png").unwrap()]
         );
+    }
+
+    #[test]
+    fn native_overlay_graphs_use_selected_canvas_on_cpu_and_gpu() {
+        for pipeline in [
+            hwaccel::RenderPipeline::cpu("libx264"),
+            hwaccel::RenderPipeline::gpu("h264_vulkan"),
+        ] {
+            let graph = overlay_graph_for_canvas(60.0, pipeline, (2160, 3840));
+            assert!(graph.contains("scale=2160:3840:force_original_aspect_ratio=decrease"));
+            assert!(graph.contains("pad=2160:3840:"));
+            assert!(!graph.contains("1920:1080"));
+        }
     }
 
     #[test]

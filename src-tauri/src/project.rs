@@ -48,12 +48,48 @@ pub enum EncodingPriority {
     Quality,
 }
 
+/// Output canvas orientation follows the first source on the main track.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RenderResolution {
+    #[serde(rename = "original")]
+    Original,
+    #[serde(rename = "4k")]
+    Uhd4k,
+    #[serde(rename = "2k")]
+    Qhd2k,
+    #[default]
+    #[serde(rename = "1080p")]
+    FullHd1080p,
+}
+
+impl RenderResolution {
+    pub fn dimensions(self, source_width: u32, source_height: u32) -> (u32, u32) {
+        let (width, height) = match self {
+            Self::Original => {
+                // YUV 4:2:0 encoders require even dimensions. Round up instead
+                // of cropping the last row/column of an odd-sized source.
+                let even = |value: u32| value.max(2).saturating_add(1) & !1;
+                return (even(source_width), even(source_height));
+            }
+            Self::Uhd4k => (3840, 2160),
+            Self::Qhd2k => (2560, 1440),
+            Self::FullHd1080p => (1920, 1080),
+        };
+        if source_height > source_width {
+            (height, width)
+        } else {
+            (width, height)
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "StoredRenderSettings")]
 pub struct RenderSettings {
     pub codec: VideoCodec,
     pub priority: EncodingPriority,
     pub bitrate_kbps: u32,
+    pub resolution: RenderResolution,
 }
 
 impl Default for RenderSettings {
@@ -62,6 +98,7 @@ impl Default for RenderSettings {
             codec: VideoCodec::Hevc,
             priority: EncodingPriority::Speed,
             bitrate_kbps: 10_000,
+            resolution: RenderResolution::default(),
         }
     }
 }
@@ -74,6 +111,8 @@ struct StoredRenderSettings {
     quality: Option<String>,
     #[serde(default = "default_bitrate_kbps")]
     bitrate_kbps: u32,
+    #[serde(default)]
+    resolution: RenderResolution,
 }
 
 fn default_bitrate_kbps() -> u32 {
@@ -97,6 +136,7 @@ impl From<StoredRenderSettings> for RenderSettings {
                 0 if legacy => defaults.bitrate_kbps,
                 bitrate => bitrate,
             },
+            resolution: stored.resolution,
         }
     }
 }
@@ -938,7 +978,7 @@ mod tests {
         let defaults = RenderSettings::default();
         assert_eq!(
             serde_json::to_value(&defaults).unwrap(),
-            json!({ "codec": "hevc", "priority": "speed", "bitrate_kbps": 10000 })
+            json!({ "codec": "hevc", "priority": "speed", "bitrate_kbps": 10000, "resolution": "1080p" })
         );
         assert_eq!(
             serde_json::from_str::<RenderSettings>("{}").unwrap(),
@@ -980,6 +1020,55 @@ mod tests {
         assert_eq!(explicit.codec, VideoCodec::H264);
         assert_eq!(explicit.priority, EncodingPriority::Speed);
         assert_eq!(explicit.bitrate_kbps, 10_000);
+        assert_eq!(explicit.resolution, RenderResolution::FullHd1080p);
+    }
+
+    #[test]
+    fn output_resolution_preserves_orientation_and_roundtrips() {
+        for (resolution, name, landscape, portrait) in [
+            (
+                RenderResolution::Original,
+                "original",
+                (1280, 720),
+                (720, 1280),
+            ),
+            (RenderResolution::Uhd4k, "4k", (3840, 2160), (2160, 3840)),
+            (RenderResolution::Qhd2k, "2k", (2560, 1440), (1440, 2560)),
+            (
+                RenderResolution::FullHd1080p,
+                "1080p",
+                (1920, 1080),
+                (1080, 1920),
+            ),
+        ] {
+            assert_eq!(resolution.dimensions(1280, 720), landscape);
+            assert_eq!(resolution.dimensions(720, 1280), portrait);
+            let settings: RenderSettings =
+                serde_json::from_value(serde_json::json!({ "resolution": name })).unwrap();
+            assert_eq!(settings.resolution, resolution);
+            assert_eq!(serde_json::to_value(settings).unwrap()["resolution"], name);
+        }
+        assert_eq!(RenderResolution::Original.dimensions(853, 479), (854, 480));
+        assert_eq!(
+            RenderResolution::Original.dimensions(1080, 1080),
+            (1080, 1080)
+        );
+        assert!(serde_json::from_str::<RenderSettings>(r#"{"resolution":"720p"}"#).is_err());
+    }
+
+    #[test]
+    fn changing_only_resolution_invalidates_render_cache() {
+        let base = timeline();
+        for resolution in [
+            RenderResolution::Original,
+            RenderResolution::Uhd4k,
+            RenderResolution::Qhd2k,
+        ] {
+            let mut changed = base.clone();
+            changed.render_settings.resolution = resolution;
+            assert_ne!(base.render_hash(""), changed.render_hash(""));
+            assert_eq!(Timeline::parse(&changed.to_json()).unwrap(), changed);
+        }
     }
 
     #[test]
@@ -1046,6 +1135,7 @@ mod tests {
             codec: VideoCodec::H264,
             priority: EncodingPriority::Quality,
             bitrate_kbps: 12_000,
+            resolution: RenderResolution::Qhd2k,
         };
         edited.clips[0].end = 20.0;
         edited.merge_saved_edits(&base, &saved);

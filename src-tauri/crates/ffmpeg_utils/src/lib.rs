@@ -11,6 +11,7 @@
 mod audio;
 mod capabilities;
 mod command;
+mod diagnostics;
 mod hls;
 mod image;
 mod media;

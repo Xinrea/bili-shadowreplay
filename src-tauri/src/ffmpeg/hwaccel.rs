@@ -27,6 +27,8 @@ pub const GPU_SCALE_PAD_FILTER: &str =
     "scale=1920:1080:force_original_aspect_ratio=decrease:out_color_matrix=bt709:out_range=tv,format=nv12,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1";
 
 /// Scale without cropping, then letterbox to the selected output canvas.
+/// Scaling can round a dimension and compensate with a non-square SAR.
+/// Concat checks SAR as well as size, so normalize after scale/pad.
 pub fn scale_pad_filter(width: u32, height: u32, gpu: bool) -> String {
     let conversion = if gpu {
         ":out_color_matrix=bt709:out_range=tv,format=nv12"

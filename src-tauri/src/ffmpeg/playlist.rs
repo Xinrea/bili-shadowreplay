@@ -361,6 +361,7 @@ pub async fn concat_playlists_to_video(
     let temp_dir = tempdir_in(output_dir)
         .map_err(|e| format!("Failed to create playlist concat directory: {e}"))?;
     let mut segments = Vec::new();
+    let mut failures = Vec::new();
     let mut burned = false;
     // If any source needs burning, encode all sources through the same overlay
     // path (including empty tracks) so matching outputs can be joined by copy.
@@ -375,7 +376,12 @@ pub async fn concat_playlists_to_video(
     for (i, playlist) in playlists.iter().enumerate() {
         let mut video_path = temp_dir.path().join(format!("playlist-{i}.mp4"));
         if let Err(e) = clip_from_playlist(reporter, playlist, &video_path, None).await {
-            log::error!("Failed to generate playlist video: {e}");
+            let error = format!(
+                "Failed to generate playlist video '{}': {e}",
+                playlist.display()
+            );
+            log::error!("{error}");
+            failures.push(error);
             continue;
         }
         let track = danmu_tracks.get(i).and_then(Option::as_ref);
@@ -401,6 +407,13 @@ pub async fn concat_playlists_to_video(
             burned |= danmus.iter().any(recorder::danmu::DanmuEntry::is_danmu);
         }
         segments.push(video_path);
+    }
+
+    if segments.is_empty() && !failures.is_empty() {
+        return Err(format!(
+            "No videos to concatenate:\n{}",
+            failures.join("\n")
+        ));
     }
 
     match settings {
@@ -592,7 +605,7 @@ seg-3.mp4
                 "-show_streams",
                 "-show_frames",
                 "-show_entries",
-                "stream=codec_name,width,height,pix_fmt,has_b_frames,time_base,r_frame_rate,avg_frame_rate,start_pts,start_time,duration_ts,duration,nb_frames:frame=pts,best_effort_timestamp,duration,pkt_duration",
+                "stream=codec_name,width,height,sample_aspect_ratio,pix_fmt,has_b_frames,time_base,r_frame_rate,avg_frame_rate,start_pts,start_time,duration_ts,duration,nb_frames:frame=pts,best_effort_timestamp,duration,pkt_duration",
                 "-of",
                 "json",
             ])
@@ -853,6 +866,146 @@ seg-3.mp4
         let metadata = ffmpeg_utils::extract_video_metadata(&legacy).await.unwrap();
         assert_eq!(metadata.video_codec, "h264");
         assert_eq!((metadata.width, metadata.height), (320, 180));
+    }
+
+    #[tokio::test]
+    async fn whole_clip_encodes_portrait_and_landscape_recordings_with_square_pixels() {
+        use crate::project::{EncodingPriority, RenderSettings, VideoCodec};
+        type Reporter = crate::progress::progress_reporter::ProgressReporter;
+
+        let portrait = tempfile::tempdir().unwrap();
+        let landscape = tempfile::tempdir().unwrap();
+        // Both sources have SAR 1:1. Fitting the portrait to 1080 pixels high
+        // rounds 607.5 to 608 pixels wide, producing SAR 1215:1216 unless reset.
+        let playlists = [
+            create_test_playlist_with_size(portrait.path(), 0.4, "1080x1920").await,
+            create_test_playlist_with_size(landscape.path(), 0.4, "1280x720").await,
+        ];
+        let settings = RenderSettings {
+            codec: VideoCodec::H264,
+            priority: EncodingPriority::Quality,
+            bitrate_kbps: 1000,
+            ..Default::default()
+        };
+        let mut remuxed = Vec::new();
+        for playlist in &playlists {
+            let video = playlist.with_extension("mp4");
+            clip_from_playlist(None::<&Reporter>, playlist, &video, None)
+                .await
+                .unwrap();
+            remuxed.push(video);
+        }
+        for order in [&[0, 1][..], &[1, 0][..], &[0, 1, 0][..]] {
+            let (width, height) = if order[0] == 0 {
+                (1080, 1920)
+            } else {
+                (1920, 1080)
+            };
+            let output = portrait.path().join(format!("mixed-{order:?}.mp4"));
+            let sources = order
+                .iter()
+                .map(|&i| playlists[i].as_path())
+                .collect::<Vec<_>>();
+            assert!(!concat_playlists_to_video(
+                None::<&Reporter>,
+                &sources,
+                vec![None; sources.len()],
+                &crate::danmu2ass::Danmu2AssOptions::default(),
+                &output,
+                Some(&settings),
+            )
+            .await
+            .unwrap());
+            let (stream, frames) = video_timeline(&output).await;
+            assert_eq!(stream["width"], width);
+            assert_eq!(stream["height"], height);
+            assert_eq!(stream["sample_aspect_ratio"], "1:1");
+            // AAC extends these HLS clips beyond their 12 video frames. FFmpeg
+            // 6 duplicates boundary frames while FFmpeg 9 keeps a VFR timeline,
+            // so compare with the installed CLI rather than a fixed frame count.
+            let oracle = portrait.path().join(format!("cli-mixed-{order:?}.mp4"));
+            let mut command = ffmpeg_utils::ffmpeg_command();
+            command.args(["-v", "error"]);
+            let mut filters = String::new();
+            let mut concat_inputs = String::new();
+            for (index, &source) in order.iter().enumerate() {
+                command.arg("-i").arg(&remuxed[source]);
+                filters.push_str(&format!(
+                    "[{index}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1[v{index}];"
+                ));
+                concat_inputs.push_str(&format!("[v{index}][{index}:a]"));
+            }
+            let reference = command
+                .arg("-filter_complex")
+                .arg(format!(
+                    "{filters}{concat_inputs}concat=n={}:v=1:a=1[v][a]",
+                    order.len()
+                ))
+                .args([
+                    "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-b:v", "1000k", "-g", "120",
+                    "-c:a", "aac", "-y",
+                ])
+                .arg(&oracle)
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                reference.status.success(),
+                "{}",
+                String::from_utf8_lossy(&reference.stderr)
+            );
+            let (_, expected_frames) = video_timeline(&oracle).await;
+            assert_eq!(frames.len(), expected_frames.len(), "CLI frame count");
+            assert!(
+                frames.len() >= 12 * sources.len(),
+                "every segment must survive"
+            );
+            let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+            assert_eq!(metadata.audio_codec, "aac");
+            let decoded = ffmpeg_utils::ffmpeg_command()
+                .args(["-v", "error", "-i"])
+                .arg(&output)
+                .args(["-f", "null", "-"])
+                .output()
+                .await
+                .unwrap();
+            assert!(decoded.status.success());
+            assert!(
+                decoded.stderr.is_empty(),
+                "{}",
+                String::from_utf8_lossy(&decoded.stderr)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn whole_clip_preserves_errors_for_each_unreadable_playlist() {
+        type Reporter = crate::progress::progress_reporter::ProgressReporter;
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.m3u8");
+        let invalid = dir.path().join("invalid.m3u8");
+        std::fs::write(&invalid, [0; 128]).unwrap();
+        let output = dir.path().join("previous.mp4");
+        std::fs::write(&output, b"previous recording").unwrap();
+        let error = concat_playlists_to_video(
+            None::<&Reporter>,
+            &[&missing, &invalid],
+            vec![None; 2],
+            &crate::danmu2ass::Danmu2AssOptions::default(),
+            &output,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.contains("missing.m3u8") && error.contains("Failed to read playlist"),
+            "{error}"
+        );
+        assert!(
+            error.contains("invalid.m3u8") && error.contains("zero-filled"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&output).unwrap(), b"previous recording");
     }
 
     #[tokio::test]

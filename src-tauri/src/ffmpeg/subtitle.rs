@@ -29,6 +29,7 @@ pub async fn encode_video_subtitle<R: ProgressReporterTrait>(
 }
 
 /// Retain the queued SRT snapshot until the media worker and renderer finish.
+#[cfg(test)]
 pub async fn encode_video_subtitle_with_resources<R: ProgressReporterTrait>(
     reporter: &R,
     file: &Path,

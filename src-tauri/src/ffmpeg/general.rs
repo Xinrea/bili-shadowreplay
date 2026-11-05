@@ -93,9 +93,9 @@ mod tests {
 /// stutter.
 ///
 /// When `normalize` is true, video is scaled/padded to a common 1920x1080 canvas
-/// and audio is resampled first. Concat requires matching resolution; sample
-/// rate and layout are converted automatically, but `aresample` also absorbs
-/// leftover timestamp gaps on mismatched clips.
+/// with square pixels and audio is resampled first. Concat checks both size and
+/// SAR; sample rate and layout are converted automatically, but `aresample`
+/// also absorbs leftover timestamp gaps on mismatched clips.
 ///
 /// `silence[i]` is the duration of input `i` when it has no audio stream; that
 /// input contributes generated silence so later audio stays aligned. Inputs

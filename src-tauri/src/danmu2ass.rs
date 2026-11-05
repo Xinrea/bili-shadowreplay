@@ -194,11 +194,20 @@ fn coordinate(value: f64) -> f64 {
 }
 
 fn escape_text(text: &str) -> String {
-    text.replace('\\', "\\\\")
-        .replace('{', "｛")
-        .replace('}', "｝")
-        .replace('\r', "")
-        .replace('\n', "\\N")
+    let mut escaped = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\\' => escaped.push_str("\\\\"),
+            '{' => escaped.push('｛'),
+            '}' => escaped.push('｝'),
+            '\n' => escaped.push_str("\\N"),
+            // Recorded messages may contain NUL or other C0/C1 controls.
+            // Only tabs are accepted literally by the native ASS parser.
+            c if c.is_control() && c != '\t' => {}
+            c => escaped.push(c),
+        }
+    }
+    escaped
 }
 
 /// The room player doesn't draw a message the moment it arrives. It queues
@@ -707,6 +716,59 @@ mod tests {
     fn test_escape_text_carriage_return() {
         // \r is removed, \n becomes \N (ASS line break)
         assert_eq!(escape_text("line\r\n"), "line\\N");
+    }
+
+    #[test]
+    fn test_escape_text_control_characters() {
+        for code in (0..=0x1f).chain(0x7f..=0x9f) {
+            let control = char::from_u32(code).unwrap();
+            let expected = match control {
+                '\n' => "before\\Nafter",
+                '\t' => "before\tafter",
+                _ => "beforeafter",
+            };
+            assert_eq!(
+                escape_text(&format!("before{control}after")),
+                expected,
+                "U+{code:04X}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_escape_text_preserves_unicode_and_ass_escaping() {
+        assert_eq!(
+            escape_text("中\0文👩🏽‍💻\u{85}❤️e\u{301}{\\N}\r\n\t尾"),
+            "中文👩🏽‍💻❤️e\u{301}｛\\\\N｝\\N\t尾"
+        );
+    }
+
+    #[test]
+    fn recorded_control_characters_do_not_break_native_danmu_rendering() {
+        // JSONL recordings decode escaped NULs into actual control characters.
+        let recorded: DanmuEntry = serde_json::from_str(
+            r#"{"ts":1000,"type":"danmu","content":"祝\u0000你\u0000生\u0000日\u0000快\u0000乐\u0000！👩🏽‍💻\u000b\u0085"}"#,
+        )
+        .unwrap();
+        let entries = vec![entry(0, "正常弹幕"), recorded, entry(2000, "后续弹幕")];
+        let plan = danmu_render_plan(&entries, &Danmu2AssOptions::default(), |_| None);
+        let texts: Vec<_> = moves(&plan.ass).into_iter().map(|event| event.0).collect();
+        assert_eq!(texts, ["正常弹幕", "祝你生日快乐！👩🏽‍💻", "后续弹幕"]);
+
+        let input = native_overlay::RenderInput {
+            documents: vec![native_overlay::AssSource {
+                text: plan.ass,
+                kind: native_overlay::SourceKind::Danmaku,
+            }],
+            ..Default::default()
+        };
+        let mut renderer = native_overlay::Renderer::new(128, 72, input, Vec::new())
+            .expect("sanitized recorded danmu should load in the native renderer");
+        assert!(renderer
+            .frame(3.0)
+            .unwrap()
+            .chunks_exact(4)
+            .any(|pixel| pixel[3] != 0));
     }
 
     #[test]

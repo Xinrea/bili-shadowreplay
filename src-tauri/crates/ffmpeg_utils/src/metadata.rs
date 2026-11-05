@@ -121,9 +121,12 @@ where
 {
     let cancel = CancelOnDrop(Arc::new(AtomicBool::new(false)));
     let token = cancel.0.clone();
-    let result = tokio::task::spawn_blocking(move || work(token))
-        .await
-        .map_err(|error| format!("媒体处理任务失败: {error}"))?;
+    let result = tokio::task::spawn_blocking(move || {
+        initialize()?;
+        crate::diagnostics::capture(|| work(token))
+    })
+    .await
+    .map_err(|error| format!("媒体处理任务失败: {error}"))?;
     drop(cancel);
     result
 }
@@ -131,7 +134,11 @@ where
 pub(crate) fn initialize() -> Result<(), String> {
     static INITIALIZED: OnceLock<Result<(), String>> = OnceLock::new();
     INITIALIZED
-        .get_or_init(|| ffmpeg::init().map_err(|error| format!("初始化 FFmpeg 失败: {error}")))
+        .get_or_init(|| {
+            ffmpeg::init().map_err(|error| format!("初始化 FFmpeg 失败: {error}"))?;
+            crate::diagnostics::install();
+            Ok(())
+        })
         .clone()
 }
 

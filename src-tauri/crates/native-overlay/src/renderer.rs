@@ -521,8 +521,12 @@ impl Renderer {
         self.stats.text_cache_misses += 1;
         let event = &self.events[id];
         let style = &event.style;
-        let sx = self.width as f32 / event.res.0 * style.scale_x;
-        let sy = self.height as f32 / event.res.1 * style.scale_y;
+        // Canvas coordinates determine placement, but glyphs keep their shape
+        // when the output aspect differs from the script (e.g. portrait clips).
+        // Explicit ASS ScaleX/ScaleY still apply independently.
+        let scale = (self.width as f32 / event.res.0).min(self.height as f32 / event.res.1);
+        let sx = scale * style.scale_x;
+        let sy = scale * style.scale_y;
         let wrap = if event.movement.is_some() {
             16384.0
         } else {
@@ -545,8 +549,8 @@ impl Renderer {
             log::warn!("native-overlay: {missing} unresolved glyphs in event {} (visible missing-glyph fallback)", event.order);
         }
         let size = (layout_width * sx, paragraph.height().max(1.0) * sy);
-        let outline = style.outline * self.height as f32 / event.res.1;
-        let shadow = style.shadow * self.height as f32 / event.res.1;
+        let outline = style.outline * scale;
+        let shadow = style.shadow * scale;
         let largest_size = event
             .runs
             .iter()
@@ -762,8 +766,8 @@ impl Renderer {
                     },
                 )
             };
-            let outline = event.style.outline * yscale;
-            let shadow = event.style.shadow * yscale;
+            let outline = event.style.outline * xscale.min(yscale);
+            let shadow = event.style.shadow * xscale.min(yscale);
             let mut rect = rotated_bounds(
                 Rect::from_xywh(
                     -sprite.size.0 * ax - outline,

@@ -152,7 +152,7 @@ pub(super) fn definitions(clip_range_params: Value) -> Vec<(&'static str, String
         ),
         (
             "update_project_output_settings",
-            "Change how a project is rendered for exports and uploads: burning the materials' danmaku, and the video codec, encoding priority and bitrate.".into(),
+            "Change how a project is rendered for exports and uploads: burning the materials' danmaku, and the video codec, encoding priority, resolution and bitrate.".into(),
             schema(
                 json!({
                     "id": { "type": "integer", "description": "Project id." },
@@ -160,6 +160,7 @@ pub(super) fn definitions(clip_range_params: Value) -> Vec<(&'static str, String
                     "render_settings": {
                         "type": "object",
                         "properties": {
+                            "resolution": { "type": "string", "enum": ["original", "4k", "2k", "1080p"], "default": "1080p" },
                             "codec": { "type": "string", "enum": ["hevc", "h264"], "default": "hevc" },
                             "priority": { "type": "string", "enum": ["speed", "quality"], "default": "speed" },
                             "bitrate_kbps": { "type": "integer", "minimum": 500, "maximum": 100000, "default": 10000, "description": "Target video bitrate in Kbps." }
@@ -428,12 +429,16 @@ mod tests {
         );
         let properties = &settings["properties"];
         assert_eq!(properties["codec"]["enum"], json!(["hevc", "h264"]));
+        assert_eq!(
+            properties["resolution"]["enum"],
+            json!(["original", "4k", "2k", "1080p"])
+        );
         assert_eq!(properties["priority"]["enum"], json!(["speed", "quality"]));
         assert_eq!(properties["bitrate_kbps"]["minimum"], 500);
         assert_eq!(properties["bitrate_kbps"]["maximum"], 100000);
         assert!(properties.get("quality").is_none());
         let defaults = serde_json::to_value(RenderSettings::default()).unwrap();
-        for field in ["codec", "priority", "bitrate_kbps"] {
+        for field in ["codec", "priority", "bitrate_kbps", "resolution"] {
             assert_eq!(properties[field]["default"], defaults[field]);
         }
     }

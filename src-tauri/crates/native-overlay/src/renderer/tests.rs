@@ -96,6 +96,20 @@ fn bbox(data: &[u8], w: usize) -> Option<(usize, usize, usize, usize)> {
 }
 
 #[test]
+fn portrait_canvas_keeps_subtitle_glyph_proportions_and_bottom_alignment() {
+    let mut landscape = Renderer::new(960, 540, input("Portrait ABC", STYLE), vec![]).unwrap();
+    let mut portrait = Renderer::new(960, 1706, input("Portrait ABC", STYLE), vec![]).unwrap();
+    let wide = bbox(&landscape.frame(1.0).unwrap(), 960).unwrap();
+    let tall = bbox(&portrait.frame(1.0).unwrap(), 960).unwrap();
+    assert!((wide.2 - wide.0).abs_diff(tall.2 - tall.0) <= 2);
+    assert!((wide.3 - wide.1).abs_diff(tall.3 - tall.1) <= 2);
+    assert!(
+        tall.1 > 1500,
+        "subtitle must remain near the portrait canvas bottom"
+    );
+}
+
+#[test]
 fn inline_font_size_changes_raster_and_cluster_remains_whole() {
     let mut normal = Renderer::new(960, 540, input("😀", STYLE), vec![]).unwrap();
     let normal = bbox(&normal.frame(1.0).unwrap(), 960).unwrap();

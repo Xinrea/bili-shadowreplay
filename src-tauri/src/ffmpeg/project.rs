@@ -73,8 +73,8 @@ const EPSILON: f64 = 1e-6;
 const RENDER_STAGE: &str = "导出切片";
 /// Part of every segment's key: change it with what a segment's graph draws,
 /// so that segments rendered before are not used again.
-/// 6: native MediaPlan routes can compose real NV12 video on the Vulkan device.
-const RENDER_VERSION: u32 = 6;
+/// 7: configurable canvas dimensions and normalized overlay scaling.
+const RENDER_VERSION: u32 = 7;
 
 pub struct RenderClip {
     /// The same however the timeline is edited around the clip.
@@ -251,7 +251,18 @@ fn part_input(clip: &RenderClip, skip: f64) -> (f64, f64) {
 /// point, however the part was cut from its clip, so the parts of one clip
 /// play on without a seam. Pictures and sound are joined apart: one concat
 /// would stretch every part to its longer stream, and those differences add up.
+#[cfg(test)]
 fn concat_filter(clips: &[RenderClip], segment: &Segment, fps: f64, audio: &str) -> String {
+    concat_filter_for_canvas(clips, segment, fps, audio, (1920, 1080))
+}
+
+fn concat_filter_for_canvas(
+    clips: &[RenderClip],
+    segment: &Segment,
+    fps: f64,
+    audio: &str,
+    (width, height): (u32, u32),
+) -> String {
     let mut filter = String::new();
     let mut pictures = String::new();
     let mut sounds = String::new();
@@ -268,10 +279,10 @@ fn concat_filter(clips: &[RenderClip], segment: &Segment, fps: f64, audio: &str)
         filter.push_str(&format!(
             "[{index}:v]setpts=PTS+{lead:.6}/TB,fps={fps}:start_time=0,\
              tpad=stop_mode=clone:stop_duration={padding:.6},\
-             trim=start_frame={first}:end_frame={},setpts=PTS-STARTPTS,{},setsar=1,\
+             trim=start_frame={first}:end_frame={},setpts=PTS-STARTPTS,{},\
              format=yuv420p[pv{index}];\n",
             first + frames,
-            hwaccel::H264_SCALE_PAD_FILTER,
+            hwaccel::scale_pad_filter(width, height, false),
         ));
         if clip.has_audio && clip.volume > 0.0 {
             filter.push_str(&format!(
@@ -375,6 +386,7 @@ struct OverlayGraph {
 
 /// Lay `overlays` over a segment starting at project time `start` and
 /// `samples` long.
+#[cfg(test)]
 fn overlay_filter(
     overlays: &[SegmentOverlay],
     first_input: usize,
@@ -382,6 +394,38 @@ fn overlay_filter(
     (start, samples): (f64, u64),
     video: &str,
 ) -> OverlayGraph {
+    overlay_filter_for_canvas(
+        overlays,
+        first_input,
+        fps,
+        (start, samples),
+        video,
+        (1920, 1080),
+    )
+}
+
+fn overlay_filter_for_canvas(
+    overlays: &[SegmentOverlay],
+    first_input: usize,
+    fps: f64,
+    (start, samples): (f64, u64),
+    video: &str,
+    (width, height): (u32, u32),
+) -> OverlayGraph {
+    let (sx, sy) = (f64::from(width) / 1920.0, f64::from(height) / 1080.0);
+    // Positions remain normalized to the 1920×1080 editor canvas, while
+    // dimensions scale uniformly so portrait output never stretches artwork.
+    let scale = sx.min(sy);
+    let image_scale = if (width, height) == (1920, 1080) {
+        String::new()
+    } else {
+        format!("scale='max(1,round(iw*{scale:.9}))':'max(1,round(ih*{scale:.9}))',")
+    };
+    let video_scale = if (width, height) == (1920, 1080) {
+        String::new()
+    } else {
+        format!(",scale=ceil(iw*{scale:.9}/2)*2:ceil(ih*{scale:.9}/2)*2,setsar=1")
+    };
     let mut filter = String::new();
     let mut current = video.to_string();
     let mut audio = Vec::new();
@@ -390,12 +434,33 @@ fn overlay_filter(
         let (from, to) = (shown.start, shown.end);
         let enable = format!("enable='gte(t,{from:.6})*lt(t,{to:.6})'");
         match &shown.overlay.layer {
-            OverlayLayer::Image { x, y, .. } => {
+            OverlayLayer::Image { x, y, png } => {
+                let (left, top) = if (width, height) == (1920, 1080) {
+                    (
+                        format!("{}", x.round() as i64),
+                        format!("{}", y.round() as i64),
+                    )
+                } else if let Some((image_width, image_height)) = overlay_png_dimensions(png) {
+                    // Raster overlays arrive cropped. Map their original center,
+                    // then subtract half the scaled raster (including rounding).
+                    (
+                        format!("{:.9}-overlay_w/2", (x + f64::from(image_width) / 2.0) * sx),
+                        format!(
+                            "{:.9}-overlay_h/2",
+                            (y + f64::from(image_height) / 2.0) * sy
+                        ),
+                    )
+                } else {
+                    // Invalid images still fail decoding; this also supports
+                    // graph-only callers that do not supply raster bytes.
+                    (
+                        format!("{:.9}+overlay_w*{:.9}/2", x * sx, sx / scale - 1.0),
+                        format!("{:.9}+overlay_h*{:.9}/2", y * sy, sy / scale - 1.0),
+                    )
+                };
                 filter.push_str(&format!(
-                    "[{input}:v]format=rgba[ov{index}];\n\
-                     [{current}][ov{index}]overlay=x={}:y={}:{enable}[layer{index}];\n",
-                    x.round() as i64,
-                    y.round() as i64,
+                    "[{input}:v]{image_scale}format=rgba[ov{index}];\n\
+                     [{current}][ov{index}]overlay=x={left}:y={top}:{enable}[layer{index}];\n",
                 ));
             }
             OverlayLayer::Video(layer) => {
@@ -423,12 +488,12 @@ fn overlay_filter(
                     "[{input}:v]fps={fps}:start_time=0,\
                      tpad=stop_mode=clone:stop_duration={:.6},trim=start={skip:.6}:duration={length:.6},\
                      setpts=PTS-STARTPTS,scale={width}:-2,setsar=1,\
-                     format=yuva420p{rotate}{fade},setpts=PTS+{from:.6}/TB[ov{index}];\n\
+                     format=yuva420p{rotate}{fade}{video_scale},setpts=PTS+{from:.6}/TB[ov{index}];\n\
                      [{current}][ov{index}]overlay=x={:.3}-overlay_w/2:y={:.3}-overlay_h/2:\
                      eof_action=repeat:{enable}[layer{index}];\n",
                     skip + length,
-                    layer.x,
-                    layer.y,
+                    layer.x * sx,
+                    layer.y * sy,
                 ));
                 if layer.has_audio && layer.volume > 0.0 {
                     let delay = ((from - start) * 1000.0).round() as i64;
@@ -451,6 +516,16 @@ fn overlay_filter(
         video: current,
         audio,
     }
+}
+
+/// PNG's mandatory IHDR stores its unscaled raster size before image data.
+fn overlay_png_dimensions(png: &[u8]) -> Option<(u32, u32)> {
+    if !png.starts_with(b"\x89PNG\r\n\x1a\n") || png.get(12..16)? != b"IHDR" {
+        return None;
+    }
+    let width = u32::from_be_bytes(png.get(16..20)?.try_into().ok()?);
+    let height = u32::from_be_bytes(png.get(20..24)?.try_into().ok()?);
+    (width > 0 && height > 0).then_some((width, height))
 }
 
 /// Mix `[main]` with the overlays' sound into `[outa]`. Every input lasts the
@@ -859,6 +934,7 @@ struct Render<'a> {
     directory: &'a Path,
     resource: Option<ffmpeg_utils::MediaResourceLease>,
     fps: f64,
+    canvas: (u32, u32),
     pipeline: hwaccel::RenderPipeline,
     /// What each input file is now, by path.
     files: HashMap<PathBuf, String>,
@@ -892,6 +968,7 @@ impl Render<'_> {
             "{}",
             serde_json::to_string(&job.render_settings).unwrap()
         );
+        let _ = writeln!(key, "canvas {} {}", self.canvas.0, self.canvas.1);
         let _ = writeln!(
             key,
             "native {} {}",
@@ -1027,8 +1104,8 @@ impl Render<'_> {
         }
         Some(OverlaySpec {
             input,
-            width: 1920,
-            height: 1080,
+            width: self.canvas.0,
+            height: self.canvas.1,
             fps: self.fps,
             start,
             duration: end - start,
@@ -1046,19 +1123,21 @@ impl Render<'_> {
         let (job, fps) = (self.job, self.fps);
         let (start, end) = (segment.start(fps), segment.end(fps));
         let overlays = segment_overlays(&job.overlays, start, end);
-        let graph = overlay_filter(
+        let graph = overlay_filter_for_canvas(
             &overlays,
             segment.parts.len(),
             fps,
             (start, segment.samples),
             "joined",
+            self.canvas,
         );
         let joined_audio = if graph.audio.is_empty() {
             "outa"
         } else {
             "maina"
         };
-        let mut filter = concat_filter(&job.clips, segment, fps, joined_audio);
+        let mut filter =
+            concat_filter_for_canvas(&job.clips, segment, fps, joined_audio, self.canvas);
         filter.push_str(&graph.filter);
         if !graph.audio.is_empty() {
             filter.push_str(&mix_filter(joined_audio, &graph.audio));
@@ -1105,8 +1184,8 @@ impl Render<'_> {
                 let mut input =
                     ffmpeg_utils::MediaInput::generated_video(ffmpeg_utils::ColorSource {
                         color: "black".into(),
-                        width: 1920,
-                        height: 1080,
+                        width: self.canvas.0,
+                        height: self.canvas.1,
                         frame_rate_num,
                         frame_rate_den,
                     });
@@ -1212,8 +1291,8 @@ impl Render<'_> {
         if let Some(spec) = native.or_else(|| {
             gpu.then(|| OverlaySpec {
                 input: ::native_overlay::RenderInput::default(),
-                width: 1920,
-                height: 1080,
+                width: self.canvas.0,
+                height: self.canvas.1,
                 fps,
                 start,
                 duration: end - start,
@@ -1557,6 +1636,11 @@ async fn render_with_pipeline_and_resources<R: ProgressReporterTrait>(
     if job.clips.is_empty() {
         return Err("时间轴上没有片段".to_string());
     }
+    let canvas = if let Some(first) = job.clips.iter().find(|clip| !clip.is_blank()) {
+        hwaccel::output_dimensions(&first.path, Some(&job.render_settings)).await?
+    } else {
+        job.render_settings.resolution.dimensions(1920, 1080)
+    };
     if pipeline.uses_gpu() {
         let mut sources = std::collections::HashSet::new();
         sources.extend(
@@ -1698,6 +1782,7 @@ async fn render_with_pipeline_and_resources<R: ProgressReporterTrait>(
         directory: &directory,
         resource: Some(workspace.clone()),
         fps,
+        canvas,
         pipeline,
         files,
         pictures,
@@ -1898,6 +1983,177 @@ mod tests {
         let mut segments = plan_segments(&clips, fps, SEGMENT_LIMITS);
         assert_eq!(segments.len(), 1);
         segments.remove(0)
+    }
+
+    #[test]
+    fn portrait_canvas_conforms_sources_and_scales_overlay_coordinates() {
+        let segment = one_segment(&[2.5], 30.0);
+        let filter =
+            concat_filter_for_canvas(&[clip(false, 30.0)], &segment, 30.0, "outa", (1080, 1920));
+        assert!(
+            filter.contains("scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:")
+        );
+        let overlays = [RenderOverlay {
+            start: 0.0,
+            end: 1.0,
+            layer: OverlayLayer::Image {
+                png: [
+                    b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".as_slice(),
+                    &200_u32.to_be_bytes(),
+                    &100_u32.to_be_bytes(),
+                ]
+                .concat(),
+                x: 860.0,
+                y: 490.0,
+            },
+        }];
+        let shown = segment_overlays(&overlays, 0.0, 1.0);
+        let graph =
+            overlay_filter_for_canvas(&shown, 1, 30.0, (0.0, 48_000), "joined", (1080, 1920));
+        assert!(graph
+            .filter
+            .contains("scale='max(1,round(iw*0.562500000))':'max(1,round(ih*0.562500000))'"));
+        assert!(graph
+            .filter
+            .contains("overlay=x=540.000000000-overlay_w/2:y=960.000000000-overlay_h/2:"));
+    }
+
+    #[tokio::test]
+    async fn portrait_project_keeps_original_canvas_and_overlay_shape() {
+        use crate::project::{RenderResolution, RenderSettings, VideoCodec};
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("portrait.mp4");
+        run_ffmpeg(
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "color=black:s=180x320:r=30:d=0.2",
+                "-c:v",
+                "libx264",
+            ],
+            &source,
+        )
+        .await;
+        let png = directory.path().join("overlay.png");
+        run_ffmpeg(
+            &["-f", "lavfi", "-i", "color=red:s=400x200", "-frames:v", "1"],
+            &png,
+        )
+        .await;
+        let output = directory.path().join("render.mp4");
+        let project = ProjectRender {
+            clips: vec![RenderClip {
+                path: source,
+                start: 0.0,
+                duration: 0.2,
+                file_duration: 0.2,
+                ..clip(false, 30.0)
+            }],
+            overlays: vec![RenderOverlay {
+                start: 0.0,
+                end: 0.2,
+                layer: OverlayLayer::Image {
+                    png: std::fs::read(png).unwrap(),
+                    x: 760.0,
+                    y: 440.0,
+                },
+            }],
+            sounds: Vec::new(),
+            subtitle_ass: None,
+            fonts_directory: None,
+            danmus: Vec::new(),
+            danmu_options: Danmu2AssOptions::default(),
+            render_settings: RenderSettings {
+                codec: VideoCodec::H264,
+                resolution: RenderResolution::Original,
+                ..Default::default()
+            },
+            output: &output,
+            segment_cache: None,
+        };
+        render_with_encoder(&NoopReporter, &project, SEGMENT_LIMITS, "libx264")
+            .await
+            .unwrap();
+        let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+        assert_eq!((metadata.width, metadata.height), (180, 320));
+        let frame = ffmpeg_command()
+            .args(["-v", "error", "-i"])
+            .arg(&output)
+            .args(["-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"])
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            frame.status.success(),
+            "{}",
+            String::from_utf8_lossy(&frame.stderr)
+        );
+        let mut bounds = (180, 320, 0, 0);
+        for (index, rgb) in frame.stdout.chunks_exact(3).enumerate() {
+            if rgb[0] > 150 && rgb[1] < 50 && rgb[2] < 50 {
+                let (x, y) = (index % 180, index / 180);
+                bounds = (
+                    bounds.0.min(x),
+                    bounds.1.min(y),
+                    bounds.2.max(x),
+                    bounds.3.max(y),
+                );
+            }
+        }
+        let (left, top, right, bottom) = bounds;
+        assert!((36..=40).contains(&(right - left + 1)), "{bounds:?}");
+        assert!((17..=21).contains(&(bottom - top + 1)), "{bounds:?}");
+        assert!((88..=91).contains(&((left + right) / 2)), "{bounds:?}");
+        assert!((158..=161).contains(&((top + bottom) / 2)), "{bounds:?}");
+    }
+
+    #[tokio::test]
+    async fn rotation_metadata_selects_display_dimensions_for_project_canvas() {
+        use crate::project::{RenderResolution, RenderSettings, VideoCodec};
+        let directory = tempfile::tempdir().unwrap();
+        let source =
+            super::super::clip::encoding_tests::rotated_landscape_source(directory.path()).await;
+        let output = directory.path().join("project.mp4");
+        let project = ProjectRender {
+            clips: vec![RenderClip {
+                path: source,
+                start: 0.0,
+                duration: 0.2,
+                file_duration: 0.2,
+                ..clip(false, 30.0)
+            }],
+            overlays: Vec::new(),
+            sounds: Vec::new(),
+            subtitle_ass: None,
+            fonts_directory: None,
+            danmus: Vec::new(),
+            danmu_options: Danmu2AssOptions::default(),
+            render_settings: RenderSettings {
+                codec: VideoCodec::H264,
+                resolution: RenderResolution::Original,
+                ..Default::default()
+            },
+            output: &output,
+            segment_cache: None,
+        };
+        render_with_encoder(&NoopReporter, &project, SEGMENT_LIMITS, "libx264")
+            .await
+            .unwrap();
+        let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+        assert_eq!((metadata.width, metadata.height), (180, 320));
+    }
+
+    #[test]
+    fn canvas_dimensions_change_native_frames_and_segment_cache_keys() {
+        let project = job(vec![clip(false, 30.0)], 0.0, 0.0);
+        let segment = native_segment(1.0, 1.0);
+        let mut render = document_render(&project, ASS, ASS);
+        let landscape_key = render.key(&segment, &[]);
+        render.canvas = (1080, 1920);
+        assert_ne!(landscape_key, render.key(&segment, &[]));
+        let spec = render.native_overlay(&segment).unwrap();
+        assert_eq!((spec.width, spec.height), (1080, 1920));
     }
 
     #[test]
@@ -2391,6 +2647,7 @@ mod tests {
             directory: Path::new("."),
             resource: None,
             fps: 30.0,
+            canvas: (1920, 1080),
             pipeline: hwaccel::RenderPipeline::cpu("libx264"),
             files: HashMap::new(),
             pictures: vec![None; job.overlays.len()],
@@ -2518,6 +2775,9 @@ mod tests {
         assert_ne!(high, bitrate);
         project.render_settings.codec = crate::project::VideoCodec::H264;
         assert_ne!(bitrate, keys(&project, ""));
+        let codec = keys(&project, "");
+        project.render_settings.resolution = crate::project::RenderResolution::Original;
+        assert_ne!(codec, keys(&project, ""));
     }
 
     #[tokio::test]
@@ -2563,6 +2823,7 @@ mod tests {
                 codec: VideoCodec::H264,
                 priority: EncodingPriority::Quality,
                 bitrate_kbps: 10_000,
+                ..Default::default()
             },
             output: &output,
             segment_cache: Some(&cache),
@@ -2844,6 +3105,7 @@ mod tests {
             directory: Path::new("."),
             resource: None,
             fps,
+            canvas: (1920, 1080),
             pipeline: hwaccel::RenderPipeline::cpu("libx264"),
             files: HashMap::new(),
             pictures: vec![Some("picture".to_string()); job.overlays.len()],

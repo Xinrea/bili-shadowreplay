@@ -29,6 +29,7 @@ pub async fn encode_video_subtitle<R: ProgressReporterTrait>(
 }
 
 /// Retain the queued SRT snapshot until the media worker and renderer finish.
+#[cfg(test)]
 pub async fn encode_video_subtitle_with_resources<R: ProgressReporterTrait>(
     reporter: &R,
     file: &Path,
@@ -36,6 +37,20 @@ pub async fn encode_video_subtitle_with_resources<R: ProgressReporterTrait>(
     srt_style: String,
     resources: Vec<ffmpeg_utils::MediaResourceLease>,
 ) -> Result<String, String> {
+    encode_video_subtitle_with_settings(reporter, file, subtitle, srt_style, resources, None).await
+}
+
+pub async fn encode_video_subtitle_with_settings<R: ProgressReporterTrait>(
+    reporter: &R,
+    file: &Path,
+    subtitle: &Path,
+    srt_style: String,
+    resources: Vec<ffmpeg_utils::MediaResourceLease>,
+    settings: Option<&crate::project::RenderSettings>,
+) -> Result<String, String> {
+    if let Some(settings) = settings {
+        settings.validate()?;
+    }
     log::info!("Encode video subtitle task start: {}", file.display());
     log::info!("SRT style: {srt_style}");
     match std::fs::metadata(subtitle) {
@@ -77,6 +92,7 @@ pub async fn encode_video_subtitle_with_resources<R: ProgressReporterTrait>(
         &srt_style,
         &output_path,
         resources,
+        settings,
     )
     .await?;
     output_guard.keep();
@@ -84,11 +100,16 @@ pub async fn encode_video_subtitle_with_resources<R: ProgressReporterTrait>(
     Ok(output_filename)
 }
 
+#[cfg(test)]
 fn native_subtitle_graph(encoder: &str) -> String {
+    native_subtitle_graph_for_canvas(encoder, (1920, 1080))
+}
+
+fn native_subtitle_graph_for_canvas(encoder: &str, (width, height): (u32, u32)) -> String {
     let output_format = hwaccel::output_format_filter(encoder);
     // FFmpeg shifts the source's common container origin, preserving relative
     // A/V delay. Never rebase only video with setpts=PTS-STARTPTS here.
-    format!("[0:v]{scale},format=bgra[base];[base][1:v]overlay=format=rgb:alpha=premultiplied:eof_action=pass:repeatlast=0:shortest=0,{output_format}[video]",scale=hwaccel::H264_SCALE_PAD_FILTER)
+    format!("[0:v]{scale},format=bgra[base];[base][1:v]overlay=format=rgb:alpha=premultiplied:eof_action=pass:repeatlast=0:shortest=0,{output_format}[video]",scale=hwaccel::scale_pad_filter(width, height, false))
 }
 
 #[cfg(test)]
@@ -99,7 +120,8 @@ async fn encode_native_srt<R: ProgressReporterTrait>(
     style: &str,
     output: &Path,
 ) -> Result<(), String> {
-    encode_native_srt_with_resources(reporter, file, subtitle, style, output, Vec::new()).await
+    encode_native_srt_with_resources(reporter, file, subtitle, style, output, Vec::new(), None)
+        .await
 }
 
 async fn encode_native_srt_with_resources<R: ProgressReporterTrait>(
@@ -109,6 +131,7 @@ async fn encode_native_srt_with_resources<R: ProgressReporterTrait>(
     style: &str,
     output: &Path,
     resources: Vec<ffmpeg_utils::MediaResourceLease>,
+    settings: Option<&crate::project::RenderSettings>,
 ) -> Result<(), String> {
     use super::native_overlay::{run_overlay_plan, OverlaySpec};
     use native_overlay::{AssSource, RenderInput, SourceKind};
@@ -129,13 +152,15 @@ async fn encode_native_srt_with_resources<R: ProgressReporterTrait>(
         return Err("SRT exceeds 64 MiB".into());
     }
     let ass = super::subtitle_native::srt_to_ass(&content, style)?;
-    let metadata = ffmpeg_utils::extract_video_metadata(file).await?;
+    let probe = ffmpeg_utils::probe_media(file).await?;
+    let metadata = &probe.metadata;
     let duration = super::danmu::probe_overlay_duration(file, metadata.duration).await?;
     let fps = if metadata.fps.is_finite() && metadata.fps > 0.0 {
         metadata.fps
     } else {
         30.0
     };
+    let (width, height) = hwaccel::output_dimensions_from_probe(&probe, settings);
     let spec = OverlaySpec {
         input: RenderInput {
             documents: vec![AssSource {
@@ -144,19 +169,19 @@ async fn encode_native_srt_with_resources<R: ProgressReporterTrait>(
             }],
             images: vec![],
         },
-        width: 1920,
-        height: 1080,
+        width,
+        height,
         fps,
         start: 0.0,
         duration,
     };
-    let encoder = hwaccel::get_x264_encoder().await;
-    let mut video = hwaccel::native_video_options(encoder, None, None, None)?;
+    let encoder = hwaccel::material_encoder(settings).await;
+    let mut video = hwaccel::native_video_options(encoder, None, None, settings)?;
     video.filter = None;
     let mut plan = super::danmu::overlay_media_plan(
         file.to_path_buf(),
         output.to_path_buf(),
-        native_subtitle_graph(encoder),
+        native_subtitle_graph_for_canvas(encoder, (width, height)),
         "video",
         video,
     );

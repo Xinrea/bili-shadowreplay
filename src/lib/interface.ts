@@ -239,11 +239,15 @@ export interface AudioFile {
   created_at: string;
 }
 
+export type RenderResolution = "original" | "4k" | "2k" | "1080p";
+
 export interface RenderSettings {
   codec: "h264" | "hevc";
   priority: "quality" | "speed";
   /** Target video bitrate in Kbps, independent of encoding priority. */
   bitrate_kbps: number;
+  /** Canvas orientation follows the first main-track source. */
+  resolution: RenderResolution;
 }
 
 export interface ProjectTimeline {
@@ -357,7 +361,7 @@ export interface UploadItem {
   danmu: boolean;
   /** The material, or one of the project's materials, has saved danmaku. */
   danmu_available: boolean;
-  /** A project's shared output settings. */
+  /** Shared project settings, or this material upload's burn-in settings. */
   render_settings: RenderSettings;
   /**
    * The material already shows its danmaku in the picture; for a project, some

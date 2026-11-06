@@ -140,16 +140,17 @@ test("complete recording encoding is optional unless danmaku is embedded", async
 for (const danmu of [false, true]) {
   test(`complete recording snapshots all settings and selection with danmaku=${danmu}`, async () => {
     const f = await fixture();
-    const settings = { codec: "h264", priority: "quality", bitrate_kbps: 16000 };
+    const settings = { codec: "h264", priority: "quality", bitrate_kbps: 16000, resolution: "2k" };
     const ids = ["second", "first"];
     f.handlers.configure(settings, danmu, ids);
     const completion = f.handlers.generateWholeClip();
     settings.codec = "hevc";
     settings.bitrate_kbps = 6000;
+    settings.resolution = "1080p";
     ids.reverse();
     const request = f.requests[0];
     assert.deepEqual(plain(request.args.renderSettings), {
-      codec: "h264", priority: "quality", bitrate_kbps: 16000,
+      codec: "h264", priority: "quality", bitrate_kbps: 16000, resolution: "2k",
     });
     assert.deepEqual(plain(request.args.selectedLiveIds), ["second", "first"]);
     assert.equal(request.args.encodeDanmu, danmu);

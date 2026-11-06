@@ -17,14 +17,45 @@ const TARGET_ENCODERS: [&str; 14] = [
     "hevc_v4l2m2m",
 ];
 
-// Scaling a portrait input can round its width and compensate with a non-square
-// SAR. Concat checks SAR as well as dimensions, so normalize after scale/pad.
+#[cfg(test)]
 pub const H264_SCALE_PAD_FILTER: &str =
     "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1";
 
 /// Normalize GPU inputs in one scaling/conversion pass before composition.
+#[cfg(test)]
 pub const GPU_SCALE_PAD_FILTER: &str =
     "scale=1920:1080:force_original_aspect_ratio=decrease:out_color_matrix=bt709:out_range=tv,format=nv12,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1";
+
+/// Scale without cropping, then letterbox to the selected output canvas.
+/// Scaling can round a dimension and compensate with a non-square SAR.
+/// Concat checks SAR as well as size, so normalize after scale/pad.
+pub fn scale_pad_filter(width: u32, height: u32, gpu: bool) -> String {
+    let conversion = if gpu {
+        ":out_color_matrix=bt709:out_range=tv,format=nv12"
+    } else {
+        ""
+    };
+    format!("scale={width}:{height}:force_original_aspect_ratio=decrease{conversion},pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1")
+}
+
+pub async fn output_dimensions(
+    file: &std::path::Path,
+    settings: Option<&crate::project::RenderSettings>,
+) -> Result<(u32, u32), String> {
+    let probe = ffmpeg_utils::probe_media(file).await?;
+    Ok(output_dimensions_from_probe(&probe, settings))
+}
+
+pub fn output_dimensions_from_probe(
+    probe: &ffmpeg_utils::MediaProbe,
+    settings: Option<&crate::project::RenderSettings>,
+) -> (u32, u32) {
+    let (width, height) = probe.display_dimensions;
+    settings
+        .map(|settings| settings.resolution)
+        .unwrap_or_default()
+        .dimensions(width, height)
+}
 
 const VAAPI_ENCODER: &str = "h264_vaapi";
 const NVENC_ENCODER: &str = "h264_nvenc";
@@ -108,10 +139,12 @@ impl RenderPipeline {
         self.renderer == RenderBackend::Vulkan
     }
     pub fn cache_identity(self) -> &'static str {
+        // Invalidate complete uploads rendered with coded dimensions before
+        // output canvases accounted for the source display rotation.
         if self.uses_gpu() {
-            "vulkan-nv12-compute-v4-srgb"
+            "vulkan-nv12-compute-v5-srgb-rotation"
         } else {
-            "cpu-bgra-overlay-v1"
+            "cpu-bgra-overlay-v2-rotation"
         }
     }
     pub fn video_options(
@@ -654,6 +687,7 @@ mod tests {
             codec: crate::project::VideoCodec::Hevc,
             priority: crate::project::EncodingPriority::Quality,
             bitrate_kbps: 6000,
+            ..Default::default()
         };
         let explicit = super::native_video_options(
             "libx265",

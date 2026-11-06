@@ -799,6 +799,7 @@ seg-3.mp4
                             EncodingPriority::Speed
                         },
                         bitrate_kbps: 4000,
+                        ..Default::default()
                     };
                     let mut tracks = vec![None; count];
                     let entries = if burn {
@@ -884,6 +885,7 @@ seg-3.mp4
             codec: VideoCodec::H264,
             priority: EncodingPriority::Quality,
             bitrate_kbps: 1000,
+            ..Default::default()
         };
         let mut remuxed = Vec::new();
         for playlist in &playlists {
@@ -894,6 +896,11 @@ seg-3.mp4
             remuxed.push(video);
         }
         for order in [&[0, 1][..], &[1, 0][..], &[0, 1, 0][..]] {
+            let (width, height) = if order[0] == 0 {
+                (1080, 1920)
+            } else {
+                (1920, 1080)
+            };
             let output = portrait.path().join(format!("mixed-{order:?}.mp4"));
             let sources = order
                 .iter()
@@ -910,8 +917,8 @@ seg-3.mp4
             .await
             .unwrap());
             let (stream, frames) = video_timeline(&output).await;
-            assert_eq!(stream["width"], 1920);
-            assert_eq!(stream["height"], 1080);
+            assert_eq!(stream["width"], width);
+            assert_eq!(stream["height"], height);
             assert_eq!(stream["sample_aspect_ratio"], "1:1");
             // AAC extends these HLS clips beyond their 12 video frames. FFmpeg
             // 6 duplicates boundary frames while FFmpeg 9 keeps a VFR timeline,
@@ -924,7 +931,7 @@ seg-3.mp4
             for (index, &source) in order.iter().enumerate() {
                 command.arg("-i").arg(&remuxed[source]);
                 filters.push_str(&format!(
-                    "[{index}:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1[v{index}];"
+                    "[{index}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1[v{index}];"
                 ));
                 concat_inputs.push_str(&format!("[v{index}][{index}:a]"));
             }

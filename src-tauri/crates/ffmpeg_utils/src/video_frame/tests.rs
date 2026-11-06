@@ -32,6 +32,30 @@ fn clean(directory: &Path) {
         .starts_with(".bsr-frame-")));
 }
 
+#[test]
+fn rotated_dimensions_match_transpose_filters_including_flips() {
+    assert_eq!(rotated_dimensions((1920, 1080), None), (1920, 1080));
+    for angle in [0.0, 90.0, -90.0, 180.0, 270.0, 45.0] {
+        for (horizontal, vertical) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+            let mut matrix = [0_i32; 9];
+            unsafe {
+                ffi::av_display_rotation_set(matrix.as_mut_ptr(), angle);
+                ffi::av_display_matrix_flip(matrix.as_mut_ptr(), horizontal, vertical);
+            }
+            let transposes = angle == 90.0 || angle == -90.0 || angle == 270.0;
+            assert_eq!(
+                rotated_dimensions((1920, 1080), Some(matrix)),
+                if transposes {
+                    (1080, 1920)
+                } else {
+                    (1920, 1080)
+                },
+                "angle={angle}, horizontal={horizontal}, vertical={vertical}"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn native_jpeg_quality_and_seek_work_without_a_cli() {
     let directory = tempfile::tempdir().unwrap();

@@ -593,13 +593,17 @@ mod auto_generate_request_tests {
             assert!(legacy.enabled && legacy.encode_danmu);
             assert!(legacy.render_settings.is_none());
             wire["renderSettings"] = serde_json::json!({
-                "codec": "h264", "priority": "quality", "bitrate_kbps": 16000
+                "codec": "h264", "priority": "quality", "bitrate_kbps": 16000, "resolution": "original"
             });
             let current: UpdateAutoGenerateRequest = serde_json::from_value(wire).unwrap();
             let settings = current.render_settings.as_ref().unwrap();
             assert_eq!(settings.codec, crate::project::VideoCodec::H264);
             assert_eq!(settings.priority, crate::project::EncodingPriority::Quality);
             assert_eq!(settings.bitrate_kbps, 16_000);
+            assert_eq!(
+                settings.resolution,
+                crate::project::RenderResolution::Original
+            );
             let serialized = serde_json::to_value(current).unwrap();
             assert_eq!(serialized["enabled"], true);
             assert!(serialized.get("enable").is_none());
@@ -1735,6 +1739,7 @@ struct EncodeVideoSubtitleRequest {
     event_id: String,
     id: i64,
     srt_style: String,
+    render_settings: Option<crate::project::RenderSettings>,
 }
 
 async fn handler_encode_video_subtitle(
@@ -1746,6 +1751,7 @@ async fn handler_encode_video_subtitle(
         encode_video_subtitle_param.event_id.clone(),
         encode_video_subtitle_param.id,
         encode_video_subtitle_param.srt_style,
+        encode_video_subtitle_param.render_settings,
     )
     .await?;
     Ok(Json(ApiResponse::success(
@@ -1759,6 +1765,8 @@ struct GeneratedSubtitlePreviewRequest {
     ass_content: String,
     time: f64,
     font_name: String,
+    width: Option<u32>,
+    height: Option<u32>,
 }
 
 async fn handler_render_generated_subtitle_preview(
@@ -1768,6 +1776,8 @@ async fn handler_render_generated_subtitle_preview(
         param.ass_content,
         param.time,
         param.font_name,
+        param.width,
+        param.height,
     )
     .await?;
     Ok(Json(ApiResponse::success(image)))

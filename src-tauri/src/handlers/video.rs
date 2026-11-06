@@ -836,6 +836,7 @@ async fn upload_procedure_inner(
             cover43: String::new(),
             profile: serde_json::to_string(&posted.profile).unwrap_or_default(),
             danmu: false,
+            render_settings_json: "{}".to_string(),
             status: "posted".to_string(),
             message: String::new(),
             bvid: posted.bvid.clone(),
@@ -1292,7 +1293,11 @@ pub async fn encode_video_subtitle(
     event_id: String,
     id: i64,
     srt_style: String,
+    render_settings: Option<crate::project::RenderSettings>,
 ) -> Result<TaskRow, String> {
+    if let Some(settings) = &render_settings {
+        settings.validate()?;
+    }
     let video = state.db.get_video(id).await?;
     let filepath = Path::new(&state.config.read().await.output).join(&video.file);
     // Freeze SRT at submission time so later edits cannot change a queued job.
@@ -1307,6 +1312,7 @@ pub async fn encode_video_subtitle(
             "video_id": id,
             "srt_style": srt_style,
             "subtitle_format": "srt",
+            "render_settings": render_settings,
         })
         .to_string(),
         created_at: Utc::now().to_rfc3339(),
@@ -1333,6 +1339,7 @@ pub async fn encode_video_subtitle(
                         video,
                         filepath,
                         subtitle,
+                        render_settings,
                     },
                 )
                 .await;
@@ -1447,6 +1454,7 @@ struct SubtitleEncodingJob {
     video: VideoRow,
     filepath: PathBuf,
     subtitle: SubtitleEncodingInput,
+    render_settings: Option<crate::project::RenderSettings>,
 }
 
 fn prepare_subtitle_encoding_input(
@@ -1483,6 +1491,7 @@ async fn encode_video_subtitle_inner(
         video,
         filepath,
         subtitle,
+        render_settings,
     } = job;
     let SubtitleEncodingInput {
         path,
@@ -1490,12 +1499,13 @@ async fn encode_video_subtitle_inner(
         _temporary_subtitle,
     } = subtitle;
     let resources = vec![ffmpeg_utils::MediaResourceLease::new(_temporary_subtitle)];
-    let output_filename = ffmpeg::encode_video_subtitle_with_resources(
+    let output_filename = ffmpeg::encode_video_subtitle_with_settings(
         reporter,
         &filepath,
         &path,
         force_style,
         resources,
+        render_settings.as_ref(),
     )
     .await?;
     let output_filepath = filepath.with_file_name(&output_filename);
@@ -2249,7 +2259,7 @@ mod queued_subtitle_tests {
         for id in ["first", "second"] {
             let task = tokio::time::timeout(
                 std::time::Duration::from_secs(1),
-                encode_video_subtitle(state.clone(), id.into(), 1, String::new()),
+                encode_video_subtitle(state.clone(), id.into(), 1, String::new(), None),
             )
             .await
             .expect("submission must return without running the job")
@@ -2270,6 +2280,45 @@ mod queued_subtitle_tests {
         assert_eq!(state.task_manager.queue_size().await, 1);
         assert_eq!(state.db.get_task("first").await.unwrap().status, "pending");
         cancel(state, "first".into()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn subtitle_submission_snapshots_resolution_and_rejects_invalid_encoding() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = fixture(dir.path(), 2, false).await;
+        let settings = crate::project::RenderSettings {
+            resolution: crate::project::RenderResolution::Original,
+            ..crate::project::RenderSettings::default()
+        };
+        let task = encode_video_subtitle(
+            state.clone(),
+            "portrait".into(),
+            1,
+            String::new(),
+            Some(settings.clone()),
+        )
+        .await
+        .unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&task.metadata).unwrap();
+        assert_eq!(
+            metadata["render_settings"],
+            serde_json::to_value(&settings).unwrap()
+        );
+        let invalid = crate::project::RenderSettings {
+            bitrate_kbps: 0,
+            ..settings
+        };
+        assert!(encode_video_subtitle(
+            state.clone(),
+            "invalid".into(),
+            1,
+            String::new(),
+            Some(invalid)
+        )
+        .await
+        .is_err());
+        assert!(state.db.get_task("invalid").await.is_err());
+        cancel(state, "portrait".into()).await.unwrap();
     }
 
     #[tokio::test]
@@ -2302,11 +2351,11 @@ mod queued_subtitle_tests {
     async fn queue_full_marks_submission_failed_instead_of_leaving_it_pending() {
         let dir = tempfile::tempdir().unwrap();
         let state = fixture(dir.path(), 1, false).await;
-        encode_video_subtitle(state.clone(), "first".into(), 1, String::new())
+        encode_video_subtitle(state.clone(), "first".into(), 1, String::new(), None)
             .await
             .unwrap();
         assert_eq!(
-            encode_video_subtitle(state.clone(), "overflow".into(), 1, String::new())
+            encode_video_subtitle(state.clone(), "overflow".into(), 1, String::new(), None)
                 .await
                 .unwrap_err(),
             "Queue is full"
@@ -2530,6 +2579,7 @@ mod queued_subtitle_tests {
             codec: VideoCodec::H264,
             priority: EncodingPriority::Quality,
             bitrate_kbps: 16_000,
+            resolution: crate::project::RenderResolution::Original,
         };
         update_auto_generate(state.clone(), true, true, Some(selected.clone()))
             .await
@@ -2636,7 +2686,7 @@ mod queued_subtitle_tests {
     async fn whole_clip_rejected_by_a_full_queue_is_marked_failed() {
         let dir = tempfile::tempdir().unwrap();
         let state = fixture(dir.path(), 1, false).await;
-        encode_video_subtitle(state.clone(), "first".into(), 1, String::new())
+        encode_video_subtitle(state.clone(), "first".into(), 1, String::new(), None)
             .await
             .unwrap();
 

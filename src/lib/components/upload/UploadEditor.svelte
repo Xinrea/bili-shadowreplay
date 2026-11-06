@@ -199,7 +199,7 @@
       });
       await onChanged();
     } catch (error) {
-      alert("修改画质码率失败：" + error);
+      alert("修改压制设置失败：" + error);
     } finally {
       savingRenderSettings = false;
     }
@@ -400,16 +400,16 @@
               {/if}
             </div>
           </section>
-          {#if upload.source === "project" && upload.source_state !== "missing"}
+          {#if (upload.source === "project" || (upload.source === "material" && upload.danmu && upload.danmu_available)) && upload.source_state !== "missing"}
             <section class="space-y-2">
-              <span class="ui-label">画质与码率</span>
+              <span class="ui-label">画质、分辨率与码率</span>
               <div class="ui-card space-y-2 bg-control/50 p-3">
                 <RenderSettingsFields
                   bind:value={renderSettings}
                   disabled={!editable || posting || savingRenderSettings}
                   onChange={saveRenderSettings}
                 />
-                <p class="ui-hint">与此切片的导出设置同步。</p>
+                <p class="ui-hint">{upload.source === "project" ? "与此切片的导出设置同步。" : "投稿压制弹幕时使用这些设置。"}</p>
               </div>
             </section>
           {/if}

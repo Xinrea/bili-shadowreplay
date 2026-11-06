@@ -620,6 +620,12 @@ fn get_migrations() -> Vec<Migration> {
             sql: "ALTER TABLE videos ADD COLUMN danmu_embedded INTEGER NOT NULL DEFAULT 0;",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 25,
+            description: "add_material_upload_render_settings",
+            sql: "ALTER TABLE uploads ADD COLUMN render_settings_json TEXT NOT NULL DEFAULT '{}';",
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

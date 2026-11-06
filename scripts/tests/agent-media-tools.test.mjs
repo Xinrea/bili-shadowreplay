@@ -81,3 +81,14 @@ test("argument keys stay data and canonical names win throughout nested paramete
     assert.equal(Object.getPrototypeOf(params.ranges[0]), Object.getPrototypeOf(f.calls[0].args));
   }
 });
+
+
+test("subtitle and merge confirmations pass selected resolution to the backend", async () => {
+  const f = await fixture();
+  const settings = { codec: "hevc", priority: "speed", bitrate_kbps: 10000, resolution: "original" };
+  await f.invoke("encode_video_subtitle", { id: 42, srt_style: "", render_settings: settings });
+  await f.invoke("merge_videos", {
+    video_ids: [42, 43], output_title: "Portrait", output_note: "", render_settings: settings,
+  });
+  for (const call of f.calls) assert.deepEqual(JSON.parse(JSON.stringify(call.args.renderSettings)), settings);
+});

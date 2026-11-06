@@ -7,7 +7,7 @@ import ts from "typescript";
 const source = await readFile(new URL("../../src/lib/components/project/ProjectEditor.svelte", import.meta.url), "utf8");
 const script = source.match(/<script lang="ts">([\s\S]*?)<\/script>/)[1];
 const parsed = ts.createSourceFile("ProjectEditor.ts", script, ts.ScriptTarget.Latest, true);
-const names = ["openExportSettings", "confirmExport", "exportProject"];
+const names = ["openExportSettings", "confirmExport", "exportProject", "changeOutputResolution"];
 const handlers = parsed.statements.filter((node) => ts.isFunctionDeclaration(node) && names.includes(node.name?.text));
 assert.equal(handlers.length, names.length);
 // Exercise the actual async export handlers without mounting the unrelated
@@ -16,13 +16,15 @@ const code = ts.transpileModule(handlers.map((node) => node.getText(parsed)).joi
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText;
 const plain = (value) => JSON.parse(JSON.stringify(value));
-const defaults = () => ({ codec: "hevc", priority: "speed", bitrate_kbps: 10000 });
+const defaults = () => ({ codec: "hevc", priority: "speed", bitrate_kbps: 10000, resolution: "1080p" });
 
 function fixture({ desktop = true, pick = async () => "/export.mp4", danmu = false } = {}) {
   const saved = { clips: [{ id: "clip", material_id: 1, start: 0, end: 10 }], danmu, render_settings: defaults() };
   const patches = [], exports = [], calls = [], alerts = [];
   const state = {
     preparingExport: false,
+    pendingResolution: null,
+    resolutionSaving: null,
     exporting: null,
     project: { id: 1 },
     projectId: 1,
@@ -48,8 +50,8 @@ function fixture({ desktop = true, pick = async () => "/export.mp4", danmu = fal
       calls.push(command);
       if (command === "update_project_output_settings") {
         patches.push(plain(args));
-        if (args.danmu !== null) saved.danmu = args.danmu;
-        if (args.renderSettings !== null) saved.render_settings = plain(args.renderSettings);
+        if (args.danmu != null) saved.danmu = args.danmu;
+        if (args.renderSettings != null) saved.render_settings = plain(args.renderSettings);
       } else if (command === "export_project") {
         exports.push(plain(args));
         return { path: args.target };
@@ -116,7 +118,7 @@ test("editing encoding preserves remote danmaku and writes the complete encoding
   f.saved.render_settings = { ...defaults(), bitrate_kbps: 8000 };
   await f.state.openExportSettings();
   f.saved.danmu = true;
-  f.state.exportSettings = { codec: "h264", priority: "quality", bitrate_kbps: 10000 };
+  f.state.exportSettings = { ...defaults(), codec: "h264", priority: "quality", bitrate_kbps: 10000 };
   await f.state.confirmExport();
   assert.deepEqual(f.patches, [{ id: 1, danmu: null, renderSettings: f.state.exportSettings }]);
   assert.equal(f.exports[0].timeline.danmu, true);
@@ -124,7 +126,7 @@ test("editing encoding preserves remote danmaku and writes the complete encoding
   assert.deepEqual(f.alerts, []);
 });
 
-for (const [field, value] of [["codec", "h264"], ["priority", "quality"], ["bitrate_kbps", 16000]]) {
+for (const [field, value] of [["codec", "h264"], ["priority", "quality"], ["bitrate_kbps", 16000], ["resolution", "original"], ["resolution", "4k"], ["resolution", "2k"]]) {
   test(`changing only ${field} persists all encoding settings`, async () => {
     const f = fixture();
     await f.state.openExportSettings();
@@ -178,4 +180,27 @@ test("web export saves explicit false and new settings without opening a file pi
   assert.equal(f.exports[0].target, null);
   assert.equal(f.exports[0].timeline.danmu, false);
   assert.deepEqual(f.alerts, []);
+});
+
+
+test("editor resolution previews immediately and persists through the output settings endpoint", async () => {
+  const f = fixture({ danmu: true });
+  const changing = f.state.changeOutputResolution("original");
+  assert.equal(f.state.pendingResolution, "original");
+  await changing;
+  assert.deepEqual(f.patches, [{ id: 1, renderSettings: { ...defaults(), resolution: "original" } }]);
+  assert.equal(f.state.timeline.render_settings.resolution, "original");
+  assert.equal(f.saved.danmu, true);
+  assert.equal(f.state.pendingResolution, null);
+  assert.ok(f.calls.indexOf("saveTimeline") < f.calls.indexOf("update_project_output_settings"));
+  assert.deepEqual(f.alerts, []);
+});
+
+test("failed editor resolution save releases its optimistic preview", async () => {
+  const f = fixture();
+  f.state.invoke = async () => { throw new Error("save failed"); };
+  await f.state.changeOutputResolution("4k");
+  assert.equal(f.state.pendingResolution, null);
+  assert.equal(f.state.timeline.render_settings.resolution, "1080p");
+  assert.equal(f.alerts.length, 1);
 });

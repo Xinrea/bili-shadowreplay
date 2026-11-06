@@ -27,7 +27,7 @@ pub use metadata::{
 };
 #[cfg(test)]
 pub use subtitle::encode_video_subtitle;
-pub use subtitle::{encode_video_subtitle_with_resources, generate_video_subtitle};
+pub use subtitle::{encode_video_subtitle_with_settings, generate_video_subtitle};
 
 #[cfg(test)]
 use crate::constants;

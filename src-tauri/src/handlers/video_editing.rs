@@ -255,7 +255,11 @@ pub async fn merge_videos(
     output_title: String,
     output_note: String,
     transition: Option<String>,
+    render_settings: Option<crate::project::RenderSettings>,
 ) -> Result<i64, String> {
+    if let Some(settings) = &render_settings {
+        settings.validate()?;
+    }
     if video_ids.is_empty() {
         return Err("No videos to merge".to_string());
     }
@@ -287,7 +291,7 @@ pub async fn merge_videos(
     let transition_type = transition.as_deref().unwrap_or("none");
 
     // If no transition or only one video, use simple concat
-    if transition_type == "none" || videos.len() == 1 {
+    if render_settings.is_none() && (transition_type == "none" || videos.len() == 1) {
         crate::ffmpeg::general::concat_copy_videos(
             None::<&crate::progress::progress_reporter::ProgressReporter>,
             &video_paths,
@@ -298,6 +302,7 @@ pub async fn merge_videos(
     } else {
         // Only pass known xfade transitions into the filter graph
         let xfade_transition = match transition_type {
+            "none" => "none",
             "fade" => "fade",
             "dissolve" => "dissolve",
             "wipeleft" => "wipeleft",
@@ -309,12 +314,13 @@ pub async fn merge_videos(
 
         // Shared with clip export: cross-fades the audio along with the video
         // and conforms inputs of different size or frame rate for xfade.
-        crate::ffmpeg::general::concat_videos_with_transition(
+        crate::ffmpeg::general::concat_videos_with_settings(
             None::<&crate::progress::progress_reporter::ProgressReporter>,
             &video_paths,
             &output_path,
             Some(xfade_transition),
             None,
+            render_settings.as_ref(),
         )
         .await
         .map_err(|e| format!("FFmpeg merge with transition failed: {}", e))?;

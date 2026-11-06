@@ -34,6 +34,7 @@ function selected(html, label) {
 
 test("the shared encoding form defaults to HEVC, speed and 10 Mbps", () => {
   const { body } = render(component.namespace.default);
+  assert.equal(selected(body, "分辨率"), "1080p");
   assert.equal(selected(body, "编码格式"), "hevc");
   assert.equal(selected(body, "编码偏好"), "speed");
   assert.equal(selected(body, "视频码率"), "10000");
@@ -43,23 +44,25 @@ test("the shared encoding form defaults to HEVC, speed and 10 Mbps", () => {
   assert.match(body, /速度优先/);
 });
 
-test("all three independent settings and non-preset saved bitrates are displayed", () => {
+test("all four independent settings and non-preset saved bitrates are displayed", () => {
   const { body } = render(component.namespace.default, {
-    props: { value: { codec: "h264", priority: "quality", bitrate_kbps: 15000 }, disabled: true },
+    props: { value: { codec: "h264", priority: "quality", bitrate_kbps: 15000, resolution: "original" }, disabled: true },
   });
   assert.equal(selected(body, "编码格式"), "h264");
   assert.equal(selected(body, "编码偏好"), "quality");
   assert.equal(selected(body, "视频码率"), "15000");
+  assert.equal(selected(body, "分辨率"), "original");
   assert.match(body, /15 Mbps/);
   assert.match(body, /<fieldset[^>]* disabled/);
 });
 
 test("the column layout keeps the same defaults without stacked field spacing", () => {
   const { body } = render(component.namespace.default, { props: { layout: "columns" } });
+  assert.equal(selected(body, "分辨率"), "1080p");
   assert.equal(selected(body, "编码格式"), "hevc");
   assert.equal(selected(body, "编码偏好"), "speed");
   assert.equal(selected(body, "视频码率"), "10000");
-  assert.match(body, /<fieldset[^>]*sm:grid-cols-3/);
+  assert.match(body, /<fieldset[^>]*sm:grid-cols-2/);
   assert.doesNotMatch(body, /<fieldset[^>]*space-y-3/);
 });
 
@@ -68,13 +71,14 @@ test("settings rows retain selection and let the host provide a single explanati
     props: {
       layout: "rows",
       showHint: false,
-      value: { codec: "h264", priority: "quality", bitrate_kbps: 16000 },
+      value: { codec: "h264", priority: "quality", bitrate_kbps: 16000, resolution: "4k" },
     },
   });
   assert.equal(selected(body, "编码格式"), "h264");
   assert.equal(selected(body, "编码偏好"), "quality");
   assert.equal(selected(body, "视频码率"), "16000");
-  assert.equal((body.match(/<label class="grid /g) ?? []).length, 3);
+  assert.equal(selected(body, "分辨率"), "4k");
+  assert.equal((body.match(/<label class="grid /g) ?? []).length, 4);
   assert.doesNotMatch(body, /实际效果取决于编码器/);
   assert.match(render(component.namespace.default).body, /实际效果取决于编码器/);
 });

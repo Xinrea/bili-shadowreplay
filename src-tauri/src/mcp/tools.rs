@@ -473,6 +473,11 @@ fn validate_arguments(name: &str, args: &Value) -> Result<(), String> {
         "encode_video_subtitle" => {
             let style: String = argument(args, "srt_style")?;
             validate_subtitle_style(&style)?;
+            if let Some(settings) = args.get("render_settings") {
+                serde_json::from_value::<crate::project::RenderSettings>(settings.clone())
+                    .map_err(|e| e.to_string())?
+                    .validate()?;
+            }
         }
         "get_danmu_record" => {
             let start: Option<f64> = args
@@ -728,6 +733,9 @@ pub(super) async fn call(state: &State, name: &str, args: Value) -> Result<Value
                 event_id.clone(),
                 argument(&args, "id")?,
                 argument(&args, "srt_style")?,
+                args.get("render_settings")
+                    .map(|_| argument(&args, "render_settings"))
+                    .transpose()?,
             )
             .await?;
             Ok(json!({ "task": task, "task_id": event_id, "event_id": event_id }))
@@ -900,6 +908,9 @@ pub(super) async fn call(state: &State, name: &str, args: Value) -> Result<Value
                 argument(&args, "output_title")?,
                 argument(&args, "output_note")?,
                 transition,
+                args.get("render_settings")
+                    .map(|_| argument(&args, "render_settings"))
+                    .transpose()?,
             )
             .await?;
             Ok(json!({ "video_id": video_id }))

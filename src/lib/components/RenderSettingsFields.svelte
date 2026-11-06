@@ -22,11 +22,20 @@
 
 <fieldset
   class={layout === "columns"
-    ? "grid gap-x-4 gap-y-3 sm:grid-cols-3 disabled:opacity-70"
+    ? "grid gap-x-4 gap-y-3 sm:grid-cols-2 disabled:opacity-70"
     : "space-y-3 disabled:opacity-70"}
   {disabled}
   onchange={() => onChange?.()}
 >
+  <label class={labelClass}>
+    <span class={captionClass}>分辨率</span>
+    <select class="ui-input w-full" aria-label="分辨率" bind:value={value.resolution}>
+      <option value="original">使用原分辨率</option>
+      <option value="4k">4K（3840 × 2160）</option>
+      <option value="2k">2K（2560 × 1440）</option>
+      <option value="1080p">1080p（1920 × 1080）</option>
+    </select>
+  </label>
   <label class={labelClass}>
     <span class={captionClass}>编码格式</span>
     <select class="ui-input w-full" aria-label="编码格式" bind:value={value.codec}>
@@ -53,6 +62,6 @@
     </select>
   </label>
   {#if showHint}
-    <p class="ui-hint sm:col-span-3">画质优先通常耗时更长，实际效果取决于编码器。码率为目标值，越高文件通常越大；H.264 的播放兼容性更广。</p>
+    <p class="ui-hint sm:col-span-2">分辨率跟随首个素材的横竖屏方向；使用原分辨率时按首个素材尺寸输出。画质优先通常耗时更长，实际效果取决于编码器。码率为目标值，越高文件通常越大；H.264 的播放兼容性更广。</p>
   {/if}
 </fieldset>

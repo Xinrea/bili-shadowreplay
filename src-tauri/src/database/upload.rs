@@ -30,6 +30,9 @@ pub struct UploadRow {
     /// Burn a material's danmaku into the posted video. A project keeps this
     /// setting in its own timeline.
     pub danmu: bool,
+    /// Material compression policy, independent of the upload form.
+    #[serde(skip)]
+    pub render_settings_json: String,
     /// `draft`, `exporting`, `posting`, `posted` or `failed`.
     pub status: String,
     /// Why the last attempt failed.
@@ -53,7 +56,7 @@ const ACTIVE: &str = "status IN ('exporting', 'posting')";
 
 pub(super) fn insert_upload(upload: &UploadRow) -> Query<'_, Sqlite, SqliteArguments<'_>> {
     sqlx::query(
-        "INSERT INTO uploads (source, source_id, file, room_id, uid, cover, cover43, profile, danmu, status, message, bvid, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+        "INSERT INTO uploads (source, source_id, file, room_id, uid, cover, cover43, profile, danmu, status, message, bvid, created_at, updated_at, render_settings_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
     )
     .bind(&upload.source)
     .bind(upload.source_id)
@@ -69,6 +72,7 @@ pub(super) fn insert_upload(upload: &UploadRow) -> Query<'_, Sqlite, SqliteArgum
     .bind(&upload.bvid)
     .bind(&upload.created_at)
     .bind(&upload.updated_at)
+    .bind(&upload.render_settings_json)
 }
 
 impl Database {
@@ -135,6 +139,24 @@ impl Database {
             .bind(id)
             .bind(base_uid)
             .bind(base_profile),
+        )
+        .await
+    }
+
+    /// Store the material render policy only while the draft remains editable.
+    pub async fn set_upload_render_settings(
+        &self,
+        id: i64,
+        settings: &str,
+        updated_at: &str,
+    ) -> Result<bool, DatabaseError> {
+        self.apply_upload_update(
+            sqlx::query(&format!(
+                "UPDATE uploads SET render_settings_json = $1, updated_at = $2 WHERE id = $3 AND source = 'material' AND {EDITABLE}"
+            ))
+            .bind(settings)
+            .bind(updated_at)
+            .bind(id),
         )
         .await
     }
@@ -322,6 +344,7 @@ mod tests {
             cover43: String::new(),
             profile: "{}".into(),
             danmu: false,
+            render_settings_json: "{}".to_string(),
             status: status.into(),
             message: String::new(),
             bvid: String::new(),
@@ -456,6 +479,34 @@ mod tests {
             ("posted", "BV1xx")
         );
         assert!(db.delete_upload(id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn material_encoding_is_persisted_and_frozen_when_posting_starts() {
+        let (db, after) = database_before_uploads().await;
+        for sql in after {
+            sqlx::raw_sql(sql).execute(&db.pool).await.unwrap();
+        }
+        let mut upload = draft("draft");
+        upload.source = "material".into();
+        let id = db.add_upload(&upload).await.unwrap().id;
+        let settings = crate::project::RenderSettings {
+            resolution: crate::project::RenderResolution::Original,
+            ..crate::project::RenderSettings::default()
+        };
+        let saved = serde_json::to_string(&settings).unwrap();
+        assert!(db
+            .set_upload_render_settings(id, &saved, "t1")
+            .await
+            .unwrap());
+        assert!(db
+            .update_upload_form(id, ("2", "{}"), ("1", "{}"), "t2")
+            .await
+            .unwrap());
+        assert_eq!(db.get_upload(id).await.unwrap().render_settings_json, saved);
+        assert!(db.claim_upload(id, "t3").await.unwrap());
+        assert!(!db.set_upload_render_settings(id, "{}", "t4").await.unwrap());
+        assert_eq!(db.get_upload(id).await.unwrap().render_settings_json, saved);
     }
 
     #[tokio::test]

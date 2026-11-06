@@ -100,16 +100,29 @@ mod tests {
 /// `silence[i]` is the duration of input `i` when it has no audio stream; that
 /// input contributes generated silence so later audio stays aligned. Inputs
 /// without an entry (or with `None`) use their own audio.
+#[cfg(test)]
 fn build_hardcut_concat_filter_complex(
     n: usize,
     normalize: bool,
     silence: &[Option<f64>],
 ) -> String {
+    build_hardcut_concat_filter_for_canvas(n, normalize, silence, (1920, 1080))
+}
+
+fn build_hardcut_concat_filter_for_canvas(
+    n: usize,
+    normalize: bool,
+    silence: &[Option<f64>],
+    (width, height): (u32, u32),
+) -> String {
     let mut parts = Vec::with_capacity(n * 2 + 1);
     let mut concat_inputs = String::new();
     for i in 0..n {
         if normalize {
-            parts.push(format!("[{i}:v]{}[v{i}]", hwaccel::H264_SCALE_PAD_FILTER));
+            parts.push(format!(
+                "[{i}:v]{}[v{i}]",
+                hwaccel::scale_pad_filter(width, height, false)
+            ));
             concat_inputs.push_str(&format!("[v{i}]"));
         } else {
             concat_inputs.push_str(&format!("[{i}:v]"));
@@ -135,11 +148,21 @@ fn build_hardcut_concat_filter_complex(
 /// frame rate only get a common time base, so their frames are left alone;
 /// otherwise they are resampled to the first clip's rate. Clips of different
 /// sizes are put on the canvas the hard-cut path uses.
-fn transition_conform_filter(inputs: &[ffmpeg_utils::VideoMetadata]) -> String {
+#[cfg(test)]
+fn transition_conform_filter(inputs: &[ffmpeg_utils::MediaProbe]) -> String {
+    transition_conform_filter_with_settings(inputs, None)
+}
+
+fn transition_conform_filter_with_settings(
+    inputs: &[ffmpeg_utils::MediaProbe],
+    settings: Option<&crate::project::RenderSettings>,
+) -> String {
     let same_size = inputs
         .windows(2)
-        .all(|pair| pair[0].width == pair[1].width && pair[0].height == pair[1].height);
-    let same_frame_rate = inputs.windows(2).all(|pair| pair[0].fps == pair[1].fps);
+        .all(|pair| pair[0].display_dimensions == pair[1].display_dimensions);
+    let same_frame_rate = inputs
+        .windows(2)
+        .all(|pair| pair[0].metadata.fps == pair[1].metadata.fps);
 
     let timing = if same_frame_rate {
         "settb=AVTB".to_string()
@@ -148,15 +171,25 @@ fn transition_conform_filter(inputs: &[ffmpeg_utils::VideoMetadata]) -> String {
         // the real rate, and resampling to it would duplicate most frames.
         let frame_rate = inputs
             .first()
-            .map(|input| input.fps)
+            .map(|input| input.metadata.fps)
             .filter(|fps| (1.0..=120.0).contains(fps))
             .unwrap_or(30.0);
         format!("fps={frame_rate}")
     };
-    if same_size {
+    let dimensions = inputs
+        .first()
+        .map(|input| hwaccel::output_dimensions_from_probe(input, settings))
+        .unwrap_or((1920, 1080));
+    let matches_target = inputs
+        .iter()
+        .all(|input| input.display_dimensions == dimensions);
+    if same_size && (settings.is_none() || matches_target) {
         timing
     } else {
-        format!("{},{timing}", hwaccel::H264_SCALE_PAD_FILTER)
+        format!(
+            "{},{timing}",
+            hwaccel::scale_pad_filter(dimensions.0, dimensions.1, false)
+        )
     }
 }
 
@@ -276,7 +309,9 @@ async fn concat_mismatched_videos(
         let metadata = ffmpeg_utils::extract_video_metadata(video).await?;
         silence.push(metadata.audio_codec.is_empty().then_some(metadata.duration));
     }
-    let filter_complex = build_hardcut_concat_filter_complex(videos.len(), true, &silence);
+    let dimensions = hwaccel::output_dimensions(&videos[0], settings).await?;
+    let filter_complex =
+        build_hardcut_concat_filter_for_canvas(videos.len(), true, &silence, dimensions);
     encode_filter_concat(
         reporter,
         videos,
@@ -306,12 +341,9 @@ async fn concat_videos_with_demuxer(
 
     let (video, audio) = if should_encode {
         let encoder = hwaccel::material_encoder(settings).await;
-        let mut video = hwaccel::native_video_options(
-            encoder,
-            Some(hwaccel::H264_SCALE_PAD_FILTER),
-            None,
-            settings,
-        )?;
+        let (width, height) = hwaccel::output_dimensions(&videos[0], settings).await?;
+        let scale = hwaccel::scale_pad_filter(width, height, false);
+        let mut video = hwaccel::native_video_options(encoder, Some(&scale), None, settings)?;
         video.threads = Some(0);
         (
             ffmpeg_utils::StreamMode::Video(video),
@@ -527,18 +559,37 @@ pub async fn concat_videos_with_settings(
         return concat_videos_with_demuxer(reporter, videos, output_path, None).await;
     }
 
+    let mut inputs = Vec::with_capacity(videos.len());
+    for video in videos {
+        inputs.push(ffmpeg_utils::probe_media(video).await?);
+    }
+
     // No visual transition: still re-encode via concat filter so each clip's
     // MP4 edit list (AAC pre-roll from `-c copy` trim) is applied per input.
     // Concat demuxer + `-c copy` would dump those packets at every join.
     if transition.is_none() || transition == Some("none") {
         let video_refs: Vec<&Path> = videos.iter().map(|p| p.as_path()).collect();
-        let normalize = !super::check_videos(&video_refs).await;
-        let mut silence = Vec::with_capacity(videos.len());
-        for video in videos {
-            let metadata = ffmpeg_utils::extract_video_metadata(video).await?;
-            silence.push(metadata.audio_codec.is_empty().then_some(metadata.duration));
-        }
-        let filter_complex = build_hardcut_concat_filter_complex(videos.len(), normalize, &silence);
+        // Equal coded dimensions do not imply equal decoded dimensions when
+        // the inputs carry different rotation matrices.
+        let same_display_dimensions = inputs
+            .windows(2)
+            .all(|pair| pair[0].display_dimensions == pair[1].display_dimensions);
+        let normalize = settings.is_some()
+            || !same_display_dimensions
+            || !super::check_videos(&video_refs).await;
+        let silence: Vec<Option<f64>> = inputs
+            .iter()
+            .map(|input| {
+                input
+                    .metadata
+                    .audio_codec
+                    .is_empty()
+                    .then_some(input.metadata.duration)
+            })
+            .collect();
+        let dimensions = hwaccel::output_dimensions_from_probe(&inputs[0], settings);
+        let filter_complex =
+            build_hardcut_concat_filter_for_canvas(videos.len(), normalize, &silence, dimensions);
         return encode_filter_concat(
             reporter,
             videos,
@@ -554,17 +605,13 @@ pub async fn concat_videos_with_settings(
     let transition_duration = super::TRANSITION_DURATION_SECS;
     let transition_type = transition.unwrap_or("fade");
 
-    let mut inputs = Vec::with_capacity(videos.len());
-    for video in videos {
-        inputs.push(ffmpeg_utils::extract_video_metadata(video).await?);
-    }
-    let durations: Vec<f64> = inputs.iter().map(|input| input.duration).collect();
+    let durations: Vec<f64> = inputs.iter().map(|input| input.metadata.duration).collect();
 
     let filter_complex = build_transition_filter_complex(
         &durations,
         transition_type,
         transition_duration,
-        &transition_conform_filter(&inputs),
+        &transition_conform_filter_with_settings(&inputs, settings),
     );
     // Each transition overlaps the neighbouring clips by its duration.
     let output_duration =
@@ -587,19 +634,71 @@ mod transition_filter_tests {
         build_hardcut_concat_filter_complex, build_transition_filter_complex,
         transition_conform_filter,
     };
-    use ffmpeg_utils::VideoMetadata;
+    use ffmpeg_utils::{MediaProbe, VideoMetadata};
 
-    fn input(width: u32, height: u32, fps: f64) -> VideoMetadata {
-        VideoMetadata {
-            duration: 3.0,
-            width,
-            height,
-            video_codec: "h264".into(),
-            audio_codec: "aac".into(),
-            bitrate: 0,
-            fps,
-            file_size: 0,
+    fn input(width: u32, height: u32, fps: f64) -> MediaProbe {
+        MediaProbe {
+            metadata: VideoMetadata {
+                duration: 3.0,
+                width,
+                height,
+                video_codec: "h264".into(),
+                audio_codec: "aac".into(),
+                bitrate: 0,
+                fps,
+                file_size: 0,
+            },
+            display_dimensions: (width, height),
+            container_duration: Some(3.0),
+            container_start_time: None,
+            video_start_time: None,
+            audio: None,
         }
+    }
+
+    #[test]
+    fn transitions_compare_rotated_dimensions_and_choose_the_first_display_canvas() {
+        let mut rotated = input(1920, 1080, 30.0);
+        rotated.display_dimensions = (1080, 1920);
+        let original = crate::project::RenderSettings {
+            resolution: crate::project::RenderResolution::Original,
+            ..Default::default()
+        };
+        let mixed = [rotated.clone(), input(1920, 1080, 30.0)];
+        for settings in [None, Some(&original)] {
+            let filter = super::transition_conform_filter_with_settings(&mixed, settings);
+            assert!(filter.starts_with("scale=1080:1920:"), "{filter}");
+        }
+        let matching = [rotated, input(1080, 1920, 30.0)];
+        assert_eq!(
+            super::transition_conform_filter_with_settings(&matching, Some(&original)),
+            "settb=AVTB"
+        );
+    }
+
+    #[test]
+    fn explicit_resolution_conforms_even_matching_transition_inputs() {
+        use crate::project::{RenderResolution, RenderSettings};
+        let inputs = [input(720, 1280, 30.0), input(720, 1280, 30.0)];
+        let settings = RenderSettings {
+            resolution: RenderResolution::Qhd2k,
+            ..Default::default()
+        };
+        let filter = super::transition_conform_filter_with_settings(&inputs, Some(&settings));
+        assert!(filter.starts_with("scale=1440:2560:"), "{filter}");
+        let original = RenderSettings {
+            resolution: RenderResolution::Original,
+            ..Default::default()
+        };
+        assert_eq!(
+            super::transition_conform_filter_with_settings(&inputs, Some(&original)),
+            "settb=AVTB"
+        );
+        let mixed = [input(720, 1280, 30.0), input(1920, 1080, 30.0)];
+        let filter = super::transition_conform_filter_with_settings(&mixed, Some(&original));
+        assert!(filter.starts_with("scale=720:1280:"), "{filter}");
+        let hardcut = super::build_hardcut_concat_filter_for_canvas(2, true, &[], (720, 1280));
+        assert_eq!(hardcut.matches("pad=720:1280:").count(), 2);
     }
 
     #[test]
@@ -1102,6 +1201,47 @@ mod concat_videos_tests {
             (decoded_duration - audio_duration).abs() < 0.15,
             "decoded audio {decoded_duration}s must match container {audio_duration}s (edit-list pre-roll was dumped)"
         );
+    }
+
+    #[tokio::test]
+    async fn rotation_metadata_normalizes_hardcut_inputs_with_matching_coded_sizes() {
+        use crate::project::{RenderResolution, RenderSettings, VideoCodec};
+
+        let directory = tempfile::tempdir().unwrap();
+        let rotated =
+            crate::ffmpeg::clip::encoding_tests::rotated_landscape_source(directory.path()).await;
+        let landscape = directory.path().join("landscape.mp4");
+        // Stream compatibility alone misses the different decoded canvases.
+        assert!(crate::ffmpeg::check_videos(&[&rotated, &landscape]).await);
+        let videos = [rotated, landscape];
+        let original = RenderSettings {
+            codec: VideoCodec::H264,
+            resolution: RenderResolution::Original,
+            ..Default::default()
+        };
+        for (name, settings, expected) in [
+            ("legacy", None, (1080, 1920)),
+            ("original", Some(&original), (180, 320)),
+        ] {
+            let output = directory.path().join(format!("{name}.mp4"));
+            super::concat_videos_with_settings(
+                None::<&crate::progress::progress_reporter::ProgressReporter>,
+                &videos,
+                &output,
+                None,
+                None,
+                settings,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{name} hard-cut concat failed: {error}"));
+            let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+            assert_eq!((metadata.width, metadata.height), expected, "{name}");
+            let duration = probe_stream_duration(&output, "v:0").await;
+            assert!(
+                (duration - 0.4).abs() < 0.05,
+                "{name}: both 0.2-second inputs must remain, got {duration}s"
+            );
+        }
     }
 
     #[tokio::test]

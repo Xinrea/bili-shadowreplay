@@ -82,12 +82,10 @@ pub async fn transcode_with_settings<R: ProgressReporterTrait>(
         single_input_plan(file, output_path, StreamMode::Copy, StreamMode::Copy)
     } else {
         let video_encoder = hwaccel::material_encoder(settings).await;
-        let mut video = hwaccel::native_video_options(
-            video_encoder,
-            Some(hwaccel::H264_SCALE_PAD_FILTER),
-            bitrate,
-            settings,
-        )?;
+        let (width, height) = hwaccel::output_dimensions(file, settings).await?;
+        let scale = hwaccel::scale_pad_filter(width, height, false);
+        let mut video =
+            hwaccel::native_video_options(video_encoder, Some(&scale), bitrate, settings)?;
         video.threads = Some(0);
         single_input_plan(
             file,
@@ -112,10 +110,89 @@ pub async fn transcode_with_settings<R: ProgressReporterTrait>(
 }
 
 #[cfg(test)]
-mod encoding_tests {
+pub(super) mod encoding_tests {
     use super::*;
     use crate::project::{RenderSettings, VideoCodec};
     use ffmpeg_utils::ffmpeg_command;
+
+    /// Coded landscape pixels displayed as portrait by the input's rotation
+    /// matrix. Keep this separate from fixtures that are already portrait.
+    pub(crate) async fn rotated_landscape_source(directory: &Path) -> std::path::PathBuf {
+        let input = directory.join("landscape.mp4");
+        let source = directory.join("rotated.mp4");
+        let generated = ffmpeg_command()
+            .args([
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=s=320x180:r=30:d=0.2",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-y",
+            ])
+            .arg(&input)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            generated.status.success(),
+            "{}",
+            String::from_utf8_lossy(&generated.stderr)
+        );
+        let rotated = ffmpeg_command()
+            .args(["-display_rotation", "90", "-i"])
+            .arg(&input)
+            .args(["-c", "copy", "-y"])
+            .arg(&source)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            rotated.status.success(),
+            "{}",
+            String::from_utf8_lossy(&rotated.stderr)
+        );
+        let metadata = ffmpeg_utils::extract_video_metadata(&source).await.unwrap();
+        assert_eq!((metadata.width, metadata.height), (320, 180));
+        source
+    }
+
+    #[tokio::test]
+    async fn rotation_metadata_selects_display_dimensions_for_transcoding() {
+        use crate::project::RenderResolution;
+        let directory = tempfile::tempdir().unwrap();
+        let source = rotated_landscape_source(directory.path()).await;
+        for (resolution, expected) in [
+            (RenderResolution::Original, (180, 320)),
+            (RenderResolution::FullHd1080p, (1080, 1920)),
+        ] {
+            let settings = RenderSettings {
+                codec: VideoCodec::H264,
+                resolution,
+                ..Default::default()
+            };
+            let destination = directory.path().join(format!("{resolution:?}.mp4"));
+            transcode_with_settings(
+                None::<&crate::progress::progress_reporter::ProgressReporter>,
+                &source,
+                &destination,
+                false,
+                None,
+                Some(&settings),
+            )
+            .await
+            .unwrap();
+            let output = ffmpeg_utils::probe_media(&destination).await.unwrap();
+            assert_eq!(
+                (output.metadata.width, output.metadata.height),
+                expected,
+                "{resolution:?}"
+            );
+            assert_eq!(output.display_dimensions, expected, "{resolution:?}");
+        }
+    }
 
     #[tokio::test]
     async fn explicit_material_settings_encode_codec_instead_of_copying() {
@@ -168,6 +245,59 @@ mod encoding_tests {
                 .unwrap();
             assert_eq!(metadata.video_codec, name);
             input = destination;
+        }
+    }
+
+    #[tokio::test]
+    async fn selected_resolutions_preserve_portrait_orientation() {
+        use crate::project::RenderResolution;
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("portrait.mp4");
+        let generated = ffmpeg_command()
+            .args([
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=s=180x320:r=10:d=0.1",
+                "-c:v",
+                "libx264",
+                "-y",
+            ])
+            .arg(&source)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            generated.status.success(),
+            "{}",
+            String::from_utf8_lossy(&generated.stderr)
+        );
+        for (resolution, expected) in [
+            (RenderResolution::Original, (180, 320)),
+            (RenderResolution::FullHd1080p, (1080, 1920)),
+            (RenderResolution::Qhd2k, (1440, 2560)),
+            (RenderResolution::Uhd4k, (2160, 3840)),
+        ] {
+            let settings = RenderSettings {
+                codec: VideoCodec::H264,
+                resolution,
+                ..Default::default()
+            };
+            let destination = dir.path().join(format!("{resolution:?}.mp4"));
+            transcode_with_settings(
+                None::<&crate::progress::progress_reporter::ProgressReporter>,
+                &source,
+                &destination,
+                false,
+                None,
+                Some(&settings),
+            )
+            .await
+            .unwrap();
+            let metadata = ffmpeg_utils::extract_video_metadata(&destination)
+                .await
+                .unwrap();
+            assert_eq!((metadata.width, metadata.height), expected);
         }
     }
 

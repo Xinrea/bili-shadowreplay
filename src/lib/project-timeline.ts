@@ -4,6 +4,7 @@ import type {
   OverlayItem,
   OverlayTrack,
   ProjectTimeline,
+  RenderResolution,
   RenderSettings,
   SubtitleStyle,
   TimelineClip,
@@ -65,7 +66,18 @@ export function newId(): string {
 }
 
 export function defaultRenderSettings(): RenderSettings {
-  return { codec: "hevc", priority: "speed", bitrate_kbps: 10000 };
+  return { codec: "hevc", priority: "speed", bitrate_kbps: 10000, resolution: "1080p" };
+}
+
+/** Mirrors RenderResolution::dimensions; YUV 4:2:0 output requires even sizes. */
+export function renderDimensions(resolution: RenderResolution, sourceWidth: number, sourceHeight: number): { width: number; height: number } {
+  if (resolution === "original") {
+    const even = (value: number) => Math.ceil(Math.max(2, Number.isFinite(value) ? value : 2) / 2) * 2;
+    return { width: even(sourceWidth), height: even(sourceHeight) };
+  }
+  const [width, height] = resolution === "4k" ? [3840, 2160]
+    : resolution === "2k" ? [2560, 1440] : [1920, 1080];
+  return sourceHeight > sourceWidth ? { width: height, height: width } : { width, height };
 }
 
 /** Read timelines saved before codec and encoding priority were configurable. */
@@ -78,6 +90,8 @@ export function normalizeRenderSettings(value?: Partial<RenderSettings> & { qual
     bitrate_kbps: legacy && value?.bitrate_kbps === 0
       ? defaults.bitrate_kbps
       : value?.bitrate_kbps ?? defaults.bitrate_kbps,
+    resolution: ["original", "4k", "2k", "1080p"].includes(value?.resolution ?? "")
+      ? value!.resolution! : defaults.resolution,
   };
 }
 

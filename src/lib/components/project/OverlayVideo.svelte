@@ -18,12 +18,14 @@
     waiting: boolean;
     /** CSS pixels per pixel of the 1920×1080 frame. */
     unit: number;
+    unitX: number;
+    unitY: number;
     /** Width over height, until the video knows its own. */
     aspect: number;
     onAspect: (aspect: number) => void;
   }
 
-  let { placed, url, time, playing, waiting, unit, aspect, onAspect }: Props = $props();
+  let { placed, url, time, playing, waiting, unit, unitX, unitY, aspect, onAspect }: Props = $props();
 
   /** How far before the end of the file its last frame is held. */
   const LAST_FRAME = 0.05;
@@ -80,8 +82,8 @@
   muted
   class="overlay-video"
   class:visible={active}
-  style:left="{item.element.x * unit - width / 2}px"
-  style:top="{item.element.y * unit - height / 2}px"
+  style:left="{item.element.x * unitX - width / 2}px"
+  style:top="{item.element.y * unitY - height / 2}px"
   style:width="{width}px"
   style:height="{height}px"
   style:transform="rotate({item.element.rotation}deg)"

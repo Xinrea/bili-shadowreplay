@@ -810,7 +810,7 @@ mod transition_filter_tests {
             ..Default::default()
         };
         let filter = super::transition_conform_filter_with_settings(&inputs, Some(&settings));
-        assert!(filter.starts_with("scale=1440:2560:"), "{filter}");
+        assert!(filter.starts_with("scale=2560:1440:"), "{filter}");
         let original = RenderSettings {
             resolution: RenderResolution::Original,
             ..Default::default()

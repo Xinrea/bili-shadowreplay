@@ -914,13 +914,20 @@ test("batch movement no-ops retain identity and ignore unknown or hidden IDs", (
   assert.equal(api.findOverlay(moved, "hidden-v"), api.findOverlay(t, "hidden-v"));
 });
 
-test("resolution choices preserve source orientation and original dimensions", () => {
-  for (const [resolution, width, height] of [["original", 1280, 720], ["4k", 3840, 2160], ["2k", 2560, 1440], ["1080p", 1920, 1080]]) {
-    assert.deepEqual(plain(api.renderDimensions(resolution, 1280, 720)), { width, height });
-    assert.deepEqual(plain(api.renderDimensions(resolution, 720, 1280)), { width: height, height: width });
+test("resolution presets use fixed landscape sizes for landscape, portrait and square sources", () => {
+  for (const [resolution, width, height] of [["4k", 3840, 2160], ["2k", 2560, 1440], ["1080p", 1920, 1080]]) {
+    for (const [sourceWidth, sourceHeight] of [[1280, 720], [720, 1280], [1080, 1080]]) {
+      assert.deepEqual(plain(api.renderDimensions(resolution, sourceWidth, sourceHeight)), { width, height });
+    }
     assert.equal(api.parseTimeline(JSON.stringify({ render_settings: { resolution } })).render_settings.resolution, resolution);
   }
+});
+
+test("original resolution preserves source dimensions and rounds up to even sizes", () => {
+  assert.deepEqual(plain(api.renderDimensions("original", 1280, 720)), { width: 1280, height: 720 });
+  assert.deepEqual(plain(api.renderDimensions("original", 720, 1280)), { width: 720, height: 1280 });
   assert.deepEqual(plain(api.renderDimensions("original", 853, 479)), { width: 854, height: 480 });
+  assert.deepEqual(plain(api.renderDimensions("original", 479, 853)), { width: 480, height: 854 });
   assert.deepEqual(plain(api.renderDimensions("original", 1080, 1080)), { width: 1080, height: 1080 });
   assert.equal(api.normalizeRenderSettings({ resolution: "unknown" }).resolution, "original");
 });

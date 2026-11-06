@@ -166,7 +166,7 @@ pub(super) mod encoding_tests {
         let source = rotated_landscape_source(directory.path()).await;
         for (resolution, expected) in [
             (RenderResolution::Original, (180, 320)),
-            (RenderResolution::FullHd1080p, (1080, 1920)),
+            (RenderResolution::FullHd1080p, (1920, 1080)),
         ] {
             let settings = RenderSettings {
                 codec: VideoCodec::H264,
@@ -249,7 +249,7 @@ pub(super) mod encoding_tests {
     }
 
     #[tokio::test]
-    async fn selected_resolutions_preserve_portrait_orientation() {
+    async fn selected_resolutions_use_fixed_landscape_sizes_for_portrait_sources() {
         use crate::project::RenderResolution;
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("portrait.mp4");
@@ -274,9 +274,9 @@ pub(super) mod encoding_tests {
         );
         for (resolution, expected) in [
             (RenderResolution::Original, (180, 320)),
-            (RenderResolution::FullHd1080p, (1080, 1920)),
-            (RenderResolution::Qhd2k, (1440, 2560)),
-            (RenderResolution::Uhd4k, (2160, 3840)),
+            (RenderResolution::FullHd1080p, (1920, 1080)),
+            (RenderResolution::Qhd2k, (2560, 1440)),
+            (RenderResolution::Uhd4k, (3840, 2160)),
         ] {
             let settings = RenderSettings {
                 codec: VideoCodec::H264,

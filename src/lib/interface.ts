@@ -246,7 +246,7 @@ export interface RenderSettings {
   priority: "quality" | "speed";
   /** Target video bitrate in Kbps, independent of encoding priority. */
   bitrate_kbps: number;
-  /** Canvas orientation follows the first main-track source. */
+  /** Presets use fixed landscape sizes; original preserves source dimensions. */
   resolution: RenderResolution;
 }
 

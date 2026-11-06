@@ -48,23 +48,18 @@ jobs:
 
       - name: install dependencies (ubuntu only)
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
-            libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libavfilter-dev \
-            clang libclang-dev ninja-build python3 pkg-config \
-            libicu-dev libharfbuzz-dev libfreetype-dev libfontconfig1-dev \
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+            libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libavfilter-dev
+            clang libclang-dev ninja-build python3 pkg-config
+            libicu-dev libharfbuzz-dev libfreetype-dev libfontconfig1-dev
             libpng-dev zlib1g-dev libexpat1-dev libjpeg-dev
 
       - name: Install FFmpeg development libraries (macOS only)
         if: runner.os == 'macOS'
-        run: |
-          brew install ffmpeg-full pkg-config molten-vk
-          echo "PKG_CONFIG_PATH=$(brew --prefix ffmpeg-full)/lib/pkgconfig" >> "$GITHUB_ENV"
-          echo "BSR_MOLTENVK_LIBRARY=$(brew --prefix molten-vk)/lib/libMoltenVK.dylib" >> "$GITHUB_ENV"
-          # Optional CLI oracles must use this SDK's version and components.
-          echo "$(brew --prefix ffmpeg-full)/bin" >> "$GITHUB_PATH"
+        uses: ./.github/actions/setup-macos-ffmpeg
 
       - name: Configure source Skia with system libraries (Linux only)
         if: runner.os == 'Linux'

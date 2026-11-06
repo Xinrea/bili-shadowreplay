@@ -38,7 +38,8 @@ int main(void) {
     }
     const char *encoders[] = { "libopus", "libmp3lame", "libx264", "libx265", "aac", "flac", "pcm_s16le", "mjpeg", "png", "ass", "mov_text" };
     const char *muxers[] = { "opus", "mp3", "wav", "flac", "ipod", "mp4", "mpegts", "hls", "matroska" };
-    const char *filters[] = { "subtitles", "overlay", "concat", "xfade", "acrossfade", "amix", "scale", "pad", "aresample", "color", "anullsrc" };
+    // Subtitle and danmaku burn-in use Skia, not FFmpeg's optional libass filter.
+    const char *filters[] = { "overlay", "concat", "xfade", "acrossfade", "amix", "scale", "pad", "aresample", "color", "anullsrc" };
     for (size_t i = 0; i < sizeof(encoders) / sizeof(*encoders); i++) {
         if (!avcodec_find_encoder_by_name(encoders[i])) { fprintf(stderr, "FFmpeg SDK lacks encoder %s\n", encoders[i]); return 1; }
     }

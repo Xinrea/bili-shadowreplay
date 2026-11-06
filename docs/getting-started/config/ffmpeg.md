@@ -73,7 +73,7 @@ export PATH="$(brew --prefix ffmpeg-full)/bin:$PATH"
 cargo test --manifest-path src-tauri/Cargo.toml -p ffmpeg_utils
 ```
 
-构建示例使用提供完整编解码组件的 `ffmpeg-full`。自定义 SDK 也必须满足上述组件要求。不应把机器上的 `/opt/homebrew` 或 Cellar 绝对路径提交到共享 Cargo 配置。Intel 和 Apple Silicon 发布任务分别固定使用 `macos-15-intel` 和 `macos-15` 原生 runner，保持产品的 macOS 15 最低版本。
+本地构建示例使用提供完整编解码组件的 `ffmpeg-full`。自定义 SDK 也必须满足上述组件要求。不应把机器上的 `/opt/homebrew` 或 Cellar 绝对路径提交到共享 Cargo 配置。Intel 和 Apple Silicon 发布任务分别固定使用 `macos-15-intel` 和 `macos-15` 原生 runner，并通过 `.github/actions/setup-macos-ffmpeg` 从校验过的 FFmpeg 9.0.2 源码构建 SDK，部署目标读取应用配置。发布 SDK 保留内置编解码器和滤镜，以及 libopus、libmp3lame、libx264、libx265、原生 TLS、Vulkan 和 VideoToolbox；不引入应用未使用的 OCR/ML 依赖，避免其 Homebrew bottle 抬高最低系统版本。最终打包仍检查所有传递依赖的真实最低版本。
 
 `tauri.macos.conf.json` 的 `beforeBundleCommand` 会运行 `scripts/bundle-macos-ffmpeg.mjs`，从最终可执行文件递归收集非系统动态库，将 install name 改为应用内部路径并签名，然后通过 `bundle.macOS.files` 放入 `Contents/Frameworks`。脚本会先读取可执行文件及每个传递依赖的 Mach-O 最低系统版本，若高于产品的 `minimumSystemVersion`（当前 15.0）则拒绝打包；验包时还会按包内 `LSMinimumSystemVersion` 复查。较新 macOS 上安装的 Homebrew bottle 可能要求 26/27，不能仅设置 `MACOSX_DEPLOYMENT_TARGET=15.0` 将其降级，应使用 macOS 15 发布 runner 或为 15 构建的完整 FFmpeg SDK 及匹配依赖。该步骤不修改 Homebrew 原件，也不会改写 Mach-O 最低版本来伪装兼容。打包后的检查命令为：
 

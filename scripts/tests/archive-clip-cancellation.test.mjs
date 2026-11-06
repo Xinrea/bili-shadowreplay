@@ -33,7 +33,7 @@ async function fixture({ variant = "primary" } = {}) {
     svelte: { onMount() {}, onDestroy() {} },
     "lucide-svelte": { Scissors() {} },
     "../project-timeline": {
-      defaultRenderSettings: () => ({ codec: "hevc", priority: "speed", bitrate_kbps: 10000 }),
+      defaultRenderSettings: () => ({ codec: "hevc", priority: "speed", bitrate_kbps: 10000, resolution: "original" }),
     },
     "../interface": {
       generateEventId: () => `clip-${++nextId}`,
@@ -111,7 +111,7 @@ test("a started clip is announced, highlighted, and settled with its result", as
 
 test("material settings are submitted independently of danmaku and snapshotted per task", async () => {
   const f = await fixture();
-  const settings = { codec: "h264", priority: "quality", bitrate_kbps: 16000 };
+  const settings = { codec: "h264", priority: "quality", bitrate_kbps: 16000, resolution: "2k" };
   f.handlers.configure(settings, false);
   const first = await startClip(f);
   assert.deepEqual(JSON.parse(JSON.stringify(first.request.params.render_settings)), settings);
@@ -119,6 +119,7 @@ test("material settings are submitted independently of danmaku and snapshotted p
   settings.codec = "hevc";
   settings.priority = "speed";
   settings.bitrate_kbps = 6000;
+  settings.resolution = "4k";
   f.handlers.configure(settings, true);
   const second = await startClip(f);
   assert.deepEqual(JSON.parse(JSON.stringify(second.request.params.render_settings)), settings);
@@ -126,6 +127,7 @@ test("material settings are submitted independently of danmaku and snapshotted p
   assert.equal(first.request.params.render_settings.codec, "h264");
   assert.equal(first.request.params.render_settings.priority, "quality");
   assert.equal(first.request.params.render_settings.bitrate_kbps, 16000);
+  assert.equal(first.request.params.render_settings.resolution, "2k");
   first.request.resolve({ id: 1 });
   second.request.resolve({ id: 2 });
   await Promise.all([first.completion, second.completion]);
@@ -133,7 +135,7 @@ test("material settings are submitted independently of danmaku and snapshotted p
 
 test("embedded danmaku forces encoding and external danmaku restores the optional choice", async () => {
   const f = await fixture();
-  const settings = { codec: "h264", priority: "quality", bitrate_kbps: 16000 };
+  const settings = { codec: "h264", priority: "quality", bitrate_kbps: 16000, resolution: "2k" };
   for (const encode of [false, true]) {
     for (const danmu of [false, true, false]) {
       f.handlers.configure(settings, danmu, encode);

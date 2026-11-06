@@ -16,7 +16,7 @@ const code = ts.transpileModule(handlers.map((node) => node.getText(parsed)).joi
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText;
 const plain = (value) => JSON.parse(JSON.stringify(value));
-const defaults = () => ({ codec: "hevc", priority: "speed", bitrate_kbps: 10000, resolution: "1080p" });
+const defaults = () => ({ codec: "hevc", priority: "speed", bitrate_kbps: 10000, resolution: "original" });
 
 function fixture({ desktop = true, pick = async () => "/export.mp4", danmu = false } = {}) {
   const saved = { clips: [{ id: "clip", material_id: 1, start: 0, end: 10 }], danmu, render_settings: defaults() };
@@ -126,7 +126,7 @@ test("editing encoding preserves remote danmaku and writes the complete encoding
   assert.deepEqual(f.alerts, []);
 });
 
-for (const [field, value] of [["codec", "h264"], ["priority", "quality"], ["bitrate_kbps", 16000], ["resolution", "original"], ["resolution", "4k"], ["resolution", "2k"]]) {
+for (const [field, value] of [["codec", "h264"], ["priority", "quality"], ["bitrate_kbps", 16000], ["resolution", "1080p"], ["resolution", "4k"], ["resolution", "2k"]]) {
   test(`changing only ${field} persists all encoding settings`, async () => {
     const f = fixture();
     await f.state.openExportSettings();
@@ -185,11 +185,11 @@ test("web export saves explicit false and new settings without opening a file pi
 
 test("editor resolution previews immediately and persists through the output settings endpoint", async () => {
   const f = fixture({ danmu: true });
-  const changing = f.state.changeOutputResolution("original");
-  assert.equal(f.state.pendingResolution, "original");
+  const changing = f.state.changeOutputResolution("1080p");
+  assert.equal(f.state.pendingResolution, "1080p");
   await changing;
-  assert.deepEqual(f.patches, [{ id: 1, renderSettings: { ...defaults(), resolution: "original" } }]);
-  assert.equal(f.state.timeline.render_settings.resolution, "original");
+  assert.deepEqual(f.patches, [{ id: 1, renderSettings: { ...defaults(), resolution: "1080p" } }]);
+  assert.equal(f.state.timeline.render_settings.resolution, "1080p");
   assert.equal(f.saved.danmu, true);
   assert.equal(f.state.pendingResolution, null);
   assert.ok(f.calls.indexOf("saveTimeline") < f.calls.indexOf("update_project_output_settings"));
@@ -201,6 +201,6 @@ test("failed editor resolution save releases its optimistic preview", async () =
   f.state.invoke = async () => { throw new Error("save failed"); };
   await f.state.changeOutputResolution("4k");
   assert.equal(f.state.pendingResolution, null);
-  assert.equal(f.state.timeline.render_settings.resolution, "1080p");
+  assert.equal(f.state.timeline.render_settings.resolution, "original");
   assert.equal(f.alerts.length, 1);
 });

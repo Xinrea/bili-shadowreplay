@@ -416,27 +416,14 @@ pub async fn concat_playlists_to_video(
         ));
     }
 
-    match settings {
-        Some(settings) if encode_segments => {
-            super::general::concat_encoded_videos(reporter, &segments, output_path, settings)
-                .await?;
-        }
-        Some(settings) => {
-            super::general::concat_videos_with_settings(
-                reporter,
-                &segments,
-                output_path,
-                None,
-                None,
-                Some(settings),
-            )
-            .await?;
-        }
-        None if burned => {
-            super::general::concat_videos(reporter, &segments, output_path).await?;
-        }
-        None => super::general::concat_copy_videos(reporter, &segments, output_path).await?,
-    }
+    super::general::concat_recordings_with_settings(
+        reporter,
+        &segments,
+        output_path,
+        settings,
+        encode_segments || burned,
+    )
+    .await?;
     Ok(burned)
 }
 
@@ -523,13 +510,22 @@ seg-3.mp4
         duration: f64,
         size: &str,
     ) -> std::path::PathBuf {
+        create_test_playlist_with_color(dir, duration, size, "blue").await
+    }
+
+    async fn create_test_playlist_with_color(
+        dir: &Path,
+        duration: f64,
+        size: &str,
+        color: &str,
+    ) -> std::path::PathBuf {
         let playlist = dir.join("playlist.m3u8");
         let output = ffmpeg_utils::ffmpeg_command()
             .args([
                 "-f",
                 "lavfi",
                 "-i",
-                &format!("color=c=blue:s={size}:r=30:d={duration}"),
+                &format!("color=c={color}:s={size}:r=30:d={duration}"),
                 "-f",
                 "lavfi",
                 "-i",
@@ -735,13 +731,13 @@ seg-3.mp4
     }
 
     #[tokio::test]
-    async fn whole_clip_without_settings_never_reencodes_mismatched_sources() {
+    async fn whole_clip_without_settings_copies_matching_sources() {
         type Reporter = crate::progress::progress_reporter::ProgressReporter;
         let first = tempfile::tempdir().unwrap();
         let second = tempfile::tempdir().unwrap();
         let playlists = [
             create_test_playlist(first.path(), 0.5).await,
-            create_test_playlist_with_size(second.path(), 0.5, "640x360").await,
+            create_test_playlist(second.path(), 0.5).await,
         ];
         let mut sources = Vec::new();
         for playlist in &playlists {
@@ -779,6 +775,111 @@ seg-3.mp4
     }
 
     #[tokio::test]
+    async fn whole_clip_without_settings_normalizes_to_largest_source_without_reordering() {
+        assert_whole_clip_uses_largest_source(None, false).await;
+    }
+
+    #[tokio::test]
+    async fn whole_clip_original_settings_use_largest_source_with_and_without_danmu() {
+        let settings = crate::project::RenderSettings {
+            codec: crate::project::VideoCodec::H264,
+            priority: crate::project::EncodingPriority::Quality,
+            bitrate_kbps: 4000,
+            resolution: crate::project::RenderResolution::Original,
+        };
+        for burn in [false, true] {
+            assert_whole_clip_uses_largest_source(Some(&settings), burn).await;
+        }
+        // Older queued burn jobs may omit output settings entirely.
+        assert_whole_clip_uses_largest_source(None, true).await;
+    }
+
+    async fn assert_whole_clip_uses_largest_source(
+        settings: Option<&crate::project::RenderSettings>,
+        burn: bool,
+    ) {
+        type Reporter = crate::progress::progress_reporter::ProgressReporter;
+        let small = tempfile::tempdir().unwrap();
+        let large = tempfile::tempdir().unwrap();
+        let playlists = [
+            create_test_playlist_with_color(small.path(), 0.6, "320x180", "red").await,
+            create_test_playlist_with_color(large.path(), 0.6, "360x640", "blue").await,
+        ];
+        for order in [[0, 1], [1, 0]] {
+            let output = small.path().join(format!("normalized-{order:?}.mp4"));
+            let mut tracks = vec![None; 2];
+            if burn {
+                tracks[1] = Some(vec![recorder::danmu::DanmuEntry {
+                    ts: 0,
+                    event_type: "danmu".into(),
+                    content: "mixed recording".into(),
+                    emoji_content: None,
+                    user_name: None,
+                    price: None,
+                    sc_duration: None,
+                }]);
+            }
+            let embedded = concat_playlists_to_video(
+                None::<&Reporter>,
+                &order.map(|index| playlists[index].as_path()),
+                tracks,
+                &crate::danmu2ass::Danmu2AssOptions::default(),
+                &output,
+                settings,
+            )
+            .await
+            .unwrap();
+            assert_eq!(embedded, burn);
+            let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+            assert_eq!((metadata.width, metadata.height), (360, 640));
+            assert!((1.1..1.5).contains(&metadata.duration), "{metadata:?}");
+            assert!(!metadata.audio_codec.is_empty());
+            if settings.is_some() {
+                assert_eq!(metadata.video_codec, "h264", "preserve the requested codec");
+            }
+
+            // Inspect both frames: preserve order and letterbox the landscape
+            // source instead of stretching it to the portrait canvas.
+            for (index, source) in order.into_iter().enumerate() {
+                let decoded = ffmpeg_utils::ffmpeg_command()
+                    .args([
+                        "-v",
+                        "error",
+                        "-ss",
+                        if index == 0 { "0.2" } else { "0.9" },
+                        "-i",
+                    ])
+                    .arg(&output)
+                    .args(["-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"])
+                    .output()
+                    .await
+                    .unwrap();
+                assert!(
+                    decoded.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&decoded.stderr)
+                );
+                assert!(
+                    decoded.stderr.is_empty(),
+                    "{}",
+                    String::from_utf8_lossy(&decoded.stderr)
+                );
+                assert_eq!(decoded.stdout.len(), 360 * 640 * 3);
+                let center = &decoded.stdout[(320 * 360 + 180) * 3..][..3];
+                let border = &decoded.stdout[(630 * 360 + 180) * 3..][..3];
+                if source == 0 {
+                    assert!(center[0] > 200 && center[2] < 30, "{center:?}");
+                    assert!(border.iter().all(|channel| *channel < 20), "{border:?}");
+                } else {
+                    for pixel in [center, border] {
+                        assert!(pixel[2] > 200 && pixel[0] < 30, "{pixel:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn whole_clip_explicit_settings_cover_missing_empty_and_burned_danmu() {
         use crate::project::{EncodingPriority, RenderSettings, VideoCodec};
         use recorder::danmu::DanmuEntry;
@@ -799,7 +900,7 @@ seg-3.mp4
                             EncodingPriority::Speed
                         },
                         bitrate_kbps: 4000,
-                        ..Default::default()
+                        resolution: crate::project::RenderResolution::FullHd1080p,
                     };
                     let mut tracks = vec![None; count];
                     let entries = if burn {
@@ -870,13 +971,13 @@ seg-3.mp4
 
     #[tokio::test]
     async fn whole_clip_encodes_portrait_and_landscape_recordings_with_square_pixels() {
-        use crate::project::{EncodingPriority, RenderSettings, VideoCodec};
+        use crate::project::{EncodingPriority, RenderResolution, RenderSettings, VideoCodec};
         type Reporter = crate::progress::progress_reporter::ProgressReporter;
 
         let portrait = tempfile::tempdir().unwrap();
         let landscape = tempfile::tempdir().unwrap();
-        // Both sources have SAR 1:1. Fitting the portrait to 1080 pixels high
-        // rounds 607.5 to 608 pixels wide, producing SAR 1215:1216 unless reset.
+        // Both sources have SAR 1:1. Fitting them to the selected canvas
+        // can round scaled dimensions; the joined video must keep square pixels.
         let playlists = [
             create_test_playlist_with_size(portrait.path(), 0.4, "1080x1920").await,
             create_test_playlist_with_size(landscape.path(), 0.4, "1280x720").await,
@@ -895,13 +996,19 @@ seg-3.mp4
                 .unwrap();
             remuxed.push(video);
         }
-        for order in [&[0, 1][..], &[1, 0][..], &[0, 1, 0][..]] {
-            let (width, height) = if order[0] == 0 {
-                (1080, 1920)
-            } else {
-                (1920, 1080)
+        for (order, resolution, (width, height)) in [
+            (&[0, 1][..], RenderResolution::Original, (1080, 1920)),
+            (&[1, 0][..], RenderResolution::Original, (1080, 1920)),
+            (&[0, 1, 0][..], RenderResolution::Original, (1080, 1920)),
+            (&[1, 0][..], RenderResolution::FullHd1080p, (1920, 1080)),
+        ] {
+            let settings = RenderSettings {
+                resolution,
+                ..settings.clone()
             };
-            let output = portrait.path().join(format!("mixed-{order:?}.mp4"));
+            let output = portrait
+                .path()
+                .join(format!("mixed-{order:?}-{resolution:?}.mp4"));
             let sources = order
                 .iter()
                 .map(|&i| playlists[i].as_path())

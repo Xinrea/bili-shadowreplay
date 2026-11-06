@@ -400,9 +400,12 @@
                 ? "内嵌弹幕需要重新编码，无法取消"
                 : reencode
                   ? "按以下设置重新编码，耗时较长"
-                  : "保留原始编码，直接复制并拼接片段"}
+                  : "分辨率一致时直接复制；不一致时自动重新编码，统一到最大片段尺寸"}
             </p>
-            <RenderSettingsFields layout="columns" bind:value={renderSettings} disabled={(!encodeDanmu && !reencode) || isLoading || isSubmitting} />
+            <RenderSettingsFields layout="columns" bind:value={renderSettings} streamCopy={!encodeDanmu && !reencode} originalResolutionSource="largest" disabled={isLoading || isSubmitting} showHint={encodeDanmu || reencode} />
+            {#if !encodeDanmu && !reencode && selectedLiveIds.length > 1}
+              <p class="ui-hint">最大片段按画面像素面积判断，面积相同时以最先出现的片段为准；其它片段等比缩放并补黑边。</p>
+            {/if}
           </div>
         </div>
 

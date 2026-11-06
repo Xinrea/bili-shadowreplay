@@ -261,7 +261,7 @@
   let firstMaterialId = $derived(timeline.clips[0]?.material_id);
   let pendingResolution: RenderResolution | null = $state(null);
   let resolutionSaving: Promise<void> | null = null;
-  let outputResolution = $derived(pendingResolution ?? timeline.render_settings?.resolution ?? "1080p");
+  let outputResolution = $derived(pendingResolution ?? timeline.render_settings?.resolution ?? defaultRenderSettings().resolution);
   let previewResolution = $derived(showExportSettings ? exportSettings.resolution : outputResolution);
   let outputDimensions = $derived.by(() => {
     const source = sourceDimensions.get(firstMaterialId);

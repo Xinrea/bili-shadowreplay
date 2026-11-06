@@ -66,7 +66,7 @@ export function newId(): string {
 }
 
 export function defaultRenderSettings(): RenderSettings {
-  return { codec: "hevc", priority: "speed", bitrate_kbps: 10000, resolution: "1080p" };
+  return { codec: "hevc", priority: "speed", bitrate_kbps: 10000, resolution: "original" };
 }
 
 /** Mirrors RenderResolution::dimensions; YUV 4:2:0 output requires even sizes. */

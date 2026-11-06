@@ -32,9 +32,9 @@ function selected(html, label) {
   return select.match(/<option value="([^"]*)" selected(?:="")?>/)?.[1];
 }
 
-test("the shared encoding form defaults to HEVC, speed and 10 Mbps", () => {
+test("the shared encoding form defaults to original resolution, HEVC, speed and 10 Mbps", () => {
   const { body } = render(component.namespace.default);
-  assert.equal(selected(body, "分辨率"), "1080p");
+  assert.equal(selected(body, "分辨率"), "original");
   assert.equal(selected(body, "编码格式"), "hevc");
   assert.equal(selected(body, "编码偏好"), "speed");
   assert.equal(selected(body, "视频码率"), "10000");
@@ -53,17 +53,39 @@ test("all four independent settings and non-preset saved bitrates are displayed"
   assert.equal(selected(body, "视频码率"), "15000");
   assert.equal(selected(body, "分辨率"), "original");
   assert.match(body, /15 Mbps/);
-  assert.match(body, /<fieldset[^>]* disabled/);
+  assert.match(body, /<fieldset[^>]* disabled[\s=>]/);
 });
 
 test("the column layout keeps the same defaults without stacked field spacing", () => {
   const { body } = render(component.namespace.default, { props: { layout: "columns" } });
-  assert.equal(selected(body, "分辨率"), "1080p");
+  assert.equal(selected(body, "分辨率"), "original");
   assert.equal(selected(body, "编码格式"), "hevc");
   assert.equal(selected(body, "编码偏好"), "speed");
   assert.equal(selected(body, "视频码率"), "10000");
   assert.match(body, /<fieldset[^>]*sm:grid-cols-2/);
   assert.doesNotMatch(body, /<fieldset[^>]*space-y-3/);
+});
+
+test("stream copy locks the displayed resolution without losing the encoding choice", () => {
+  const value = { codec: "h264", priority: "quality", bitrate_kbps: 16000, resolution: "2k" };
+  const { body } = render(component.namespace.default, { props: { value, streamCopy: true } });
+  assert.equal(selected(body, "分辨率"), "original");
+  assert.match(body, /<fieldset[^>]* disabled[\s=>]/);
+  assert.match(body, /保留各片段原有分辨率/);
+  assert.doesNotMatch(body, /按首个素材尺寸输出/);
+  assert.equal(value.resolution, "2k");
+
+  const encoded = render(component.namespace.default, { props: { value, streamCopy: false } }).body;
+  assert.equal(selected(encoded, "分辨率"), "2k");
+  assert.doesNotMatch(encoded, /<fieldset[^>]* disabled[\s=>]/);
+});
+
+test("whole recordings describe the largest original canvas without changing editor guidance", () => {
+  const body = render(component.namespace.default, { props: { originalResolutionSource: "largest" } }).body;
+  assert.match(body, /按像素面积最大的片段尺寸输出/);
+  assert.match(body, /面积相同取首个/);
+  assert.doesNotMatch(body, /按首个素材尺寸输出/);
+  assert.match(render(component.namespace.default).body, /按首个素材尺寸输出/);
 });
 
 test("settings rows retain selection and let the host provide a single explanation", () => {

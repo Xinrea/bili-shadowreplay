@@ -358,6 +358,94 @@ async fn concat_videos_with_demuxer(
     run_concat_demuxer(reporter, videos, output_path, video, audio, !should_encode).await
 }
 
+/// Use an actual source canvas, not independently maximized width and height.
+/// Compare display dimensions so rotation is respected; equal pixel areas keep
+/// the first source's orientation. Matching dimensions need no normalization.
+fn recording_normalization_canvas(inputs: &[ffmpeg_utils::MediaProbe]) -> Option<(u32, u32)> {
+    let first = inputs.first()?.display_dimensions;
+    if inputs.iter().all(|input| input.display_dimensions == first) {
+        return None;
+    }
+    let area = |(width, height): (u32, u32)| u64::from(width) * u64::from(height);
+    let largest = inputs.iter().fold(first, |largest, input| {
+        let dimensions = input.display_dimensions;
+        if area(dimensions) > area(largest) {
+            dimensions
+        } else {
+            largest
+        }
+    });
+    Some(crate::project::RenderResolution::Original.dimensions(largest.0, largest.1))
+}
+
+/// Whole recordings use the largest source canvas for original resolution.
+/// Without settings, matching sizes use stream copy; explicit settings force
+/// encoding unless every source was already encoded with those settings.
+pub async fn concat_recordings_with_settings(
+    reporter: Option<&impl ProgressReporterTrait>,
+    videos: &[PathBuf],
+    output_path: &Path,
+    settings: Option<&crate::project::RenderSettings>,
+    already_encoded: bool,
+) -> Result<(), String> {
+    if let Some(settings) = settings {
+        settings.validate()?;
+    }
+    let mut inputs = Vec::with_capacity(videos.len());
+    for video in videos {
+        inputs.push(ffmpeg_utils::probe_media(video).await?);
+    }
+    let Some(largest_canvas) = recording_normalization_canvas(&inputs) else {
+        return match settings {
+            Some(settings) if already_encoded => {
+                concat_encoded_videos(reporter, videos, output_path, settings).await
+            }
+            Some(settings) => {
+                concat_videos_with_settings(
+                    reporter,
+                    videos,
+                    output_path,
+                    None,
+                    None,
+                    Some(settings),
+                )
+                .await
+            }
+            None if already_encoded => concat_videos(reporter, videos, output_path).await,
+            None => concat_copy_videos(reporter, videos, output_path).await,
+        };
+    };
+    let defaults = crate::project::RenderSettings::default();
+    let settings = settings.unwrap_or(&defaults);
+    let dimensions = match settings.resolution {
+        crate::project::RenderResolution::Original => largest_canvas,
+        _ => hwaccel::output_dimensions_from_probe(&inputs[0], Some(settings)),
+    };
+    let silence: Vec<Option<f64>> = inputs
+        .iter()
+        .map(|input| {
+            input
+                .metadata
+                .audio_codec
+                .is_empty()
+                .then_some(input.metadata.duration)
+        })
+        .collect();
+    let filter = build_hardcut_concat_filter_for_canvas(videos.len(), true, &silence, dimensions);
+    let normalizing = reporter
+        .map(|reporter| reporter.stage(&format!("统一分辨率 {}×{}", dimensions.0, dimensions.1)));
+    encode_filter_concat(
+        normalizing.as_ref(),
+        videos,
+        output_path,
+        filter,
+        ProgressTotal::AllInputs,
+        None,
+        Some(settings),
+    )
+    .await
+}
+
 /// Join compatible complete files with the concat demuxer and copy streams.
 /// This deliberately retains demuxer/edit-list behavior rather than using the
 /// decoded concat filter employed by timeline clip joins.
@@ -657,6 +745,43 @@ mod transition_filter_tests {
     }
 
     #[test]
+    fn recording_canvas_uses_largest_display_area_and_keeps_the_first_tie() {
+        let canvas = super::recording_normalization_canvas;
+        assert_eq!(canvas(&[]), None);
+        assert_eq!(canvas(&[input(640, 360, 30.0)]), None);
+        assert_eq!(
+            canvas(&[input(640, 360, 30.0), input(640, 360, 60.0)]),
+            None
+        );
+        for sizes in [[(320, 180), (640, 360)], [(640, 360), (320, 180)]] {
+            assert_eq!(
+                canvas(&sizes.map(|(w, h)| input(w, h, 30.0))),
+                Some((640, 360))
+            );
+        }
+        // Maximize area, not width and height separately.
+        assert_eq!(
+            canvas(&[input(4000, 500, 30.0), input(1920, 1080, 30.0)]),
+            Some((1920, 1080))
+        );
+        assert_eq!(
+            canvas(&[input(360, 640, 30.0), input(640, 360, 30.0)]),
+            Some((360, 640))
+        );
+        assert_eq!(
+            canvas(&[input(640, 360, 30.0), input(360, 640, 30.0)]),
+            Some((640, 360))
+        );
+        let mut rotated = input(640, 360, 30.0);
+        rotated.display_dimensions = (360, 640);
+        assert_eq!(canvas(&[input(320, 180, 30.0), rotated]), Some((360, 640)));
+        assert_eq!(
+            canvas(&[input(320, 180, 30.0), input(853, 479, 30.0)]),
+            Some((854, 480))
+        );
+    }
+
+    #[test]
     fn transitions_compare_rotated_dimensions_and_choose_the_first_display_canvas() {
         let mut rotated = input(1920, 1080, 30.0);
         rotated.display_dimensions = (1080, 1920);
@@ -822,7 +947,7 @@ mod transition_filter_tests {
     fn mismatched_sizes_are_put_on_the_hardcut_canvas() {
         assert_eq!(
             transition_conform_filter(&[input(1280, 720, 30.0), input(1920, 1080, 30.0)]),
-            "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,settb=AVTB"
+            "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,settb=AVTB"
         );
     }
 
@@ -1220,7 +1345,7 @@ mod concat_videos_tests {
             ..Default::default()
         };
         for (name, settings, expected) in [
-            ("legacy", None, (1080, 1920)),
+            ("default", None, (180, 320)),
             ("original", Some(&original), (180, 320)),
         ] {
             let output = directory.path().join(format!("{name}.mp4"));
@@ -1278,8 +1403,8 @@ mod concat_videos_tests {
             .await
             .expect("output metadata");
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
-        assert_eq!(metadata.width, 1920);
-        assert_eq!(metadata.height, 1080);
+        assert_eq!(metadata.width, 640);
+        assert_eq!(metadata.height, 360);
     }
 
     #[tokio::test]
@@ -1321,8 +1446,8 @@ mod concat_videos_tests {
         let audio_duration = probe_stream_duration(&output_path, "a:0").await;
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
 
-        assert_eq!(metadata.width, 1920);
-        assert_eq!(metadata.height, 1080);
+        assert_eq!(metadata.width, 640);
+        assert_eq!(metadata.height, 360);
         assert_eq!(metadata.fps, 25.0);
         assert!(
             (video_duration - 3.0).abs() < 0.3,

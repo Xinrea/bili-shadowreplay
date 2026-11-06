@@ -521,7 +521,7 @@ mod subtitle_tests {
         .unwrap();
         let output = input.with_file_name(name);
         let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
-        assert_eq!((metadata.width, metadata.height), (1920, 1080));
+        assert_eq!((metadata.width, metadata.height), (320, 180));
         assert!((metadata.duration - 2.0).abs() < 0.1);
         for (time, visible) in [("0.5", true), ("1.5", false)] {
             let frame = ffmpeg_command()
@@ -680,7 +680,7 @@ mod native_srt_tests {
         .await
         .unwrap();
         let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
-        assert_eq!((metadata.width, metadata.height), (1920, 1080));
+        assert_eq!((metadata.width, metadata.height), (160, 90));
         assert!((metadata.duration - 1.1).abs() < 1e-6);
         assert!(red_pixels(&output, 0.2, directory.path()).await > 100);
         assert_eq!(red_pixels(&output, 0.9, directory.path()).await, 0);

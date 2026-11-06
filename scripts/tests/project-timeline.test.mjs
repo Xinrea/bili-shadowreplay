@@ -28,7 +28,7 @@ const sub = (id, clip_id, start, end, text = id) => ({ id, clip_id, start, end, 
 
 test("output settings default for old projects and merge without losing local edits", () => {
   const base = api.parseTimeline('{"clips":[{"id":"a","material_id":1,"start":0,"end":30}]}');
-  assert.deepEqual(plain(base.render_settings), { codec: "hevc", priority: "speed", bitrate_kbps: 10000, resolution: "1080p" });
+  assert.deepEqual(plain(base.render_settings), { codec: "hevc", priority: "speed", bitrate_kbps: 10000, resolution: "original" });
   const remote = { ...base, render_settings: { codec: "h264", priority: "quality", bitrate_kbps: 12000, resolution: "2k" } };
   const local = api.trimClip(base, "a", "end", 20, 30);
   const merged = api.mergeRemoteTimeline(local, base, remote);
@@ -45,14 +45,14 @@ test("legacy render settings gain codec and priority without losing a chosen bit
         codec: "hevc",
         priority: quality === "high" ? "quality" : "speed",
         bitrate_kbps: bitrate_kbps || 10000,
-        resolution: "1080p",
+        resolution: "original",
       });
     }
   }
   const explicit = { codec: "h264", priority: "speed", bitrate_kbps: 6000, resolution: "1080p" };
   assert.deepEqual(plain(api.normalizeRenderSettings({ ...explicit, quality: "high" })), explicit);
   assert.deepEqual(plain(api.normalizeRenderSettings({ codec: "h264", quality: "high", bitrate_kbps: 0 })), {
-    codec: "h264", priority: "speed", bitrate_kbps: 0, resolution: "1080p",
+    codec: "h264", priority: "speed", bitrate_kbps: 0, resolution: "original",
   });
 });
 
@@ -922,5 +922,5 @@ test("resolution choices preserve source orientation and original dimensions", (
   }
   assert.deepEqual(plain(api.renderDimensions("original", 853, 479)), { width: 854, height: 480 });
   assert.deepEqual(plain(api.renderDimensions("original", 1080, 1080)), { width: 1080, height: 1080 });
-  assert.equal(api.normalizeRenderSettings({ resolution: "unknown" }).resolution, "1080p");
+  assert.equal(api.normalizeRenderSettings({ resolution: "unknown" }).resolution, "original");
 });

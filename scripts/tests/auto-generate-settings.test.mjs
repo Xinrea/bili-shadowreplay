@@ -63,7 +63,7 @@ test("old auto-generation config gains HEVC/speed/10 Mbps without enabling autom
   assert.deepEqual(f.requests, []);
 });
 
-for (const [field, value] of [["codec", "h264"], ["priority", "quality"], ["bitrate_kbps", 16000], ["resolution", "original"], ["resolution", "4k"], ["resolution", "2k"]]) {
+for (const [field, value] of [["codec", "h264"], ["priority", "quality"], ["bitrate_kbps", 16000], ["resolution", "1080p"], ["resolution", "4k"], ["resolution", "2k"]]) {
   test(`editing automatic ${field} saves the complete independent encoding choice`, async () => {
     const f = fixture({ enabled: true, encode_danmu: false, render_settings: defaults() });
     await f.state.get_config();

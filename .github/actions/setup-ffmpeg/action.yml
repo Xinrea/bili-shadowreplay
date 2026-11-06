@@ -1,0 +1,61 @@
+name: Setup FFmpeg for Linux CI
+description: Build and cache a pinned FFmpeg SDK with matching CLI test oracles.
+
+inputs:
+  packages:
+    description: Additional apt packages required by the calling job.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install system dependencies
+      uses: ./.github/actions/apt-install
+      with:
+        packages: >-
+          build-essential pkg-config nasm clang libass-dev libfontconfig1-dev
+          libfreetype-dev libharfbuzz-dev libmp3lame-dev libopus-dev libx264-dev
+          libx265-dev libssl-dev zlib1g-dev ${{ inputs.packages }}
+
+    - id: platform
+      shell: bash
+      run: echo "image=$ImageOS" >> "$GITHUB_OUTPUT"
+
+    - id: cache
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.temp }}/ffmpeg-sdk
+        key: ffmpeg-${{ steps.platform.outputs.image }}-${{ runner.arch }}-${{ hashFiles('.github/actions/setup-ffmpeg/**') }}
+
+    - name: Build FFmpeg
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/build.sh" "$RUNNER_TEMP/ffmpeg-sdk"
+
+    - name: Select the SDK and matching CLI
+      shell: bash
+      run: |
+        prefix="$RUNNER_TEMP/ffmpeg-sdk"
+        echo "$prefix/bin" >> "$GITHUB_PATH"
+        echo "PKG_CONFIG_PATH=$prefix/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+        echo "LD_LIBRARY_PATH=$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+
+    - name: Verify FFmpeg SDK
+      shell: bash
+      run: |
+        ffmpeg -version
+        ffprobe -version
+        test "$(ffmpeg -version | head -n 1 | cut -d ' ' -f 3)" = "9.0.2"
+        test "$(ffprobe -version | head -n 1 | cut -d ' ' -f 3)" = "9.0.2"
+        # Check headers/linker discovery as well as the command-line version.
+        for library in libavcodec libavformat libavutil libavfilter libswresample libswscale; do
+          test "$(pkg-config --variable=prefix "$library")" = "$RUNNER_TEMP/ffmpeg-sdk"
+          pkg-config --modversion "$library"
+        done
+
+    - uses: actions/cache/save@v4
+      if: steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+      with:
+        path: ${{ runner.temp }}/ffmpeg-sdk
+        key: ${{ steps.cache.outputs.cache-primary-key }}

@@ -433,6 +433,10 @@ fn strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).into()).collect()
 }
 
+// Strict packet oracles need deterministic scaler rounding as well as a fixed
+// thread count. Use the same bit-exact bicubic path in native and CLI graphs.
+const ORACLE_SCALE: &str = "scale=64:48:flags=bicubic+accurate_rnd+bitexact";
+
 fn synthetic(input: &Path) {
     cli(
         &strings(&[
@@ -544,7 +548,7 @@ async fn native_software_encode_and_output_seek_match_cli_profiles_and_frames() 
         (Some(0.111), None),
     ] {
         let video = VideoEncodeOptions {
-            filter: Some("scale=64:48".into()),
+            filter: Some(ORACLE_SCALE.into()),
             threads: Some(1),
             gop: Some(120),
             options: [
@@ -580,7 +584,7 @@ async fn native_software_encode_and_output_seek_match_cli_profiles_and_frames() 
             "-t",
             "0.777",
             "-vf",
-            "scale=64:48",
+            ORACLE_SCALE,
             "-c:v",
             "libx264",
             "-threads:v",

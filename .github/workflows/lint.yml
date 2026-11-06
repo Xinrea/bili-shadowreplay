@@ -74,6 +74,7 @@ jobs:
               - '.pre-commit-config.yaml'
               - '.github/workflows/lint.yml'
               - '.github/actions/apt-install/**'
+              - '.github/actions/setup-ffmpeg/**'
 
   clippy-test:
     needs: changes
@@ -99,15 +100,16 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install system dependencies
-        uses: ./.github/actions/apt-install
-        with:
-          packages: libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libavfilter-dev ffmpeg libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libfontconfig1-dev fonts-wqy-microhei clang libclang-dev ninja-build python3 libicu-dev libharfbuzz-dev libpng-dev zlib1g-dev libexpat1-dev libjpeg-dev
-
+      # setup-python replaces PKG_CONFIG_PATH, so select the FFmpeg SDK afterward.
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.x"
+
+      - name: Setup FFmpeg and system dependencies
+        uses: ./.github/actions/setup-ffmpeg
+        with:
+          packages: libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf fonts-wqy-microhei libclang-dev ninja-build python3 libicu-dev libpng-dev libexpat1-dev libjpeg-dev
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -119,7 +121,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
-          key: linux-system-skia-v1
+          key: linux-system-skia-ffmpeg9-v1
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Swatinem/rust-cache deletes every file under non-profile `target/`

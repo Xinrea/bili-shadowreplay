@@ -441,12 +441,12 @@ async fn all_audio_mapping_keeps_each_track_order_metadata_and_packets() {
             mode: StreamMode::Copy,
         };
         let (request, args) = if graph {
-            let filter = "[0:v]scale=64:48[v]";
+            let filter = format!("[0:v]{ORACLE_SCALE}[v]");
             (
                 graph_plan(
                     vec![MediaInput::file(&source)],
                     vec![MediaOutput::file(&target)],
-                    filter,
+                    &filter,
                     vec![binding(0, true)],
                     vec![
                         graph_route("v", 0, StreamMode::Video(video_options())),
@@ -458,7 +458,7 @@ async fn all_audio_mapping_keeps_each_track_order_metadata_and_packets() {
                     "-i",
                     source.to_str().unwrap(),
                     "-filter_complex",
-                    filter,
+                    &filter,
                     "-map",
                     "[v]",
                     "-map",

@@ -48,7 +48,7 @@ pub enum EncodingPriority {
     Quality,
 }
 
-/// Output canvas orientation follows the first source on the main track.
+/// Presets use fixed landscape sizes; original preserves source dimensions.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RenderResolution {
     #[default]
@@ -64,21 +64,16 @@ pub enum RenderResolution {
 
 impl RenderResolution {
     pub fn dimensions(self, source_width: u32, source_height: u32) -> (u32, u32) {
-        let (width, height) = match self {
+        match self {
             Self::Original => {
                 // YUV 4:2:0 encoders require even dimensions. Round up instead
                 // of cropping the last row/column of an odd-sized source.
                 let even = |value: u32| value.max(2).saturating_add(1) & !1;
-                return (even(source_width), even(source_height));
+                (even(source_width), even(source_height))
             }
             Self::Uhd4k => (3840, 2160),
             Self::Qhd2k => (2560, 1440),
             Self::FullHd1080p => (1920, 1080),
-        };
-        if source_height > source_width {
-            (height, width)
-        } else {
-            (width, height)
         }
     }
 }
@@ -835,9 +830,9 @@ impl Timeline {
     /// Identifies an export: a different hash means the output is stale.
     pub fn render_hash(&self, extra: &str) -> String {
         let mut hasher = Sha256::new();
-        // Invalidate complete upload renders as well as individual segments
-        // when switching to premultiplied native overlay composition.
-        hasher.update(b"project-render-v3\0");
+        // Invalidate complete upload renders made with source-oriented presets.
+        // Segment keys already include the resolved canvas dimensions.
+        hasher.update(b"project-render-v4\0");
         hasher.update(self.to_json().as_bytes());
         hasher.update([0]);
         hasher.update(extra.as_bytes());
@@ -1024,36 +1019,58 @@ mod tests {
     }
 
     #[test]
-    fn output_resolution_preserves_orientation_and_roundtrips() {
-        for (resolution, name, landscape, portrait) in [
-            (
-                RenderResolution::Original,
-                "original",
-                (1280, 720),
-                (720, 1280),
-            ),
-            (RenderResolution::Uhd4k, "4k", (3840, 2160), (2160, 3840)),
-            (RenderResolution::Qhd2k, "2k", (2560, 1440), (1440, 2560)),
-            (
-                RenderResolution::FullHd1080p,
-                "1080p",
-                (1920, 1080),
-                (1080, 1920),
-            ),
+    fn output_resolution_presets_use_fixed_landscape_sizes_and_roundtrip() {
+        for (resolution, name, dimensions) in [
+            (RenderResolution::Uhd4k, "4k", (3840, 2160)),
+            (RenderResolution::Qhd2k, "2k", (2560, 1440)),
+            (RenderResolution::FullHd1080p, "1080p", (1920, 1080)),
         ] {
-            assert_eq!(resolution.dimensions(1280, 720), landscape);
-            assert_eq!(resolution.dimensions(720, 1280), portrait);
+            for (width, height) in [(1280, 720), (720, 1280), (1080, 1080)] {
+                assert_eq!(resolution.dimensions(width, height), dimensions);
+            }
             let settings: RenderSettings =
                 serde_json::from_value(serde_json::json!({ "resolution": name })).unwrap();
             assert_eq!(settings.resolution, resolution);
             assert_eq!(serde_json::to_value(settings).unwrap()["resolution"], name);
         }
-        assert_eq!(RenderResolution::Original.dimensions(853, 479), (854, 480));
-        assert_eq!(
-            RenderResolution::Original.dimensions(1080, 1080),
-            (1080, 1080)
-        );
         assert!(serde_json::from_str::<RenderSettings>(r#"{"resolution":"720p"}"#).is_err());
+    }
+
+    #[test]
+    fn original_resolution_preserves_source_dimensions_and_rounds_up_to_even() {
+        for (source, expected) in [
+            ((1280, 720), (1280, 720)),
+            ((720, 1280), (720, 1280)),
+            ((1080, 1080), (1080, 1080)),
+            ((853, 479), (854, 480)),
+            ((479, 853), (480, 854)),
+        ] {
+            assert_eq!(
+                RenderResolution::Original.dimensions(source.0, source.1),
+                expected
+            );
+        }
+        let settings: RenderSettings =
+            serde_json::from_value(serde_json::json!({ "resolution": "original" })).unwrap();
+        assert_eq!(settings.resolution, RenderResolution::Original);
+        assert_eq!(
+            serde_json::to_value(settings).unwrap()["resolution"],
+            "original"
+        );
+    }
+
+    #[test]
+    fn source_oriented_preset_renders_are_not_reused() {
+        let mut project = timeline();
+        project.render_settings.resolution = RenderResolution::FullHd1080p;
+        let mut previous = Sha256::new();
+        previous.update(b"project-render-v3\0");
+        previous.update(project.to_json().as_bytes());
+        previous.update([0]);
+        assert_ne!(
+            project.render_hash(""),
+            format!("{:x}", previous.finalize())
+        );
     }
 
     #[test]

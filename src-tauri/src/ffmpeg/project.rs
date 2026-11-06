@@ -2843,6 +2843,99 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn portrait_project_resolution_switches_to_landscape_1080p_with_pillarboxing() {
+        use crate::project::{RenderResolution, RenderSettings, VideoCodec};
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("portrait.mp4");
+        let output = directory.path().join("output.mp4");
+        let cache = directory.path().join("segments");
+        run_ffmpeg(
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "color=white:s=180x320:r=30:d=0.2",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+            ],
+            &source,
+        )
+        .await;
+        let mut project = ProjectRender {
+            clips: vec![RenderClip {
+                id: "portrait".into(),
+                path: source,
+                start: 0.0,
+                duration: 0.2,
+                has_audio: false,
+                fps: 30.0,
+                file_duration: 0.2,
+                volume: 1.0,
+            }],
+            overlays: Vec::new(),
+            sounds: Vec::new(),
+            subtitle_ass: None,
+            fonts_directory: None,
+            danmus: Vec::new(),
+            danmu_options: Danmu2AssOptions::default(),
+            render_settings: RenderSettings {
+                codec: VideoCodec::H264,
+                ..Default::default()
+            },
+            output: &output,
+            segment_cache: Some(&cache),
+        };
+        for (resolution, dimensions) in [
+            (RenderResolution::Original, (180, 320)),
+            (RenderResolution::FullHd1080p, (1920, 1080)),
+        ] {
+            project.render_settings.resolution = resolution;
+            let stats = render_with_encoder(&NoopReporter, &project, SEGMENT_LIMITS, "libx264")
+                .await
+                .unwrap();
+            assert_eq!(stats.reused, 0);
+            let probe = ffmpeg_utils::probe_media(&output).await.unwrap();
+            assert_eq!((probe.metadata.width, probe.metadata.height), dimensions);
+            assert_eq!(probe.display_dimensions, dimensions);
+        }
+
+        // Decode independently and verify the portrait fills the canvas height,
+        // remains centered at its original aspect ratio, and has black side bars.
+        let frame = ffmpeg_command()
+            .arg("-i")
+            .arg(&output)
+            .args([
+                "-frames:v",
+                "1",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "pipe:1",
+            ])
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            frame.status.success(),
+            "{}",
+            String::from_utf8_lossy(&frame.stderr)
+        );
+        assert_eq!(frame.stdout.len(), 1920 * 1080 * 3);
+        let pixel = |x: usize, y: usize| &frame.stdout[(y * 1920 + x) * 3..][..3];
+        for y in [10, 540, 1070] {
+            for x in [10, 640, 1280, 1910] {
+                assert!(pixel(x, y).iter().all(|channel| *channel < 10));
+            }
+            for x in [680, 960, 1240] {
+                assert!(pixel(x, y).iter().all(|channel| *channel > 240));
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn native_generated_segments_keep_exact_pcm_cache_and_previous_export_without_cli() {
         assert_generated_segments(hwaccel::RenderPipeline::cpu("libx264")).await;
     }

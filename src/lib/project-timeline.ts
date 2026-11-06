@@ -77,7 +77,7 @@ export function renderDimensions(resolution: RenderResolution, sourceWidth: numb
   }
   const [width, height] = resolution === "4k" ? [3840, 2160]
     : resolution === "2k" ? [2560, 1440] : [1920, 1080];
-  return sourceHeight > sourceWidth ? { width: height, height: width } : { width, height };
+  return { width, height };
 }
 
 /** Read timelines saved before codec and encoding priority were configurable. */

@@ -16,7 +16,7 @@ runs:
       uses: actions/cache/restore@v4
       with:
         path: ${{ runner.temp }}/ffmpeg-sdk
-        key: macos15-ffmpeg-${{ runner.arch }}-${{ steps.dependencies.outputs.identity }}-${{ hashFiles('.github/actions/setup-macos-ffmpeg/**', 'src-tauri/tauri.macos.conf.json') }}
+        key: macos15-ffmpeg-${{ runner.arch }}-${{ steps.dependencies.outputs.identity }}-${{ hashFiles('.github/actions/setup-macos-ffmpeg/build.sh', 'src-tauri/tauri.macos.conf.json') }}
 
     - name: Build FFmpeg for macOS 15
       if: steps.cache.outputs.cache-hit != 'true'
@@ -46,6 +46,24 @@ runs:
           grep -w "$encoder" "$RUNNER_TEMP/ffmpeg-encoders.txt"
         done
         ffmpeg -hide_banner -hwaccels | grep -w vulkan
+
+    - name: Check deployment baseline before compiling the application
+      shell: bash
+      run: |
+        probe=$(mktemp -d)
+        trap 'rm -rf "$probe"' EXIT
+        cat > "$probe/probe.c" <<'EOF'
+        #include <libavformat/avformat.h>
+        #include <libavcodec/avcodec.h>
+        #include <libavfilter/avfilter.h>
+        #include <libswresample/swresample.h>
+        int main(void) { return !(avformat_version() && avcodec_version() && avfilter_version() && swresample_version()); }
+        EOF
+        minimum=$(node -p "JSON.parse(require('fs').readFileSync('src-tauri/tauri.macos.conf.json', 'utf8')).bundle.macOS.minimumSystemVersion")
+        cc "$probe/probe.c" -I"$FFMPEG_DIR/include" -L"$FFMPEG_DIR/lib" \
+          -lavformat -lavcodec -lavfilter -lswresample \
+          "-mmacosx-version-min=$minimum" -Wl,-headerpad_max_install_names -o "$probe/probe"
+        node scripts/bundle-macos-ffmpeg.mjs --binary "$probe/probe" --runtime "$probe/runtime"
 
     - uses: actions/cache/save@v4
       if: steps.cache.outputs.cache-hit != 'true'

@@ -160,7 +160,7 @@ pub(super) fn definitions(clip_range_params: Value) -> Vec<(&'static str, String
                     "render_settings": {
                         "type": "object",
                         "properties": {
-                            "resolution": { "type": "string", "enum": ["original", "4k", "2k", "1080p"], "default": "1080p" },
+                            "resolution": { "type": "string", "enum": ["original", "4k", "2k", "1080p"], "default": "original" },
                             "codec": { "type": "string", "enum": ["hevc", "h264"], "default": "hevc" },
                             "priority": { "type": "string", "enum": ["speed", "quality"], "default": "speed" },
                             "bitrate_kbps": { "type": "integer", "minimum": 500, "maximum": 100000, "default": 10000, "description": "Target video bitrate in Kbps." }

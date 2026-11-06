@@ -2776,7 +2776,7 @@ mod tests {
         project.render_settings.codec = crate::project::VideoCodec::H264;
         assert_ne!(bitrate, keys(&project, ""));
         let codec = keys(&project, "");
-        project.render_settings.resolution = crate::project::RenderResolution::Original;
+        project.render_settings.resolution = crate::project::RenderResolution::FullHd1080p;
         assert_ne!(codec, keys(&project, ""));
     }
 
@@ -2838,7 +2838,7 @@ mod tests {
         project.render_settings.bitrate_kbps = 4000;
         assert_eq!(render(&project).await.reused, 0);
         let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
-        assert_eq!((metadata.width, metadata.height), (1920, 1080));
+        assert_eq!((metadata.width, metadata.height), (320, 180));
         assert!((metadata.duration - 1.0).abs() < 0.1);
     }
 
@@ -4017,7 +4017,7 @@ mod tests {
         .await
         .unwrap();
         let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
-        assert_eq!((metadata.width, metadata.height), (1920, 1080));
+        assert_eq!((metadata.width, metadata.height), (320, 180));
         assert_eq!(metadata.fps, 60.0);
         assert!(!metadata.audio_codec.is_empty());
         assert!(

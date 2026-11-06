@@ -695,7 +695,7 @@ mod tests {
         .await
         .unwrap();
         let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
-        assert_eq!((metadata.width, metadata.height), (1920, 1080));
+        assert_eq!((metadata.width, metadata.height), (160, 90));
         assert_eq!(metadata.fps, 60.0);
         assert!(
             (metadata.duration - 1.1).abs() < 0.02,

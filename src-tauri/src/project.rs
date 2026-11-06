@@ -51,13 +51,13 @@ pub enum EncodingPriority {
 /// Output canvas orientation follows the first source on the main track.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RenderResolution {
+    #[default]
     #[serde(rename = "original")]
     Original,
     #[serde(rename = "4k")]
     Uhd4k,
     #[serde(rename = "2k")]
     Qhd2k,
-    #[default]
     #[serde(rename = "1080p")]
     FullHd1080p,
 }
@@ -978,7 +978,7 @@ mod tests {
         let defaults = RenderSettings::default();
         assert_eq!(
             serde_json::to_value(&defaults).unwrap(),
-            json!({ "codec": "hevc", "priority": "speed", "bitrate_kbps": 10000, "resolution": "1080p" })
+            json!({ "codec": "hevc", "priority": "speed", "bitrate_kbps": 10000, "resolution": "original" })
         );
         assert_eq!(
             serde_json::from_str::<RenderSettings>("{}").unwrap(),
@@ -1020,7 +1020,7 @@ mod tests {
         assert_eq!(explicit.codec, VideoCodec::H264);
         assert_eq!(explicit.priority, EncodingPriority::Speed);
         assert_eq!(explicit.bitrate_kbps, 10_000);
-        assert_eq!(explicit.resolution, RenderResolution::FullHd1080p);
+        assert_eq!(explicit.resolution, RenderResolution::Original);
     }
 
     #[test]
@@ -1060,7 +1060,7 @@ mod tests {
     fn changing_only_resolution_invalidates_render_cache() {
         let base = timeline();
         for resolution in [
-            RenderResolution::Original,
+            RenderResolution::FullHd1080p,
             RenderResolution::Uhd4k,
             RenderResolution::Qhd2k,
         ] {

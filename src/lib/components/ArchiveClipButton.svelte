@@ -329,7 +329,7 @@
                     ? "按以下设置重新编码，耗时较长"
                     : "保留原始编码，直接复制并拼接片段"}
               </p>
-              <RenderSettingsFields bind:value={renderSettings} disabled={!embedDanmu && !reencode} />
+              <RenderSettingsFields bind:value={renderSettings} streamCopy={!embedDanmu && !reencode} />
             </div>
 
             <div class="space-y-2.5">

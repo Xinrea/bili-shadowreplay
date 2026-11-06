@@ -16,7 +16,7 @@ const output = ts.transpileModule(`${script}
   }
 `, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
 const plain = (value) => JSON.parse(JSON.stringify(value));
-const defaults = () => ({ codec: "hevc", priority: "speed", bitrate_kbps: 10000 });
+const defaults = () => ({ codec: "hevc", priority: "speed", bitrate_kbps: 10000, resolution: "original" });
 
 async function fixture() {
   const requests = [], generated = [];
@@ -123,13 +123,14 @@ test("complete recording encoding is optional unless danmaku is embedded", async
   const f = await fixture();
   for (const encode of [false, true]) {
     for (const danmu of [false, true, false]) {
-      f.handlers.configure(defaults(), danmu, ["first", "second"], encode);
+      const settings = { ...defaults(), resolution: "2k" };
+      f.handlers.configure(settings, danmu, ["first", "second"], encode);
       const completion = f.handlers.generateWholeClip();
       const request = f.requests.at(-1);
       assert.equal(request.args.encodeDanmu, danmu);
       assert.deepEqual(
         plain(request.args).renderSettings,
-        danmu || encode ? defaults() : undefined,
+        danmu || encode ? settings : undefined,
       );
       request.resolve({ id: "task" });
       await completion;

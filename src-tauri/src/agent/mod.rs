@@ -540,7 +540,7 @@ impl BsrTool {
                     "codec": { "type": "string", "enum": ["hevc", "h264"] },
                     "priority": { "type": "string", "enum": ["speed", "quality"] },
                     "bitrate_kbps": { "type": "integer", "minimum": 500, "maximum": 100000 },
-                    "resolution": { "type": "string", "enum": ["original", "4k", "2k", "1080p"], "default": "1080p", "description": "Original preserves source dimensions; presets follow the source orientation." }
+                    "resolution": { "type": "string", "enum": ["original", "4k", "2k", "1080p"], "default": "original", "description": "Original preserves source dimensions; presets follow the source orientation." }
                 },
                 "additionalProperties": false
             })

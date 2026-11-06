@@ -94,7 +94,9 @@ Ubuntu 24.04 / Debian 的开发依赖：
 sudo apt install clang libclang-dev pkg-config libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libavfilter-dev
 ```
 
-CI 和 Docker builder 已安装这些开发包。Docker runtime 保持与 builder 相同的 Debian trixie 基线，安装 `libavformat61`、`libavcodec61`、`libavutil59`、`libswresample5`、`libavfilter10` 和 `libswscale8`，不安装 CLI 可执行文件；镜像构建会用 `ldd` 检查所有动态依赖。Ubuntu 24.04 桌面 `.deb` 显式依赖 `libavformat60`、`libavcodec60`、`libavutil58`、`libswresample4` 和 `libavfilter9`；其他发行版需使用自身匹配的包，不能直接照搬这些 ABI 名称。
+Linux 的 Tests 和 Lint CI 通过共享的 `setup-ffmpeg` action 构建并缓存固定版本 FFmpeg 9.0.2，校验源包 SHA-256，并统一配置头文件、共享库和 CLI 的搜索路径。首次缓存未命中时需要编译 SDK；后续复用缓存。CLI 对照测试保留逐包比较，避免 Ubuntu 24.04 自带的 FFmpeg 6.1 与开发 SDK 版本不同。
+
+Docker builder 安装发行版的开发包。Docker runtime 保持与 builder 相同的 Debian trixie 基线，安装 `libavformat61`、`libavcodec61`、`libavutil59`、`libswresample5`、`libavfilter10` 和 `libswscale8`，不安装 CLI 可执行文件；镜像构建会用 `ldd` 检查所有动态依赖。Ubuntu 24.04 桌面 `.deb` 显式依赖 `libavformat60`、`libavcodec60`、`libavutil58`、`libswresample4` 和 `libavfilter9`；其他发行版需使用自身匹配的包，不能直接照搬这些 ABI 名称。
 
 ### Windows
 

@@ -213,7 +213,10 @@ rand = "0.10"
 m3u8-rs = "6.0"
 
 # ffmpeg-sys-next 9's unoptimized build script overflows Windows' 1 MiB
-# executable stack before main. Optimize this FFI crate, keeping app code in
-# the normal dev profile and avoiding global linker/stack environment flags.
+# executable stack. Build scripts are unoptimized even in release by default,
+# so override this FFI crate in both profiles without global linker/stack flags.
 [profile.dev.package.ffmpeg-sys-next]
 opt-level = 1
+
+[profile.release.package.ffmpeg-sys-next]
+opt-level = 3

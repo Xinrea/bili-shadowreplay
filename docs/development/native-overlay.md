@@ -19,7 +19,7 @@ yarn tauri dev
 
 启动器自动导入 Visual Studio 开发环境，发现 LLVM/libclang 的标准安装位置，准备 FFmpeg shared SDK、运行 DLL 和 Skia，并仅对子进程设置 `PATH`、`FFMPEG_DIR`、`LIBCLANG_PATH`、`SKIA_BINARIES_URL`。无需修改全局环境或使用 Developer PowerShell；显式指定的 SDK/Skia 路径仍保留。
 
-`ffmpeg-sys-next` 9 的未优化构建脚本在 Windows 默认栈上可能溢出，因此开发 profile 仅对该 FFI 依赖启用 `opt-level=1`；应用代码仍使用正常 debug 配置，无需设置全局栈或链接参数。
+`ffmpeg-sys-next` 9 的未优化构建脚本在 Windows 默认栈上可能溢出。Cargo 默认在 Release 模式下也不优化构建脚本，因此仅对该 FFI 依赖分别设置开发 profile 的 `opt-level=1` 和 Release profile 的 `opt-level=3`；应用代码仍使用各自的正常配置，无需设置全局栈或链接参数。FFmpeg SDK 解压会先使用 Windows tar；旧版 tar 不支持压缩包中的 LZMA 时，会自动重试已安装的 7-Zip。
 
 直接调用 Cargo、绕过 `yarn tauri` 时，仍可使用独立准备脚本：
 

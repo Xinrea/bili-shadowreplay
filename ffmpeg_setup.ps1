@@ -54,10 +54,21 @@ if ($env:FFMPEG_DIR) {
         }
         if ((File-Hash $archive) -ne $expectedHash) { throw "FFmpeg archive checksum mismatch: $archive. Remove it and retry." }
         Write-Host "[native] Preparing FFmpeg $version shared SDK"
-        if (Test-Path $tar) { & $tar -xf $archive -C $work }
-        else { & $sevenZipPath x $archive "-o$work" -y | Out-Null }
-        if ($LASTEXITCODE -ne 0) { throw "Failed to unpack FFmpeg SDK" }
         $unpacked = Join-Path $work "ffmpeg-$version-full_build-shared"
+        $extracted = $false
+        if (Test-Path $tar) {
+            & $tar -xf $archive -C $work
+            $extracted = $LASTEXITCODE -eq 0
+        }
+        if (-not $extracted -and $sevenZipPath) {
+            # Older Windows tar builds cannot decode LZMA in this 7z archive.
+            # Discard partial output before retrying with the discovered 7-Zip.
+            if (Test-Path $unpacked) { Remove-Item -LiteralPath $unpacked -Recurse -Force }
+            Write-Host "[native] Unpacking FFmpeg SDK with 7-Zip"
+            & $sevenZipPath x $archive "-o$work" -y | Out-Null
+            $extracted = $LASTEXITCODE -eq 0
+        }
+        if (-not $extracted) { throw "Failed to unpack FFmpeg SDK. Install 64-bit 7-Zip if Windows tar does not support this archive." }
         Assert-Sdk $unpacked
         $files = [ordered]@{}
         $entries = @(Get-ChildItem (Join-Path $unpacked 'include') -Recurse -File) + @(Get-ChildItem (Join-Path $unpacked 'lib') -File) + @(Get-ChildItem (Join-Path $unpacked 'bin/*.dll') -File)

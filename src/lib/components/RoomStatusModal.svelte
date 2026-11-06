@@ -9,11 +9,9 @@
   import { formatBitrate, formatSize } from "../size-format";
   import { formatTimecode } from "../time-format";
   import { createStateRefresh, watchStateChanges } from "../state-refresh";
-  import { archiveViewMode } from "../stores/archive-view";
   import type { RecordItem } from "../db";
   import type { RecorderInfo, RecorderStatus } from "../interface";
   import type { RtmpIngestInfo } from "../rtmp";
-  import ArchiveList from "./ArchiveList.svelte";
   import ArchiveCover from "./ArchiveCover.svelte";
   import RoomCheckTimeline from "./RoomCheckTimeline.svelte";
   import RtmpIngestSettings from "./RtmpIngestSettings.svelte";
@@ -30,7 +28,6 @@
   let archivesLoading = $state(true);
   let archivesLoaded = $state(false);
   let archivesError = $state("");
-  let archiveDialogOpen = $state(false);
   let coverUrl = $state<string | null>(null);
   let requestedCover: string | null = null;
   let coverRequest = 0;
@@ -136,7 +133,7 @@
 </script>
 
 <svelte:window onkeydown={(event) => {
-  if (event.key === "Escape" && pageVisible() && !archiveDialogOpen && !event.defaultPrevented && !event.isComposing) {
+  if (event.key === "Escape" && pageVisible() && !event.defaultPrevented && !event.isComposing) {
     event.preventDefault();
     event.stopImmediatePropagation();
     onclose();
@@ -145,7 +142,7 @@
 
 <div class="ui-modal-backdrop">
   <button class="absolute inset-0" type="button" aria-label="关闭房间状态" onclick={onclose}></button>
-  <div use:trapFocus={{ active: pageVisible() }} role="dialog" aria-modal="true" aria-labelledby="room-status-title" tabindex="-1" class="ui-modal room-status-modal relative w-[1040px] max-w-full" class:calendar-open={$archiveViewMode === "calendar"}>
+  <div use:trapFocus={{ active: pageVisible() }} role="dialog" aria-modal="true" aria-labelledby="room-status-title" tabindex="-1" class="ui-modal room-status-modal relative w-[900px] max-w-full">
     <div class="ui-modal-header">
       <div class="flex items-center gap-2"><Activity class="h-4 w-4 text-fg-muted" /><h2 id="room-status-title">房间状态</h2></div>
       <div class="flex items-center gap-1.5">
@@ -156,7 +153,7 @@
       </div>
     </div>
 
-    <div class="room-status-overview custom-scrollbar-light max-h-[52vh] shrink-0 overflow-y-auto border-b border-line px-4 py-4">
+    <div class="custom-scrollbar-light min-h-0 flex-1 overflow-y-auto px-4 py-4">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div class="flex min-w-0 flex-[1_1_240px] items-center gap-3">
           <ArchiveCover src={coverUrl || room.room_info.room_cover} alt="直播间封面" class="h-16 w-28 shrink-0 rounded-[7px]" loading="eager" />
@@ -200,6 +197,12 @@
             <div><dt>总录制时长</dt><dd data-room-total="length">{archivesLoaded ? formatTimecode(archiveTotals.length, 0) : "—"}</dd></div>
             <div><dt>总录制大小</dt><dd data-room-total="size">{archivesLoaded ? formatSize(archiveTotals.size) : "—"}</dd></div>
           </dl>
+          {#if archivesError}
+            <div role="alert" class="mt-2 flex items-start gap-2 text-[12px] text-danger-fg">
+              <span class="min-w-0 flex-1 select-text break-words">{archivesError}</span>
+              <button class="shrink-0 underline" disabled={archivesLoading} onclick={() => archivesRefresh.run()}>重试</button>
+            </div>
+          {/if}
         </section>
 
         <section aria-labelledby="room-recording-title" class="min-w-0">
@@ -260,8 +263,6 @@
 
     </div>
 
-    <ArchiveList {archives} rooms={[info]} loading={archivesLoading} error={archivesError} compact bind:dialogOpen={archiveDialogOpen} onrefresh={() => archivesRefresh.run()} />
-
     <div class="flex shrink-0 items-center justify-between gap-3 border-t border-line bg-chrome px-4 py-2 text-[11px] text-fg-muted">
       <span>状态自动更新，累计数据按现存录播计算。</span>
       <button type="button" class="ui-btn ui-btn-sm" onclick={onclose}>关闭</button>
@@ -279,7 +280,5 @@
   summary::-webkit-details-marker { display: none; }
   @media (max-height: 850px) {
     .room-status-modal { max-height: calc(100vh - 72px); }
-    .room-status-overview { max-height: min(52vh, calc(100vh - 380px)); }
-    .calendar-open .room-status-overview { max-height: calc(100vh - 460px); }
   }
 </style>

@@ -1,18 +1,15 @@
 <script lang="ts">
   import { createStateRefresh, watchStateChanges } from "../lib/state-refresh";
-  import { formatSize } from "../lib/size-format";
   import { liveRoomUrl } from "../lib/platform";
-  import { invoke, open, onOpenUrl, get_static_url, get } from "../lib/invoker";
+  import { invoke, open, onOpenUrl, get } from "../lib/invoker";
   import { message } from "@tauri-apps/plugin-dialog";
   import { fade, scale } from "svelte/transition";
   import { Dropdown, DropdownItem } from "flowbite-svelte";
   import type { RecorderList, RecorderInfo } from "../lib/interface";
-  import type { RecordItem } from "../lib/db";
   import {
     Ellipsis,
     Play,
     Plus,
-    FileVideo,
     Search,
     Trash2,
     X,
@@ -31,10 +28,10 @@
   import YouTubeIcon from "../lib/components/YouTubeIcon.svelte";
   import PlatformIconTabs from "../lib/components/PlatformIconTabs.svelte";
   import AutoRecordIcon from "../lib/components/AutoRecordIcon.svelte";
-  import GenerateWholeClipModal from "../lib/components/GenerateWholeClipModal.svelte";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
   import DeleteConfirmActions from "../lib/components/DeleteConfirmActions.svelte";
   import RoomStatusModal from "../lib/components/RoomStatusModal.svelte";
+  import RoomArchiveModal from "../lib/components/RoomArchiveModal.svelte";
   import { onMount } from "svelte";
   import { registerCommands } from "../lib/stores/commands";
 
@@ -207,121 +204,13 @@
   let selectedPlatform = $state("bilibili");
   let creatingRoom = $state(false);
 
-  let archiveModal = $state(false);
-  let archiveRoom: RecorderInfo = $state(null);
-  let archives: RecordItem[] = $state([]);
-
-  // 分页相关状态
-  let currentPage = $state(0);
-  let pageSize = 20;
-  let hasMore = $state(true);
-  let isLoading = $state(false);
-  let loadError = $state("");
-
-  async function showArchives(room_id: string) {
-    // 重置分页状态
-    currentPage = 0;
-    archives = [];
-    hasMore = true;
-    isLoading = false;
-    loadError = "";
-
-    updateArchives();
-    archiveModal = true;
-    console.log(archives);
-  }
-
-  async function updateArchives() {
-    if (isLoading || !hasMore) return;
-
-    isLoading = true;
-
-    try {
-      let new_archives = (await invoke("get_archives", {
-        platform: archiveRoom.room_info.platform,
-        roomId: archiveRoom.room_info.room_id,
-        offset: currentPage * pageSize,
-        limit: pageSize,
-      })) as RecordItem[];
-
-      for (const archive of new_archives) {
-        archive.cover = await get_static_url(
-          "cache",
-          `${archive.platform}/${archive.room_id}/${archive.live_id}/cover.jpg`,
-        );
-      }
-
-      // 如果是第一页，直接替换；否则追加数据
-      if (currentPage === 0) {
-        archives = new_archives;
-      } else {
-        archives = [...archives, ...new_archives];
-      }
-
-      // 检查是否还有更多数据
-      hasMore = new_archives.length === pageSize;
-
-      // 按时间排序
-      archives.sort((a, b) => {
-        return (
-          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-        );
-      });
-
-      // 更新总数（如果后端支持的话）
-      // totalCount = await invoke("get_archives_count", { roomId: archiveRoom.room_id });
-
-      currentPage++;
-    } catch (error) {
-      console.error("Failed to load archives:", error);
-      loadError = "加载失败，请重试";
-    } finally {
-      isLoading = false;
-    }
-  }
-
-  async function loadMoreArchives() {
-    await updateArchives();
-  }
-
-  function handleScroll(event: Event) {
-    const target = event.target as HTMLElement;
-    const { scrollTop, scrollHeight, clientHeight } = target;
-
-    // 当滚动到距离底部100px时，自动加载更多
-    if (
-      scrollHeight - scrollTop - clientHeight < 100 &&
-      hasMore &&
-      !isLoading
-    ) {
-      loadMoreArchives();
-    }
-  }
-
-  function format_ts(ts_string: string) {
-    const date = new Date(ts_string);
-    return date.toLocaleString();
-  }
-
-  function format_duration(duration: number) {
-    duration = Math.round(duration);
-    const hours = Math.floor(duration / 3600)
-      .toString()
-      .padStart(2, "0");
-    const minutes = Math.floor((duration % 3600) / 60)
-      .toString()
-      .padStart(2, "0");
-    const seconds = (duration % 60).toString().padStart(2, "0");
-
-    return `${hours}:${minutes}:${seconds}`;
-  }
-
-  function calc_bitrate(size: number, duration: number) {
-    return ((size * 8) / duration / 1024).toFixed(0);
-  }
+  let archiveRoom: RecorderInfo | null = $state(null);
+  const currentArchiveRoom = $derived(archiveRoom && (summary.recorders.find((room) =>
+    room.room_info.platform === archiveRoom.room_info.platform &&
+    room.room_info.room_id === archiveRoom.room_info.room_id) ?? archiveRoom));
 
   function handleModalClickOutside(event) {
-    if (statusRoom) return;
+    if (statusRoom || archiveRoom) return;
     // 检查点击是否在任何modal内部
     const clickedElement = event.target;
 
@@ -330,30 +219,7 @@
       return;
     }
 
-    // 按层级顺序检查modal，优先处理最上层的modal
-    // 如果点击在最上层modal内部，则不处理任何modal关闭
-
-    // 最上层：generateWholeClipModal (handled by component)
-    if (generateWholeClipModal) {
-      return; // Let the component handle its own modal closing
-    }
-
-    // 第二层：archiveModal
-    if (archiveModal) {
-      const archiveModalEl = document.querySelector(".archive-modal");
-      if (archiveModalEl) {
-        if (archiveModalEl.contains(clickedElement)) {
-          // 点击在archiveModal内部，不关闭任何modal
-          return;
-        } else {
-          // 点击在archiveModal外部，关闭它
-          archiveModal = false;
-          return;
-        }
-      }
-    }
-
-    // 第三层：addModal
+    // 添加直播间弹窗
     if (addModal) {
       const addModalEl = document.querySelector(".add-modal");
       if (addModalEl) {
@@ -368,7 +234,7 @@
       }
     }
 
-    // 第四层：deleteModal
+    // 删除直播间弹窗
     if (deleteModal) {
       if (deletingRoom) return;
       const deleteModalEl = document.querySelector(".delete-modal");
@@ -519,19 +385,6 @@
         await message(e);
       })
       .finally(() => { creatingRoom = false; });
-  }
-
-  let generateWholeClipModal = $state(false);
-  let generateWholeClipArchive: RecordItem = $state(null);
-
-  async function openGenerateWholeClipModal(archive: RecordItem) {
-    generateWholeClipModal = true;
-    generateWholeClipArchive = archive;
-  }
-
-  function handleWholeClipGenerated() {
-    generateWholeClipModal = false;
-    generateWholeClipArchive = null;
   }
 
   onMount(async () => {
@@ -782,10 +635,9 @@
                 {/if}
                 <button
                   class="ui-btn ui-btn-ghost ui-btn-icon"
-                  onclick={() => {
-                    archiveRoom = room;
-                    showArchives(room.room_info.room_id);
-                  }}
+                  title="录播历史"
+                  aria-label={`查看 ${room.user_info.user_name || room.room_info.room_id} 的录播历史`}
+                  onclick={() => { archiveRoom = room; }}
                 >
                   <History class="h-4 w-4" />
                 </button>
@@ -912,205 +764,15 @@
   </div>
 {/if}
 
-{#if archiveModal}
-  <div class="ui-modal-backdrop" transition:fade={{ duration: 200 }}>
-    <div
-      class="ui-modal archive-modal max-h-[80vh] w-[900px]"
-      transition:scale={{ duration: 150, start: 0.95 }}
-    >
-      <!-- Header -->
-      <div class="ui-modal-header">
-        <div class="flex min-w-0 items-baseline gap-2.5">
-          <h2 class="shrink-0">直播间记录</h2>
-          <span class="truncate text-[12px] font-normal text-fg-muted">
-            {archiveRoom?.user_info.user_name} · {archiveRoom?.room_info
-              .room_id}
-          </span>
-        </div>
-        <button
-          class="ui-btn ui-btn-ghost ui-btn-sm ui-btn-icon -mr-1.5"
-          onclick={() => (archiveModal = false)}
-        >
-          <X class="h-4 w-4" />
-        </button>
-      </div>
-
-      <div
-        class="custom-scrollbar-light flex-1 overflow-auto"
-        onscroll={handleScroll}
-      >
-        <div class="p-[18px]">
-          <div class="custom-scrollbar-light overflow-x-auto">
-            <table class="w-full">
-              <thead>
-                <tr class="border-b border-line">
-                  <th
-                    class="px-3 py-2 text-left text-[11px] font-medium text-fg-muted"
-                    >直播时间</th
-                  >
-                  <th
-                    class="px-3 py-2 text-left text-[11px] font-medium text-fg-muted"
-                    >标题</th
-                  >
-                  <th
-                    class="px-3 py-2 text-left text-[11px] font-medium text-fg-muted"
-                    >时长</th
-                  >
-                  <th
-                    class="px-3 py-2 text-left text-[11px] font-medium text-fg-muted"
-                    >大小</th
-                  >
-                  <th
-                    class="px-3 py-2 text-left text-[11px] font-medium text-fg-muted"
-                    >码率</th
-                  >
-                  <th
-                    class="px-3 py-2 text-left text-[11px] font-medium text-fg-muted"
-                    >操作</th
-                  >
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-line">
-                {#each archives as archive (archive.parent_id + ":" + archive.live_id)}
-                  <tr class="group transition-colors hover:bg-control">
-                    <td class="px-3 py-2.5">
-                      <div class="flex flex-col tabular-nums">
-                        <span class="text-[12px] text-fg"
-                          >{format_ts(archive.created_at).split(" ")[0]}</span
-                        >
-                        <span class="text-[11px] text-fg-muted"
-                          >{format_ts(archive.created_at).split(" ")[1]}</span
-                        >
-                      </div>
-                    </td>
-                    <td class="px-3 py-2.5">
-                      <div class="flex items-center space-x-3">
-                        <img
-                          src={archive.cover}
-                          alt="cover"
-                          class="h-8 w-12 rounded-[5px] bg-sunken object-cover"
-                        />
-                        <span class="text-[12px] text-fg">{archive.title}</span>
-                      </div>
-                    </td>
-                    <td class="px-3 py-2.5 text-[12px] tabular-nums text-fg"
-                      >{format_duration(archive.length)}</td
-                    >
-                    <td class="px-3 py-2.5 text-[12px] tabular-nums text-fg"
-                      >{formatSize(archive.size)}</td
-                    >
-                    <td
-                      class="px-3 py-2.5 text-[12px] tabular-nums text-fg-muted"
-                      >{calc_bitrate(archive.size, archive.length)} Kbps</td
-                    >
-                    <td class="px-3 py-2.5">
-                      <div class="flex items-center space-x-1">
-                        <button
-                          class="inline-flex h-[26px] w-[26px] items-center justify-center rounded-[7px] text-accent-fg transition-colors hover:bg-accent-soft"
-                          title="预览录播"
-                          onclick={() => {
-                            invoke("open_live", {
-                              platform: archiveRoom.room_info.platform,
-                              roomId: archiveRoom.room_info.room_id,
-                              liveId: archive.live_id,
-                            });
-                          }}
-                        >
-                          <PlayIcon class="h-4 w-4" />
-                        </button>
-                        <button
-                          class="inline-flex h-[26px] w-[26px] items-center justify-center rounded-[7px] text-accent-fg transition-colors hover:bg-accent-soft"
-                          title="生成完整切片"
-                          onclick={() => {
-                            openGenerateWholeClipModal(archive);
-                          }}
-                        >
-                          <FileVideo class="h-4 w-4" />
-                        </button>
-                        <button
-                          class="inline-flex h-[26px] w-[26px] items-center justify-center rounded-[7px] text-danger-fg transition-colors hover:bg-danger-soft"
-                          title="删除记录"
-                          onclick={() => {
-                            invoke("delete_archive", {
-                              platform: archiveRoom.room_info.platform,
-                              roomId: archiveRoom.room_info.room_id,
-                              liveId: archive.live_id,
-                            })
-                              .then(async () => {
-                                // 删除后重新加载第一页数据
-                                currentPage = 0;
-                                archives = [];
-                                hasMore = true;
-                                loadError = "";
-                                await updateArchives();
-                              })
-                              .catch((e) => {
-                                alert(e);
-                              });
-                          }}
-                        >
-                          <Trash2 class="h-4 w-4" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </div>
-
-          <!-- 加载更多区域 -->
-          <div class="mt-4 flex justify-center">
-            {#if loadError}
-              <div class="mb-3 text-[12px] text-danger-fg">
-                {loadError}
-                <button
-                  class="ml-2 text-accent-fg underline hover:opacity-80"
-                  onclick={() => {
-                    loadError = "";
-                    loadMoreArchives();
-                  }}
-                >
-                  重试
-                </button>
-              </div>
-            {/if}
-
-            {#if isLoading && currentPage === 0}
-              <div class="flex items-center space-x-2 text-[12px] text-fg-muted">
-                <div
-                  class="h-5 w-5 animate-spin rounded-full border-b-2 border-accent"
-                ></div>
-                <span>加载中...</span>
-              </div>
-            {:else if isLoading}
-              <div class="flex items-center space-x-2 text-[12px] text-fg-muted">
-                <div
-                  class="h-4 w-4 animate-spin rounded-full border-b-2 border-accent"
-                ></div>
-                <span>加载更多...</span>
-              </div>
-            {:else if archives.length === 0 && !isLoading}
-              <div class="text-[12px] text-fg-muted">暂无录制记录</div>
-            {/if}
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
+{#if currentArchiveRoom}
+  {#key currentArchiveRoom.room_info.platform + ":" + currentArchiveRoom.room_info.room_id}
+    <RoomArchiveModal room={currentArchiveRoom} onclose={() => { archiveRoom = null; }} />
+  {/key}
 {/if}
 
 {#if statusRoom}
   <RoomStatusModal room={statusRoom} onclose={closeRoomStatus} />
 {/if}
-
-<!-- Generate Whole Clip Modal -->
-<GenerateWholeClipModal
-  bind:showModal={generateWholeClipModal}
-  archive={generateWholeClipArchive}
-  roomId={generateWholeClipArchive?.room_id || ""}
-  onGenerated={handleWholeClipGenerated}
-/>
 
 <svelte:window onmousedown={handleModalClickOutside} />
 

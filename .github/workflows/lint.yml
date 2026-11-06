@@ -100,15 +100,16 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Setup FFmpeg and system dependencies
-        uses: ./.github/actions/setup-ffmpeg
-        with:
-          packages: libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf fonts-wqy-microhei libclang-dev ninja-build python3 libicu-dev libpng-dev libexpat1-dev libjpeg-dev
-
+      # setup-python replaces PKG_CONFIG_PATH, so select the FFmpeg SDK afterward.
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.x"
+
+      - name: Setup FFmpeg and system dependencies
+        uses: ./.github/actions/setup-ffmpeg
+        with:
+          packages: libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf fonts-wqy-microhei libclang-dev ninja-build python3 libicu-dev libpng-dev libexpat1-dev libjpeg-dev
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable

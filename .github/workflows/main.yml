@@ -138,7 +138,12 @@ jobs:
         shell: pwsh
         # Keep shared libraries/headers for native linking; no CLI executables are bundled.
         # This script is located in the root of the repository.
-        run: ./ffmpeg_setup.ps1
+        run: |
+          # rust-cache prunes non-Cargo headers beneath target. Re-extract the
+          # verified SDK archive instead of trusting a restored partial tree.
+          $sdkCache = "src-tauri/target/ffmpeg-sdk"
+          if (Test-Path $sdkCache) { Remove-Item -LiteralPath $sdkCache -Recurse -Force }
+          ./ffmpeg_setup.ps1
 
       - name: install frontend dependencies
         # If you don't have `beforeBuildCommand` configured you may want to build your frontend here too.

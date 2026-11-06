@@ -21,6 +21,7 @@ pub struct VideoMetadata {
     /// Positive video-track duration, falling back to the container span.
     /// Unknown and zero durations are reported as `0.0`.
     pub duration: f64,
+    /// Coded dimensions, before applying the stream display matrix.
     pub width: u32,
     pub height: u32,
     pub video_codec: String,
@@ -64,6 +65,9 @@ pub struct AudioStreamMetadata {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MediaProbe {
     pub metadata: VideoMetadata,
+    /// Pixel dimensions after the same stream autorotation used by media decoding.
+    /// Quarter-turn matrices swap the coded dimensions; SAR is not applied.
+    pub display_dimensions: (u32, u32),
     pub container_duration: Option<f64>,
     pub container_start_time: Option<f64>,
     pub video_start_time: Option<f64>,
@@ -313,6 +317,7 @@ fn describe(input: &format::context::Input) -> Result<MediaProbe, String> {
         fps: 0.0,
         file_size: input.io_size().unwrap_or(0).max(0) as u64,
     };
+    let mut display_dimensions = (0, 0);
     if let Some(stream) = video {
         let parameters = stream.parameters();
         // SAFETY: the codec parameters remain owned by input until this returns.
@@ -322,9 +327,16 @@ fn describe(input: &format::context::Input) -> Result<MediaProbe, String> {
         }
         metadata.video_codec = codec_name(&parameters);
         metadata.fps = frame_rate(stream.rate());
+        let matrix = stream
+            .side_data()
+            .find(|side| side.kind() == ffmpeg::packet::side_data::Type::DisplayMatrix)
+            .and_then(|side| crate::video_frame::display_matrix(side.data()));
+        display_dimensions =
+            crate::video_frame::rotated_dimensions((metadata.width, metadata.height), matrix);
     }
     Ok(MediaProbe {
         metadata,
+        display_dimensions,
         container_duration,
         container_start_time,
         video_start_time,
@@ -479,10 +491,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn display_dimensions_follow_rotation_without_changing_coded_metadata() {
+        // Remux a real video to attach a track display matrix; probe with the
+        // native implementation, without relying on ffprobe's interpretation.
+        let available = crate::ffmpeg_command().arg("-version").output().await;
+        if !available.is_ok_and(|output| output.status.success()) {
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let source =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/video_frame/fixtures/seek.mp4");
+        let original = probe_media(&source).await.unwrap();
+        let coded = (original.metadata.width, original.metadata.height);
+        assert_ne!(coded.0, coded.1, "fixture must distinguish a quarter turn");
+        assert_eq!(original.display_dimensions, coded);
+        for (angle, transpose) in [
+            (0, false),
+            (90, true),
+            (-90, true),
+            (180, false),
+            (45, false),
+        ] {
+            let output = directory.path().join(format!("rotation-{angle}.mp4"));
+            let remuxed = crate::ffmpeg_command()
+                .args(["-v", "error", "-display_rotation", &angle.to_string(), "-i"])
+                .arg(&source)
+                .args(["-c", "copy", "-y"])
+                .arg(&output)
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                remuxed.status.success(),
+                "{}",
+                String::from_utf8_lossy(&remuxed.stderr)
+            );
+            let probe = probe_media(&output).await.unwrap();
+            assert_eq!(
+                (probe.metadata.width, probe.metadata.height),
+                coded,
+                "coded dimensions at {angle}"
+            );
+            assert_eq!(
+                probe.display_dimensions,
+                if transpose { (coded.1, coded.0) } else { coded },
+                "display dimensions at {angle}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn probes_audio_only_files_and_exposes_the_first_audio_clock() {
         let probe = probe_media(&fixture("../audio/test.wav")).await.unwrap();
         assert_eq!(probe.metadata.video_codec, "");
         assert_eq!((probe.metadata.width, probe.metadata.height), (0, 0));
+        assert_eq!(probe.display_dimensions, (0, 0));
         assert_eq!(probe.metadata.audio_codec, "pcm_s16le");
         assert_eq!(probe.metadata.duration, 83.008);
         let audio = probe.audio.unwrap();

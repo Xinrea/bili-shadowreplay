@@ -387,6 +387,23 @@ pub(crate) fn rotation_filters(matrix: Option<[i32; 9]>) -> Vec<String> {
     }
 }
 
+/// Predict the canvas produced by our autorotation chain. Use the actual
+/// transpose decision rather than maintaining a second angle/flip parser.
+/// The general rotate filter keeps its input canvas; flips and 180° do too.
+pub(crate) fn rotated_dimensions(
+    (width, height): (u32, u32),
+    matrix: Option<[i32; 9]>,
+) -> (u32, u32) {
+    if rotation_filters(matrix)
+        .iter()
+        .any(|filter| filter.starts_with("transpose="))
+    {
+        (height, width)
+    } else {
+        (width, height)
+    }
+}
+
 pub(crate) fn filter_has_option(filter: &filter::Filter, option: &std::ffi::CStr) -> bool {
     let mut class = unsafe { (*filter.as_ptr()).priv_class };
     !class.is_null()

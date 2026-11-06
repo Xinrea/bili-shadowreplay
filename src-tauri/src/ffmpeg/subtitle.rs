@@ -152,17 +152,15 @@ async fn encode_native_srt_with_resources<R: ProgressReporterTrait>(
         return Err("SRT exceeds 64 MiB".into());
     }
     let ass = super::subtitle_native::srt_to_ass(&content, style)?;
-    let metadata = ffmpeg_utils::extract_video_metadata(file).await?;
+    let probe = ffmpeg_utils::probe_media(file).await?;
+    let metadata = &probe.metadata;
     let duration = super::danmu::probe_overlay_duration(file, metadata.duration).await?;
     let fps = if metadata.fps.is_finite() && metadata.fps > 0.0 {
         metadata.fps
     } else {
         30.0
     };
-    let (width, height) = settings
-        .map(|settings| settings.resolution)
-        .unwrap_or_default()
-        .dimensions(metadata.width, metadata.height);
+    let (width, height) = hwaccel::output_dimensions_from_probe(&probe, settings);
     let spec = OverlaySpec {
         input: RenderInput {
             documents: vec![AssSource {

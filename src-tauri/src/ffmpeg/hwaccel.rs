@@ -42,11 +42,19 @@ pub async fn output_dimensions(
     file: &std::path::Path,
     settings: Option<&crate::project::RenderSettings>,
 ) -> Result<(u32, u32), String> {
-    let metadata = ffmpeg_utils::extract_video_metadata(file).await?;
-    Ok(settings
+    let probe = ffmpeg_utils::probe_media(file).await?;
+    Ok(output_dimensions_from_probe(&probe, settings))
+}
+
+pub fn output_dimensions_from_probe(
+    probe: &ffmpeg_utils::MediaProbe,
+    settings: Option<&crate::project::RenderSettings>,
+) -> (u32, u32) {
+    let (width, height) = probe.display_dimensions;
+    settings
         .map(|settings| settings.resolution)
         .unwrap_or_default()
-        .dimensions(metadata.width, metadata.height))
+        .dimensions(width, height)
 }
 
 const VAAPI_ENCODER: &str = "h264_vaapi";
@@ -131,10 +139,12 @@ impl RenderPipeline {
         self.renderer == RenderBackend::Vulkan
     }
     pub fn cache_identity(self) -> &'static str {
+        // Invalidate complete uploads rendered with coded dimensions before
+        // output canvases accounted for the source display rotation.
         if self.uses_gpu() {
-            "vulkan-nv12-compute-v4-srgb"
+            "vulkan-nv12-compute-v5-srgb-rotation"
         } else {
-            "cpu-bgra-overlay-v1"
+            "cpu-bgra-overlay-v2-rotation"
         }
     }
     pub fn video_options(

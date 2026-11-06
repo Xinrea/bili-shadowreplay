@@ -2108,6 +2108,42 @@ mod tests {
         assert!((158..=161).contains(&((top + bottom) / 2)), "{bounds:?}");
     }
 
+    #[tokio::test]
+    async fn rotation_metadata_selects_display_dimensions_for_project_canvas() {
+        use crate::project::{RenderResolution, RenderSettings, VideoCodec};
+        let directory = tempfile::tempdir().unwrap();
+        let source =
+            super::super::clip::encoding_tests::rotated_landscape_source(directory.path()).await;
+        let output = directory.path().join("project.mp4");
+        let project = ProjectRender {
+            clips: vec![RenderClip {
+                path: source,
+                start: 0.0,
+                duration: 0.2,
+                file_duration: 0.2,
+                ..clip(false, 30.0)
+            }],
+            overlays: Vec::new(),
+            sounds: Vec::new(),
+            subtitle_ass: None,
+            fonts_directory: None,
+            danmus: Vec::new(),
+            danmu_options: Danmu2AssOptions::default(),
+            render_settings: RenderSettings {
+                codec: VideoCodec::H264,
+                resolution: RenderResolution::Original,
+                ..Default::default()
+            },
+            output: &output,
+            segment_cache: None,
+        };
+        render_with_encoder(&NoopReporter, &project, SEGMENT_LIMITS, "libx264")
+            .await
+            .unwrap();
+        let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+        assert_eq!((metadata.width, metadata.height), (180, 320));
+    }
+
     #[test]
     fn canvas_dimensions_change_native_frames_and_segment_cache_keys() {
         let project = job(vec![clip(false, 30.0)], 0.0, 0.0);

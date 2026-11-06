@@ -416,9 +416,10 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
     log::info!("Encode video danmu task start: {}", file.display());
     // A finite duration is necessary for the bounded overlay producer. Never
     // silently turn a failed probe into an indefinite rawvideo input.
-    let metadata = ffmpeg_utils::extract_video_metadata(file)
+    let probe = ffmpeg_utils::probe_media(file)
         .await
         .map_err(|error| format!("Failed to inspect source video: {error}"))?;
+    let metadata = &probe.metadata;
     let fps = danmu_output_fps(metadata.fps);
     let mut pipeline = hwaccel::material_overlay_pipeline(settings).await;
     if pipeline.uses_gpu() && !ffmpeg_utils::video_supports_gpu_sdr(file).await? {
@@ -428,10 +429,7 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
             None => hwaccel::get_x264_encoder().await,
         });
     }
-    let (width, height) = settings
-        .map(|settings| settings.resolution)
-        .unwrap_or_default()
-        .dimensions(metadata.width, metadata.height);
+    let (width, height) = hwaccel::output_dimensions_from_probe(&probe, settings);
     let graph = overlay_graph_for_canvas(fps, pipeline, (width, height));
     let spec = OverlaySpec {
         input: native_overlay::RenderInput {
@@ -587,7 +585,6 @@ mod tests {
 
     #[tokio::test]
     async fn native_burns_keep_original_portrait_resolution() {
-        use crate::project::{RenderResolution, RenderSettings, VideoCodec};
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("portrait.mp4");
         let generated = ffmpeg_utils::ffmpeg_command()
@@ -609,6 +606,20 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&generated.stderr)
         );
+        assert_native_burns_keep_original_portrait_resolution(&source).await;
+    }
+
+    #[tokio::test]
+    async fn rotation_metadata_selects_display_dimensions_for_native_burns() {
+        let directory = tempfile::tempdir().unwrap();
+        let source =
+            super::super::clip::encoding_tests::rotated_landscape_source(directory.path()).await;
+        assert_native_burns_keep_original_portrait_resolution(&source).await;
+    }
+
+    async fn assert_native_burns_keep_original_portrait_resolution(source: &Path) {
+        use crate::project::{RenderResolution, RenderSettings, VideoCodec};
+        let directory = source.parent().unwrap();
         let settings = RenderSettings {
             codec: VideoCodec::H264,
             resolution: RenderResolution::Original,
@@ -619,7 +630,7 @@ mod tests {
             super::super::subtitle_native::srt_to_ass(srt, "FontName=Arial,FontSize=36").unwrap();
         let burned = encode_danmu_plan(
             None::<&NoopReporter>,
-            &source,
+            source,
             DanmuRenderPlan {
                 ass,
                 images: vec![],
@@ -633,11 +644,11 @@ mod tests {
         .unwrap();
         let metadata = ffmpeg_utils::extract_video_metadata(&burned).await.unwrap();
         assert_eq!((metadata.width, metadata.height), (180, 320));
-        let subtitle = directory.path().join("subtitle.srt");
+        let subtitle = directory.join("subtitle.srt");
         std::fs::write(&subtitle, srt).unwrap();
         let name = super::super::subtitle::encode_video_subtitle_with_settings(
             &NoopReporter,
-            &source,
+            source,
             &subtitle,
             "FontName=Arial,FontSize=36".into(),
             vec![],
@@ -645,7 +656,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let metadata = ffmpeg_utils::extract_video_metadata(&directory.path().join(name))
+        let metadata = ffmpeg_utils::extract_video_metadata(&directory.join(name))
             .await
             .unwrap();
         assert_eq!((metadata.width, metadata.height), (180, 320));

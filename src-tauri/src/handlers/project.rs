@@ -2358,7 +2358,8 @@ mod tests {
             plain.render_hash(hwaccel::RenderPipeline::gpu("hevc_videotoolbox"))
         );
         let mut extra = format!(
-            "encoder:libx265\nrenderer:cpu-bgra-overlay-v1\nnative:{}\n",
+            "encoder:libx265\nrenderer:{}\nnative:{}\n",
+            hwaccel::RenderPipeline::cpu("libx265").cache_identity(),
             native_overlay::RENDERER_VERSION,
         );
         extra.push_str(&serde_json::to_string(&timeline.render_settings).unwrap());
@@ -2379,6 +2380,27 @@ mod tests {
             plain.render_hash(hwaccel::RenderPipeline::cpu("libx265")),
             timeline.render_hash(&extra)
         );
+        // A previously cached complete upload can have a landscape canvas for
+        // rotated portrait media. Both rendering backends must regenerate it.
+        for (pipeline, old_identity) in [
+            (
+                hwaccel::RenderPipeline::cpu("libx265"),
+                "cpu-bgra-overlay-v1",
+            ),
+            (
+                hwaccel::RenderPipeline::gpu("libx265"),
+                "vulkan-nv12-compute-v4-srgb",
+            ),
+        ] {
+            let old_extra = extra.replace(
+                hwaccel::RenderPipeline::cpu("libx265").cache_identity(),
+                old_identity,
+            );
+            assert_ne!(
+                plain.render_hash(pipeline),
+                timeline.render_hash(&old_extra)
+            );
+        }
     }
 
     #[test]

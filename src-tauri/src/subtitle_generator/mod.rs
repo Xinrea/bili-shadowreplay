@@ -157,6 +157,9 @@ impl SubtitleGeneratorType {
     }
 }
 
+// async_trait stamps `#[must_use]` on the boxed-future methods it generates;
+// newer clippy (1.99+) flags that as redundant for `Pin<Box<dyn Future>>`.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait SubtitleGenerator {
     async fn generate_subtitle(

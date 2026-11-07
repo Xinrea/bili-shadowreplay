@@ -22,6 +22,9 @@ pub struct ProgressReporter {
     db: Arc<Database>,
 }
 
+// async_trait stamps `#[must_use]` on the boxed-future methods it generates;
+// newer clippy (1.99+) flags that as redundant for `Pin<Box<dyn Future>>`.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait ProgressReporterTrait: Send + Sync + Clone {
     async fn update(&self, content: &str);

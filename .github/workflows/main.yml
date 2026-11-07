@@ -9,6 +9,8 @@ on:
         options:
           - all
           - macos
+          - macos-intel
+          - macos-apple-silicon
   push:
     tags:
       - "v*"
@@ -34,8 +36,11 @@ jobs:
             { platform: 'windows-latest', args: '', features: 'cpu', target: '', 'updater-target': 'windows-x86_64-cpu' },
           ];
           const selection = process.env.BUILD_PLATFORMS;
-          if (!['all', 'macos'].includes(selection)) throw new Error(`Unknown platform selection: ${selection}`);
-          const selected = matrix.filter(entry => selection === 'all' || entry.platform.startsWith('macos-'));
+          if (!['all', 'macos', 'macos-intel', 'macos-apple-silicon'].includes(selection)) throw new Error(`Unknown platform selection: ${selection}`);
+          const selected = matrix.filter(entry => selection === 'all'
+            || (selection === 'macos' && entry.platform.startsWith('macos-'))
+            || (selection === 'macos-intel' && entry['updater-target'] === 'darwin-x86_64')
+            || (selection === 'macos-apple-silicon' && entry['updater-target'] === 'darwin-aarch64'));
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify(selected)}\n`);
           NODE
 
@@ -261,7 +266,7 @@ jobs:
   publish-updater:
     needs: publish-tauri
     # A partial rebuild must not replace the complete updater manifest.
-    if: needs.publish-tauri.outputs.prerelease == 'false' && inputs.platforms != 'macos'
+    if: needs.publish-tauri.outputs.prerelease == 'false' && (inputs.platforms == '' || inputs.platforms == 'all')
     runs-on: ubuntu-latest
     permissions:
       contents: write

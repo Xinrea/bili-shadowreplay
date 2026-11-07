@@ -61,7 +61,12 @@ int main(void) {
     // dependency: both must resolve to a single bundled implementation.
     run("cc", [source, `-I${include}`, `-L${lib}`, "-lavformat", "-lavcodec", "-lswresample", "-lavfilter", molten, `-Wl,-rpath,${path.dirname(molten)}`, "-mmacosx-version-min=15.0", "-Wl,-headerpad_max_install_names", "-o", binary]);
     const expected = run(binary, []);
-    const minimum = run("sw_vers", ["-productVersion"]).trim();
+    const hostMinimum = run("sw_vers", ["-productVersion"]).trim();
+    const minimum = [hostMinimum, releaseMinimum].sort((left, right) => {
+      const a = left.split(".").map(Number);
+      const b = right.split(".").map(Number);
+      return [0, 1, 2].map(index => (a[index] || 0) - (b[index] || 0)).find(value => value !== 0) || 0;
+    }).at(-1);
     const original = fs.readFileSync(binary);
     const rejected = spawnSync(process.execPath, [hook, "--binary", binary, "--runtime", runtime, "--minimum-system-version", "1.0"], { encoding: "utf8" });
     assert.notEqual(rejected.status, 0);
@@ -79,8 +84,8 @@ int main(void) {
       assert.deepEqual(fs.readFileSync(binary), original);
       assert.equal(fs.existsSync(runtime), false);
     }
-    // This temporary smoke bundle targets the actual local SDK/host, not the
-    // product's macOS 15 release baseline. No Mach-O minimum is rewritten.
+    // Cover newer local SDKs as well as release SDKs whose configured minimum
+    // is above the runner's OS version. No Mach-O minimum is rewritten.
     const bundle = [hook, "--binary", binary, "--runtime", runtime, "--minimum-system-version", minimum];
     run(process.execPath, bundle);
     run(process.execPath, bundle);

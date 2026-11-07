@@ -390,6 +390,25 @@ impl VideoEncoderStage {
         if let Ok(directory) = std::env::var("BSR_ENCODING_DIAGNOSTICS") {
             use std::io::Write;
             assert_eq!(frame.format(), ffmpeg::format::Pixel::YUV420P);
+            let mut timestamps = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(std::path::Path::new(&directory).join("native-timestamps.txt"))
+                .unwrap();
+            unsafe {
+                let raw = &*frame.as_ptr();
+                writeln!(
+                    timestamps,
+                    "pts={} duration={} base={}/{} flags={} side_data={}",
+                    raw.pts,
+                    raw.duration,
+                    raw.time_base.num,
+                    raw.time_base.den,
+                    raw.flags,
+                    raw.nb_side_data
+                )
+                .unwrap();
+            }
             let mut file = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)

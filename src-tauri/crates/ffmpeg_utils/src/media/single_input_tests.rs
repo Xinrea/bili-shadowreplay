@@ -547,7 +547,7 @@ async fn native_software_encode_and_output_seek_match_cli_profiles_and_frames() 
         (None, Some(1.123)),
         (Some(0.111), None),
     ] {
-        let video = VideoEncodeOptions {
+        let mut video = VideoEncodeOptions {
             filter: Some(ORACLE_SCALE.into()),
             threads: Some(1),
             gop: Some(120),
@@ -559,6 +559,9 @@ async fn native_software_encode_and_output_seek_match_cli_profiles_and_frames() 
             .collect(),
             ..Default::default()
         };
+        if let Ok(value) = std::env::var("BSR_X264_PARAMS") {
+            video.options.insert("x264-params".into(), value);
+        }
         let mut request = plan(
             &input,
             &output,
@@ -602,9 +605,13 @@ async fn native_software_encode_and_output_seek_match_cli_profiles_and_frames() 
         ]));
         let diagnostics =
             std::env::var_os("BSR_ENCODING_DIAGNOSTICS").map(std::path::PathBuf::from);
+        if let Ok(value) = std::env::var("BSR_X264_PARAMS") {
+            args.extend(strings(&["-x264-params", &value]));
+        }
         if let Some(directory) = &diagnostics {
             fs::create_dir_all(directory).unwrap();
             fs::write(directory.join("native-input.yuv"), []).unwrap();
+            fs::write(directory.join("native-timestamps.txt"), []).unwrap();
         }
         execute_media_plan(request, None).await.unwrap();
         cli(&args, &oracle);

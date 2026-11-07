@@ -31,9 +31,33 @@ jobs:
           ffmpeg -version > "$BSR_ENCODING_DIAGNOSTICS/ffmpeg.txt"
           for iteration in $(seq 1 100); do
             echo "Iteration $iteration"
-            cargo test --manifest-path src-tauri/Cargo.toml -p ffmpeg_utils --lib native_software_encode_and_output_seek_match_cli_profiles_and_frames -- --nocapture --test-threads=1 > "$BSR_ENCODING_DIAGNOSTICS/test.log" 2>&1 || { cat "$BSR_ENCODING_DIAGNOSTICS/test.log"; exit 1; }
+            cargo test --manifest-path src-tauri/Cargo.toml -p ffmpeg_utils --lib native_software_encode_and_output_seek_match_cli_profiles_and_frames -- --nocapture --test-threads=1 > "$BSR_ENCODING_DIAGNOSTICS/test.log" 2>&1 || { cat "$BSR_ENCODING_DIAGNOSTICS/test.log"; break; }
           done
           cat "$BSR_ENCODING_DIAGNOSTICS/test.log"
+      - name: CLI repetition control
+        if: always()
+        env:
+          BSR_ENCODING_DIAGNOSTICS: ${{ runner.temp }}/encoding-oracle
+        run: |
+          python3 .github/encoding-diagnostics.py
+      - name: Compare CPU-independent and scalar x264
+        if: always()
+        run: |
+          binary=$(find src-tauri/target/debug/deps -maxdepth 1 -type f -executable -name 'ffmpeg_utils-*' | head -1)
+          for params in cpu-independent=1 asm=0; do
+            directory="$RUNNER_TEMP/encoding-oracle/$params"
+            mkdir -p "$directory"
+            passed=0
+            for iteration in $(seq 1 50); do
+              if BSR_ENCODING_DIAGNOSTICS="$directory" BSR_X264_PARAMS="$params" "$binary" native_software_encode_and_output_seek_match_cli_profiles_and_frames --nocapture --test-threads=1 > "$directory/test.log" 2>&1; then
+                passed=$((passed + 1))
+              else
+                break
+              fi
+            done
+            echo "$params passed $passed iterations" | tee "$directory/result.txt"
+            tail -18 "$directory/test.log"
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -1,11 +1,46 @@
 name: Release
 on:
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: Platforms to build (partial builds require merging updater metadata separately)
+        type: choice
+        default: all
+        options:
+          - all
+          - macos
   push:
     tags:
       - "v*"
 jobs:
+  prepare-matrix:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: matrix
+        env:
+          BUILD_PLATFORMS: ${{ inputs.platforms || 'all' }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          // CUDA 13.1 supports VS 2019-2022; windows-latest uses VS 2026.
+          const matrix = [
+            { platform: 'macos-15-intel', args: '--target x86_64-apple-darwin', target: 'x86_64-apple-darwin', 'updater-target': 'darwin-x86_64' },
+            { platform: 'macos-15', args: '--target aarch64-apple-darwin', target: 'aarch64-apple-darwin', 'updater-target': 'darwin-aarch64' },
+            { platform: 'ubuntu-24.04', args: '', target: '', 'updater-target': 'linux-x86_64' },
+            { platform: 'windows-2022', args: '--features cuda', features: 'cuda', target: '', 'updater-target': 'windows-x86_64-cuda' },
+            { platform: 'windows-latest', args: '', features: 'cpu', target: '', 'updater-target': 'windows-x86_64-cpu' },
+          ];
+          const selection = process.env.BUILD_PLATFORMS;
+          if (!['all', 'macos'].includes(selection)) throw new Error(`Unknown platform selection: ${selection}`);
+          const selected = matrix.filter(entry => selection === 'all' || entry.platform.startsWith('macos-'));
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify(selected)}\n`);
+          NODE
+
   publish-tauri:
+    needs: prepare-matrix
     outputs:
       prerelease: ${{ steps.release_info.outputs.prerelease }}
     permissions:
@@ -13,32 +48,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: "macos-15-intel" # Native x86_64 FFmpeg libraries.
-            args: "--target x86_64-apple-darwin"
-            target: "x86_64-apple-darwin"
-            updater-target: "darwin-x86_64"
-          - platform: "macos-15" # Native ARM libraries must preserve the macOS 15 baseline.
-            args: "--target aarch64-apple-darwin"
-            target: "aarch64-apple-darwin"
-            updater-target: "darwin-aarch64"
-          - platform: "ubuntu-24.04"
-            args: ""
-            target: ""
-            updater-target: "linux-x86_64"
-          # CUDA 13.1 nvcc only supports MSVC from VS 2019-2022. The
-          # windows-latest image migrated to VS 2026 in June 2026, which
-          # nvcc rejects, so pin the CUDA build to windows-2022.
-          - platform: "windows-2022"
-            args: "--features cuda"
-            features: "cuda"
-            target: ""
-            updater-target: "windows-x86_64-cuda"
-          - platform: "windows-latest"
-            args: ""
-            features: "cpu"
-            target: ""
-            updater-target: "windows-x86_64-cpu"
+        include: ${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -99,12 +109,23 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
-          # sherpa-onnx-sys downloads its libraries beside, not inside, its
-          # OUT_DIR. Keep them with the build script's cached output, or a
-          # restored build links against a folder that no longer exists.
-          cache-directories: src-tauri/target/sherpa-onnx-prebuilt
-          # Bumped so caches saved without that folder are not restored.
+          # Native libraries outside Cargo's profile directories are pruned
+          # before saving this cache; the next step restores them when needed.
           key: ${{ matrix.target || matrix.features || 'native' }}-sherpa-prebuilt
+
+      - name: Repair sherpa-onnx prebuilt libraries after cache restore
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.target }}
+        run: |
+          library=libsherpa-onnx-c-api.a
+          if [ "$RUNNER_OS" = Windows ]; then library=sherpa-onnx-c-api.lib; fi
+          if ! find src-tauri/target/sherpa-onnx-prebuilt -type f -name "$library" -size +0c 2>/dev/null | grep -q .; then
+            rm -rf src-tauri/target/sherpa-onnx-prebuilt
+            target_args=()
+            if [ -n "$RUST_TARGET" ]; then target_args+=(--target "$RUST_TARGET"); fi
+            cargo clean -p sherpa-onnx-sys --manifest-path src-tauri/Cargo.toml "${target_args[@]}"
+          fi
 
       - name: Install CUDA toolkit (Windows CUDA only)
         if: matrix.features == 'cuda'
@@ -207,7 +228,7 @@ jobs:
         with:
           tagName: ${{ steps.release_info.outputs.tag }}
           releaseName: "BiliBili ShadowReplay v__VERSION__"
-          releaseBody: "> [!NOTE]\n> 如果你是第一次下载安装，请参考 [安装准备](https://bsr.xinrea.cn/getting-started/installation/desktop.html) 选择合适的版本。\n> Linux 桌面版最低支持 Ubuntu 24.04；Ubuntu 22.04 不再受支持，AppImage 同样需要兼容的系统运行库。\n> Changelog: https://github.com/Xinrea/bili-shadowreplay/compare/${{ steps.get_previous_tag.outputs.previous_tag }}...${{ steps.get_previous_tag.outputs.current_tag }}"
+          releaseBody: "> [!NOTE]\n> 如果你是第一次下载安装，请参考 [安装准备](https://bsr.xinrea.cn/getting-started/installation/desktop.html) 选择合适的版本。\n> macOS 桌面版最低支持 macOS 15.8.1，Intel 和 Apple Silicon 版本均适用。\n> Linux 桌面版最低支持 Ubuntu 24.04；Ubuntu 22.04 不再受支持，AppImage 同样需要兼容的系统运行库。\n> Changelog: https://github.com/Xinrea/bili-shadowreplay/compare/${{ steps.get_previous_tag.outputs.previous_tag }}...${{ steps.get_previous_tag.outputs.current_tag }}"
           releaseDraft: true
           prerelease: ${{ steps.release_info.outputs.prerelease }}
           # Merge once after all builds to avoid CPU/CUDA collisions and upload races.
@@ -239,7 +260,8 @@ jobs:
 
   publish-updater:
     needs: publish-tauri
-    if: needs.publish-tauri.outputs.prerelease == 'false'
+    # A partial rebuild must not replace the complete updater manifest.
+    if: needs.publish-tauri.outputs.prerelease == 'false' && inputs.platforms != 'macos'
     runs-on: ubuntu-latest
     permissions:
       contents: write

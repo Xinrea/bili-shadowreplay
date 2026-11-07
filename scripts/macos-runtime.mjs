@@ -51,7 +51,8 @@ function validateLibrary(file) {
   const architectures = run("lipo", ["-archs", file]).split(/\s+/);
   const required = process.arch === "arm64" ? "arm64" : "x86_64";
   if (!architectures.includes(required)) throw new Error(`MoltenVK is missing the ${required} architecture: ${file}`);
-  assertMacosDeployment(run("otool", ["-l", file]), "15.0", file);
+  const config = JSON.parse(fs.readFileSync(new URL("../src-tauri/tauri.macos.conf.json", import.meta.url), "utf8"));
+  assertMacosDeployment(run("otool", ["-l", file]), config.bundle.macOS.minimumSystemVersion, file);
   if (!run("nm", ["-gU", file]).includes("_vkExportMetalObjectsEXT")) {
     throw new Error(`MoltenVK must export VK_EXT_metal_objects: ${file}`);
   }

@@ -9,6 +9,7 @@ import { assertMacosDeployment, macosMinimumVersions } from "./macos-deployment.
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const hook = path.join(repository, "scripts/bundle-macos-ffmpeg.mjs");
+const releaseMinimum = JSON.parse(fs.readFileSync(path.join(repository, "src-tauri/tauri.macos.conf.json"), "utf8")).bundle.macOS.minimumSystemVersion;
 const run = (command, args, options = {}) => execFileSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...options });
 
 test("macOS native FFmpeg dependencies relocate, survive repeated bundling and pass signature validation", { skip: process.platform !== "darwin" }, () => {
@@ -73,7 +74,8 @@ int main(void) {
       // must be rejected before install-name rewriting or copying takes place.
       const incompatibleDependency = spawnSync(process.execPath, [hook, "--binary", binary, "--runtime", runtime], { encoding: "utf8" });
       assert.notEqual(incompatibleDependency.status, 0);
-      assert.match(incompatibleDependency.stderr, /libavformat[^\n]*requires macOS [^\n]*above bundle minimum 15\.0/);
+      assert.match(incompatibleDependency.stderr, /libavformat[^\n]*requires macOS/);
+      assert.ok(incompatibleDependency.stderr.includes(`above bundle minimum ${releaseMinimum}`));
       assert.deepEqual(fs.readFileSync(binary), original);
       assert.equal(fs.existsSync(runtime), false);
     }

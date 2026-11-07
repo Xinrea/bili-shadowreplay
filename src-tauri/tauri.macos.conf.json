@@ -1,7 +1,7 @@
 {
   "bundle": {
     "macOS": {
-      "minimumSystemVersion": "15.0",
+      "minimumSystemVersion": "15.8.1",
       "signingIdentity": "-",
       "entitlements": "Entitlements.plist",
       "files": {

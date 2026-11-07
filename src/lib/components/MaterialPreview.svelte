@@ -5,6 +5,7 @@
   import { get_static_url, invoke, set_title, TAURI_ENV } from "../invoker";
   import type { DanmuEntry, VideoItem } from "../interface";
   import TitleBar from "./TitleBar.svelte";
+  import MaterialPlaybackControls from "./MaterialPlaybackControls.svelte";
 
   interface Props {
     materialId: number;
@@ -23,6 +24,9 @@
   let stage: HTMLElement = $state();
   let overlay: HTMLElement = $state();
   let showDanmu = $state(true);
+  let player: HTMLElement = $state();
+  let controls: MaterialPlaybackControls = $state();
+  let fullscreen = $state(false);
   // Where the picture is within the stage, which the danmaku overlay covers.
   let picture = $state({ left: 0, top: 0, width: 0, height: 0 });
 
@@ -140,42 +144,61 @@
 </script>
 
 <main class="flex h-screen flex-col bg-[#1c1c1e] text-white">
-  <TitleBar tone="dark" title={material ? material.title || material.file : "素材预览"}>
-    {#snippet actions()}
-      {#if !TAURI_ENV && material}
-        <button class="titlebar-icon-button" title="下载素材" aria-label="下载素材" onclick={download}>
-          <Download class="h-4 w-4" />
-        </button>
-      {/if}
-    {/snippet}
-  </TitleBar>
+  <div class="contents" inert={TAURI_ENV && fullscreen}>
+    <TitleBar tone="dark" title={material ? material.title || material.file : "素材预览"}>
+      {#snippet actions()}
+        {#if !TAURI_ENV && material}
+          <button class="titlebar-icon-button" title="下载素材" aria-label="下载素材" onclick={download}>
+            <Download class="h-4 w-4" />
+          </button>
+        {/if}
+      {/snippet}
+    </TitleBar>
+  </div>
 
   {#if error}
     <div class="flex flex-1 items-center justify-center text-sm text-red-300">加载素材失败：{error}</div>
   {:else}
-    <div class="flex min-h-0 flex-1">
-      <div bind:this={stage} class="relative min-w-0 flex-1 overflow-hidden bg-black">
-        {#if url}
-          <!-- svelte-ignore a11y_media_has_caption -->
-          <video
-            bind:this={video}
-            src={url}
-            controls
-            class="absolute inset-0 h-full w-full object-contain"
-            ontimeupdate={() => (currentTime = video.currentTime)}
-          ></video>
-          <div
-            bind:this={overlay}
-            class="pointer-events-none absolute overflow-hidden"
-            style:left="{picture.left}px"
-            style:top="{picture.top}px"
-            style:width="{picture.width}px"
-            style:height="{picture.height}px"
-          ></div>
-        {/if}
+    <div class="preview-layout flex min-h-0 flex-1">
+      <div bind:this={player} class="material-player" class:native-fullscreen={TAURI_ENV && fullscreen}>
+        <div bind:this={stage} class="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-black">
+          {#if url}
+            <!-- svelte-ignore a11y_media_has_caption -->
+            <video
+              bind:this={video}
+              src={url}
+              playsinline
+              class="absolute inset-0 h-full w-full object-contain"
+              ontimeupdate={() => (currentTime = video.currentTime)}
+            ></video>
+            <button
+              type="button"
+              class="picture-toggle absolute inset-0 h-full w-full"
+              aria-label="播放或暂停"
+              title="播放 / 暂停"
+              onclick={() => controls?.togglePlayback()}
+            ></button>
+            <div
+              bind:this={overlay}
+              class="pointer-events-none absolute overflow-hidden"
+              style:left="{picture.left}px"
+              style:top="{picture.top}px"
+              style:width="{picture.width}px"
+              style:height="{picture.height}px"
+            ></div>
+          {/if}
+        </div>
+        <MaterialPlaybackControls
+          bind:this={controls}
+          {video}
+          container={player}
+          bind:fullscreen
+          bind:showDanmu
+          hasDanmu={danmus.length > 0}
+        />
       </div>
 
-      <aside class="flex w-72 shrink-0 flex-col border-l border-[#222a35] bg-[#171c25]">
+      <aside inert={TAURI_ENV && fullscreen} class="material-sidebar flex w-72 shrink-0 flex-col border-l border-[#222a35] bg-[#171c25]">
         {#if material}
           <div class="space-y-2 border-b border-[#222a35] p-4 text-[12px]">
             <div class="flex items-center gap-2 text-[13px] font-medium">
@@ -262,3 +285,25 @@
     </div>
   {/if}
 </main>
+
+<style>
+  .material-player {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    background: black;
+  }
+  .material-player:fullscreen { width: 100%; height: 100%; }
+  .material-player.native-fullscreen {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+  }
+  .picture-toggle:focus-visible { outline: 2px solid #0a84ff; outline-offset: -3px; }
+  @media (max-width: 700px) {
+    .preview-layout { flex-direction: column; }
+    .material-sidebar { width: 100%; max-height: 35%; border-left: 0; border-top: 1px solid #222a35; overflow-y: auto; }
+  }
+</style>

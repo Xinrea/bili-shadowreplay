@@ -7,7 +7,7 @@ use std::sync::{atomic, Arc};
 
 use async_trait::async_trait;
 use chrono::Utc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::RwLock;
 
 use crate::account::Account;
 use crate::errors::RecorderError;
@@ -28,7 +28,7 @@ impl TikTokRecorder {
         room_id: &str,
         account: &Account,
         cache_dir: PathBuf,
-        event_channel: broadcast::Sender<crate::events::RecorderEvent>,
+        event_channel: impl Into<crate::events::RecorderEventSender>,
         update_interval: Arc<AtomicU64>,
         enabled: bool,
     ) -> Result<Self, RecorderError> {

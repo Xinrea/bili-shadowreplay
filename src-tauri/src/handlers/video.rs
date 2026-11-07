@@ -1,18 +1,25 @@
 use crate::database::task::TaskRow;
+use crate::database::upload::UploadRow;
 use crate::database::video::VideoRow;
 use crate::ffmpeg;
-use crate::handlers::utils::get_disk_info_inner;
-use crate::progress::progress_reporter::{EventEmitter, ProgressReporter, ProgressReporterTrait};
+use crate::handlers::utils::{decode_data_url, get_disk_info_inner};
+use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
 use crate::recorder_manager::ClipRangeParams;
-use crate::subtitle_generator::{item_to_srt, SubtitleGeneratorType};
+use crate::subtitle_generator::{
+    item_to_srt,
+    powerlive::{PowerLiveOptions, PowerLiveOverrides},
+    SubtitleGeneratorType,
+};
 use crate::task::{Task, TaskPriority};
 use crate::webhook::events;
 use base64::Engine;
 use chrono::{Local, Utc};
+use recorder::danmu::DanmuEntry;
 use recorder::platforms::bilibili;
 use recorder::platforms::bilibili::profile::Profile;
 use serde_json::json;
 use std::fs::File;
+use std::future::Future;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -54,25 +61,6 @@ fn is_network_protocol(path_str: &str) -> bool {
 fn should_convert_video_format(extension: &str) -> bool {
     // FLV格式在现代浏览器中播放兼容性差，需要转换为MP4
     matches!(extension.to_lowercase().as_str(), "flv")
-}
-
-/// 获取视频的最佳缩略图截取时间点
-/// 根据视频长度选择最佳时间点，避开开头可能的黑屏
-fn get_optimal_thumbnail_timestamp(duration: f64) -> f64 {
-    // 根据视频长度选择最佳时间点
-    if duration <= 10.0 {
-        // 短视频（10秒以内）：选择1/3位置，避免开头黑屏
-        duration / 3.0
-    } else if duration <= 60.0 {
-        // 1分钟以内：选择第3秒
-        3.0
-    } else if duration <= 300.0 {
-        // 5分钟以内：选择第5秒
-        5.0
-    } else {
-        // 长视频：选择第10秒，确保跳过开头可能的黑屏/logo
-        10.0
-    }
 }
 
 use crate::state::State;
@@ -323,11 +311,7 @@ pub async fn clip_range(
         }
     }
 
-    #[cfg(feature = "gui")]
-    let emitter = EventEmitter::new(state.app_handle.clone());
-    #[cfg(feature = "headless")]
-    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &event_id).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
     let mut params_without_cover = params.clone();
     params_without_cover.cover = String::new();
     let task = TaskRow {
@@ -345,89 +329,147 @@ pub async fn clip_range(
     state.db.add_task(&task).await?;
     log::info!("Create task: {} {}", task.id, task.task_type);
 
-    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-
     #[cfg(feature = "gui")]
     let state_clone = (*state).clone();
     #[cfg(feature = "headless")]
     let state_clone = state.clone();
 
     let task_id = event_id.clone();
-    state
+    run_queued(
+        &state,
+        &event_id,
+        async move {
+            match clip_range_inner(&state_clone, &reporter, params).await {
+                Ok(video) => {
+                    reporter.finish(true, "切片完成").await;
+                    let _ = state_clone
+                        .db
+                        .update_task(&task_id, "success", "切片完成", None)
+                        .await;
+                    auto_subtitle_material(&state_clone, &task_id, video.id).await;
+                    Ok(video)
+                }
+                Err(e) => {
+                    reporter.finish(false, &format!("切片失败: {e}")).await;
+                    let _ = state_clone
+                        .db
+                        .update_task(&task_id, "failed", &format!("切片失败: {e}"), None)
+                        .await;
+                    Err(e)
+                }
+            }
+        },
+        "切片任务已取消",
+        "切片任务失败",
+    )
+    .await
+}
+
+/// Run `job` on the task queue and wait for its result, so the request can be
+/// cancelled from the task list like any other queued task.
+pub(crate) async fn run_queued<T: Send + 'static>(
+    state: &State,
+    task_id: &str,
+    job: impl Future<Output = Result<T, String>> + Send + 'static,
+    cancelled_message: &str,
+    failed_message: &str,
+) -> Result<T, String> {
+    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+    let enqueue_result = state
         .task_manager
         .add_task(Task::new(
-            task_id.clone(),
+            task_id.to_string(),
             TaskPriority::Normal,
             async move {
-                let result = match clip_range_inner(&state_clone, &reporter, params).await {
-                    Ok(video) => {
-                        reporter.finish(true, "切片完成").await;
-                        let _ = state_clone
-                            .db
-                            .update_task(&task_id, "success", "切片完成", None)
-                            .await;
-
-                        if state_clone.config.read().await.auto_subtitle {
-                            let subtitle_event_id = format!("{task_id}_subtitle");
-                            let result = generate_video_subtitle_inner(
-                                &state_clone,
-                                subtitle_event_id,
-                                video.id,
-                            )
-                            .await;
-                            match result {
-                                Ok(subtitle) => {
-                                    let result = update_video_subtitle_inner(
-                                        &state_clone,
-                                        video.id,
-                                        subtitle,
-                                    )
-                                    .await;
-                                    if let Err(e) = result {
-                                        log::error!("Update video subtitle error: {e}");
-                                    }
-                                }
-                                Err(e) => log::error!("Generate video subtitle error: {e}"),
-                            }
-                        }
-
-                        let event = events::new_webhook_event(
-                            events::CLIP_GENERATED,
-                            events::Payload::Clip(video.clone()),
-                        );
-
-                        if let Err(e) = state_clone.webhook_poster.post_event(&event).await {
-                            log::error!("Post webhook event error: {e}");
-                        }
-
-                        Ok(video)
-                    }
-                    Err(e) => {
-                        reporter.finish(false, &format!("切片失败: {e}")).await;
-                        let _ = state_clone
-                            .db
-                            .update_task(&task_id, "failed", &format!("切片失败: {e}"), None)
-                            .await;
-                        Err(e)
-                    }
-                };
-
+                let result = job.await;
                 let task_result = result.as_ref().map(|_| ()).map_err(Clone::clone);
                 let _ = result_tx.send(result);
                 task_result
             },
         ))
-        .await?;
+        .await;
+    if let Err(error) = enqueue_result {
+        // The caller already recorded the task; never leave it pending with no
+        // worker that could run or cancel it.
+        state
+            .db
+            .update_task(task_id, "failed", &format!("加入队列失败: {error}"), None)
+            .await?;
+        return Err(error);
+    }
 
-    result_rx
-        .await
-        .unwrap_or_else(|_| Err("切片任务失败".to_string()))
+    match result_rx.await {
+        Ok(result) => result,
+        // The worker dropped without a result: cancelled through the task list,
+        // or an unexpected exit, which must remain a visible failure.
+        Err(_) => {
+            let cancelled = state
+                .db
+                .get_task(task_id)
+                .await
+                .is_ok_and(|task| task.status == "cancelled");
+            Err(if cancelled {
+                cancelled_message
+            } else {
+                failed_message
+            }
+            .to_string())
+        }
+    }
 }
 
 async fn clip_range_inner(
     state: &State,
     reporter: &ProgressReporter,
     params: ClipRangeParams,
+) -> Result<VideoRow, String> {
+    let video = create_material(state, reporter, &params).await?;
+    notify_materials_created(state, &params.room_id, std::slice::from_ref(&video)).await?;
+    reporter.finish(true, "切片完成").await;
+    Ok(video)
+}
+
+/// A file name in the output directory that no existing file uses.
+fn unused_output_path(path: PathBuf) -> PathBuf {
+    if !path.exists() {
+        return path;
+    }
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("clip")
+        .to_string();
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("mp4")
+        .to_string();
+    (1..)
+        .map(|index| path.with_file_name(format!("{stem}_{index}.{extension}")))
+        .find(|candidate| !candidate.exists())
+        .unwrap_or(path)
+}
+
+/// The recording ranges a material really covers. Stream copy starts a cut at
+/// the keyframe before the requested start while the end stays where it was
+/// asked, so a single-range material begins `duration - requested` earlier.
+/// Multiple ranges already have their copy/encode boundaries measured by the cut.
+fn actual_material_ranges(ranges: &[ffmpeg::Range], duration: f64) -> Vec<ffmpeg::Range> {
+    match ranges {
+        [range] if duration - range.duration() > 0.05 => vec![ffmpeg::Range {
+            start: (range.end - duration).max(0.0),
+            end: range.end,
+        }],
+        _ => ranges.to_vec(),
+    }
+}
+
+/// Cut `params.ranges` of a recording into a new material, together with the
+/// danmaku shown during those ranges.
+pub(crate) async fn create_material(
+    state: &State,
+    reporter: &ProgressReporter,
+    params: &ClipRangeParams,
 ) -> Result<VideoRow, String> {
     log::info!(
         "[{}]Clip room_id: {}, ts: {}, ranges: {:?}",
@@ -437,14 +479,79 @@ async fn clip_range_inner(
         params.ranges,
     );
 
-    let clip_file = state.config.read().await.generate_clip_name(&params);
+    let clip_file = unused_output_path(state.config.read().await.generate_clip_name(params));
 
-    let file = state
+    let (file, covered) = state
         .recorder_manager
-        .clip_range(Some(reporter), clip_file, &params)
+        .clip_range(Some(reporter), clip_file, params)
         .await?;
     log::info!("Clip range done, doing post processing");
-    // get file metadata from fs
+    reporter.update("正在保存素材").await;
+    let duration = match ffmpeg_utils::extract_video_metadata(&file).await {
+        Ok(video) if video.duration > 0.0 => video.duration,
+        _ => covered.iter().map(|r| r.duration()).sum::<f64>(),
+    };
+    let ranges = actual_material_ranges(&covered, duration);
+    let source_params = ClipRangeParams {
+        ranges: ranges.clone(),
+        ..params.clone()
+    };
+    let mut danmu_embedded = false;
+    match state.recorder_manager.material_danmus(&source_params).await {
+        Ok(danmus) if params.danmu => {
+            // Super chats are not drawn, so they alone leave nothing to burn.
+            if danmus.iter().any(DanmuEntry::is_danmu) {
+                burn_material_danmus(
+                    state,
+                    reporter,
+                    &file,
+                    &danmus,
+                    params.video_bitrate(),
+                    params.render_settings.as_ref(),
+                )
+                .await?;
+                danmu_embedded = true;
+            }
+        }
+        Ok(danmus) => crate::material::save_danmus(&file, &danmus).await?,
+        Err(e) => log::warn!("Failed to cut danmaku for material {}: {e}", file.display()),
+    }
+    // Explicit settings must affect even an untouched single range, including
+    // when danmaku was requested but no drawable entries could be loaded.
+    let final_encode = params.needs_final_encode(danmu_embedded);
+    if final_encode {
+        let parent = file.parent().ok_or("Material path has no parent")?;
+        let temporary = tempfile::Builder::new()
+            .prefix(".bili-encode-")
+            .suffix(".mp4")
+            .tempfile_in(parent)
+            .map_err(|error| error.to_string())?
+            .into_temp_path();
+        ffmpeg::clip::transcode_with_settings(
+            Some(reporter),
+            &file,
+            &temporary,
+            false,
+            params.video_bitrate(),
+            params.render_settings.as_ref(),
+        )
+        .await?;
+        tokio::fs::remove_file(&file)
+            .await
+            .map_err(|error| error.to_string())?;
+        tokio::fs::rename(&temporary, &file)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    // Burning re-encodes the material; the ranges above still describe the cut.
+    let duration = if danmu_embedded || final_encode {
+        match ffmpeg_utils::extract_video_metadata(&file).await {
+            Ok(video) if video.duration > 0.0 => video.duration,
+            _ => duration,
+        }
+    } else {
+        duration
+    };
     let metadata = std::fs::metadata(&file).map_err(|e| {
         log::error!("Get file metadata error: {} {}", e, file.display());
         e.to_string()
@@ -452,24 +559,34 @@ async fn clip_range_inner(
     let mut cover_generate_ffmpeg = true;
     let cover_file = file.with_extension("jpg");
     if !params.cover.is_empty() {
-        if let Some(base64) = params.cover.split("base64,").nth(1) {
-            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(base64) {
-                // write cover file to fs
+        match decode_data_url(&params.cover) {
+            Ok(bytes) => {
                 tokio::fs::write(&cover_file, bytes).await.map_err(|e| {
                     log::error!("Write cover file error: {} {}", e, cover_file.display());
                     e.to_string()
                 })?;
                 cover_generate_ffmpeg = false;
-            } else {
-                log::error!("Decode base64 error: {}", params.cover);
             }
-        } else {
-            log::error!("Invalid cover base64: {}", params.cover);
+            Err(e) => log::error!("Invalid cover for {}: {e}", cover_file.display()),
         }
     }
-    // generate cover file from video as fallback
+    let mut cover_name = cover_file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("Invalid cover path: {}", cover_file.display()))?
+        .to_string();
+    // A failed thumbnail must not discard an otherwise completed material.
     if cover_generate_ffmpeg {
-        ffmpeg::generate_thumbnail(&file, 0.0).await?;
+        if let Err(e) =
+            ffmpeg::generate_thumbnail(&file, ffmpeg::get_random_thumbnail_timestamp(duration))
+                .await
+        {
+            log::warn!(
+                "Failed to generate material thumbnail {}: {e}",
+                file.display()
+            );
+            cover_name.clear();
+        }
     }
     let _ = crate::ffmpeg::extract_audio_sample(&file).await?;
     // get filename from path
@@ -486,12 +603,10 @@ async fn clip_range_inner(
         );
         return Err("Failed to convert metadata length to i64".to_string());
     };
-    let duration = params.ranges.iter().map(|r| r.duration()).sum::<f64>();
-    let cover_name = cover_file
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| format!("Invalid cover path: {}", cover_file.display()))?
-        .to_string();
+    let source = crate::database::video::MaterialSource {
+        ranges,
+        local_offset: params.local_offset,
+    };
     let video = state
         .db
         .add_video(&VideoRow {
@@ -505,20 +620,84 @@ async fn clip_range_inner(
             length: duration as i64,
             size,
             bvid: String::new(),
-            title: String::new(),
+            title: params.title.clone(),
             desc: String::new(),
             tags: String::new(),
             area: 0,
             platform: params.platform.clone(),
+            live_id: params.live_id.clone(),
+            source: serde_json::to_string(&source).map_err(|e| e.to_string())?,
+            duration,
+            danmu_embedded,
         })
         .await?;
+
+    let event =
+        events::new_webhook_event(events::CLIP_GENERATED, events::Payload::Clip(video.clone()));
+    if let Err(e) = state.webhook_poster.post_event(&event).await {
+        log::error!("Post webhook event error: {e}");
+    }
+
+    Ok(video)
+}
+
+/// Burn `danmus` into the material at `file`, replacing it. The work happens in
+/// a private directory beside it, so no other file in the output directory is
+/// overwritten, and the cut is removed with that directory when burning fails.
+async fn burn_material_danmus(
+    state: &State,
+    reporter: &ProgressReporter,
+    file: &Path,
+    danmus: &[DanmuEntry],
+    bitrate: Option<std::num::NonZeroU32>,
+    settings: Option<&crate::project::RenderSettings>,
+) -> Result<(), String> {
+    let options = state.config.read().await.danmu_ass_options.clone();
+    let parent = file
+        .parent()
+        .ok_or_else(|| format!("Invalid material path: {}", file.display()))?;
+    let work = tempfile::tempdir_in(parent).map_err(|e| {
+        let _ = std::fs::remove_file(file);
+        format!("创建弹幕压制目录失败: {e}")
+    })?;
+    let cut = work.path().join("material.mp4");
+    if let Err(e) = tokio::fs::rename(file, &cut).await {
+        let _ = tokio::fs::remove_file(file).await;
+        return Err(format!("移动素材失败: {} ({e})", file.display()));
+    }
+    let burned = ffmpeg::encode_video_danmu_with_settings(
+        Some(reporter),
+        &cut,
+        danmus,
+        &options,
+        bitrate,
+        settings,
+    )
+    .await?;
+    tokio::fs::rename(&burned, file)
+        .await
+        .map_err(|e| format!("保存压制弹幕的素材失败: {} ({e})", file.display()))
+}
+
+/// Report new materials with one message and notification per batch.
+pub(crate) async fn notify_materials_created(
+    state: &State,
+    room_id: &str,
+    videos: &[VideoRow],
+) -> Result<(), String> {
+    let duration: f64 = videos.iter().map(|video| video.duration).sum();
+    let names = videos
+        .iter()
+        .map(|video| video.file.as_str())
+        .collect::<Vec<_>>()
+        .join("、");
     state
         .db
         .new_message(
-            "生成新切片",
+            "生成新素材",
             &format!(
-                "生成了房间 {} 的切片，长度 {}s：{}",
-                params.room_id, duration, filename
+                "生成了房间 {room_id} 的 {} 个素材，总长度 {duration:.0}s：{names}",
+                videos.len()
             ),
         )
         .await?;
@@ -528,18 +707,51 @@ async fn clip_range_inner(
             .app_handle
             .notification()
             .builder()
-            .title("BiliShadowReplay - 切片完成")
-            .body(format!(
-                "生成了房间 {} 的切片: {}",
-                params.room_id, filename
-            ))
+            .title("BiliShadowReplay - 素材生成完成")
+            .body(format!("生成了房间 {room_id} 的素材: {names}"))
             .show()
             .unwrap_or_else(|e| log::warn!("Failed to show clip notification: {e}"));
     }
+    Ok(())
+}
 
-    reporter.finish(true, "切片完成").await;
+/// Report a whole-live material like one cut from a recording: message,
+/// notification and automatic subtitles.
+pub(crate) fn material_hook(state: &State) -> crate::recorder_manager::MaterialHook {
+    let state = state.clone();
+    std::sync::Arc::new(move |task_id, video| {
+        let state = state.clone();
+        Box::pin(async move {
+            if let Err(e) =
+                notify_materials_created(&state, &video.room_id, std::slice::from_ref(&video)).await
+            {
+                log::error!("Failed to report material {}: {e}", video.file);
+            }
+            auto_subtitle_material(&state, &task_id, video.id).await;
+        })
+    })
+}
 
-    Ok(video)
+/// Generate and save subtitles for a material when automatic subtitles are on.
+pub(crate) async fn auto_subtitle_material(state: &State, task_id: &str, video_id: i64) -> bool {
+    if !state.config.read().await.auto_subtitle {
+        return false;
+    }
+    let subtitle_event_id = format!("{task_id}_subtitle_{video_id}");
+    match generate_video_subtitle_inner(
+        state,
+        subtitle_event_id,
+        video_id,
+        PowerLiveOverrides::default(),
+    )
+    .await
+    {
+        Ok(_) => true,
+        Err(e) => {
+            log::error!("Generate video subtitle error: {e}");
+            false
+        }
+    }
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -551,11 +763,7 @@ pub async fn upload_procedure(
     video_id: i64,
     profile: Profile,
 ) -> Result<String, String> {
-    #[cfg(feature = "gui")]
-    let emitter = EventEmitter::new(state.app_handle.clone());
-    #[cfg(feature = "headless")]
-    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &event_id).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
     let task = TaskRow {
         id: event_id.clone(),
         task_type: "upload_procedure".to_string(),
@@ -598,53 +806,124 @@ async fn upload_procedure_inner(
     uid: String,
     room_id: String,
     video_id: i64,
-    mut profile: Profile,
+    profile: Profile,
 ) -> Result<String, String> {
-    let account = state.db.get_account("bilibili", &uid).await?;
     // get video info from dbs
     let mut video_row = state.db.get_video(video_id).await?;
     // construct file path
     let output = state.config.read().await.output.clone();
     let file = Path::new(&output).join(&video_row.file);
-    let path = Path::new(&file);
-    let client = reqwest::Client::new();
-
     let cover_path = file.with_extension("jpg");
-    let cover_bytes = tokio::fs::read(&cover_path).await.map_err(|e| {
-        log::error!("Read cover file error: {} {}", e, cover_path.display());
+    let posted = upload_video_file(
+        state,
+        reporter,
+        &uid,
+        &room_id,
+        &file,
+        &cover_path,
+        None,
+        profile,
+    )
+    .await?;
+    // Posted already; a missing history entry must not report a failure.
+    let now = chrono::Local::now().to_rfc3339();
+    let history = state
+        .db
+        .add_upload(&UploadRow {
+            id: 0,
+            source: "material".to_string(),
+            source_id: video_id,
+            file: String::new(),
+            room_id,
+            uid,
+            cover: String::new(),
+            cover43: String::new(),
+            profile: serde_json::to_string(&posted.profile).unwrap_or_default(),
+            danmu: false,
+            render_settings_json: "{}".to_string(),
+            status: "posted".to_string(),
+            message: String::new(),
+            bvid: posted.bvid.clone(),
+            created_at: now.clone(),
+            updated_at: now,
+        })
+        .await;
+    if let Err(e) = history {
+        log::warn!("Failed to record the upload of video {video_id}: {e}");
+    }
+    // update video status and details
+    // 1 means uploaded
+    video_row.status = 1;
+    video_row.bvid = posted.bvid.clone();
+    video_row.title = posted.profile.title;
+    video_row.desc = posted.profile.desc;
+    video_row.tags = posted.profile.tag;
+    video_row.area = posted.profile.tid as i64;
+    state.db.update_video(&video_row).await?;
+    Ok(posted.bvid)
+}
+
+pub(crate) struct PostedVideo {
+    pub bvid: String,
+    pub profile: Profile,
+}
+
+/// The JPEG at `path` as a base64 data URL, as Bilibili takes covers.
+async fn cover_data_url(path: &Path) -> Result<String, String> {
+    let bytes = tokio::fs::read(path).await.map_err(|e| {
+        log::error!("Read cover file error: {} {}", e, path.display());
         e.to_string()
     })?;
-    let cover_base64 = format!(
+    Ok(format!(
         "data:image/jpeg;base64,{}",
-        base64::engine::general_purpose::STANDARD.encode(cover_bytes)
-    );
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
+/// Upload `file` with `cover_path`, and `cover43_path` for the homepage
+/// feed if given, to Bilibili as a new submission.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn upload_video_file(
+    state: &State,
+    reporter: &ProgressReporter,
+    uid: &str,
+    room_id: &str,
+    file: &Path,
+    cover_path: &Path,
+    cover43_path: Option<&Path>,
+    mut profile: Profile,
+) -> Result<PostedVideo, String> {
+    let account = state.db.get_account("bilibili", uid).await?;
+    let client = reqwest::Client::new();
+
+    let cover_base64 = cover_data_url(cover_path).await?;
     let cover_url =
         bilibili::api::upload_cover(&client, &account.to_account(), &cover_base64).await;
+    // Without it Bilibili crops the 16:9 cover, so a failure is not fatal.
+    if let Some(path) = cover43_path {
+        profile.cover43 = match cover_data_url(path).await {
+            Ok(data) => bilibili::api::upload_cover(&client, &account.to_account(), &data)
+                .await
+                .inspect_err(|e| log::warn!("Failed to upload the 4:3 cover: {e}"))
+                .ok(),
+            Err(_) => None,
+        };
+    }
 
     reporter.update("投稿预处理中").await;
 
-    match bilibili::api::prepare_video(&client, &account.to_account(), path).await {
+    match bilibili::api::prepare_video(&client, &account.to_account(), file).await {
         Ok(video) => {
             profile.cover = cover_url.unwrap_or(String::new());
             if let Ok(ret) =
                 bilibili::api::submit_video(&client, &account.to_account(), &profile, &video).await
             {
-                // update video status and details
-                // 1 means uploaded
-                video_row.status = 1;
-                video_row.bvid = ret.bvid.clone();
-                video_row.title = profile.title;
-                video_row.desc = profile.desc;
-                video_row.tags = profile.tag;
-                video_row.area = profile.tid as i64;
-                state.db.update_video(&video_row).await?;
-                state
-                    .db
-                    .new_message(
-                        "投稿成功",
-                        &format!("投稿了房间 {} 的切片：{}", room_id, ret.bvid),
-                    )
-                    .await?;
+                let summary = if room_id.is_empty() {
+                    format!("投稿了视频：{}", ret.bvid)
+                } else {
+                    format!("投稿了房间 {} 的切片：{}", room_id, ret.bvid)
+                };
+                state.db.new_message("投稿成功", &summary).await?;
                 if state.config.read().await.post_notify {
                     #[cfg(feature = "gui")]
                     state
@@ -652,12 +931,15 @@ async fn upload_procedure_inner(
                         .notification()
                         .builder()
                         .title("BiliShadowReplay - 投稿成功")
-                        .body(format!("投稿了房间 {} 的切片: {}", room_id, ret.bvid))
+                        .body(&summary)
                         .show()
                         .unwrap_or_else(|e| log::warn!("Failed to show post notification: {e}"));
                 }
                 reporter.finish(true, "投稿成功").await;
-                Ok(ret.bvid)
+                Ok(PostedVideo {
+                    bvid: ret.bvid,
+                    profile,
+                })
             } else {
                 reporter.finish(false, "投稿失败").await;
                 Err("Submit video failed".to_string())
@@ -676,22 +958,21 @@ async fn upload_procedure_inner(
 pub async fn cancel(state: state_type!(), event_id: String) -> Result<(), String> {
     log::info!("Cancel task: {event_id}");
     let task_before_cancel = state.db.get_task(&event_id).await.ok();
-    let cancel_result = state.task_manager.cancel_task(&event_id).await;
+    let cancel_result = state
+        .task_manager
+        .cancel_task_if(&event_id, async {
+            Ok(state.db.cancel_task_if_active(&event_id).await?)
+        })
+        .await;
     match cancel_result {
-        Ok(()) => {
-            state
-                .db
-                .update_task(&event_id, "cancelled", "任务取消", None)
-                .await?;
-        }
+        Ok(true) => {}
+        Ok(false) => return Ok(()),
         Err(e) if e == "Task not found" => {
             let task = state.db.get_task(&event_id).await?;
             if matches!(task.status.as_str(), "pending" | "processing") {
-                state
-                    .db
-                    .update_task(&event_id, "cancelled", "任务取消", None)
-                    .await?;
+                return Err("任务尚未进入队列或不支持取消，请稍后重试".to_string());
             }
+            return Ok(());
         }
         Err(e) => return Err(e),
     }
@@ -716,7 +997,34 @@ pub async fn cancel(state: state_type!(), event_id: String) -> Result<(), String
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_video(state: state_type!(), id: i64) -> Result<VideoRow, String> {
-    Ok(state.db.get_video(id).await?)
+    let video = state.db.get_video(id).await?;
+    Ok(ensure_material_duration(&state, video).await)
+}
+
+/// Probe and store the exact length of materials created before it was kept.
+pub(crate) async fn ensure_material_duration(state: &State, mut video: VideoRow) -> VideoRow {
+    if video.duration > 0.0 {
+        return video;
+    }
+    let path = Path::new(&state.config.read().await.output).join(&video.file);
+    match ffmpeg_utils::extract_video_metadata(&path).await {
+        Ok(metadata) if metadata.duration > 0.0 => {
+            video.duration = metadata.duration;
+            if let Err(e) = state
+                .db
+                .update_video_duration(video.id, video.duration)
+                .await
+            {
+                log::warn!("Failed to save material duration {}: {e}", video.id);
+            }
+        }
+        Ok(_) => video.duration = video.length as f64,
+        Err(e) => {
+            log::warn!("Failed to probe material {}: {e}", path.display());
+            video.duration = video.length as f64;
+        }
+    }
+    video
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -755,6 +1063,9 @@ pub async fn delete_video(state: state_type!(), id: i64) -> Result<(), String> {
         log::error!("Post webhook event error: {e}");
     }
 
+    // Projects keep working without the material; its clips leave them.
+    crate::handlers::project::remove_material_from_projects(&state, id).await?;
+
     // delete video from db
     state.db.delete_video(id).await?;
 
@@ -768,16 +1079,13 @@ pub async fn delete_video(state: state_type!(), id: i64) -> Result<(), String> {
     }
 
     // delete all related files
-    let srt_path = file.with_extension("srt");
-    let _ = tokio::fs::remove_file(srt_path).await;
-    let wav_path = file.with_extension("wav");
-    let _ = tokio::fs::remove_file(wav_path).await;
-    let mp3_path = file.with_extension("mp3");
-    let _ = tokio::fs::remove_file(mp3_path).await;
-    let opus_path = file.with_extension("opus");
-    let _ = tokio::fs::remove_file(opus_path).await;
-    let cover_path = Path::new(&config.output).join(&video.cover);
-    let _ = tokio::fs::remove_file(cover_path).await;
+    for sidecar in crate::material::sidecar_paths(file) {
+        let _ = tokio::fs::remove_file(sidecar).await;
+    }
+    if !video.cover.is_empty() {
+        let cover_path = Path::new(&config.output).join(&video.cover);
+        let _ = tokio::fs::remove_file(cover_path).await;
+    }
 
     Ok(())
 }
@@ -803,14 +1111,7 @@ pub async fn update_video_cover(
     let video = state.db.get_video(id).await?;
     let output_path = Path::new(state.config.read().await.output.as_str()).join(&video.file);
     let cover_path = output_path.with_extension("jpg");
-    // decode cover and write into file
-    let base64 = cover
-        .split("base64,")
-        .nth(1)
-        .ok_or_else(|| "Cover is not a base64 data URL".to_string())?;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(base64)
-        .map_err(|e| format!("Failed to decode cover: {e}"))?;
+    let bytes = decode_data_url(&cover)?;
     tokio::fs::write(&cover_path, bytes)
         .await
         .map_err(|e| e.to_string())?;
@@ -836,25 +1137,55 @@ pub async fn get_video_subtitle(state: state_type!(), id: i64) -> Result<String,
     }
 }
 
+/// `powerlive` adds a context and replaces settings for PowerLive; other
+/// services ignore it.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn generate_video_subtitle(
     state: state_type!(),
     event_id: String,
     id: i64,
+    powerlive: Option<PowerLiveOverrides>,
 ) -> Result<String, String> {
-    generate_video_subtitle_inner(&state, event_id, id).await
+    generate_video_subtitle_inner(&state, event_id, id, powerlive.unwrap_or_default()).await
 }
 
 async fn generate_video_subtitle_inner(
     state: &State,
     event_id: String,
     id: i64,
+    overrides: PowerLiveOverrides,
 ) -> Result<String, String> {
-    #[cfg(feature = "gui")]
-    let emitter = EventEmitter::new(state.app_handle.clone());
-    #[cfg(feature = "headless")]
-    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &event_id).await?;
+    let video = state.db.get_video(id).await?;
+    // Copy the settings out so no config guard is held across the subtitle
+    // job, and resolve them before the task row exists so a bad setting or
+    // missing video does not leave the task pending.
+    let (
+        generator_type,
+        whisper_model,
+        whisper_prompt,
+        openai_api_key,
+        openai_api_endpoint,
+        language_hint,
+        output,
+        powerlive,
+    ) = {
+        let config = state.config.read().await;
+        (
+            SubtitleGeneratorType::parse(&config.subtitle_generator_type)?,
+            config.whisper_model.clone(),
+            config.whisper_prompt.clone(),
+            config.openai_api_key.clone(),
+            config.openai_api_endpoint.clone(),
+            config.whisper_language.clone(),
+            config.output.clone(),
+            PowerLiveOptions::for_room(&state.db, &config, &video.platform, &video.room_id)
+                .with_overrides(overrides),
+        )
+    };
+    let filepath = Path::new(&output).join(&video.file);
+    let file = Path::new(&filepath);
+
+    let reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
     let task = TaskRow {
         id: event_id.clone(),
         task_type: "generate_video_subtitle".to_string(),
@@ -868,18 +1199,6 @@ async fn generate_video_subtitle_inner(
     };
     state.db.add_task(&task).await?;
     log::info!("Create task: {task:?}");
-    let config = state.config.read().await;
-    let generator_type = SubtitleGeneratorType::parse(&config.subtitle_generator_type)?;
-    let whisper_model = config.whisper_model.clone();
-    let whisper_prompt = config.whisper_prompt.clone();
-    let openai_api_key = config.openai_api_key.clone();
-    let openai_api_endpoint = config.openai_api_endpoint.clone();
-    let language_hint = state.config.read().await.whisper_language.clone();
-    let language_hint = language_hint.as_str();
-
-    let video = state.db.get_video(id).await?;
-    let filepath = Path::new(state.config.read().await.output.as_str()).join(&video.file);
-    let file = Path::new(&filepath);
 
     match ffmpeg::generate_video_subtitle(
         Some(&reporter),
@@ -890,7 +1209,8 @@ async fn generate_video_subtitle_inner(
         &whisper_prompt,
         &openai_api_key,
         &openai_api_endpoint,
-        language_hint,
+        &language_hint,
+        Some(powerlive),
     )
     .await
     {
@@ -977,59 +1297,221 @@ pub async fn encode_video_subtitle(
     event_id: String,
     id: i64,
     srt_style: String,
-) -> Result<VideoRow, String> {
-    #[cfg(feature = "gui")]
-    let emitter = EventEmitter::new(state.app_handle.clone());
-    #[cfg(feature = "headless")]
-    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &event_id).await?;
+    render_settings: Option<crate::project::RenderSettings>,
+) -> Result<TaskRow, String> {
+    if let Some(settings) = &render_settings {
+        settings.validate()?;
+    }
+    let video = state.db.get_video(id).await?;
+    let filepath = Path::new(&state.config.read().await.output).join(&video.file);
+    // Freeze SRT at submission time so later edits cannot change a queued job.
+    let subtitle = prepare_subtitle_encoding_input(&filepath, srt_style.clone())?;
+    let reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
     let task = TaskRow {
         id: event_id.clone(),
         task_type: "encode_video_subtitle".to_string(),
         status: "pending".to_string(),
-        message: String::new(),
+        message: "等待字幕压制".to_string(),
         metadata: json!({
             "video_id": id,
             "srt_style": srt_style,
+            "subtitle_format": "srt",
+            "render_settings": render_settings,
         })
         .to_string(),
         created_at: Utc::now().to_rfc3339(),
     };
     state.db.add_task(&task).await?;
     log::info!("Create task: {task:?}");
-    match encode_video_subtitle_inner(&state, &reporter, id, srt_style).await {
-        Ok(video) => {
-            reporter.finish(true, "字幕编码完成").await;
-            state
-                .db
-                .update_task(&event_id, "success", "字幕编码完成", None)
-                .await?;
-            Ok(video)
-        }
-        Err(e) => {
-            reporter.finish(false, &format!("字幕编码失败: {e}")).await;
-            state
-                .db
-                .update_task(&event_id, "failed", &format!("字幕编码失败: {e}"), None)
-                .await?;
-            Err(e)
+    #[cfg(feature = "gui")]
+    let state_clone = (*state).clone();
+    #[cfg(feature = "headless")]
+    let state_clone = state.clone();
+
+    let task_id = event_id.clone();
+    let enqueue_result = state
+        .task_manager
+        .add_task(Task::new(
+            task_id.clone(),
+            TaskPriority::Normal,
+            async move {
+                reporter.update("准备字幕压制").await;
+                let result = encode_video_subtitle_inner(
+                    &state_clone,
+                    &reporter,
+                    SubtitleEncodingJob {
+                        video,
+                        filepath,
+                        subtitle,
+                        render_settings,
+                    },
+                )
+                .await;
+                let (status, message) = match &result {
+                    Ok(_) => ("success", "字幕编码完成".to_string()),
+                    Err(error) => ("failed", format!("字幕编码失败: {error}")),
+                };
+                state_clone
+                    .db
+                    .update_task(&task_id, status, &message, None)
+                    .await?;
+                reporter.finish(result.is_ok(), &message).await;
+                result.map(|_| ())
+            },
+        ))
+        .await;
+    if let Err(error) = enqueue_result {
+        state
+            .db
+            .update_task(
+                &event_id,
+                "failed",
+                &format!("加入压制队列失败: {error}"),
+                None,
+            )
+            .await?;
+        return Err(error);
+    }
+    Ok(task)
+}
+
+const MAX_ASS_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
+
+pub(crate) fn validate_ass_document(content: &str) -> Result<(), String> {
+    if content.len() > MAX_ASS_DOCUMENT_BYTES {
+        return Err("ASS 字幕文件不能超过 8 MiB".to_string());
+    }
+    if content.contains('\0') {
+        return Err("ASS 字幕文件不能包含 NUL 字符".to_string());
+    }
+
+    let mut script_info = false;
+    let mut styles = false;
+    let mut events = false;
+    let mut style = false;
+    let mut dialogue = false;
+    let mut section = "";
+    for line in content.trim_start_matches('\u{feff}').lines() {
+        let line = line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            section = line;
+            script_info |= section.eq_ignore_ascii_case("[Script Info]");
+            styles |= section.eq_ignore_ascii_case("[V4+ Styles]");
+            events |= section.eq_ignore_ascii_case("[Events]");
+        } else if let Some((key, value)) = line.split_once(':') {
+            if section.eq_ignore_ascii_case("[V4+ Styles]") {
+                style |= key.eq_ignore_ascii_case("Style") && !value.trim().is_empty();
+            } else if section.eq_ignore_ascii_case("[Events]") {
+                dialogue |= key.eq_ignore_ascii_case("Dialogue") && !value.trim().is_empty();
+            }
         }
     }
+    if !script_info || !styles || !events || !style || !dialogue {
+        return Err(
+            "ASS 字幕需要包含 [Script Info]、[V4+ Styles]、[Events] 以及有效的 Style 和 Dialogue 行"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn ass_primary_font_name(content: &str) -> Result<String, String> {
+    let mut in_styles = false;
+    let mut font_index = None;
+    for line in content.trim_start_matches('\u{feff}').lines() {
+        let line = line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            in_styles = line.eq_ignore_ascii_case("[V4+ Styles]");
+            continue;
+        }
+        if !in_styles {
+            continue;
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        if key.eq_ignore_ascii_case("Format") {
+            font_index = value
+                .split(',')
+                .position(|field| field.trim().eq_ignore_ascii_case("Fontname"));
+        } else if key.eq_ignore_ascii_case("Style") {
+            if let Some(index) = font_index {
+                if let Some(font) = value.split(',').nth(index).map(str::trim) {
+                    if !font.is_empty() {
+                        return Ok(font.to_string());
+                    }
+                }
+            }
+        }
+    }
+    Err("ASS 字幕样式需要包含 Format 定义和有效的 Fontname 字段".to_string())
+}
+
+/// Keep a snapshot of the submitted subtitles alive until the job finishes.
+struct SubtitleEncodingInput {
+    path: PathBuf,
+    force_style: String,
+    _temporary_subtitle: tempfile::TempPath,
+}
+
+struct SubtitleEncodingJob {
+    video: VideoRow,
+    filepath: PathBuf,
+    subtitle: SubtitleEncodingInput,
+    render_settings: Option<crate::project::RenderSettings>,
+}
+
+fn prepare_subtitle_encoding_input(
+    video_path: &Path,
+    srt_style: String,
+) -> Result<SubtitleEncodingInput, String> {
+    let source = video_path.with_extension("srt");
+    let content = std::fs::read_to_string(&source)
+        .map_err(|error| format!("字幕文件不可用：{} ({error})", source.display()))?;
+    if content.trim().is_empty() {
+        return Err(format!("字幕文件为空：{}", source.display()));
+    }
+    let mut file = tempfile::Builder::new()
+        .prefix("bili-shadowreplay-subtitle-")
+        .suffix(".srt")
+        .tempfile()
+        .map_err(|error| format!("创建临时字幕文件失败：{error}"))?;
+    file.write_all(content.as_bytes())
+        .map_err(|error| format!("写入临时字幕文件失败：{error}"))?;
+    let temporary_subtitle = file.into_temp_path();
+    Ok(SubtitleEncodingInput {
+        path: temporary_subtitle.to_path_buf(),
+        force_style: srt_style,
+        _temporary_subtitle: temporary_subtitle,
+    })
 }
 
 async fn encode_video_subtitle_inner(
-    state: &state_type!(),
+    state: &State,
     reporter: &ProgressReporter,
-    id: i64,
-    srt_style: String,
+    job: SubtitleEncodingJob,
 ) -> Result<VideoRow, String> {
-    let video = state.db.get_video(id).await?;
-    let config = state.config.read().await;
-    let filepath = Path::new(&config.output).join(&video.file);
-    let subtitle_path = filepath.with_extension("srt");
-
-    let output_filename =
-        ffmpeg::encode_video_subtitle(reporter, &filepath, &subtitle_path, srt_style).await?;
+    let SubtitleEncodingJob {
+        video,
+        filepath,
+        subtitle,
+        render_settings,
+    } = job;
+    let SubtitleEncodingInput {
+        path,
+        force_style,
+        _temporary_subtitle,
+    } = subtitle;
+    let resources = vec![ffmpeg_utils::MediaResourceLease::new(_temporary_subtitle)];
+    let output_filename = ffmpeg::encode_video_subtitle_with_settings(
+        reporter,
+        &filepath,
+        &path,
+        force_style,
+        resources,
+        render_settings.as_ref(),
+    )
+    .await?;
     let output_filepath = filepath.with_file_name(&output_filename);
     let cover_path = filepath.with_extension("jpg");
     let output_cover_path = output_filepath.with_extension("jpg");
@@ -1058,7 +1540,15 @@ async fn encode_video_subtitle_inner(
             status: video.status,
             room_id: video.room_id,
             created_at: Local::now().to_rfc3339(),
-            cover: video.cover.clone(),
+            cover: if output_cover_path.exists() {
+                output_cover_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
+                    .to_string()
+            } else {
+                String::new()
+            },
             file: output_filename,
             note: video.note.clone(),
             length: video.length,
@@ -1069,19 +1559,14 @@ async fn encode_video_subtitle_inner(
             tags: video.tags.clone(),
             area: video.area,
             platform: video.platform,
+            live_id: video.live_id,
+            source: video.source,
+            duration: video.duration,
+            danmu_embedded: video.danmu_embedded,
         })
         .await?;
 
     Ok(new_video)
-}
-
-#[cfg_attr(feature = "gui", tauri::command)]
-pub async fn generic_ffmpeg_command(
-    _state: state_type!(),
-    args: Vec<String>,
-) -> Result<String, String> {
-    let args_str: Vec<&str> = args.iter().map(std::string::String::as_str).collect();
-    ffmpeg::generic_ffmpeg_command(&args_str).await
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -1092,12 +1577,7 @@ pub async fn import_external_video(
     title: String,
     room_id: String,
 ) -> Result<VideoRow, String> {
-    #[cfg(feature = "gui")]
-    let emitter = EventEmitter::new(state.app_handle.clone());
-    #[cfg(feature = "headless")]
-    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-
-    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &event_id).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
 
     let source_path = Path::new(&file_path);
     if !source_path.exists() {
@@ -1150,8 +1630,8 @@ pub async fn import_external_video(
     // 步骤3: 生成缩略图
     reporter.update("正在生成视频缩略图...").await;
 
-    // 生成缩略图，使用智能时间点选择
-    let thumbnail_timestamp = get_optimal_thumbnail_timestamp(metadata.duration);
+    // 从视频中随机截取缩略图
+    let thumbnail_timestamp = ffmpeg::get_random_thumbnail_timestamp(metadata.duration);
     let cover_path =
         match ffmpeg::generate_thumbnail(&final_target_full_path, thumbnail_timestamp).await {
             Ok(path) => path
@@ -1201,6 +1681,10 @@ pub async fn import_external_video(
         bvid: String::new(),
         area: 0,
         created_at: Utc::now().to_rfc3339(),
+        live_id: String::new(),
+        source: String::new(),
+        duration: metadata.duration,
+        danmu_embedded: false,
     };
 
     let result = state.db.add_video(&video).await?;
@@ -1231,11 +1715,7 @@ pub async fn clip_video(
     // 获取父视频信息
     let parent_video = state.db.get_video(parent_video_id).await?;
 
-    #[cfg(feature = "gui")]
-    let emitter = EventEmitter::new(state.app_handle.clone());
-    #[cfg(feature = "headless")]
-    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &event_id).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
 
     // 创建任务记录
     let task = TaskRow {
@@ -1254,54 +1734,70 @@ pub async fn clip_video(
     };
     state.db.add_task(&task).await?;
 
-    match clip_video_inner(
+    #[cfg(feature = "gui")]
+    let state_clone = (*state).clone();
+    #[cfg(feature = "headless")]
+    let state_clone = state.clone();
+
+    let task_id = event_id.clone();
+    run_queued(
         &state,
-        &reporter,
-        parent_video,
-        start_time,
-        end_time,
-        clip_title,
+        &task_id,
+        async move {
+            match clip_video_inner(
+                &state_clone,
+                &reporter,
+                parent_video,
+                start_time,
+                end_time,
+                clip_title,
+            )
+            .await
+            {
+                Ok(video) => {
+                    reporter.finish(true, "切片完成").await;
+                    state_clone
+                        .db
+                        .update_task(&event_id, "success", "切片完成", None)
+                        .await?;
+                    Ok(video)
+                }
+                Err(e) => {
+                    reporter.finish(false, &format!("切片失败: {e}")).await;
+                    state_clone
+                        .db
+                        .update_task(&event_id, "failed", &format!("切片失败: {e}"), None)
+                        .await?;
+                    Err(e)
+                }
+            }
+        },
+        "切片任务已取消",
+        "切片任务失败",
     )
     .await
-    {
-        Ok(video) => {
-            reporter.finish(true, "切片完成").await;
-            state
-                .db
-                .update_task(&event_id, "success", "切片完成", None)
-                .await?;
-            Ok(video)
-        }
-        Err(e) => {
-            reporter.finish(false, &format!("切片失败: {e}")).await;
-            state
-                .db
-                .update_task(&event_id, "failed", &format!("切片失败: {e}"), None)
-                .await?;
-            Err(e)
-        }
-    }
 }
 
 async fn clip_video_inner(
-    state: &state_type!(),
+    state: &State,
     reporter: &ProgressReporter,
     parent_video: VideoRow,
     start_time: f64,
     end_time: f64,
     clip_title: String,
 ) -> Result<VideoRow, String> {
-    let config = state.config.read().await;
+    // Copy the path out so no config guard is held across ffmpeg.
+    let output = state.config.read().await.output.clone();
 
     // 构建输入文件路径
-    let input_path = Path::new(&config.output).join(&parent_video.file);
+    let input_path = Path::new(&output).join(&parent_video.file);
 
     if !input_path.exists() {
         return Err("原视频文件不存在".to_string());
     }
 
     // 统一的输出目录：clips
-    let output_dir = Path::new(&config.output).join("clips");
+    let output_dir = Path::new(&output).join("clips");
     if !output_dir.exists() {
         std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
     }
@@ -1342,9 +1838,14 @@ async fn clip_video_inner(
     // 生成缩略图文件名，确保路径安全
     let thumbnail_full_path = output_full_path.with_extension("jpg");
 
-    // 生成缩略图，选择切片开头的合理位置
-    let clip_duration = end_time - start_time;
-    let clip_thumbnail_timestamp = get_optimal_thumbnail_timestamp(clip_duration);
+    // 从切片中随机截取缩略图
+    let clip_duration = match ffmpeg_utils::extract_video_metadata(&output_full_path).await {
+        Ok(metadata) if metadata.duration.is_finite() && metadata.duration > 0.0 => {
+            metadata.duration
+        }
+        _ => end_time - start_time,
+    };
+    let clip_thumbnail_timestamp = ffmpeg::get_random_thumbnail_timestamp(clip_duration);
     let clip_cover_path =
         match ffmpeg::generate_thumbnail(&output_full_path, clip_thumbnail_timestamp).await {
             Ok(_) => thumbnail_full_path
@@ -1369,7 +1870,7 @@ async fn clip_video_inner(
         title: clip_title,
         file: output_filename,
         note: String::new(),
-        length: (end_time - start_time) as i64,
+        length: clip_duration as i64,
         size: i64::try_from(file_metadata.len()).map_err(|e| e.to_string())?,
         status: 1,
         cover: clip_cover_path,
@@ -1378,6 +1879,10 @@ async fn clip_video_inner(
         bvid: String::new(),
         area: parent_video.area,
         created_at: Local::now().to_rfc3339(),
+        live_id: String::new(),
+        source: String::new(),
+        duration: clip_duration,
+        danmu_embedded: parent_video.danmu_embedded,
     };
 
     let result = state.db.add_video(&clip_video).await?;
@@ -1455,11 +1960,7 @@ pub async fn batch_import_external_videos(
     let mut errors = Vec::new();
 
     // 设置批量进度事件发射器
-    #[cfg(feature = "gui")]
-    let emitter = EventEmitter::new(state.app_handle.clone());
-    #[cfg(feature = "headless")]
-    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let batch_reporter = ProgressReporter::new(state.db.clone(), &emitter, &event_id).await?;
+    let batch_reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
 
     let total_files = file_paths.len();
 
@@ -1572,4 +2073,746 @@ pub async fn generate_audio_sample(state: state_type!(), video_id: i64) -> Resul
         let _ = crate::ffmpeg::extract_audio_sample(&video_path).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod material_range_tests {
+    use super::*;
+
+    #[test]
+    fn stream_copied_materials_start_at_the_keyframe_before_the_range() {
+        let range = |start, end| ffmpeg::Range { start, end };
+        let actual = actual_material_ranges(&[range(5.0, 15.0)], 10.983);
+        assert!((actual[0].start - 4.017).abs() < 1e-9 && actual[0].end == 15.0);
+        // A cut on a keyframe, or a re-encoded concatenation, is used as asked.
+        assert_eq!(
+            actual_material_ranges(&[range(30.0, 42.0)], 12.0)[0].start,
+            30.0
+        );
+        let two = actual_material_ranges(&[range(1.0, 2.0), range(5.0, 7.0)], 4.0);
+        assert_eq!((two[0].start, two[1].start), (1.0, 5.0));
+        assert_eq!(
+            actual_material_ranges(&[range(0.5, 3.0)], 4.0)[0].start,
+            0.0
+        );
+    }
+}
+
+#[cfg(test)]
+mod subtitle_encoding_tests {
+    use super::*;
+
+    const ASS: &str = "[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\n\
+        [V4+ Styles]\nStyle: Default,Arial,48,&H00FFFFFF\n\
+        [Events]\nDialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,字幕\\N第二行\n";
+
+    #[test]
+    fn srt_input_snapshots_content_and_style_and_removes_temporary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let video = dir.path().join("clip.mp4");
+        let source = video.with_extension("srt");
+        let original = "1\n00:00:00,000 --> 00:00:01,000\nOriginal\n";
+        std::fs::write(&source, original).unwrap();
+        let path;
+        {
+            let input =
+                prepare_subtitle_encoding_input(&video, "FontName=Arial,FontSize=24".to_string())
+                    .unwrap();
+            path = input.path.clone();
+            std::fs::write(&source, "Later edits").unwrap();
+            assert_ne!(input.path, source);
+            assert_eq!(std::fs::read_to_string(&input.path).unwrap(), original);
+            assert_eq!(input.force_style, "FontName=Arial,FontSize=24");
+        }
+        assert!(!path.exists());
+        assert_eq!(std::fs::read_to_string(source).unwrap(), "Later edits");
+    }
+
+    #[test]
+    fn srt_rejects_missing_and_empty_input_before_enqueuing() {
+        let dir = tempfile::tempdir().unwrap();
+        let video = dir.path().join("clip.mp4");
+        assert!(prepare_subtitle_encoding_input(&video, String::new()).is_err());
+        std::fs::write(video.with_extension("srt"), " \n").unwrap();
+        assert!(prepare_subtitle_encoding_input(&video, String::new()).is_err());
+    }
+
+    #[test]
+    fn ass_validation_rejects_missing_sections_empty_events_nul_and_oversized_documents() {
+        assert!(validate_ass_document(ASS).is_ok());
+        assert!(validate_ass_document(&format!("\u{feff}{ASS}")).is_ok());
+        for invalid in [
+            "",
+            "[Script Info]\n[V4+ Styles]\n[Events]",
+            "[Script Info]\n[V4+ Styles]\nStyle: Default,Arial\n[Events]",
+            "[Script Info]\n[V4+ Styles]\n[Events]\nStyle: Default,Arial\nDialogue: example",
+        ] {
+            assert!(validate_ass_document(invalid).is_err(), "{invalid}");
+        }
+        assert!(validate_ass_document(&format!("{ASS}\0")).is_err());
+        assert!(validate_ass_document(&" ".repeat(MAX_ASS_DOCUMENT_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn ass_font_name_uses_style_format_order_and_ignores_other_sections() {
+        let standard = "[Script Info]\nFontname: Wrong\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize\nStyle: Default, Microsoft YaHei, 48\n[Events]\n";
+        assert_eq!(ass_primary_font_name(standard).unwrap(), "Microsoft YaHei");
+        let reordered =
+            "[V4+ Styles]\nFormat: Fontsize,Name,Fontname\nStyle: 48,Default,思源黑体\n";
+        assert_eq!(ass_primary_font_name(reordered).unwrap(), "思源黑体");
+        for invalid in [
+            "[V4+ Styles]\nStyle: Default,Arial,48",
+            "[V4+ Styles]\nFormat: Name,Fontsize\nStyle: Default,48",
+            "[V4+ Styles]\nFormat: Name,Fontname\nStyle: Default, ",
+        ] {
+            assert!(ass_primary_font_name(invalid).is_err());
+        }
+    }
+}
+
+#[cfg(all(test, feature = "headless"))]
+mod queued_subtitle_tests {
+    use super::*;
+    use crate::{
+        config::Config,
+        database::{credentials::CredentialCipher, Database},
+        events::EventBus,
+        mcp::McpServer,
+        recorder_manager::RecorderManager,
+        task::{TaskManager, TaskManagerConfig},
+        webhook::poster::{WebhookConfig, WebhookPoster},
+    };
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    async fn fixture(dir: &Path, capacity: usize, start_scheduler: bool) -> State {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE videos (
+                id INTEGER PRIMARY KEY, room_id TEXT, cover TEXT, file TEXT,
+                note TEXT, length INTEGER, size INTEGER, status INTEGER, bvid TEXT,
+                title TEXT, desc TEXT, tags TEXT, area INTEGER, created_at TEXT, platform TEXT,
+                live_id TEXT DEFAULT '', source TEXT DEFAULT '', duration REAL DEFAULT 0,
+                needs_project INTEGER DEFAULT 0
+            );
+            CREATE TABLE tasks (
+                id TEXT PRIMARY KEY, type TEXT, status TEXT, message TEXT,
+                metadata TEXT, created_at TEXT
+            );
+            INSERT INTO videos (id, room_id, cover, file, note, length, size, status, bvid, title, desc, tags, area, created_at, platform)
+                VALUES (1, 'room', '', 'clip.mp4', '', 1, 0, 0, '', '', '', '', 0, '', 'bilibili');",
+        ).execute(&pool).await.unwrap();
+        std::fs::write(
+            dir.join("clip.srt"),
+            "1\n00:00:00,000 --> 00:00:01,000\nOriginal\n",
+        )
+        .unwrap();
+        let events = EventBus::new();
+        let db = Arc::new(Database::new(
+            pool,
+            CredentialCipher::new(&[0; 32]).unwrap(),
+            events.clone(),
+        ));
+        let config: Config = serde_json::from_value(json!({
+            "output": dir, "cache": dir,
+            "live_start_notify": false, "live_end_notify": false,
+            "clip_notify": false, "post_notify": false,
+        }))
+        .unwrap();
+        let config = Arc::new(RwLock::new(config));
+        let mut task_manager = TaskManager::with_config(TaskManagerConfig {
+            max_queue_size: capacity,
+            check_interval_ms: 5,
+            ..Default::default()
+        });
+        if start_scheduler {
+            task_manager.start();
+        }
+        let task_manager = Arc::new(task_manager);
+        let webhook_poster = WebhookPoster::new(WebhookConfig::default()).unwrap();
+        let recorder_manager = Arc::new(RecorderManager::new(
+            events.clone(),
+            db.clone(),
+            config.clone(),
+            task_manager.clone(),
+            dir.to_path_buf(),
+            webhook_poster.clone(),
+        ));
+        State {
+            mcp_server: Arc::new(McpServer::default()),
+            db,
+            config,
+            webhook_poster,
+            recorder_manager,
+            task_manager,
+            resource_dir: dir.to_path_buf(),
+            events,
+            readonly: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn consecutive_submissions_return_pending_jobs_and_can_be_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        // Submission must return even when the scheduler is stopped.
+        let state = fixture(dir.path(), 2, false).await;
+        for id in ["first", "second"] {
+            let task = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                encode_video_subtitle(state.clone(), id.into(), 1, String::new(), None),
+            )
+            .await
+            .expect("submission must return without running the job")
+            .unwrap();
+            assert_eq!(task.id, id);
+            assert_eq!(task.status, "pending");
+            assert_eq!(state.db.get_task(id).await.unwrap().status, "pending");
+        }
+        assert_eq!(state.task_manager.queue_size().await, 2);
+        cancel(state.clone(), "second".into()).await.unwrap();
+        assert_eq!(state.task_manager.queue_size().await, 1);
+        assert_eq!(
+            state.db.get_task("second").await.unwrap().status,
+            "cancelled"
+        );
+        // Repeated cancellation is harmless; it must not affect the first job.
+        cancel(state.clone(), "second".into()).await.unwrap();
+        assert_eq!(state.task_manager.queue_size().await, 1);
+        assert_eq!(state.db.get_task("first").await.unwrap().status, "pending");
+        cancel(state, "first".into()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn subtitle_submission_snapshots_resolution_and_rejects_invalid_encoding() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = fixture(dir.path(), 2, false).await;
+        let settings = crate::project::RenderSettings {
+            resolution: crate::project::RenderResolution::Original,
+            ..crate::project::RenderSettings::default()
+        };
+        let task = encode_video_subtitle(
+            state.clone(),
+            "portrait".into(),
+            1,
+            String::new(),
+            Some(settings.clone()),
+        )
+        .await
+        .unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&task.metadata).unwrap();
+        assert_eq!(
+            metadata["render_settings"],
+            serde_json::to_value(&settings).unwrap()
+        );
+        let invalid = crate::project::RenderSettings {
+            bitrate_kbps: 0,
+            ..settings
+        };
+        assert!(encode_video_subtitle(
+            state.clone(),
+            "invalid".into(),
+            1,
+            String::new(),
+            Some(invalid)
+        )
+        .await
+        .is_err());
+        assert!(state.db.get_task("invalid").await.is_err());
+        cancel(state, "portrait".into()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn subtitle_generation_rejected_upfront_leaves_no_pending_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = fixture(dir.path(), 1, false).await;
+        // A missing video fails before the task row exists.
+        assert!(generate_video_subtitle_inner(
+            &state,
+            "missing".into(),
+            404,
+            PowerLiveOverrides::default()
+        )
+        .await
+        .is_err());
+        // So does an unknown subtitle generator.
+        state.config.write().await.subtitle_generator_type = "unknown".into();
+        assert!(generate_video_subtitle_inner(
+            &state,
+            "unknown".into(),
+            1,
+            PowerLiveOverrides::default()
+        )
+        .await
+        .is_err());
+        assert!(state.db.get_tasks().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn queue_full_marks_submission_failed_instead_of_leaving_it_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = fixture(dir.path(), 1, false).await;
+        encode_video_subtitle(state.clone(), "first".into(), 1, String::new(), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            encode_video_subtitle(state.clone(), "overflow".into(), 1, String::new(), None)
+                .await
+                .unwrap_err(),
+            "Queue is full"
+        );
+        assert_eq!(
+            state.db.get_task("overflow").await.unwrap().status,
+            "failed"
+        );
+        assert_eq!(state.task_manager.queue_size().await, 1);
+        cancel(state, "first".into()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelling_pending_and_running_tasks_closes_result_without_failure_progress() {
+        use crate::{
+            events::{AppEvent, DataChange},
+            task::TaskStatus,
+        };
+        use tokio::{
+            sync::oneshot,
+            time::{timeout, Duration},
+        };
+
+        for running in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let state = fixture(dir.path(), 1, running).await;
+            let task = state
+                .db
+                .generate_task("clip_range", "waiting", "{}")
+                .await
+                .unwrap();
+            let (started_tx, started_rx) = oneshot::channel();
+            let (result_tx, result_rx) = oneshot::channel();
+            state
+                .task_manager
+                .add_task(Task::new(
+                    task.id.clone(),
+                    TaskPriority::Normal,
+                    async move {
+                        started_tx.send(()).unwrap();
+                        let result = std::future::pending::<Result<(), String>>().await;
+                        let _ = result_tx.send(result);
+                        Ok(())
+                    },
+                ))
+                .await
+                .unwrap();
+            if running {
+                timeout(Duration::from_secs(1), started_rx)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            }
+            let mut events = state.events.subscribe();
+
+            cancel(state.clone(), task.id.clone()).await.unwrap();
+
+            assert_eq!(
+                state.db.get_task(&task.id).await.unwrap().status,
+                "cancelled"
+            );
+            assert_eq!(
+                state.task_manager.get_task_status(&task.id).await,
+                Some(TaskStatus::Cancelled)
+            );
+            assert!(timeout(Duration::from_secs(1), result_rx)
+                .await
+                .expect("dropping the task must unblock its result receiver")
+                .is_err());
+            assert!(matches!(
+                timeout(Duration::from_secs(1), events.recv())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                AppEvent::DataChanged(DataChange::Tasks)
+            ));
+            assert!(
+                timeout(Duration::from_millis(10), events.recv())
+                    .await
+                    .is_err(),
+                "cancellation must refresh tasks without publishing failure progress"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn clip_request_distinguishes_cancelled_tasks_from_unexpected_worker_drops() {
+        use tokio::time::{timeout, Duration};
+
+        for cancelled in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let state = fixture(dir.path(), 1, false).await;
+            let request_state = state.clone();
+            let request = tokio::spawn(async move {
+                let params = serde_json::from_value(json!({
+                    "title": "Clip", "note": "", "cover": "", "platform": "bilibili",
+                    "room_id": "room", "live_id": "live", "ranges": [],
+                    "danmu": false, "local_offset": 0, "fix_encoding": false,
+                }))
+                .unwrap();
+                clip_range(request_state, "clip-request".into(), params).await
+            });
+            timeout(Duration::from_secs(3), async {
+                while state.task_manager.queue_size().await == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("clip request must enqueue before cancellation");
+
+            if cancelled {
+                cancel(state.clone(), "clip-request".into()).await.unwrap();
+            } else {
+                // Drop the worker without a persisted cancellation, as with an
+                // unexpected worker exit. This must remain a visible failure.
+                state
+                    .task_manager
+                    .cancel_task("clip-request")
+                    .await
+                    .unwrap();
+            }
+
+            let error = timeout(Duration::from_secs(1), request)
+                .await
+                .expect("clip request must unblock when its worker is dropped")
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(
+                error,
+                if cancelled {
+                    "切片任务已取消"
+                } else {
+                    "切片任务失败"
+                }
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn queued_video_clip_can_be_cancelled_from_the_task_list() {
+        use tokio::time::{timeout, Duration};
+
+        let dir = tempfile::tempdir().unwrap();
+        let state = fixture(dir.path(), 1, false).await;
+        let request_state = state.clone();
+        let request = tokio::spawn(async move {
+            clip_video(
+                request_state,
+                "video-clip".into(),
+                1,
+                0.0,
+                1.0,
+                "Clip".into(),
+            )
+            .await
+        });
+        timeout(Duration::from_secs(3), async {
+            while state.task_manager.queue_size().await == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("video clip must enqueue so the task list can cancel it");
+
+        cancel(state.clone(), "video-clip".into()).await.unwrap();
+        let error = timeout(Duration::from_secs(1), request)
+            .await
+            .expect("video clip request must unblock when cancelled")
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error, "切片任务已取消");
+    }
+
+    #[tokio::test]
+    async fn video_clip_rejected_by_a_full_queue_is_marked_failed() {
+        use tokio::time::{timeout, Duration};
+
+        let dir = tempfile::tempdir().unwrap();
+        let state = fixture(dir.path(), 1, false).await;
+        let first_state = state.clone();
+        let first = tokio::spawn(async move {
+            clip_video(first_state, "first".into(), 1, 0.0, 1.0, "Clip".into()).await
+        });
+        timeout(Duration::from_secs(3), async {
+            while state.task_manager.queue_size().await == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first video clip must occupy the queue");
+
+        assert_eq!(
+            clip_video(state.clone(), "overflow".into(), 1, 0.0, 1.0, "Clip".into())
+                .await
+                .unwrap_err(),
+            "Queue is full"
+        );
+        assert_eq!(
+            state.db.get_task("overflow").await.unwrap().status,
+            "failed"
+        );
+
+        cancel(state.clone(), "first".into()).await.unwrap();
+        timeout(Duration::from_secs(1), first)
+            .await
+            .expect("cancelled video clip must unblock")
+            .unwrap()
+            .unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn auto_generate_updates_preserve_settings_and_reject_without_mutation() {
+        use crate::handlers::config::update_auto_generate;
+        use crate::project::{EncodingPriority, RenderSettings, VideoCodec};
+
+        let dir = tempfile::tempdir().unwrap();
+        let state = fixture(dir.path(), 1, false).await;
+        let path = dir.path().join("config.toml");
+        state.config.write().await.config_path = path.to_string_lossy().into_owned();
+        let selected = RenderSettings {
+            codec: VideoCodec::H264,
+            priority: EncodingPriority::Quality,
+            bitrate_kbps: 16_000,
+            resolution: crate::project::RenderResolution::Original,
+        };
+        update_auto_generate(state.clone(), true, true, Some(selected.clone()))
+            .await
+            .unwrap();
+        update_auto_generate(state.clone(), false, false, None)
+            .await
+            .unwrap();
+        let before = state.config.read().await.auto_generate.clone();
+        assert_eq!(before.render_settings, selected);
+        assert!(!before.enabled && !before.encode_danmu);
+        let saved = std::fs::read(&path).unwrap();
+        for bitrate_kbps in [0, 499, 100_001] {
+            let invalid = RenderSettings {
+                bitrate_kbps,
+                ..selected.clone()
+            };
+            let error = update_auto_generate(state.clone(), true, true, Some(invalid.clone()))
+                .await
+                .unwrap_err();
+            assert_eq!(error, invalid.validate().unwrap_err());
+            assert_eq!(state.config.read().await.auto_generate, before);
+            assert_eq!(std::fs::read(&path).unwrap(), saved);
+        }
+        let loaded = Config::load(&path, dir.path(), dir.path()).unwrap();
+        assert_eq!(loaded.auto_generate, before);
+        // A save error must also leave the active settings untouched.
+        state.config.write().await.config_path = dir.path().to_string_lossy().into_owned();
+        assert!(update_auto_generate(state.clone(), true, true, None)
+            .await
+            .is_err());
+        assert_eq!(state.config.read().await.auto_generate, before);
+    }
+
+    #[tokio::test]
+    async fn whole_clip_settings_are_validated_before_queueing_and_saved_in_metadata() {
+        use crate::project::RenderSettings;
+        use crate::recorder_manager::GenerateWholeClipParams;
+
+        let dir = tempfile::tempdir().unwrap();
+        let state = fixture(dir.path(), 1, false).await;
+        for bitrate_kbps in [0, 499, 100_001] {
+            let invalid = RenderSettings {
+                bitrate_kbps,
+                ..RenderSettings::default()
+            };
+            let error = crate::handlers::recorder::generate_whole_clip(
+                state.clone(),
+                false,
+                "bilibili".into(),
+                "room".into(),
+                "parent".into(),
+                None,
+                None,
+                Some(invalid.clone()),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error, invalid.validate().unwrap_err());
+            assert!(state.db.get_tasks().await.unwrap().is_empty());
+            assert_eq!(state.task_manager.queue_size().await, 0);
+            assert!(state
+                .recorder_manager
+                .generate_whole_clip(
+                    None,
+                    GenerateWholeClipParams {
+                        encode_danmu: false,
+                        platform: "bilibili".into(),
+                        room_id: "room".into(),
+                        parent_id: "parent".into(),
+                        selected_live_ids: None,
+                        output_name: None,
+                        render_settings: Some(invalid),
+                    }
+                )
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("500"));
+        }
+        let settings = RenderSettings::default();
+        let task = crate::handlers::recorder::generate_whole_clip(
+            state.clone(),
+            false,
+            "bilibili".into(),
+            "room".into(),
+            "parent".into(),
+            None,
+            None,
+            Some(settings.clone()),
+        )
+        .await
+        .unwrap();
+        let stored = state.db.get_task(&task.id).await.unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&stored.metadata).unwrap();
+        assert_eq!(
+            metadata["render_settings"],
+            serde_json::to_value(settings).unwrap()
+        );
+        assert_eq!(state.task_manager.queue_size().await, 1);
+        cancel(state, task.id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn whole_clip_rejected_by_a_full_queue_is_marked_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = fixture(dir.path(), 1, false).await;
+        encode_video_subtitle(state.clone(), "first".into(), 1, String::new(), None)
+            .await
+            .unwrap();
+
+        let error = crate::handlers::recorder::generate_whole_clip(
+            state.clone(),
+            false,
+            "bilibili".into(),
+            "room".into(),
+            "parent".into(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, "Queue is full");
+        let tasks = state.db.get_tasks().await.unwrap();
+        let whole_clip = tasks
+            .iter()
+            .find(|task| task.task_type == "generate_whole_clip")
+            .expect("the rejected whole clip task is still recorded");
+        assert_eq!(whole_clip.status, "failed");
+        cancel(state, "first".into()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancellation_preserves_committed_result_while_worker_is_still_running() {
+        use crate::task::TaskStatus;
+        use tokio::{
+            sync::oneshot,
+            time::{timeout, Duration},
+        };
+
+        for status in ["success", "failed"] {
+            let dir = tempfile::tempdir().unwrap();
+            let state = fixture(dir.path(), 1, true).await;
+            let task = state
+                .db
+                .generate_task("encode_video_subtitle", "waiting", "{}")
+                .await
+                .unwrap();
+            let task_id = task.id.clone();
+            let worker_db = state.db.clone();
+            let (committed_tx, committed_rx) = oneshot::channel();
+            let (release_tx, release_rx) = oneshot::channel();
+            state
+                .task_manager
+                .add_task(Task::new(
+                    task.id.clone(),
+                    TaskPriority::Normal,
+                    async move {
+                        worker_db
+                            .update_task(&task_id, status, "finished", Some("{\"finished\":true}"))
+                            .await
+                            .unwrap();
+                        committed_tx.send(()).unwrap();
+                        // Hold the worker after the terminal DB commit, reproducing the
+                        // window before the scheduler removes its running handle.
+                        release_rx.await.unwrap();
+                        if status == "failed" {
+                            Err("encode failed".to_string())
+                        } else {
+                            Ok(())
+                        }
+                    },
+                ))
+                .await
+                .unwrap();
+            timeout(Duration::from_secs(1), committed_rx)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                state.task_manager.get_task_status(&task.id).await,
+                Some(TaskStatus::Running)
+            );
+            let mut events = state.events.subscribe();
+
+            cancel(state.clone(), task.id.clone()).await.unwrap();
+
+            let row = state.db.get_task(&task.id).await.unwrap();
+            assert_eq!(row.status, status);
+            assert_eq!(row.message, "finished");
+            assert_eq!(row.metadata, "{\"finished\":true}");
+            assert_eq!(
+                state.task_manager.get_task_status(&task.id).await,
+                Some(TaskStatus::Running)
+            );
+            assert!(
+                timeout(Duration::from_millis(10), events.recv())
+                    .await
+                    .is_err(),
+                "ignored cancellation must not publish cancelled progress"
+            );
+            release_tx
+                .send(())
+                .expect("completed worker must not be aborted");
+            let expected = if status == "failed" {
+                TaskStatus::Failed("encode failed".into())
+            } else {
+                TaskStatus::Completed
+            };
+            timeout(Duration::from_secs(1), async {
+                while state.task_manager.get_task_status(&task.id).await != Some(expected.clone()) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_an_unmanaged_task_does_not_claim_it_was_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = fixture(dir.path(), 1, false).await;
+        let task = state
+            .db
+            .generate_task("upload_procedure", "working", "{}")
+            .await
+            .unwrap();
+        assert!(cancel(state.clone(), task.id.clone()).await.is_err());
+        assert_eq!(state.db.get_task(&task.id).await.unwrap().status, "pending");
+    }
 }

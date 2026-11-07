@@ -1,5 +1,7 @@
 use chrono::Local;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{self, AtomicU64};
 use std::sync::Arc;
@@ -22,6 +24,15 @@ pub struct Config {
     pub whisper_model: String,
     #[serde(default = "default_whisper_prompt")]
     pub whisper_prompt: String,
+    /// Words PowerLive should favor when recognizing, shared by every room.
+    #[serde(default)]
+    pub powerlive_hotwords: Vec<String>,
+    /// Room-specific words, keyed by platform then room ID.
+    #[serde(default)]
+    pub powerlive_room_hotwords: HashMap<String, HashMap<String, Vec<String>>>,
+    /// The most characters a PowerLive subtitle line may have.
+    #[serde(default = "default_powerlive_sentence_max_length")]
+    pub powerlive_sentence_max_length: u32,
     #[serde(default = "default_openai_api_endpoint")]
     pub openai_api_endpoint: String,
     #[serde(default = "default_openai_api_key")]
@@ -42,10 +53,47 @@ pub struct Config {
     pub danmu_ass_options: Danmu2AssOptions,
     #[serde(skip)]
     pub update_interval: Arc<AtomicU64>,
-    #[serde(default = "default_powerlive_key")]
-    pub powerlive_key: String,
     #[serde(default = "default_llm_config")]
     pub llm: LlmConfig,
+    #[serde(default)]
+    pub mcp_enabled: bool,
+    #[serde(default = "default_mcp_port")]
+    pub mcp_port: u16,
+}
+
+pub const DEFAULT_MCP_PORT: u16 = 18763;
+
+fn default_mcp_port() -> u16 {
+    DEFAULT_MCP_PORT
+}
+
+fn update_mounted_config(path: &Path, content: &[u8]) -> io::Result<()> {
+    // Linux cannot rename over a single-file bind mount. Update that inode
+    // without truncating it first, preserving its permissions and mount.
+    // Attempt to restore the original bytes on an I/O error; this fallback
+    // cannot provide atomicity against a process crash or a failed rollback.
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?;
+    let mut previous = Vec::new();
+    file.read_to_end(&mut previous)?;
+    let write_contents = |file: &mut std::fs::File, bytes: &[u8]| -> io::Result<()> {
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(bytes)?;
+        file.set_len(bytes.len() as u64)?;
+        file.sync_all()
+    };
+    if let Err(error) = write_contents(&mut file, content) {
+        if let Err(rollback) = write_contents(&mut file, &previous) {
+            return Err(io::Error::new(
+                error.kind(),
+                format!("{error}; restoring the previous configuration also failed: {rollback}"),
+            ));
+        }
+        return Err(error);
+    }
+    Ok(())
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -56,10 +104,12 @@ pub struct LlmConfig {
     pub model: String,
 }
 
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct AutoGenerateConfig {
     pub enabled: bool,
     pub encode_danmu: bool,
+    #[serde(default)]
+    pub render_settings: crate::project::RenderSettings,
 }
 
 fn default_danmu_ass_options() -> Danmu2AssOptions {
@@ -76,6 +126,10 @@ fn default_subtitle_generator_type() -> String {
 
 fn default_whisper_model() -> String {
     "whisper_model.bin".to_string()
+}
+
+fn default_powerlive_sentence_max_length() -> u32 {
+    crate::subtitle_generator::powerlive::DEFAULT_SENTENCE_MAX_LENGTH
 }
 
 fn default_whisper_prompt() -> String {
@@ -98,6 +152,7 @@ fn default_auto_generate_config() -> AutoGenerateConfig {
     AutoGenerateConfig {
         enabled: false,
         encode_danmu: false,
+        render_settings: crate::project::RenderSettings::default(),
     }
 }
 
@@ -113,10 +168,6 @@ fn default_webhook_url() -> String {
     String::new()
 }
 
-fn default_powerlive_key() -> String {
-    String::new()
-}
-
 fn default_llm_config() -> LlmConfig {
     LlmConfig {
         provider: "openai".to_string(),
@@ -127,6 +178,44 @@ fn default_llm_config() -> LlmConfig {
 }
 
 impl Config {
+    /// Update one dictionary, returning its normalized words (not the merged list).
+    /// Omitted scope selects global; a room scope requires both nonblank keys.
+    pub fn set_powerlive_hotwords(
+        &mut self,
+        hotwords: Vec<String>,
+        platform: Option<&str>,
+        room_id: Option<&str>,
+    ) -> Result<Vec<String>, String> {
+        let scope = match (platform, room_id) {
+            (None, None) => None,
+            (Some(platform), Some(room_id))
+                if !platform.trim().is_empty() && !room_id.trim().is_empty() =>
+            {
+                Some((platform, room_id))
+            }
+            _ => return Err("platform and roomId must both be nonempty or both omitted".into()),
+        };
+        let hotwords = crate::subtitle_generator::powerlive::normalize_hotwords(hotwords);
+        if let Some((platform, room_id)) = scope {
+            if hotwords.is_empty() {
+                if let Some(rooms) = self.powerlive_room_hotwords.get_mut(platform) {
+                    rooms.remove(room_id);
+                    if rooms.is_empty() {
+                        self.powerlive_room_hotwords.remove(platform);
+                    }
+                }
+            } else {
+                self.powerlive_room_hotwords
+                    .entry(platform.to_string())
+                    .or_default()
+                    .insert(room_id.to_string(), hotwords.clone());
+            }
+        } else {
+            self.powerlive_hotwords = hotwords.clone();
+        }
+        Ok(hotwords)
+    }
+
     pub fn load(
         config_path: &PathBuf,
         default_cache: &Path,
@@ -161,6 +250,9 @@ impl Config {
             subtitle_generator_type: default_subtitle_generator_type(),
             whisper_model: default_whisper_model(),
             whisper_prompt: default_whisper_prompt(),
+            powerlive_hotwords: Vec::new(),
+            powerlive_room_hotwords: HashMap::new(),
+            powerlive_sentence_max_length: default_powerlive_sentence_max_length(),
             openai_api_endpoint: default_openai_api_endpoint(),
             openai_api_key: default_openai_api_key(),
             clip_name_format: default_clip_name_format(),
@@ -171,8 +263,9 @@ impl Config {
             webhook_url: default_webhook_url(),
             danmu_ass_options: default_danmu_ass_options(),
             update_interval: Arc::new(AtomicU64::new(default_status_check_interval())),
-            powerlive_key: default_powerlive_key(),
             llm: default_llm_config(),
+            mcp_enabled: false,
+            mcp_port: default_mcp_port(),
         };
 
         config.save();
@@ -181,15 +274,49 @@ impl Config {
     }
 
     pub fn save(&self) {
-        let content = match toml::to_string(&self) {
-            Ok(content) => content,
-            Err(e) => {
-                log::error!("Failed to serialize config: {e}");
-                return;
+        if let Err(error) = self.try_save() {
+            log::error!("{error}");
+        }
+    }
+
+    pub fn try_save(&self) -> Result<(), String> {
+        self.try_save_with(|pending, path| pending.persist(path))
+    }
+
+    fn try_save_with(
+        &self,
+        persist: impl FnOnce(
+            tempfile::NamedTempFile,
+            &Path,
+        ) -> Result<std::fs::File, tempfile::PersistError>,
+    ) -> Result<(), String> {
+        let content = toml::to_string(self)
+            .map_err(|error| format!("Failed to serialize config: {error}"))?;
+        // Follow existing symlinks and replace the file only after a complete
+        // write, so a failed settings change cannot truncate the old config.
+        let path = std::fs::canonicalize(&self.config_path)
+            .unwrap_or_else(|_| PathBuf::from(&self.config_path));
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let failure = |error| format!("Failed to save config {}: {error}", self.config_path);
+        let mut pending = tempfile::NamedTempFile::new_in(parent).map_err(failure)?;
+        pending.write_all(content.as_bytes()).map_err(failure)?;
+        if let Ok(metadata) = std::fs::metadata(&path) {
+            pending
+                .as_file()
+                .set_permissions(metadata.permissions())
+                .map_err(failure)?;
+        }
+        pending.as_file().sync_all().map_err(failure)?;
+        match persist(pending, &path) {
+            Ok(_) => Ok(()),
+            Err(error) if error.error.kind() == io::ErrorKind::ResourceBusy => {
+                drop(error.file);
+                update_mounted_config(&path, content.as_bytes()).map_err(failure)
             }
-        };
-        if let Err(e) = std::fs::write(self.config_path.clone(), content) {
-            log::error!("Failed to save config: {} {}", e, self.config_path);
+            Err(error) => Err(failure(error.error)),
         }
     }
 
@@ -205,7 +332,6 @@ impl Config {
         self.save();
     }
 
-    #[allow(dead_code)]
     pub fn set_whisper_language(&mut self, language: &str) {
         self.whisper_language = language.to_string();
         self.save();
@@ -268,5 +394,283 @@ impl Config {
         self.update_interval
             .store(interval, atomic::Ordering::Relaxed);
         self.save();
+    }
+}
+
+#[cfg(test)]
+mod powerlive_config_tests {
+    use super::*;
+
+    fn config() -> Config {
+        toml::from_str(include_str!("../config.example.toml")).unwrap()
+    }
+
+    fn words(values: &[&str]) -> Vec<String> {
+        values.iter().map(|word| word.to_string()).collect()
+    }
+
+    #[test]
+    fn powerlive_dictionaries_default_for_legacy_and_new_configs() {
+        let legacy = config();
+        assert!(legacy.powerlive_hotwords.is_empty());
+        assert!(legacy.powerlive_room_hotwords.is_empty());
+        let mut json = serde_json::to_value(&legacy).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .remove("powerlive_room_hotwords");
+        json["powerlive_hotwords"] = serde_json::json!(["legacy"]);
+        let legacy: Config = serde_json::from_value(json).unwrap();
+        assert_eq!(legacy.powerlive_hotwords, ["legacy"]);
+        assert!(legacy.powerlive_room_hotwords.is_empty());
+
+        let directory = tempfile::tempdir().unwrap();
+        let fresh = Config::load(
+            &directory.path().join("config.toml"),
+            directory.path(),
+            directory.path(),
+        )
+        .unwrap();
+        assert!(fresh.powerlive_room_hotwords.is_empty());
+    }
+
+    #[test]
+    fn powerlive_updates_are_normalized_isolated_and_persisted() {
+        let mut config = config();
+        assert_eq!(
+            config
+                .set_powerlive_hotwords(words(&[" global ", "global", ""]), None, None)
+                .unwrap(),
+            ["global"]
+        );
+        let set_room = |config: &mut Config, platform, room, values: &[&str]| {
+            config
+                .set_powerlive_hotwords(words(values), Some(platform), Some(room))
+                .unwrap()
+        };
+        assert_eq!(
+            set_room(
+                &mut config,
+                "bilibili",
+                "123",
+                &[" Room   word ", "Room word"]
+            ),
+            ["Room word"]
+        );
+        set_room(&mut config, "bilibili", "456", &["other room"]);
+        set_room(&mut config, "douyu", "123", &["other platform"]);
+        assert_eq!(config.powerlive_hotwords, ["global"]);
+        assert_eq!(
+            config.powerlive_room_hotwords["bilibili"]["123"],
+            ["Room word"]
+        );
+        assert_eq!(
+            config.powerlive_room_hotwords["bilibili"]["456"],
+            ["other room"]
+        );
+        assert_eq!(
+            config.powerlive_room_hotwords["douyu"]["123"],
+            ["other platform"]
+        );
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        config.config_path = path.to_string_lossy().into_owned();
+        config.try_save().unwrap();
+        let reloaded = Config::load(&path, directory.path(), directory.path()).unwrap();
+        assert_eq!(reloaded.powerlive_hotwords, config.powerlive_hotwords);
+        assert_eq!(
+            reloaded.powerlive_room_hotwords,
+            config.powerlive_room_hotwords
+        );
+
+        // Normalized-empty words remove only the selected room and prune empty platforms.
+        set_room(&mut config, "bilibili", "123", &[" ", "\t"]);
+        assert!(!config.powerlive_room_hotwords["bilibili"].contains_key("123"));
+        set_room(&mut config, "bilibili", "456", &[]);
+        assert!(!config.powerlive_room_hotwords.contains_key("bilibili"));
+        set_room(&mut config, "missing", "123", &[]);
+        assert!(!config.powerlive_room_hotwords.contains_key("missing"));
+        assert_eq!(
+            config.powerlive_room_hotwords["douyu"]["123"],
+            ["other platform"]
+        );
+        config
+            .set_powerlive_hotwords(Vec::new(), None, None)
+            .unwrap();
+        assert!(config.powerlive_hotwords.is_empty());
+        assert_eq!(config.powerlive_room_hotwords.len(), 1);
+    }
+
+    #[test]
+    fn powerlive_invalid_scopes_leave_both_dictionaries_unchanged() {
+        let mut config = config();
+        config
+            .set_powerlive_hotwords(words(&["global"]), None, None)
+            .unwrap();
+        config
+            .set_powerlive_hotwords(words(&["room"]), Some("bilibili"), Some("123"))
+            .unwrap();
+        let before = serde_json::to_value(&config).unwrap();
+        for (platform, room_id) in [
+            (Some("bilibili"), None),
+            (None, Some("123")),
+            (Some(""), Some("123")),
+            (Some("bilibili"), Some("")),
+            (Some(" \t"), Some("123")),
+            (Some("bilibili"), Some(" \n")),
+            (Some(""), Some("")),
+        ] {
+            assert!(config
+                .set_powerlive_hotwords(words(&["bad"]), platform, room_id)
+                .is_err());
+            assert_eq!(serde_json::to_value(&config).unwrap(), before);
+        }
+    }
+}
+
+#[cfg(test)]
+mod auto_generate_tests {
+    use super::*;
+    use crate::project::{EncodingPriority, RenderSettings, VideoCodec};
+
+    #[test]
+    fn auto_generate_defaults_migrate_and_persist_encoding_settings() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let fresh = Config::load(&path, directory.path(), directory.path()).unwrap();
+        assert_eq!(
+            fresh.auto_generate.render_settings,
+            RenderSettings::default()
+        );
+        assert!(!fresh.auto_generate.enabled);
+        let mut legacy = toml::Value::try_from(&fresh).unwrap();
+        legacy["auto_generate"]
+            .as_table_mut()
+            .unwrap()
+            .remove("render_settings");
+        std::fs::write(&path, toml::to_string(&legacy).unwrap()).unwrap();
+        let mut loaded = Config::load(&path, directory.path(), directory.path()).unwrap();
+        assert_eq!(
+            loaded.auto_generate.render_settings,
+            RenderSettings::default()
+        );
+        loaded.auto_generate.enabled = true;
+        loaded.auto_generate.encode_danmu = true;
+        loaded.auto_generate.render_settings = RenderSettings {
+            codec: VideoCodec::H264,
+            priority: EncodingPriority::Quality,
+            bitrate_kbps: 16_000,
+            resolution: crate::project::RenderResolution::Original,
+        };
+        loaded.try_save().unwrap();
+        let reloaded = Config::load(&path, directory.path(), directory.path()).unwrap();
+        assert_eq!(reloaded.auto_generate, loaded.auto_generate);
+        legacy.as_table_mut().unwrap().remove("auto_generate");
+        let missing: Config = legacy.try_into().unwrap();
+        assert_eq!(missing.auto_generate, fresh.auto_generate);
+    }
+}
+
+#[cfg(test)]
+mod mcp_config_tests {
+    use super::*;
+
+    #[test]
+    fn mcp_is_disabled_for_existing_and_new_configs() {
+        let old = include_str!("../config.example.toml")
+            .replace("mcp_enabled = false\n", "")
+            .replace("mcp_port = 18763\n", "");
+        let old = toml::from_str::<Config>(&old).unwrap();
+        assert!(!old.mcp_enabled);
+        assert_eq!(old.mcp_port, DEFAULT_MCP_PORT);
+        let directory = tempfile::tempdir().unwrap();
+        let config = Config::load(
+            &directory.path().join("config.toml"),
+            directory.path(),
+            directory.path(),
+        )
+        .unwrap();
+        assert!(!config.mcp_enabled);
+        assert_eq!(config.mcp_port, DEFAULT_MCP_PORT);
+    }
+
+    #[test]
+    fn mcp_setting_persists_and_save_failures_are_reported() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let mut config = Config::load(&path, directory.path(), directory.path()).unwrap();
+        config.mcp_enabled = true;
+        config.mcp_port = 18764;
+        config.try_save().unwrap();
+        let reloaded = Config::load(&path, directory.path(), directory.path()).unwrap();
+        assert!(reloaded.mcp_enabled);
+        assert_eq!(reloaded.mcp_port, 18764);
+        config.config_path = directory.path().to_string_lossy().into_owned();
+        assert!(config.try_save().is_err());
+    }
+
+    #[test]
+    fn busy_replace_updates_existing_inode_and_removes_trailing_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let mut config = Config::load(&path, directory.path(), directory.path()).unwrap();
+        std::fs::OpenOptions::new().append(true).open(&path).unwrap()
+            .write_all(b"\n# Long trailing comment which must disappear when replacing the shorter configuration\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        }
+        let previous_metadata = std::fs::metadata(&path).unwrap();
+        config.mcp_enabled = true;
+        config.mcp_port = 19763;
+        let expected = toml::to_string(&config).unwrap();
+        assert!((expected.len() as u64) < previous_metadata.len());
+        config
+            .try_save_with(|pending, _| {
+                Err(tempfile::PersistError {
+                    error: io::Error::from(io::ErrorKind::ResourceBusy),
+                    file: pending,
+                })
+            })
+            .unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+        let saved = Config::load(&path, directory.path(), directory.path()).unwrap();
+        assert!(saved.mcp_enabled);
+        assert_eq!(saved.mcp_port, 19763);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            let saved_metadata = std::fs::metadata(&path).unwrap();
+            assert_eq!(saved_metadata.ino(), previous_metadata.ino());
+            assert_eq!(saved_metadata.dev(), previous_metadata.dev());
+            assert_eq!(
+                saved_metadata.permissions().mode(),
+                previous_metadata.permissions().mode()
+            );
+        }
+    }
+
+    #[test]
+    fn non_busy_replace_errors_preserve_the_original_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let mut config = Config::load(&path, directory.path(), directory.path()).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        config.mcp_enabled = true;
+        config.mcp_port = 19763;
+        for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::Other] {
+            assert!(config
+                .try_save_with(|pending, _| Err(tempfile::PersistError {
+                    error: io::Error::from(kind),
+                    file: pending,
+                }))
+                .is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+        }
+        let saved = Config::load(&path, directory.path(), directory.path()).unwrap();
+        assert!(!saved.mcp_enabled);
+        assert_eq!(saved.mcp_port, DEFAULT_MCP_PORT);
     }
 }

@@ -43,3 +43,6 @@ docs/.vitepress/dist
 
 # local dev script
 start-dev-cuda.ps1
+
+# Local updater signing key (never commit the private key).
+.updater/

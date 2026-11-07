@@ -205,7 +205,7 @@ pub async fn add_account(
                 }
             }
         }
-        PlatformType::Weibo => {
+        PlatformType::Weibo | PlatformType::Rtmp => {
             return Err("Unsupported platform".to_string());
         }
     };

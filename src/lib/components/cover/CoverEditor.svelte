@@ -1,0 +1,1223 @@
+<script lang="ts">
+  import {
+    ArrowDown,
+    ArrowUp,
+    Copy,
+    Film,
+    ImageUp,
+    Loader2,
+    Redo2,
+    Smile,
+    Trash2,
+    Type,
+    Undo2,
+    X,
+    ZoomIn,
+    ZoomOut,
+  } from "lucide-svelte";
+  import { onMount, untrack } from "svelte";
+  import {
+    aspectOf,
+    clamp,
+    clampFrame,
+    COVER_SIZES,
+    defaultFrame,
+    dragChanges,
+    ELEMENT_MIDDLE,
+    ELEMENT_SPACE,
+    elementArea,
+    elementAt,
+    elementSize,
+    frameRect,
+    MAX_ZOOM,
+    minZoom,
+    newSticker,
+    newText,
+    nextId,
+    reorder,
+    scaledSize,
+    sceneOf,
+    styleOf,
+    TEXT_STYLES,
+    zoomFrame,
+    twinChanges,
+    type CoverElement,
+    type ElementChanges,
+    type Frame,
+    type Ratio,
+    type TextElement,
+    type TextStyle,
+  } from "../../cover-elements";
+  import { trapFocus } from "../../focus-trap";
+  import { invoke, log } from "../../invoker";
+  import ElementToolbar from "./ElementToolbar.svelte";
+  import {
+    frameScheduler,
+    isCrossOrigin,
+    loadSticker,
+    measure,
+    prepareBackground,
+    redrawWhenLoaded,
+    renderCover,
+    STICKER_GROUPS,
+    type Background,
+  } from "./render";
+  import SelectionBox from "./SelectionBox.svelte";
+  import StickerPanel from "./StickerPanel.svelte";
+  import TextEditField from "./TextEditField.svelte";
+  import TextPanel from "./TextPanel.svelte";
+
+  interface Props {
+    /** `file` is the video to pick frames from; `value` its id when saving to it. */
+    video?: { file?: string; value?: number } | null;
+    /** The current cover, used as the background at first. */
+    image?: string;
+    /** Shown under the previews. */
+    title?: string;
+    show?: boolean;
+    onCoverUpdate?: (cover: { cover: string }) => void;
+    /** Store the covers somewhere other than the video, such as an upload. */
+    onSave?: (covers: { cover: string; cover43: string }) => Promise<void>;
+  }
+
+  let { video = null, image = "", title = "", show = $bindable(false), onCoverUpdate, onSave }: Props = $props();
+
+  const RATIOS: { id: Ratio; label: string; hint: string }[] = [
+    { id: "home", label: "首页推荐", hint: "4:3" },
+    { id: "wide", label: "个人空间", hint: "16:9" },
+  ];
+
+  // Each cover's elements, front last, in element space; an element and its
+  // twin on the other cover share an id. Kept while the editor is hidden,
+  // so reopening after saving edits them again over the same background.
+  let covers: Record<Ratio, CoverElement[]> = $state({ home: [], wide: [] });
+  let selectedId: number | null = $state(null);
+  let editingId: number | null = $state(null);
+  // The picture of the cover being edited is selected: zoom and move it.
+  let pictureSelected = $state(false);
+  let panel: "text" | "sticker" = $state("text");
+  let stickerGroup = $state(STICKER_GROUPS[0].name);
+  let saving = $state(false);
+  let guides = $state({ x: false, y: false });
+  let lastStyle: TextStyle = styleOf(TEXT_STYLES[0]);
+  let lastFont = "";
+
+  // The cover being edited, and how each cover frames the scene.
+  let ratio: Ratio = $state("wide");
+  let scene = $state(sceneOf());
+  let frames: Record<Ratio, Frame> = $state({
+    home: defaultFrame(sceneOf(), aspectOf("home")),
+    wide: defaultFrame(sceneOf(), aspectOf("wide")),
+  });
+  // Edit text and stickers on both covers together, as Bilibili does by
+  // default; each cover always frames the picture on its own.
+  let syncCovers = $state(true);
+
+  /** The elements of the cover being edited. */
+  let elements = $derived(covers[ratio]);
+  let selected = $derived(elements.find((element) => element.id === selectedId) ?? null);
+  let selectedText = $derived(selected?.kind === "text" ? selected : null);
+  let selectedSticker = $derived(selected?.kind === "sticker" ? selected : null);
+  let selectedBox = $derived(selected ? elementSize(selected, measure) : null);
+  let editing = $derived((elements.find((e) => e.id === editingId && e.kind === "text") as TextElement) ?? null);
+
+  let canvas: HTMLCanvasElement = $state();
+  let ctx: CanvasRenderingContext2D | null = null;
+  let stageArea: HTMLDivElement = $state();
+  let surface: HTMLDivElement = $state();
+  let previews: Partial<Record<Ratio, HTMLCanvasElement>> = $state({});
+  let fileInput: HTMLInputElement = $state();
+  let stageSize = $state({ width: 0, height: 0 });
+
+  let size = $derived(COVER_SIZES[ratio]);
+  let view = $derived(frameRect(scene, aspectOf(ratio), frames[ratio]));
+  let area = $derived(elementArea(ratio));
+  let stageWidth = $derived(
+    Math.floor(Math.max(0, Math.min(stageSize.width, (stageSize.height * size.width) / size.height))),
+  );
+  // CSS pixels on the stage per element-space pixel.
+  let unit = $derived(stageWidth / area.width);
+  let zoomRange = $derived({ min: minZoom(scene, aspectOf(ratio)), max: MAX_ZOOM });
+
+  let background: Background | null = null;
+  let hasBackground = $state(false);
+  let backgroundKind: "cover" | "frame" | "upload" | null = $state(null);
+  let originalCover = $state("");
+  // Kept once loaded: saving can delete the file it came from.
+  let originalImage: HTMLImageElement | null = null;
+  let originalFailed = false;
+  // Bumped by each background change so a slower image load cannot win.
+  let backgroundToken = 0;
+  let followVideo = false;
+  // Picked by the user rather than a frame shown while the cover loads.
+  let backgroundChosen = false;
+
+  let videoElement: HTMLVideoElement = $state();
+  let opened = $state(false);
+  let videoReady = $state(false);
+  let duration = $state(0);
+  let frameTime = $state(0);
+
+  onMount(() => {
+    ctx = canvas.getContext("2d");
+    const observer = new ResizeObserver(([entry]) => {
+      stageSize = { width: entry.contentRect.width, height: entry.contentRect.height };
+    });
+    observer.observe(stageArea);
+    scheduleRedraw();
+    return () => {
+      observer.disconnect();
+      cancelRedraw();
+      clearTimeout(commitTimer);
+    };
+  });
+
+  $effect(() => {
+    $state.snapshot(covers);
+    $state.snapshot(frames);
+    editingId;
+    // The canvas is cleared when switching covers resizes it.
+    size;
+    scheduleRedraw();
+  });
+
+  $effect(() => {
+    if (!show) return;
+    const cover = image;
+    untrack(() => {
+      opened = true;
+      if (cover && !originalCover) {
+        originalCover = cover;
+        if (!backgroundChosen) void useImage(cover, "cover");
+      }
+    });
+  });
+
+  const { schedule: scheduleRedraw, cancel: cancelRedraw } = frameScheduler(redraw);
+
+  function viewOf(r: Ratio) {
+    return frameRect(scene, aspectOf(r), frames[r]);
+  }
+
+  function redraw() {
+    if (!ctx) return;
+    const pending = renderCover(ctx, scene, view, background, area, elements, editingId);
+    for (const r of ["home", "wide"] as const) {
+      const preview = previews[r]?.getContext("2d");
+      if (preview) pending.push(...renderCover(preview, scene, viewOf(r), background, elementArea(r), covers[r]));
+    }
+    redrawWhenLoaded(pending, scheduleRedraw);
+  }
+
+  const otherRatio = (r: Ratio): Ratio => (r === "home" ? "wide" : "home");
+
+  /** The covers an edit to the current one goes to. */
+  const editedRatios = (): Ratio[] => (syncCovers ? [ratio, otherRatio(ratio)] : [ratio]);
+
+  // Framing
+
+  function setFrame(next: Frame) {
+    frames[ratio] = clampFrame(scene, aspectOf(ratio), next);
+  }
+
+  function zoomTo(zoom: number, anchor?: { x: number; y: number }) {
+    setFrame(zoomFrame(scene, aspectOf(ratio), frames[ratio], zoom, anchor));
+  }
+
+  function resetFrame() {
+    frames[ratio] = defaultFrame(scene, aspectOf(ratio));
+    commit();
+  }
+
+  function switchRatio(next: Ratio) {
+    finishEditing();
+    ratio = next;
+  }
+
+  // Background
+
+  function setBackground(source: CanvasImageSource, width: number, height: number, kind: typeof backgroundKind) {
+    background = prepareBackground(source, width, height);
+    const next = sceneOf(width, height);
+    if (Math.abs(next.width - scene.width) > 0.5) {
+      scene = next;
+      frames = { home: defaultFrame(next, aspectOf("home")), wide: defaultFrame(next, aspectOf("wide")) };
+    }
+    hasBackground = true;
+    backgroundKind = kind;
+    scheduleRedraw();
+    for (const resolve of firstBackground.splice(0)) resolve();
+  }
+
+  // Saves waiting for the video's first frame when there is no cover.
+  const firstBackground: (() => void)[] = [];
+
+  function waitForFirstBackground(timeout: number): Promise<void> {
+    if (hasBackground || !video?.file) return Promise.resolve();
+    return new Promise((resolve) => {
+      firstBackground.push(resolve);
+      setTimeout(resolve, timeout);
+    });
+  }
+
+  function loadImage(src: string): Promise<HTMLImageElement> {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      if (isCrossOrigin(src)) image.crossOrigin = "anonymous";
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error(`Failed to load ${src}`));
+      image.src = src;
+    });
+  }
+
+  // Awaited before saving, so a quick save does not miss the background.
+  let backgroundLoad: Promise<void> = Promise.resolve();
+
+  function useImage(src: string, kind: "cover" | "upload") {
+    backgroundLoad = loadBackground(src, kind);
+    return backgroundLoad;
+  }
+
+  async function loadBackground(src: string, kind: "cover" | "upload") {
+    const token = ++backgroundToken;
+    followVideo = false;
+    settleSeek();
+    try {
+      const image = src === originalCover && originalImage ? originalImage : await loadImage(src);
+      if (src === originalCover) originalImage = image;
+      if (token === backgroundToken) setBackground(image, image.naturalWidth, image.naturalHeight, kind);
+    } catch (error) {
+      log.error("Failed to load the cover background:", String(error));
+      if (src === originalCover) originalFailed = true;
+      // Fall back to a frame; a video still loading picks one when ready.
+      if (token === backgroundToken && !hasBackground && videoReady) seekFrame(defaultFrameTime());
+    }
+  }
+
+  async function handleUpload(event: Event & { currentTarget: HTMLInputElement }) {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) return;
+    backgroundChosen = true;
+    const url = URL.createObjectURL(file);
+    await useImage(url, "upload");
+    URL.revokeObjectURL(url);
+  }
+
+  // Past the black frames most recordings start with.
+  const defaultFrameTime = () => Math.min(duration * 0.1, 30);
+
+  function handleVideoLoaded() {
+    videoReady = true;
+    duration = videoElement.duration;
+    // Not while the cover is still loading: it would cancel that load.
+    if (!hasBackground && (!originalCover || originalFailed)) seekFrame(defaultFrameTime());
+  }
+
+  // Resolves the seek a save may be waiting for.
+  let seekDone: (() => void) | null = null;
+
+  function settleSeek() {
+    seekDone?.();
+    seekDone = null;
+  }
+
+  function seekFrame(time: number) {
+    if (!videoElement) return;
+    ++backgroundToken;
+    followVideo = true;
+    frameTime = time;
+    settleSeek();
+    backgroundLoad = new Promise((resolve) => (seekDone = resolve));
+    videoElement.currentTime = time;
+  }
+
+  function handleSeeked() {
+    try {
+      if (followVideo && videoElement.videoWidth) {
+        setBackground(videoElement, videoElement.videoWidth, videoElement.videoHeight, "frame");
+      }
+    } catch (error) {
+      log.error("Failed to capture video frame:", String(error));
+    } finally {
+      settleSeek();
+    }
+  }
+
+  function formatTime(seconds: number): string {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, "0")}`;
+  }
+
+  // History of elements and framing
+
+  const snapshot = () => JSON.stringify({ covers: $state.snapshot(covers), frames: $state.snapshot(frames) });
+  let history = [snapshot()];
+  let historyIndex = $state(0);
+  let historyLength = $state(1);
+  let commitTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function commit() {
+    clearTimeout(commitTimer);
+    commitTimer = undefined;
+    const current = snapshot();
+    if (current === history[historyIndex]) return;
+    history = [...history.slice(0, historyIndex + 1), current].slice(-100);
+    historyIndex = history.length - 1;
+    historyLength = history.length;
+  }
+
+  /** Commit once a run of small changes, like dragging a color, settles. */
+  function commitSoon() {
+    clearTimeout(commitTimer);
+    commitTimer = setTimeout(commit, 400);
+  }
+
+  function restore(index: number) {
+    if (commitTimer) commit();
+    if (index < 0 || index >= history.length) return;
+    historyIndex = index;
+    const state = JSON.parse(history[index]);
+    covers = state.covers;
+    // Framing saved for another picture would not fit this one.
+    frames = {
+      home: clampFrame(scene, aspectOf("home"), state.frames.home),
+      wide: clampFrame(scene, aspectOf("wide"), state.frames.wide),
+    };
+    if (!elements.some((element) => element.id === selectedId)) selectedId = null;
+  }
+
+  const undo = () => restore(historyIndex - 1);
+  const redo = () => restore(historyIndex + 1);
+
+  // Elements
+
+  /** Unique across both covers, so only twins share an id. */
+  const newId = () => nextId([...covers.home, ...covers.wide]);
+
+  /** The twin of element `id` on the other cover, while edits carry over to it. */
+  function twinOf(id: number): CoverElement | null {
+    return syncCovers ? (covers[otherRatio(ratio)].find((element) => element.id === id) ?? null) : null;
+  }
+
+  function add(element: CoverElement) {
+    for (const r of editedRatios()) covers[r].push({ ...element });
+  }
+
+  /** Applies `changes` to `element` and, while synced, to its twin. */
+  function change(element: CoverElement, changes: ElementChanges) {
+    const twin = twinOf(element.id);
+    if (twin) Object.assign(twin, twinChanges(element, changes, twin));
+    Object.assign(element, changes);
+  }
+
+  function addText(style: TextStyle = lastStyle, font = lastFont) {
+    pictureSelected = false;
+    const text = { ...newText(elements, ELEMENT_MIDDLE, style, font), id: newId() };
+    add(text);
+    // Committed when its first edit finishes.
+    startEditing(text.id, true);
+  }
+
+  async function addSticker(src: string, size?: number) {
+    let image: HTMLImageElement;
+    try {
+      image = await loadSticker(src);
+    } catch {
+      alert("贴纸加载失败，可能已被删除");
+      return;
+    }
+    const element = {
+      ...newSticker(elements, ELEMENT_MIDDLE, src, image.naturalWidth / image.naturalHeight || 1, size),
+      id: newId(),
+    };
+    add(element);
+    selectedId = element.id;
+    pictureSelected = false;
+    commit();
+  }
+
+  function pickStyle(style: TextStyle) {
+    lastStyle = styleOf(style);
+    if (!selectedText) return addText(style);
+    change(selectedText, styleOf(style));
+    commit();
+  }
+
+  function pickFont(family: string) {
+    lastFont = family;
+    if (!selectedText) return addText(lastStyle, family);
+    change(selectedText, { font: family });
+    commit();
+  }
+
+  function update(changes: ElementChanges) {
+    if (!selected) return;
+    change(selected, changes);
+    commitSoon();
+  }
+
+  function remove(id: number) {
+    for (const r of editedRatios()) covers[r] = covers[r].filter((element) => element.id !== id);
+    if (selectedId === id) selectedId = null;
+    commit();
+  }
+
+  /** `point` kept on the covers. */
+  function placeable(point: { x: number; y: number }) {
+    return { x: clamp(point.x, 0, ELEMENT_SPACE.width), y: clamp(point.y, 0, ELEMENT_SPACE.height) };
+  }
+
+  function duplicate(element: CoverElement) {
+    const id = newId();
+    for (const r of editedRatios()) {
+      const source = covers[r].find((e) => e.id === element.id);
+      if (!source) continue;
+      covers[r].push({
+        ...$state.snapshot(source),
+        id,
+        ...placeable({ x: source.x + 40, y: source.y + 40 }),
+      } as CoverElement);
+    }
+    selectedId = id;
+    commit();
+  }
+
+  function shift(element: CoverElement, step: 1 | -1) {
+    for (const r of editedRatios()) {
+      const index = covers[r].findIndex((e) => e.id === element.id);
+      if (index >= 0) covers[r] = reorder(covers[r], index, index + step);
+    }
+    commit();
+  }
+
+  const PANELS = [
+    { id: "text", label: "文字", icon: Type },
+    { id: "sticker", label: "贴纸", icon: Smile },
+  ] as const;
+
+  // Text editing on the canvas
+
+  // What the edited text read at its last input; the field is read again when editing ends.
+  let editContent = "";
+  let editSelectAll = $state(false);
+  let editField: ReturnType<typeof TextEditField> | undefined = $state();
+
+  function startEditing(id: number, selectAll = false) {
+    finishEditing();
+    const element = elements.find((e) => e.id === id);
+    if (element?.kind !== "text") return;
+    selectedId = id;
+    editContent = element.content;
+    editSelectAll = selectAll;
+    editingId = id;
+  }
+
+  function finishEditing() {
+    const id = editingId;
+    if (id === null) return;
+    // As on screen, also when ended by a click elsewhere mid-composition.
+    const content = editField?.content() ?? editContent;
+    editingId = null;
+    const element = elements.find((e) => e.id === id);
+    if (element?.kind === "text") {
+      if (content.trim()) change(element, { content });
+      else remove(id);
+    }
+    commit();
+  }
+
+  function handleEditDone(byKey: boolean) {
+    finishEditing();
+    if (byKey) surface.focus({ preventScroll: true });
+  }
+
+  // Pointer interaction
+
+  interface ElementDrag {
+    mode: "move" | "rotate" | "scale";
+    id: number;
+    start: { x: number; y: number };
+    origin: CoverElement;
+    /** The twin as the drag began, while edits carry over to it. */
+    twin: CoverElement | null;
+    moved: boolean;
+  }
+
+  // Moves the picture under the frame; tracked on screen, as the frame moves.
+  interface PictureDrag {
+    mode: "picture";
+    client: { x: number; y: number };
+    origin: Frame;
+    /** CSS pixels per scene unit. */
+    scale: number;
+    moved: boolean;
+  }
+
+  let drag: ElementDrag | PictureDrag | null = null;
+
+  /** Where the pointer is on the stage, as fractions of it. */
+  function stagePoint(event: MouseEvent) {
+    const rect = surface.getBoundingClientRect();
+    return { x: (event.clientX - rect.left) / rect.width, y: (event.clientY - rect.top) / rect.height };
+  }
+
+  /** The element-space point under the pointer. */
+  function toCover(event: MouseEvent) {
+    const p = stagePoint(event);
+    return { x: area.x + p.x * area.width, y: area.y + p.y * area.height };
+  }
+
+  /** The picture's scene point under the pointer. */
+  function toScene(event: MouseEvent) {
+    const p = stagePoint(event);
+    return { x: view.x + p.x * view.width, y: view.y + p.y * view.height };
+  }
+
+  function hitTest(event: MouseEvent) {
+    const point = toCover(event);
+    return elementAt(elements, point.x, point.y, measure, 4 / unit);
+  }
+
+  function beginDrag(event: PointerEvent, mode: ElementDrag["mode"], element: CoverElement) {
+    event.stopPropagation();
+    if (event.button !== 0 || saving) return;
+    surface.setPointerCapture(event.pointerId);
+    const twin = twinOf(element.id);
+    drag = {
+      mode,
+      id: element.id,
+      start: toCover(event),
+      origin: $state.snapshot(element) as CoverElement,
+      twin: twin && ($state.snapshot(twin) as CoverElement),
+      moved: false,
+    };
+  }
+
+  function handlePointerDown(event: PointerEvent) {
+    // Also where `inert` is missing.
+    if (event.button !== 0 || saving) return;
+    finishEditing();
+    surface.focus({ preventScroll: true });
+    const hit = hitTest(event);
+    selectedId = hit?.id ?? null;
+    // Clicking the picture selects it, to zoom and move it.
+    pictureSelected = !hit;
+    if (hit) {
+      beginDrag(event, "move", hit);
+    } else {
+      surface.setPointerCapture(event.pointerId);
+      drag = {
+        mode: "picture",
+        client: { x: event.clientX, y: event.clientY },
+        origin: { ...frames[ratio] },
+        scale: stageWidth / view.width,
+        moved: false,
+      };
+    }
+  }
+
+  function handlePointerMove(event: PointerEvent) {
+    if (!drag) {
+      surface.style.cursor = hitTest(event) ? "move" : pictureSelected ? "grab" : "";
+      return;
+    }
+    if (drag.mode === "picture") {
+      const dx = event.clientX - drag.client.x;
+      const dy = event.clientY - drag.client.y;
+      if (!drag.moved && Math.hypot(dx, dy) < 3) return;
+      drag.moved = true;
+      surface.style.cursor = "grabbing";
+      // The picture follows the pointer, so the frame moves the other way.
+      setFrame({ ...drag.origin, x: drag.origin.x - dx / drag.scale, y: drag.origin.y - dy / drag.scale });
+      return;
+    }
+    const current = drag;
+    const element = elements.find((e) => e.id === current.id);
+    if (!element) return;
+    const point = toCover(event);
+    const origin = drag.origin;
+    const update = dragChanges(drag.mode, origin, drag.start, point, unit, {
+      moved: drag.moved,
+      snapStep: event.shiftKey ? 15 : undefined,
+    });
+    if (!update) return;
+    let changes: ElementChanges;
+    if ("scale" in update) {
+      changes = scaledSize(origin, update.scale);
+    } else {
+      changes = update.changes;
+      if ("guides" in update) guides = update.guides;
+    }
+    Object.assign(element, changes);
+    // From where both started, so the twin does not drift.
+    const twin = drag.twin && covers[otherRatio(ratio)].find((e) => e.id === current.id);
+    if (twin) Object.assign(twin, twinChanges(origin, changes, drag.twin));
+    drag.moved = true;
+  }
+
+  function handlePointerUp() {
+    if (!drag) return;
+    const moved = drag.moved;
+    drag = null;
+    guides = { x: false, y: false };
+    surface.style.cursor = "";
+    if (moved) commit();
+  }
+
+  function handleWheel(event: WheelEvent) {
+    if (!pictureSelected || saving) return;
+    event.preventDefault();
+    zoomTo(frames[ratio].zoom * Math.exp(-event.deltaY * 0.0015), toScene(event));
+    commitSoon();
+  }
+
+  function handleDoubleClick(event: MouseEvent) {
+    const hit = hitTest(event);
+    if (hit?.kind === "text") startEditing(hit.id, true);
+  }
+
+  function handleKeydown(event: KeyboardEvent) {
+    if (!show || saving || event.defaultPrevented) return;
+    const target = event.target as HTMLElement | null;
+    const typing = Boolean(target?.closest?.("input, textarea, select, [contenteditable]"));
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (typing) target.blur();
+      else if (selectedId !== null || pictureSelected) {
+        selectedId = null;
+        pictureSelected = false;
+      } else handleClose();
+      return;
+    }
+    if (typing || editingId !== null) return;
+    const mod = event.metaKey || event.ctrlKey;
+    const key = event.key.toLowerCase();
+    if (mod && (key === "z" || key === "y")) {
+      event.preventDefault();
+      if (key === "y" || event.shiftKey) redo();
+      else undo();
+      return;
+    }
+    if (!selected) return;
+    if (key === "delete" || key === "backspace") {
+      event.preventDefault();
+      remove(selected.id);
+    } else if (mod && key === "d") {
+      event.preventDefault();
+      duplicate(selected);
+    } else if (key === "enter" && selected.kind === "text") {
+      event.preventDefault();
+      startEditing(selected.id, true);
+    } else if (key.startsWith("arrow")) {
+      event.preventDefault();
+      const step = event.shiftKey ? 20 : 2;
+      const dx = key === "arrowleft" ? -step : key === "arrowright" ? step : 0;
+      const dy = key === "arrowup" ? -step : key === "arrowdown" ? step : 0;
+      update(placeable({ x: selected.x + dx, y: selected.y + dy }));
+    }
+  }
+
+  function close() {
+    finishEditing();
+    selectedId = null;
+    pictureSelected = false;
+    show = false;
+  }
+
+  /** The cover of `r` as a JPEG data URL, at its full size. */
+  function exportCover(r: Ratio): string {
+    const output = document.createElement("canvas");
+    output.width = COVER_SIZES[r].width;
+    output.height = COVER_SIZES[r].height;
+    renderCover(output.getContext("2d"), scene, viewOf(r), background, elementArea(r), covers[r]);
+    return output.toDataURL("image/jpeg", 0.92);
+  }
+
+  // A save in flight writes the cover anyway, so it cannot be cancelled.
+  function handleClose() {
+    if (!saving) close();
+  }
+
+  async function handleSave() {
+    if (saving) return;
+    finishEditing();
+    saving = true;
+    try {
+      // A seek that never finishes must not hold the save forever.
+      await Promise.race([backgroundLoad, new Promise((resolve) => setTimeout(resolve, 5000))]);
+      await waitForFirstBackground(5000);
+      // Never replace a cover with the grey placeholder.
+      if (!hasBackground) {
+        alert("封面画面还没有加载出来，请稍后再保存，或上传一张图片作为背景");
+        return;
+      }
+      const stickers = RATIOS.flatMap(({ id }) =>
+        covers[id].flatMap((element) => (element.kind === "sticker" ? [{ ratio: id, element }] : [])),
+      );
+      const loads = await Promise.allSettled(stickers.map(({ element }) => loadSticker(element.src)));
+      const broken = stickers.find((_, index) => loads[index].status === "rejected");
+      if (broken) {
+        // It may be on the other cover only: show it there, selected.
+        ratio = broken.ratio;
+        selectedId = broken.element.id;
+        pictureSelected = false;
+        alert("有贴纸没有加载出来，已选中它，请删除后再保存封面");
+        return;
+      }
+      const cover = exportCover("wide");
+      if (onSave) {
+        await onSave({ cover, cover43: exportCover("home") });
+      } else {
+        await invoke("update_video_cover", { id: video.value, cover });
+      }
+      onCoverUpdate?.({ cover });
+      close();
+    } catch (e) {
+      alert("更新封面失败: " + e);
+    } finally {
+      saving = false;
+    }
+  }
+</script>
+
+<svelte:window
+  onkeydown={handleKeydown}
+  onblur={handlePointerUp}
+/>
+
+<!-- Kept mounted while hidden so the canvas and video stay ready. -->
+<div
+  class="ui-modal-backdrop z-[1100] transition-opacity duration-200"
+  class:opacity-0={!show}
+  class:pointer-events-none={!show}
+  inert={!show}
+  data-hotkey-block
+>
+  <div
+    class="ui-modal h-[min(820px,92vh)] max-h-[92vh] w-[1320px] max-w-full transition-transform duration-200"
+    class:scale-95={!show}
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="cover-editor-title"
+    use:trapFocus={{ active: show }}
+  >
+    <div class="ui-modal-header">
+      <h3 id="cover-editor-title">封面制作</h3>
+      <button
+        type="button"
+        class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost -mr-1.5"
+        aria-label="关闭"
+        disabled={saving}
+        onclick={handleClose}
+      >
+        <X class="h-4 w-4" />
+      </button>
+    </div>
+
+    <!-- Changes after the canvas is captured would be lost. -->
+    <div class="flex min-h-0 flex-1" inert={saving}>
+      <!-- Element kinds -->
+      <nav class="flex w-[60px] shrink-0 flex-col items-center gap-1 border-r border-line bg-chrome/50 py-3" aria-label="元素">
+        {#each PANELS as item (item.id)}
+          <button
+            type="button"
+            class="flex w-12 flex-col items-center gap-1 rounded-[8px] py-2 text-[11px] transition-colors {panel === item.id
+              ? 'bg-accent-soft font-medium text-accent-fg'
+              : 'text-fg-muted hover:bg-control-hover hover:text-fg'}"
+            aria-pressed={panel === item.id}
+            onclick={() => (panel = item.id)}
+          >
+            <item.icon class="h-5 w-5" />
+            {item.label}
+          </button>
+        {/each}
+      </nav>
+
+      <div class="custom-scrollbar-light w-[252px] shrink-0 overflow-y-auto border-r border-line p-3">
+        <!-- Both stay mounted so an import keeps running while the other is shown. -->
+        <div class:hidden={panel !== "text"}>
+          <TextPanel selected={selectedText} onAdd={() => addText()} onStyle={pickStyle} onFont={pickFont} />
+        </div>
+        <div class="min-h-full" class:hidden={panel !== "sticker"}>
+          <StickerPanel
+            active={show && panel === "sticker"}
+            bind:group={stickerGroup}
+            onPick={(sticker, size) => addSticker(sticker.src, size)}
+          />
+        </div>
+      </div>
+
+      <!-- Canvas -->
+      <div class="flex min-w-0 flex-1 flex-col bg-sunken">
+        <div class="flex min-h-[46px] shrink-0 flex-wrap items-center gap-1 border-b border-line bg-surface px-3 py-2">
+          {#if selectedText || selectedSticker}
+            <ElementToolbar
+              text={selectedText}
+              sticker={selectedSticker}
+              onUpdate={update}
+              onFont={(font) => {
+                lastFont = font;
+                change(selectedText, { font });
+                commit();
+              }}
+            />
+          {:else if pictureSelected}
+            <button
+              type="button"
+              class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost"
+              title="缩小"
+              aria-label="缩小"
+              disabled={frames[ratio].zoom <= zoomRange.min + 1e-6}
+              onclick={() => {
+                zoomTo(frames[ratio].zoom / 1.25);
+                commit();
+              }}
+            >
+              <ZoomOut class="h-3.5 w-3.5" />
+            </button>
+            <input
+              type="range"
+              min={zoomRange.min}
+              max={zoomRange.max}
+              step="0.01"
+              value={frames[ratio].zoom}
+              class="w-36"
+              aria-label="缩放"
+              oninput={(event) => zoomTo(Number(event.currentTarget.value))}
+              onchange={commit}
+            />
+            <button
+              type="button"
+              class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost"
+              title="放大"
+              aria-label="放大"
+              disabled={frames[ratio].zoom >= zoomRange.max - 1e-6}
+              onclick={() => {
+                zoomTo(frames[ratio].zoom * 1.25);
+                commit();
+              }}
+            >
+              <ZoomIn class="h-3.5 w-3.5" />
+            </button>
+            <span class="w-10 text-right text-[11px] tabular-nums text-fg-muted">{Math.round(frames[ratio].zoom * 100)}%</span>
+            <span class="toolbar-separator"></span>
+            <button type="button" class="ui-btn ui-btn-sm ui-btn-ghost" onclick={resetFrame}>重置</button>
+          {:else}
+            <span class="text-[12px] text-fg-muted">点击画面可缩放、拖动；从左侧添加文字或贴纸，双击文字可直接修改。</span>
+          {/if}
+
+          <div class="ml-auto flex items-center gap-1">
+            {#if selected}
+              {@const index = elements.indexOf(selected)}
+              <button
+                type="button"
+                class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost"
+                title="上移一层"
+                aria-label="上移一层"
+                disabled={index === elements.length - 1}
+                onclick={() => shift(selected, 1)}
+              >
+                <ArrowUp class="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost"
+                title="下移一层"
+                aria-label="下移一层"
+                disabled={index === 0}
+                onclick={() => shift(selected, -1)}
+              >
+                <ArrowDown class="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost"
+                title="复制 (⌘/Ctrl+D)"
+                aria-label="复制"
+                onclick={() => duplicate(selected)}
+              >
+                <Copy class="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost hover:text-danger-fg"
+                title="删除 (Delete)"
+                aria-label="删除"
+                onclick={() => remove(selected.id)}
+              >
+                <Trash2 class="h-3.5 w-3.5" />
+              </button>
+              <span class="toolbar-separator"></span>
+            {/if}
+            <button
+              type="button"
+              class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost"
+              title="撤销 (⌘/Ctrl+Z)"
+              aria-label="撤销"
+              disabled={historyIndex === 0}
+              onclick={undo}
+            >
+              <Undo2 class="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              class="ui-btn ui-btn-sm ui-btn-icon ui-btn-ghost"
+              title="重做 (⇧⌘Z / Ctrl+Y)"
+              aria-label="重做"
+              disabled={historyIndex >= historyLength - 1}
+              onclick={redo}
+            >
+              <Redo2 class="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+
+        <div class="flex shrink-0 items-center justify-center gap-4 pt-3">
+          <div class="ui-tabs" role="tablist" aria-label="封面比例">
+            {#each RATIOS as item (item.id)}
+              <button
+                type="button"
+                role="tab"
+                class="ui-tab"
+                aria-selected={ratio === item.id}
+                onclick={() => switchRatio(item.id)}
+              >
+                {item.label}封面
+                <span class="text-[11px] text-fg-faint">{item.hint}</span>
+              </button>
+            {/each}
+          </div>
+          <label
+            class="flex cursor-pointer items-center gap-1.5 text-[12px] text-fg-secondary"
+            title="取消后，文字和贴纸的改动只作用于当前封面"
+          >
+            <input type="checkbox" class="ui-checkbox" bind:checked={syncCovers} />
+            双比例同步改动
+          </label>
+        </div>
+
+        <div bind:this={stageArea} class="relative mx-5 mb-5 mt-3 flex min-h-0 flex-1 items-center justify-center">
+          <div
+            class="relative overflow-hidden rounded-[4px] shadow-lg outline outline-2 outline-offset-2 transition-[outline-color] {pictureSelected
+              ? 'outline-accent'
+              : 'outline-transparent'}"
+            style:width="{stageWidth}px"
+            style:height="{(stageWidth * size.height) / size.width}px"
+          >
+            <canvas bind:this={canvas} width={size.width} height={size.height} class="absolute inset-0 h-full w-full"
+            ></canvas>
+            <!-- Focusable so Delete and the arrow keys reach the selected element. -->
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+            <div
+              bind:this={surface}
+              class="absolute inset-0 touch-none outline-none"
+              role="application"
+              aria-label="封面画布：拖动移动元素或画面，双击编辑文字"
+              tabindex="0"
+              onwheel={handleWheel}
+              onpointerdown={handlePointerDown}
+              onpointermove={handlePointerMove}
+              onpointerup={handlePointerUp}
+              onpointercancel={handlePointerUp}
+              ondblclick={handleDoubleClick}
+            >
+              {#if guides.x}
+                <div class="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-[#FF2D7A]"></div>
+              {/if}
+              {#if guides.y}
+                <div class="pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-[#FF2D7A]"></div>
+              {/if}
+
+              {#if selected && selectedBox && editingId === null}
+                <SelectionBox
+                  left={(selected.x - area.x) * unit}
+                  top={(selected.y - area.y) * unit}
+                  width={selectedBox.width * unit}
+                  height={selectedBox.height * unit}
+                  rotation={selected.rotation}
+                  onDelete={() => remove(selected.id)}
+                  onRotate={(event) => beginDrag(event, "rotate", selected)}
+                  onScale={(event) => beginDrag(event, "scale", selected)}
+                />
+              {/if}
+
+              {#if editing}
+                {#key editing.id}
+                  <TextEditField
+                    bind:this={editField}
+                    text={editing}
+                    {unit}
+                    left={(editing.x - area.x) * unit}
+                    top={(editing.y - area.y) * unit}
+                    selectAll={editSelectAll}
+                    onInput={(content) => (editContent = content)}
+                    onDone={handleEditDone}
+                  />
+                {/key}
+              {/if}
+            </div>
+          </div>
+        </div>
+
+        <!-- Background -->
+        <div class="flex h-12 shrink-0 items-center gap-3 border-t border-line bg-surface px-3">
+          <span class="flex shrink-0 items-center gap-1.5 text-[12px] font-medium text-fg-secondary">
+            <Film class="h-3.5 w-3.5 text-fg-muted" />
+            视频帧
+          </span>
+          {#if video?.file}
+            <input
+              type="range"
+              min="0"
+              max={duration || 0}
+              step="0.1"
+              value={frameTime}
+              class="min-w-0 flex-1"
+              aria-label="视频帧位置"
+              disabled={!videoReady}
+              oninput={(event) => {
+                backgroundChosen = true;
+                seekFrame(Number(event.currentTarget.value));
+              }}
+            />
+            <span class="shrink-0 text-[11px] tabular-nums text-fg-muted">
+              {formatTime(frameTime)} / {formatTime(duration)}
+            </span>
+          {:else}
+            <span class="min-w-0 flex-1 text-[11px] text-fg-faint">没有可选帧的视频</span>
+          {/if}
+          <div class="flex shrink-0 items-center gap-1.5">
+            {#if originalCover}
+              <button
+                type="button"
+                class="ui-btn ui-btn-sm {backgroundKind === 'cover' ? 'ui-btn-active' : ''}"
+                onclick={() => {
+                  backgroundChosen = true;
+                  void useImage(originalCover, "cover");
+                }}
+              >
+                原封面
+              </button>
+            {/if}
+            <button
+              type="button"
+              class="ui-btn ui-btn-sm {backgroundKind === 'upload' ? 'ui-btn-active' : ''}"
+              onclick={() => fileInput.click()}
+            >
+              <ImageUp class="h-3.5 w-3.5" />
+              上传图片
+            </button>
+            <input bind:this={fileInput} type="file" accept="image/*" class="hidden" onchange={handleUpload} />
+          </div>
+          <!-- svelte-ignore a11y_media_has_caption -->
+          <video
+            bind:this={videoElement}
+            src={opened ? video?.file : undefined}
+            class="hidden"
+            crossorigin="anonymous"
+            preload="auto"
+            onloadedmetadata={handleVideoLoaded}
+            onseeked={handleSeeked}
+            onerror={settleSeek}
+          ></video>
+        </div>
+      </div>
+
+      <!-- Preview -->
+      <aside class="custom-scrollbar-light flex w-[220px] shrink-0 flex-col gap-4 overflow-y-auto border-l border-line p-4 max-[1279px]:hidden">
+        {#each RATIOS as item (item.id)}
+          <button
+            type="button"
+            class="block w-full space-y-2 text-left"
+            aria-pressed={ratio === item.id}
+            title="编辑{item.label}封面"
+            onclick={() => switchRatio(item.id)}
+          >
+            <span class="block text-[12px] font-medium {ratio === item.id ? 'text-accent-fg' : 'text-fg-secondary'}">
+              {item.label} · {item.hint}
+            </span>
+            <span
+              class="ui-card block overflow-hidden transition-shadow {ratio === item.id
+                ? 'ring-2 ring-accent'
+                : 'hover:ring-1 hover:ring-line-strong'}"
+            >
+              <canvas
+                bind:this={previews[item.id]}
+                width="376"
+                height={Math.round((376 * COVER_SIZES[item.id].height) / COVER_SIZES[item.id].width)}
+                class="block w-full"
+                style:aspect-ratio="{COVER_SIZES[item.id].width} / {COVER_SIZES[item.id].height}"
+              ></canvas>
+              <span class="line-clamp-2 px-2 py-1.5 text-[11px] leading-snug text-fg">{title || "视频标题"}</span>
+            </span>
+          </button>
+        {/each}
+        <p class="ui-hint">两张封面都会展示给观众：首页推荐用 4:3，个人空间等处用 16:9。每张可以单独缩放、移动画面；取消「双比例同步改动」后，文字和贴纸的改动只作用于当前封面。</p>
+      </aside>
+    </div>
+
+    <div class="ui-modal-footer justify-between">
+      <span class="text-[11px] text-fg-muted">保存 16:9（1920×1080）和 4:3（1440×1080）两张封面</span>
+      <div class="flex gap-2">
+        <button type="button" class="ui-btn" disabled={saving} onclick={handleClose}>取消</button>
+        <button type="button" class="ui-btn ui-btn-primary" disabled={saving} onclick={handleSave}>
+          {#if saving}<Loader2 class="h-3.5 w-3.5 animate-spin" />{/if}
+          完成
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .toolbar-separator {
+    margin: 0 4px;
+    height: 16px;
+    width: 1px;
+    background: rgb(var(--c-line-strong));
+  }
+
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    border-radius: 2px;
+    background: rgb(var(--c-fg-faint) / 50%);
+    cursor: pointer;
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: white;
+    box-shadow: 0 1px 3px rgb(0 0 0 / 35%);
+  }
+
+  input[type="range"]::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border: none;
+    border-radius: 50%;
+    background: white;
+  }
+
+  input[type="range"]:focus {
+    outline: none;
+  }
+
+  input[type="range"]:focus-visible {
+    outline: 2px solid rgb(var(--c-accent));
+    outline-offset: 4px;
+  }
+
+  input[type="range"]:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+</style>

@@ -24,7 +24,7 @@ RUN yarn build
 
 # Build Rust backend. cargo-chef keeps third-party dependencies in a separate
 # Docker layer, so application source changes do not force a full rebuild.
-FROM rust:1.90-slim AS rust-base
+FROM rust:1.90-slim-trixie AS rust-base
 
 WORKDIR /app/src-tauri
 
@@ -35,11 +35,31 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     glib-2.0-dev \
     libclang-dev \
+    libavformat-dev \
+    libavcodec-dev \
+    libavutil-dev \
+    libswresample-dev \
+    libavfilter-dev \
+    libfontconfig1-dev \
+    libicu-dev \
+    libharfbuzz-dev \
+    libpng-dev \
+    libexpat1-dev \
+    libjpeg-dev \
+    zlib1g-dev \
+    clang \
+    ninja-build \
+    python3 \
+    curl \
     g++ \
     wget \
     xz-utils \
     git \
     && rm -rf /var/lib/apt/lists/*
+
+# Linux needs a source build: upstream's old archive omits COLRv1 and its
+# bundled ICU conflicts with V8. Keep the builder/runtime distro ABI aligned.
+ENV FORCE_SKIA_BUILD=1 SKIA_USE_SYSTEM_LIBRARIES=1 CC=clang CXX=clang++
 
 RUN cargo install cargo-chef --version 0.1.78 --locked
 
@@ -75,11 +95,24 @@ WORKDIR /app
 # Install runtime dependencies, SSL certificates and Chinese fonts
 RUN apt-get update && apt-get install -y \
     libssl3 \
+    libfontconfig1 \
+    libicu76 \
+    libharfbuzz0b \
+    libharfbuzz-subset0 \
+    libpng16-16t64 \
+    libjpeg62-turbo \
+    libexpat1 \
+    zlib1g \
     ca-certificates \
     fonts-wqy-microhei \
     netbase \
     nscd \
-    ffmpeg \
+    libavformat61 \
+    libavcodec61 \
+    libavutil59 \
+    libswresample5 \
+    libavfilter10 \
+    libswscale8 \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -95,6 +128,17 @@ COPY --from=frontend-builder /app/dist ./dist
 
 # Copy built Rust binary
 COPY --from=rust-builder /app/src-tauri/target/release/bili-shadowreplay .
+# The runtime uses the same trixie FFmpeg ABI as the Rust builder, without CLI tools.
+# Fail if any linked FFmpeg/Skia dependency was missed in the runtime.
+RUN ! command -v ffmpeg \
+    && ! command -v ffprobe \
+    && ldd ./bili-shadowreplay > /tmp/bsr-linked-libraries \
+    && cat /tmp/bsr-linked-libraries \
+    && ! grep -q 'not found' /tmp/bsr-linked-libraries \
+    && rm /tmp/bsr-linked-libraries
+# The emoji font and Unicode table are embedded in the binary; ship their notices.
+COPY src-tauri/crates/native-overlay/assets/EMOJI-OFL.txt ./licenses/Noto-Emoji-OFL.txt
+COPY src-tauri/crates/native-overlay/assets/UNICODE-LICENSE.txt ./licenses/Unicode.txt
 
 # Expose port
 EXPOSE 3000

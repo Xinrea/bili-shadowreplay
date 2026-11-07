@@ -1,18 +1,34 @@
 use std::path::PathBuf;
 
+use base64::Engine;
+
 use crate::state::State;
 use crate::state_type;
 
 #[cfg(feature = "gui")]
 use {
-    recorder::platforms::PlatformType,
-    std::process::Command,
-    tauri::State as TauriState,
-    tauri::{Manager, Theme},
-    tauri_utils::config::WindowEffectsConfig,
-    tokio::fs::OpenOptions,
+    recorder::platforms::PlatformType, std::process::Command, tauri::Manager,
+    tauri::State as TauriState, tauri_utils::config::WindowEffectsConfig, tokio::fs::OpenOptions,
     tokio::io::AsyncWriteExt,
 };
+
+/// Bring the main window to the front, from a preview window that asked it to
+/// continue something there.
+pub(crate) fn focus_main_window(_state: &State) {
+    #[cfg(feature = "gui")]
+    crate::tray::show_main_window(&_state.app_handle);
+}
+
+/// The bytes of the base64 data URL `data`.
+pub(crate) fn decode_data_url(data: &str) -> Result<Vec<u8>, String> {
+    let base64 = data
+        .split("base64,")
+        .nth(1)
+        .ok_or_else(|| "Image is not a base64 data URL".to_string())?;
+    base64::engine::general_purpose::STANDARD
+        .decode(base64)
+        .map_err(|e| format!("Failed to decode image: {e}"))
+}
 
 #[allow(dead_code)]
 pub fn copy_dir_all(
@@ -86,7 +102,7 @@ pub fn show_in_folder(path: String) {
 
 #[derive(serde::Serialize)]
 pub struct DiskInfo {
-    pub disk: String,
+    pub(crate) disk: String,
     total: u64,
     pub free: u64,
 }
@@ -153,31 +169,79 @@ pub async fn get_disk_info_inner(target: PathBuf) -> Result<DiskInfo, ()> {
         Ok(DiskInfo { disk, total, free })
     }
 
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    // Off the async runtime: these are blocking calls.
+    #[cfg(target_os = "macos")]
     {
-        // check system disk info
-        let disks = sysinfo::Disks::new_with_refreshed_list();
-        // get target disk info
-        let mut disk_info = DiskInfo {
-            disk: String::new(),
-            total: 0,
-            free: 0,
-        };
-
-        // Find the disk with the longest matching mount point
-        let mut longest_match = 0;
-        for disk in disks.list() {
-            let mount_point = disk.mount_point().to_string_lossy();
-            if target.starts_with(&*mount_point) && mount_point.split('/').count() > longest_match {
-                disk_info.disk = mount_point.to_string();
-                disk_info.total = disk.total_space();
-                disk_info.free = disk.available_space();
-                longest_match = mount_point.split('/').count();
-            }
-        }
-
-        Ok(disk_info)
+        tokio::task::spawn_blocking(move || file_system_info(&target))
+            .await
+            .map_err(|e| log::error!("Disk info task failed: {e}"))?
     }
+
+    #[cfg(target_os = "windows")]
+    {
+        tokio::task::spawn_blocking(move || disk_info_of(&target))
+            .await
+            .map_err(|e| log::error!("Disk info task failed: {e}"))
+    }
+}
+
+/// The file system holding `target`, or the nearest folder above it that
+/// exists. Only it: listing every volume waits on each, as on a network share
+/// that does not answer.
+#[cfg(target_os = "macos")]
+fn file_system_info(target: &std::path::Path) -> Result<DiskInfo, ()> {
+    use std::ffi::{CStr, CString};
+    use std::os::unix::ffi::OsStrExt;
+
+    let target = target
+        .ancestors()
+        .find(|path| path.exists())
+        .unwrap_or(target);
+    let path = CString::new(target.as_os_str().as_bytes())
+        .map_err(|e| log::error!("Invalid path for disk info: {e}"))?;
+    let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: `path` is a valid C string, and `stats` is written in full when
+    // the call succeeds.
+    if unsafe { libc::statfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
+        log::error!(
+            "Failed to read disk info of {}: {}",
+            target.display(),
+            std::io::Error::last_os_error()
+        );
+        return Err(());
+    }
+    // SAFETY: the call succeeded.
+    let stats = unsafe { stats.assume_init() };
+    let block = u64::from(stats.f_bsize);
+    // SAFETY: the kernel writes the mount point as a NUL-terminated string.
+    let mount_point = unsafe { CStr::from_ptr(stats.f_mntonname.as_ptr()) };
+    Ok(DiskInfo {
+        disk: mount_point.to_string_lossy().into_owned(),
+        total: stats.f_blocks * block,
+        free: stats.f_bavail * block,
+    })
+}
+
+/// The disk with the longest mount point holding `target`.
+#[cfg(target_os = "windows")]
+fn disk_info_of(target: &std::path::Path) -> DiskInfo {
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let mut disk_info = DiskInfo {
+        disk: String::new(),
+        total: 0,
+        free: 0,
+    };
+    let mut longest_match = 0;
+    for disk in disks.list() {
+        let mount_point = disk.mount_point().to_string_lossy();
+        if target.starts_with(&*mount_point) && mount_point.split('/').count() > longest_match {
+            disk_info.disk = mount_point.to_string();
+            disk_info.total = disk.total_space();
+            disk_info.free = disk.available_space();
+            longest_match = mount_point.split('/').count();
+        }
+    }
+    disk_info
 }
 
 #[cfg(feature = "gui")]
@@ -216,6 +280,89 @@ pub async fn open_log_folder(state: state_type!()) -> Result<(), String> {
         show_in_folder(log_dir.to_string_lossy().into_owned());
     }
     Ok(())
+}
+
+/// Open the configured material directory itself, rather than reveal it in its parent.
+#[cfg(feature = "gui")]
+#[tauri::command]
+pub async fn open_material_folder(state: state_type!()) -> Result<(), String> {
+    let output = state.config.read().await.output.clone();
+    let path = std::path::absolute(output)
+        .map_err(|e| format!("Failed to resolve material directory: {e}"))?;
+    tokio::fs::create_dir_all(&path)
+        .await
+        .map_err(|e| format!("Failed to create material directory: {e}"))?;
+
+    #[cfg(target_os = "windows")]
+    let mut command = Command::new("explorer");
+    #[cfg(target_os = "macos")]
+    let mut command = Command::new("open");
+    #[cfg(target_os = "linux")]
+    let mut command = Command::new("xdg-open");
+
+    command
+        .arg(path)
+        .spawn()
+        .map_err(|e| format!("Failed to open material directory: {e}"))?;
+    Ok(())
+}
+
+/// Preview windows draw their own title bar (`TitleBar.svelte`): on macOS it
+/// sits under the native traffic lights, elsewhere it replaces the decorations.
+/// Keep the traffic light position in sync with `tauri.macos.conf.json`.
+#[cfg(feature = "gui")]
+fn with_custom_titlebar<'a, R: tauri::Runtime, M: Manager<R>>(
+    builder: tauri::WebviewWindowBuilder<'a, R, M>,
+) -> tauri::WebviewWindowBuilder<'a, R, M> {
+    #[cfg(target_os = "macos")]
+    {
+        builder
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true)
+            .traffic_light_position(tauri::LogicalPosition::new(16.0, 22.0))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        builder.decorations(false)
+    }
+}
+
+/// Changes the calling window's title. On macOS, AppKit lays the title bar out
+/// again on every title change, which moves the traffic lights back to their
+/// default position. Marking the content view dirty in the same main-thread
+/// turn makes wry re-apply the custom position when it redraws after that.
+#[cfg(feature = "gui")]
+#[tauri::command]
+pub fn set_window_title(window: tauri::WebviewWindow, title: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        // Not `with_webview`: on macOS it hands out the WKWebView and NSWindow
+        // with references that are never released, so a window whose title was
+        // set kept its page running, and its media playing, after it closed.
+        let target = window.clone();
+        window
+            .run_on_main_thread(move || {
+                let Ok(ns_window) = target.ns_window() else {
+                    return;
+                };
+                let ns_window = ns_window.cast::<objc2_app_kit::NSWindow>();
+                if ns_window.is_null() {
+                    return;
+                }
+                // SAFETY: an autoreleased pointer used on the main thread while
+                // the window is still open.
+                let ns_window = unsafe { &*ns_window };
+                ns_window.setTitle(&objc2_foundation::NSString::from_str(&title));
+                if let Some(view) = ns_window.contentView() {
+                    unsafe { view.setNeedsDisplay(true) };
+                }
+            })
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        window.set_title(&title).map_err(|e| e.to_string())
+    }
 }
 
 #[cfg(feature = "gui")]
@@ -261,7 +408,6 @@ pub async fn open_live(
             ),
         )
         .title(format!("Live[{}] {}", room_id, live_id))
-        .theme(Some(Theme::Light))
         .inner_size(1200.0, 800.0)
         .effects(WindowEffectsConfig {
             effects: vec![
@@ -273,7 +419,7 @@ pub async fn open_live(
             color: None,
         });
 
-        if let Err(e) = builder.decorations(true).build() {
+        if let Err(e) = with_custom_titlebar(builder).build() {
             log::error!("live window build failed: {e}");
             return Err(format!("打开直播窗口失败：{e}"));
         }
@@ -282,31 +428,35 @@ pub async fn open_live(
     Ok(())
 }
 
+/// Focus the window `label`, or open `url` in a new one.
 #[cfg(feature = "gui")]
-#[tauri::command]
-pub async fn open_clip(state: state_type!(), video_id: i64) -> Result<(), String> {
-    log::info!("Open clip window: {video_id}");
-    let label = format!("Clip:{video_id}");
-
+fn open_or_focus_window(
+    state: &State,
+    label: String,
+    url: String,
+    title: String,
+    size: (f64, f64),
+    min_size: Option<(f64, f64)>,
+    html5_drag_drop: bool,
+) -> Result<(), String> {
     // 窗口已存在时 build 会直接失败，这里改为聚焦到已有窗口，
-    // 否则用户重复点击切片时没有任何反应。
+    // 否则用户重复点击时没有任何反应。
     if let Some(window) = state.app_handle.get_webview_window(&label) {
-        log::info!("Clip window already exists, focusing: {label}");
+        log::info!("Window already exists, focusing: {label}");
         let _ = window.unminimize();
         let _ = window.show();
         return window
             .set_focus()
-            .map_err(|e| format!("聚焦已有切片窗口失败：{e}"));
+            .map_err(|e| format!("聚焦已有窗口失败：{e}"));
     }
 
-    let builder = tauri::WebviewWindowBuilder::new(
+    let mut builder = tauri::WebviewWindowBuilder::new(
         &state.app_handle,
-        label.clone(),
-        tauri::WebviewUrl::App(format!("index_clip.html?id={video_id}").into()),
+        label,
+        tauri::WebviewUrl::App(url.into()),
     )
-    .title(format!("Clip window:{video_id}"))
-    .theme(Some(Theme::Light))
-    .inner_size(1200.0, 800.0)
+    .title(title)
+    .inner_size(size.0, size.1)
     .effects(WindowEffectsConfig {
         effects: vec![
             tauri_utils::WindowEffect::Tabbed,
@@ -316,13 +466,53 @@ pub async fn open_clip(state: state_type!(), video_id: i64) -> Result<(), String
         radius: None,
         color: None,
     });
-
-    if let Err(e) = builder.decorations(true).build() {
-        log::error!("clip window build failed: {e}");
-        return Err(format!("打开切片窗口失败：{e}"));
+    if let Some((width, height)) = min_size {
+        builder = builder.min_inner_size(width, height);
+    }
+    if html5_drag_drop {
+        // Windows' native file-drop handler otherwise intercepts material-bin
+        // drags before the editor's HTML5 drop targets receive them.
+        builder = builder.disable_drag_drop_handler();
     }
 
+    if let Err(e) = with_custom_titlebar(builder).build() {
+        log::error!("window build failed: {e}");
+        return Err(format!("打开窗口失败：{e}"));
+    }
     Ok(())
+}
+
+/// Preview a material.
+#[cfg(feature = "gui")]
+#[tauri::command]
+pub async fn open_clip(state: state_type!(), video_id: i64) -> Result<(), String> {
+    log::info!("Open material window: {video_id}");
+    open_or_focus_window(
+        &state,
+        format!("Clip:{video_id}"),
+        format!("index_clip.html?material={video_id}"),
+        format!("Material window:{video_id}"),
+        (1000.0, 680.0),
+        None,
+        false,
+    )
+}
+
+/// Edit a project.
+#[cfg(feature = "gui")]
+#[tauri::command]
+pub async fn open_project(state: state_type!(), project_id: i64) -> Result<(), String> {
+    log::info!("Open project window: {project_id}");
+    open_or_focus_window(
+        &state,
+        format!("Project:{project_id}"),
+        format!("index_clip.html?project={project_id}"),
+        format!("Project window:{project_id}"),
+        (1360.0, 860.0),
+        // Material library, preview and side panel stay side by side.
+        Some((1100.0, 680.0)),
+        true,
+    )
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -419,6 +609,18 @@ pub fn sanitize_filename_advanced(name: &str, max_length: Option<usize>) -> Stri
 #[cfg(test)]
 mod tests {
     #[test]
+    fn decode_data_url_reads_base64_payloads_only() {
+        use super::decode_data_url;
+
+        assert_eq!(
+            decode_data_url("data:image/png;base64,aGVsbG8=").unwrap(),
+            b"hello"
+        );
+        assert!(decode_data_url("data:image/png,hello").is_err());
+        assert!(decode_data_url("data:image/png;base64,invalid!").is_err());
+    }
+
+    #[test]
     #[cfg(feature = "headless")]
     fn test_sanitize_filename_advanced() {
         use super::sanitize_filename_advanced;
@@ -468,5 +670,45 @@ mod tests {
         let short_name = "test.mp4";
         let result = sanitize_filename_advanced(short_name, Some(50));
         assert_eq!(result, "test.mp4");
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod disk_info_tests {
+    use super::*;
+    use std::ffi::{CStr, CString};
+    use std::os::unix::ffi::OsStrExt;
+
+    #[tokio::test]
+    async fn disk_info_reads_the_file_system_of_a_folder_to_be() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("to/be");
+        assert!(!target.exists());
+
+        // Read the existing parent directly to verify that the missing child
+        // resolves to its file system, not another volume selected by prefix.
+        let path = CString::new(directory.path().as_os_str().as_bytes()).unwrap();
+        let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
+        // SAFETY: `path` is a valid C string and `stats` is writable.
+        assert_eq!(
+            unsafe { libc::statfs(path.as_ptr(), stats.as_mut_ptr()) },
+            0
+        );
+        // SAFETY: the successful call initialized `stats`, including the
+        // NUL-terminated mount point.
+        let stats = unsafe { stats.assume_init() };
+        let mount_point = unsafe { CStr::from_ptr(stats.f_mntonname.as_ptr()) };
+
+        let info = get_disk_info_inner(target.clone()).await.unwrap();
+        assert!(
+            !target.exists(),
+            "querying disk info must not create the path"
+        );
+        assert_eq!(info.disk, mount_point.to_string_lossy());
+        assert_eq!(info.total, stats.f_blocks * u64::from(stats.f_bsize));
+        // Free space can change between reads or be zero on a full volume.
+        // sysinfo's macOS estimate also includes reclaimable capacity, so it
+        // is not an oracle for statfs's immediately available blocks.
+        assert!(info.total > 0 && info.free <= info.total);
     }
 }

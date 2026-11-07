@@ -1,1094 +1,393 @@
 <script lang="ts">
-  import { invoke, TAURI_ENV, get_static_url } from "../lib/invoker";
-  import type { VideoItem } from "../lib/interface";
-  import ImportVideoDialog from "../lib/components/ImportVideoDialog.svelte";
-  import { onMount, onDestroy, tick } from "svelte";
-  import {
-    Play,
-    Trash2,
-    Calendar,
-    Clock,
-    HardDrive,
-    RefreshCw,
-    ChevronDown,
-    ChevronUp,
-    Video,
-    Globe,
-    Upload,
-    Home,
-    FileVideo,
-    Scissors,
-    Download,
-    RotateCw,
-    Edit,
-  } from "lucide-svelte";
+  import { formatTimecode } from "../lib/time-format";
+  import { trapFocus } from "../lib/focus-trap";
+  import { createStateRefresh, watchStateChanges } from "../lib/state-refresh";
+  import { invoke, get_static_url } from "../lib/invoker";
+  import type { ProjectItem } from "../lib/interface";
+  import PageTitlebar from "../lib/components/PageTitlebar.svelte";
+  import BatchActionLayout from "../lib/components/BatchActionLayout.svelte";
+  import DeleteConfirmActions from "../lib/components/DeleteConfirmActions.svelte";
+  import { onMount } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
-  import { AnnotationOutline } from "flowbite-svelte-icons";
-  import BilibiliIcon from "../lib/components/BilibiliIcon.svelte";
-  import DouyinIcon from "../lib/components/DouyinIcon.svelte";
-  import DouyuIcon from "../lib/components/DouyuIcon.svelte";
-  import KuaishouIcon from "../lib/components/KuaishouIcon.svelte";
-  import HuyaIcon from "../lib/components/HuyaIcon.svelte";
-  import TikTokIcon from "../lib/components/TikTokIcon.svelte";
-  import TwitchIcon from "../lib/components/TwitchIcon.svelte";
-  import YouTubeIcon from "../lib/components/YouTubeIcon.svelte";
+  import {
+    Calendar,
+    Clapperboard,
+    Clock,
+    Edit,
+    Pencil,
+    Plus,
+    RefreshCw,
+    Search,
+    Trash2,
+    Upload,
+  } from "lucide-svelte";
+  import { registerCommands } from "../lib/stores/commands";
+  import { requestUpload } from "../lib/uploads";
 
-  let videos: VideoItem[] = [];
-  let filteredVideos: VideoItem[] = $state([]);
-  let loading = $state(false);
-  let sortBy = $state("created_at");
-  let sortOrder = $state("desc");
-  let selectedRoomId = $state(null);
-  let roomIds: string[] = $state([]);
+  interface ProjectRow extends ProjectItem {
+    coverUrl: string;
+  }
 
-  let selectedVideos = new SvelteSet<number>();
-  let showDeleteConfirm = $state(false);
-  let videoToDelete: VideoItem | null = $state(null);
-  let showImportDialog = $state(false);
-
-  // 编辑备注相关状态
-  let showEditNoteDialog = $state(false);
-  let videoToEditNote: VideoItem | null = $state(null);
+  let projects: ProjectRow[] = $state([]);
+  let loading = $state(true);
+  let selectedRoomId: string | null = $state(null);
+  let search = $state("");
+  let sortBy: "updated_at" | "created_at" | "title" | "duration" = $state("updated_at");
+  const selectedProjects = new SvelteSet<number>();
+  let projectsToDelete: ProjectRow[] | null = $state(null);
+  let projectToNote: ProjectRow | null = $state(null);
   let editingNote = $state("");
+  let creating = $state(false);
 
-  onMount(async () => {
-    await loadVideos();
+  let roomIds = $derived([...new Set(projects.map((project) => project.room_id))].filter(Boolean).sort());
+  let filtered = $derived.by(() => {
+    const keyword = search.trim().toLowerCase();
+    return projects
+      .filter((project) => selectedRoomId === null || project.room_id === selectedRoomId)
+      .filter(
+        (project) =>
+          !keyword ||
+          project.title.toLowerCase().includes(keyword) ||
+          project.note.toLowerCase().includes(keyword),
+      )
+      .sort((a, b) => {
+        switch (sortBy) {
+          case "title":
+            return a.title.localeCompare(b.title);
+          case "duration":
+            return b.duration - a.duration;
+          default:
+            return new Date(b[sortBy]).getTime() - new Date(a[sortBy]).getTime();
+        }
+      });
   });
+  let selected = $derived(filtered.filter((project) => selectedProjects.has(project.id)));
+  let allSelected = $derived(filtered.length > 0 && selected.length === filtered.length);
 
-  onDestroy(() => {
-    stopProgressPolling();
-  });
-
-  let importProgressInfo = $state(null);
-  let progressPollingTimer = null;
-
-  /**
-   * 响应式语句：当检测到转换任务时，确保 loading 状态为 true
-   */
   $effect(() => {
-    if (importProgressInfo) {
-      loading = true;
+    // Keep selection within the current results, including after a remote deletion.
+    const visibleIds = new Set(filtered.map((project) => project.id));
+    for (const id of selectedProjects) {
+      if (!visibleIds.has(id)) selectedProjects.delete(id);
     }
   });
 
-  /**
-   * 启动进度轮询定时器
-   * 每3秒检查一次导入任务进度
-   */
-  function startProgressPolling() {
-    if (progressPollingTimer) {
-      clearTimeout(progressPollingTimer);
-    }
-    progressPollingTimer = setTimeout(async () => {
-      await checkImportProgress();
-    }, 3000);
-  }
-
-  /**
-   * 检查导入任务进度
-   * 如果任务仍在进行中，更新进度信息并继续轮询
-   * 如果任务完成，停止轮询并重新加载视频列表
-   */
-  async function checkImportProgress() {
+  const stateRefresh = createStateRefresh(async () => {
     try {
-      const importProgress = await invoke("get_import_progress");
-
-      if (importProgress) {
-        // 仍有进行中的任务，更新进度信息并继续轮询
-        importProgressInfo = importProgress;
-        loading = true;
-        startProgressPolling();
-      } else {
-        // 任务已完成，延迟100ms确保状态同步后再重新加载
-        importProgressInfo = null;
-        stopProgressPolling();
-
-        // 延迟处理避免状态竞争
-        setTimeout(async () => {
-          loading = false;
-          // 重新加载视频列表（不包括进度检查）
-          await loadVideoList();
-        }, 100);
-      }
-    } catch (error) {
-      console.error("轮询检查进度失败:", error);
-
-      // 不要立即重置状态，避免在网络错误时丢失进度
-      // 保持现有状态一段时间，然后重置
-      setTimeout(() => {
-        importProgressInfo = null;
-        stopProgressPolling();
-        loading = false;
-      }, 5000);
-    }
-  }
-
-  /**
-   * 停止进度轮询定时器
-   */
-  function stopProgressPolling() {
-    if (progressPollingTimer) {
-      clearTimeout(progressPollingTimer);
-      progressPollingTimer = null;
-    }
-  }
-
-  /**
-   * 格式化毫秒转换为可读的时间长度
-   * @param milliseconds 毫秒数
-   * @returns 格式化的时间字符串（如：1小时30分20秒）
-   */
-  function formatProgressDuration(milliseconds: number): string {
-    const seconds = Math.floor(milliseconds / 1000);
-    const minutes = Math.floor(seconds / 60);
-    const hours = Math.floor(minutes / 60);
-
-    if (hours > 0) {
-      return `${hours}小时${minutes % 60}分${seconds % 60}秒`;
-    } else if (minutes > 0) {
-      return `${minutes}分${seconds % 60}秒`;
-    } else {
-      return `${seconds}秒`;
-    }
-  }
-
-  /**
-   * 加载视频列表
-   * 1. 扫描导入目录中的新视频文件并自动导入
-   * 2. 检查是否有正在进行的转换任务
-   * 3. 加载并显示所有视频
-   */
-  async function loadVideos() {
-    loading = true;
-    try {
-      await loadVideoList();
-    } catch (error) {
-      console.error("Failed to load videos:", error);
-      importProgressInfo = null;
-      stopProgressPolling();
+      const list = await invoke<ProjectItem[]>("get_projects");
+      projects = await Promise.all(
+        list.map(async (project) => ({
+          ...project,
+          coverUrl: project.display_cover ? await get_static_url("output", project.display_cover) : "",
+        })),
+      );
+    } finally {
       loading = false;
     }
-  }
+  });
 
-  /**
-   * 加载视频数据列表
-   * 从后端获取所有视频数据，包含封面信息，并应用筛选条件
-   */
-  async function loadVideoList() {
+  onMount(() => watchStateChanges(stateRefresh, ["projects-changed", "videos-changed"]));
+
+  onMount(() =>
+    registerCommands([
+      {
+        id: "project:new",
+        group: "action",
+        title: "新建切片",
+        detail: "切片",
+        icon: Plus,
+        keywords: ["new project", "create clip"],
+        page: "切片",
+        run: createProject,
+      },
+      {
+        id: "project:refresh",
+        group: "action",
+        title: "刷新切片列表",
+        detail: "切片",
+        icon: RefreshCw,
+        keywords: ["refresh projects", "reload"],
+        page: "切片",
+        run: () => stateRefresh.run(),
+      },
+    ]),
+  );
+
+  async function createProject() {
+    if (creating) return;
+    creating = true;
     try {
-      // 获取所有视频
-      const allVideos: VideoItem[] = [];
-      const roomIdsSet = new Set<string>();
-      const tempVideos = await invoke<VideoItem[]>("get_all_videos");
-
-      for (const video of tempVideos) {
-        video.cover = await get_static_url("output", video.cover);
-      }
-
-      for (const video of tempVideos) {
-        roomIdsSet.add(video.room_id);
-        allVideos.push(video);
-      }
-
-      videos = allVideos;
-      roomIds = Array.from(roomIdsSet).sort();
-
-      applyFilters();
+      const project = await invoke<ProjectItem>("create_project", {
+        title: "",
+        roomId: selectedRoomId ?? "",
+        platform: projects.find((item) => item.room_id === selectedRoomId)?.platform ?? "",
+        materialIds: [],
+      });
+      await openProject(project.id);
     } catch (error) {
-      console.error("加载视频列表失败:", error);
-      throw error;
+      alert("新建切片失败：" + error);
     } finally {
-      // 只有在没有转换任务且没有轮询定时器时才设置 loading = false
-      if (!importProgressInfo && !progressPollingTimer) {
-        loading = false;
-      }
+      creating = false;
     }
   }
 
-  function applyFilters() {
-    let filtered = [...videos];
-
-    // Apply room filter
-    if (selectedRoomId !== null) {
-      filtered = filtered.filter((video) => video.room_id === selectedRoomId);
-    }
-
-    // Apply sorting
-    filtered.sort((a, b) => {
-      let aValue: any, bValue: any;
-
-      switch (sortBy) {
-        case "title":
-          aValue = a.title.toLowerCase();
-          bValue = b.title.toLowerCase();
-          break;
-          bValue = b.note;
-          break;
-        case "length":
-          aValue = a.length;
-          bValue = b.length;
-          break;
-        case "size":
-          aValue = a.size;
-          bValue = b.size;
-          break;
-        case "created_at":
-          aValue = new Date(a.created_at);
-          bValue = new Date(b.created_at);
-          break;
-        case "room_id":
-          aValue = a.room_id;
-          bValue = b.room_id;
-          break;
-        case "platform":
-          aValue = (a.platform || "").toLowerCase();
-          bValue = (b.platform || "").toLowerCase();
-          break;
-        default:
-          aValue = a.created_at;
-          bValue = b.created_at;
-      }
-
-      if (sortOrder === "asc") {
-        return aValue > bValue ? 1 : -1;
-      } else {
-        return aValue < bValue ? 1 : -1;
-      }
-    });
-
-    filteredVideos = filtered;
-  }
-
-  function formatSize(size: number) {
-    if (size < 1024) {
-      return `${size} B`;
-    } else if (size < 1024 * 1024) {
-      return `${(size / 1024).toFixed(2)} KiB`;
-    } else if (size < 1024 * 1024 * 1024) {
-      return `${(size / 1024 / 1024).toFixed(2)} MiB`;
-    } else {
-      return `${(size / 1024 / 1024 / 1024).toFixed(2)} GiB`;
-    }
-  }
-
-  function formatDuration(seconds: number) {
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    const secs = seconds % 60;
-
-    if (hours > 0) {
-      return `${hours}:${minutes.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
-    } else {
-      return `${minutes}:${secs.toString().padStart(2, "0")}`;
-    }
-  }
-
-  function formatDate(dateString: string) {
-    return new Date(dateString).toLocaleString();
-  }
-
-  function formatPlatform(platform: string | undefined) {
-    if (!platform) return "未知";
-    switch (platform.toLowerCase()) {
-      case "bilibili":
-        return "B站";
-      case "douyin":
-        return "抖音";
-      case "douyu":
-        return "斗鱼";
-      case "huya":
-        return "虎牙";
-      case "kuaishou":
-        return "快手";
-      case "tiktok":
-        return "TikTok";
-      case "twitch":
-        return "Twitch";
-      case "youtube":
-        return "YouTube";
-      case "imported":
-        return "导入视频";
-      case "clip":
-        return "切片";
-      default:
-        return platform;
-    }
-  }
-
-  function getRoomUrl(platform: string | undefined, roomId: string) {
-    if (!platform) return null;
-    if (roomId.startsWith("http")) return roomId;
-    switch (platform.toLowerCase()) {
-      case "bilibili":
-        return `https://live.bilibili.com/${roomId}`;
-      case "douyin":
-        return `https://live.douyin.com/${roomId}`;
-      case "douyu":
-        return `https://www.douyu.com/${roomId}`;
-      case "huya":
-        return `https://www.huya.com/${roomId}`;
-      case "kuaishou":
-        return `https://live.kuaishou.com/u/${roomId}`;
-      case "tiktok":
-        return `https://www.tiktok.com/${roomId}/live`;
-      case "twitch":
-        return `https://www.twitch.tv/${roomId}`;
-      case "youtube":
-        if (roomId.startsWith("legacy-c-")) {
-          return `https://www.youtube.com/c/${roomId.slice(9)}/live`;
-        }
-        if (roomId.startsWith("legacy-user-")) {
-          return `https://www.youtube.com/user/${roomId.slice(12)}/live`;
-        }
-        if (/^[A-Za-z0-9_-]{11}$/.test(roomId)) {
-          return `https://www.youtube.com/watch?v=${roomId}`;
-        }
-        if (roomId.startsWith("UC")) {
-          return `https://www.youtube.com/channel/${roomId}/live`;
-        }
-        const handle = roomId.startsWith("@") ? roomId : `@${roomId}`;
-        return `https://www.youtube.com/${handle}/live`;
-      default:
-        return null;
-    }
-  }
-
-  function toggleSort(field: string) {
-    if (sortBy === field) {
-      sortOrder = sortOrder === "asc" ? "desc" : "asc";
-    } else {
-      sortBy = field;
-      sortOrder = "asc";
-    }
-    applyFilters();
-  }
-
-  function toggleVideoSelection(id: number) {
-    if (selectedVideos.has(id)) {
-      selectedVideos.delete(id);
-    } else {
-      selectedVideos.add(id);
-    }
-  }
-
-  function selectAllVideos() {
-    const currentVideos = filteredVideos;
-    if (selectedVideos.size === currentVideos.length) {
-      selectedVideos.clear();
-    } else {
-      currentVideos.forEach((video) => selectedVideos.add(video.id));
-    }
-  }
-
-  async function deleteVideo(video: VideoItem) {
+  async function openProject(id: number) {
     try {
-      await invoke("delete_video", { id: video.id });
-      await loadVideos();
-      showDeleteConfirm = false;
-      videoToDelete = null;
+      await invoke("open_project", { projectId: id });
     } catch (error) {
-      console.error("Failed to delete video:", error);
+      console.error("Failed to open project:", error);
     }
   }
 
-  async function deleteSelectedVideos() {
+  function toggleProjectSelection(id: number) {
+    if (selectedProjects.has(id)) selectedProjects.delete(id);
+    else selectedProjects.add(id);
+  }
+
+  function selectAllProjects() {
+    if (allSelected) selectedProjects.clear();
+    else filtered.forEach((project) => selectedProjects.add(project.id));
+  }
+
+  function confirmDelete(project: ProjectRow | null = null) {
+    const targets = project ? [project] : selected;
+    if (targets.length > 0) projectsToDelete = [...targets];
+  }
+
+  async function deleteProjects() {
+    // Snapshot the confirmed targets: background refreshes may replace the list.
+    const targets = [...(projectsToDelete ?? [])];
+    if (targets.length === 0) return;
     try {
-      for (const id of selectedVideos) {
-        await invoke("delete_video", { id });
+      for (const project of targets) {
+        await invoke("delete_project", { id: project.id });
+        selectedProjects.delete(project.id);
+        projects = projects.filter((item) => item.id !== project.id);
+        // On failure, retry only the failed and unattempted projects.
+        projectsToDelete = projectsToDelete!.filter((item) => item.id !== project.id);
       }
-      selectedVideos.clear();
-      await loadVideos();
-      showDeleteConfirm = false;
-      videoToDelete = null;
-    } catch (error) {
-      console.error("Failed to delete selected videos:", error);
+    } finally {
+      await stateRefresh.run();
     }
+    projectsToDelete = null;
   }
 
-  async function playVideo(video: VideoItem) {
-    try {
-      await invoke("open_clip", { videoId: video.id });
-    } catch (error) {
-      console.error("Failed to play video:", error);
-    }
-  }
-
-  function handleVideoImported() {
-    // 视频导入完成后刷新列表
-    loadVideos();
-  }
-
-  function handleImageError(event: Event) {
-    // 如果图片加载失败，隐藏图片元素并显示默认图标
-    const target = event.target as HTMLImageElement;
-    target.style.display = "none";
-    if (target.parentElement) {
-      target.parentElement.innerHTML =
-        '<svg class="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>';
-    }
-  }
-
-  async function exportVideo(video: VideoItem) {
-    // download video
-    const video_url = await get_static_url("output", video.file);
-    const video_name = video.title;
-    const a = document.createElement("a");
-    a.href = video_url;
-    a.download = video_name;
-    a.click();
-  }
-
-  // 编辑备注相关函数
-  function openEditNoteDialog(video: VideoItem) {
-    videoToEditNote = video;
-    editingNote = video.note || "";
-    showEditNoteDialog = true;
-  }
-
-  function closeEditNoteDialog() {
-    showEditNoteDialog = false;
-    videoToEditNote = null;
-    editingNote = "";
+  function openNoteDialog(project: ProjectRow) {
+    projectToNote = project;
+    editingNote = project.note;
   }
 
   async function saveNote() {
-    if (!videoToEditNote) return;
-
+    if (!projectToNote) return;
     try {
-      await invoke("update_video_note", {
-        id: videoToEditNote.id,
-        note: editingNote,
-      });
-
-      // 更新本地数据
-      videoToEditNote.note = editingNote;
-
-      // 更新筛选后的视频列表
-      const index = filteredVideos.findIndex(
-        (v) => v.id === videoToEditNote.id
-      );
-      if (index !== -1) {
-        filteredVideos[index].note = editingNote;
-      }
-
-      // 更新所有视频列表
-      const allIndex = videos.findIndex((v) => v.id === videoToEditNote.id);
-      if (allIndex !== -1) {
-        videos[allIndex].note = editingNote;
-      }
-
-      closeEditNoteDialog();
+      // Only the note: the editor may have just renamed the project.
+      await invoke("update_project_info", { id: projectToNote.id, note: editingNote.trim() });
+      projectToNote = null;
+      await stateRefresh.run();
     } catch (error) {
-      console.error("Failed to update video note:", error);
-    }
-  }
-
-  // 键盘事件处理
-  function handleKeydown(event: KeyboardEvent) {
-    if (showEditNoteDialog && event.key === "Escape") {
-      closeEditNoteDialog();
+      alert("保存备注失败：" + error);
     }
   }
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<svelte:window onkeydown={handleKeydown} />
+<PageTitlebar title="切片">
+  {#snippet subtitle()}
+    <span class="truncate text-[12px] text-fg-muted">
+      切片是由一个或多个素材组成的剪辑工程，可裁剪、分割、添加字幕和压制弹幕，完成后导出到文件或在投稿页投稿。
+    </span>
+  {/snippet}
+  <button
+    class="titlebar-icon-button"
+    title="刷新"
+    aria-label="刷新"
+    onclick={() => stateRefresh.run()}
+  >
+    <RefreshCw class="h-4 w-4" />
+  </button>
+  <button
+    class="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-[7px] bg-accent px-2.5 text-[12px] font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-60"
+    disabled={creating}
+    onclick={createProject}
+  >
+    <Plus class="h-3.5 w-3.5" />
+    新建切片
+  </button>
+</PageTitlebar>
 
-<div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50 dark:bg-black">
-  <div class="space-y-6">
-    <!-- Header -->
-    <div class="flex justify-between items-center">
-      <div class="space-y-1">
-        <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">
-          切片
-        </h1>
-        <p class="text-sm text-gray-500 dark:text-gray-400">
-          管理所有录播产生的切片；如需生成切片，请从直播间列表进入录播预览页面操作。
-        </p>
-      </div>
-
-      <div class="flex items-center space-x-3">
-        <button
-          class="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors flex items-center space-x-2"
-          onclick={() => (showImportDialog = true)}
-        >
-          <Upload class="w-4 h-4 text-white" />
-          <span>导入视频</span>
-        </button>
-        <button
-          class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
-          onclick={loadVideos}
-          disabled={loading}
-        >
-          <RefreshCw
-            class="w-4 h-4 text-white {loading ? 'animate-spin' : ''}"
-          />
-          <span>刷新</span>
-        </button>
-      </div>
-    </div>
-
-    <!-- Filters -->
-    <div
-      class="p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 space-y-4"
-    >
-      <div class="flex justify-between items-center flex-wrap gap-4">
-        <div class="flex space-x-3">
-          <select
-            bind:value={selectedRoomId}
-            onchange={applyFilters}
-            class="px-3 py-2 bg-gray-100 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 cursor-pointer"
-          >
+<BatchActionLayout count={selected.length} itemLabel="切片" onclear={() => selectedProjects.clear()}>
+  {#snippet actions()}
+    <button class="ui-btn ui-btn-danger" onclick={() => confirmDelete()}>
+      <Trash2 class="h-3.5 w-3.5" />
+      <span>删除选中</span>
+    </button>
+  {/snippet}
+  <div class="space-y-4">
+    <div class="ui-card px-3 py-2.5">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="flex items-center gap-2">
+          <select bind:value={selectedRoomId} class="ui-input min-w-[160px]">
             <option value={null}>所有直播间</option>
             {#each roomIds as roomId}
               <option value={roomId}>{roomId}</option>
             {/each}
           </select>
+          <div class="relative">
+            <Search class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-fg-faint" />
+            <input
+              class="ui-input w-56 pl-8"
+              placeholder="搜索标题或备注"
+              bind:value={search}
+            />
+          </div>
         </div>
-
-        <div class="flex items-center space-x-2">
-          <span class="text-sm text-gray-600 dark:text-gray-400">排序:</span>
-          <button
-            class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors {sortBy ===
-            'room_id'
-              ? 'bg-blue-500 text-white'
-              : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
-            onclick={() => toggleSort("room_id")}
-          >
-            直播间号
-            {#if sortBy === "room_id"}
-              {#if sortOrder === "asc"}
-                <ChevronUp class="w-3 h-3 inline ml-1" />
-              {:else}
-                <ChevronDown class="w-3 h-3 inline ml-1" />
-              {/if}
-            {/if}
-          </button>
-          <button
-            class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors {sortBy ===
-            'title'
-              ? 'bg-blue-500 text-white'
-              : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
-            onclick={() => toggleSort("title")}
-          >
-            文件名
-            {#if sortBy === "title"}
-              {#if sortOrder === "asc"}
-                <ChevronUp class="w-3 h-3 inline ml-1" />
-              {:else}
-                <ChevronDown class="w-3 h-3 inline ml-1" />
-              {/if}
-            {/if}
-          </button>
-          <button
-            class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors {sortBy ===
-            'note'
-              ? 'bg-blue-500 text-white'
-              : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
-            onclick={() => toggleSort("note")}
-          >
-            备注
-            {#if sortBy === "note"}
-              {#if sortOrder === "asc"}
-                <ChevronUp class="w-3 h-3 inline ml-1" />
-              {:else}
-                <ChevronDown class="w-3 h-3 inline ml-1" />
-              {/if}
-            {/if}
-          </button>
-          <button
-            class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors {sortBy ===
-            'length'
-              ? 'bg-blue-500 text-white'
-              : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
-            onclick={() => toggleSort("length")}
-          >
-            时长
-            {#if sortBy === "length"}
-              {#if sortOrder === "asc"}
-                <ChevronUp class="w-3 h-3 inline ml-1" />
-              {:else}
-                <ChevronDown class="w-3 h-3 inline ml-1" />
-              {/if}
-            {/if}
-          </button>
-          <button
-            class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors {sortBy ===
-            'size'
-              ? 'bg-blue-500 text-white'
-              : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
-            onclick={() => toggleSort("size")}
-          >
-            大小
-            {#if sortBy === "size"}
-              {#if sortOrder === "asc"}
-                <ChevronUp class="w-3 h-3 inline ml-1" />
-              {:else}
-                <ChevronDown class="w-3 h-3 inline ml-1" />
-              {/if}
-            {/if}
-          </button>
-          <button
-            class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors {sortBy ===
-            'created_at'
-              ? 'bg-blue-500 text-white'
-              : 'bg-gray-100 dark:bg-gray-700/50 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'}"
-            onclick={() => toggleSort("created_at")}
-          >
-            创建时间
-            {#if sortBy === "created_at"}
-              {#if sortOrder === "asc"}
-                <ChevronUp class="w-3 h-3 inline ml-1" />
-              {:else}
-                <ChevronDown class="w-3 h-3 inline ml-1" />
-              {/if}
-            {/if}
-          </button>
+        <div class="flex items-center gap-1.5">
+          <span class="mr-0.5 text-[12px] text-fg-muted">排序:</span>
+          {#each [["updated_at", "最近编辑"], ["created_at", "创建时间"], ["title", "标题"], ["duration", "时长"]] as [value, label]}
+            <button
+              class="ui-btn ui-btn-sm {sortBy === value ? 'ui-btn-active' : ''}"
+              onclick={() => (sortBy = value as typeof sortBy)}
+            >
+              {label}
+            </button>
+          {/each}
         </div>
       </div>
     </div>
 
-    <!-- Bulk Actions -->
-    {#if selectedVideos.size > 0}
-      <div
-        class="flex justify-between items-center p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700"
-      >
-        <span class="text-sm text-gray-600 dark:text-gray-400">
-          已选择 {selectedVideos.size} 个视频
-        </span>
-        <button
-          class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors flex items-center space-x-2"
-          onclick={() => {
-            showDeleteConfirm = true;
-            videoToDelete = null;
-          }}
-        >
-          <Trash2 class="w-4 h-4 icon-white" />
-          <span>删除选中</span>
-        </button>
-      </div>
-    {/if}
-
-    <!-- Video List -->
-    <div
-      class="bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden"
-    >
+    <div class="ui-card overflow-hidden">
       {#if loading}
-        <div
-          class="flex flex-col items-center justify-center p-12 space-y-4 text-gray-500 dark:text-gray-400"
-        >
-          {#if importProgressInfo}
-            <!-- 优化的转换进度显示 -->
-            <div class="text-center space-y-3 max-w-md">
-              <!-- 主要信息：醒目的转换状态 -->
-              <div class="flex items-center justify-center space-x-3">
-                <RotateCw
-                  class="w-7 h-7 text-blue-600 dark:text-blue-400 animate-spin"
-                />
-                <span
-                  class="text-xl font-semibold text-blue-600 dark:text-blue-400"
-                >
-                  正在转换视频
-                </span>
-              </div>
-
-              <!-- 副信息：文件名显示在小字部分 -->
-              <div
-                class="text-sm text-gray-500 dark:text-gray-400 break-all px-4"
-              >
-                {importProgressInfo.fileName ||
-                  importProgressInfo.file_name ||
-                  "正在准备..."}
-              </div>
-            </div>
-          {:else}
-            <!-- 普通加载状态 -->
-            <RefreshCw class="w-8 h-8 animate-spin" />
-            <span>加载中...</span>
-          {/if}
+        <div class="flex flex-col items-center justify-center space-y-3 p-12 text-[12px] text-fg-muted">
+          <RefreshCw class="h-6 w-6 animate-spin text-fg-faint" />
+          <span>加载中...</span>
         </div>
-      {:else if filteredVideos.length === 0}
-        <div
-          class="flex flex-col items-center justify-center p-12 space-y-4 text-gray-500 dark:text-gray-400"
-        >
-          <Video class="w-12 h-12" />
-          <h3 class="text-lg font-medium text-gray-900 dark:text-white">
-            暂无视频
-          </h3>
-          <p class="text-sm">
-            {selectedRoomId !== null
-              ? "没有找到匹配的视频"
-              : "还没有录制任何视频切片"}
+      {:else if filtered.length === 0}
+        <div class="flex flex-col items-center justify-center space-y-2 p-12 text-fg-muted">
+          <Clapperboard class="h-10 w-10 text-fg-faint" />
+          <h3 class="text-[14px] font-semibold text-fg">暂无切片</h3>
+          <p class="text-[12px]">
+            {projects.length > 0
+              ? "没有找到匹配的切片"
+              : "在素材页选择素材新建切片，或生成素材时勾选「同时新建切片」"}
           </p>
         </div>
       {:else}
         <div class="overflow-x-auto custom-scrollbar-light">
           <table class="w-full table-fixed whitespace-nowrap">
             <thead>
-              <tr class="border-b border-gray-200 dark:border-gray-700/50">
-                <th class="px-4 py-3 text-left w-12">
+              <tr class="border-b border-line bg-control/60">
+                <th class="w-12 px-4 py-2.5 text-left">
                   <input
                     type="checkbox"
-                    checked={selectedVideos.size === filteredVideos.length &&
-                      filteredVideos.length > 0}
-                    onchange={selectAllVideos}
-                    class="rounded border-gray-300 dark:border-gray-600"
+                    checked={allSelected}
+                    indeterminate={selected.length > 0 && !allSelected}
+                    onchange={selectAllProjects}
+                    class="ui-checkbox"
+                    aria-label="全选当前筛选结果中的切片"
                   />
                 </th>
-                <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-28"
-                  >直播间</th
-                >
-                <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-64"
-                  >视频</th
-                >
-                <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-20"
-                  >备注</th
-                >
-                <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-20"
-                  >时长</th
-                >
-                <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-24"
-                  >大小</th
-                >
-                <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-28"
-                  >创建时间</th
-                >
-                <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-28"
-                  >投稿状态</th
-                >
-                <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-28"
-                  >操作</th
-                >
+                <th class="w-80 px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted">切片</th>
+                <th class="w-28 px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted">直播间</th>
+                <th class="w-32 px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted">内容</th>
+                <th class="w-36 px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted">投稿</th>
+                <th class="w-40 px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted">最近编辑</th>
+                <th class="w-40 px-4 py-2.5 text-left text-[11px] font-medium text-fg-muted">操作</th>
               </tr>
             </thead>
-            <tbody class="divide-y divide-gray-200 dark:divide-gray-700/50">
-              {#each filteredVideos as video (video.id)}
-                <tr
-                  class="group hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c] transition-colors"
-                >
-                  <td class="px-4 py-3 w-12">
+            <tbody class="divide-y divide-line">
+              {#each filtered as project (project.id)}
+                <tr class="group transition-colors hover:bg-control-hover/50 {selectedProjects.has(project.id) ? 'bg-accent-soft/40' : ''}">
+                  <td class="w-12 px-4 py-2.5">
                     <input
                       type="checkbox"
-                      checked={selectedVideos.has(video.id)}
-                      onchange={() => toggleVideoSelection(video.id)}
-                      class="rounded border-gray-300 dark:border-gray-600"
+                      checked={selectedProjects.has(project.id)}
+                      onchange={() => toggleProjectSelection(project.id)}
+                      class="ui-checkbox"
+                      aria-label={`选择切片「${project.title || "未命名切片"}」`}
                     />
                   </td>
-
-                  <td class="px-4 py-3 w-28">
-                    <div class="flex items-center space-x-2">
-                      {#if video.platform === "imported"}
-                        <FileVideo class="table-icon text-gray-400" />
-                        <span class="text-sm text-gray-800 dark:text-gray-200"
-                          >外部视频</span
-                        >
-                      {:else if video.platform === "clip"}
-                        <Scissors class="table-icon text-gray-400" />
-                        <span class="text-sm text-gray-800 dark:text-gray-200"
-                          >视频切片</span
-                        >
-                      {:else if video.platform === "bilibili"}
-                        <BilibiliIcon class="w-4 h-4 flex-shrink-0" />
-                        {#if getRoomUrl(video.platform, video.room_id)}
-                          <a
-                            href={getRoomUrl(video.platform, video.room_id)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="text-blue-500 hover:text-blue-700 text-sm"
-                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
-                          >
-                            {video.room_id}
-                          </a>
+                  <td class="px-4 py-2.5">
+                    <button
+                      class="flex w-full items-center gap-3 text-left"
+                      title="编辑切片"
+                      onclick={() => openProject(project.id)}
+                    >
+                      <div class="flex h-10 w-16 flex-shrink-0 items-center justify-center overflow-hidden rounded-[6px] border border-line bg-sunken">
+                        {#if project.coverUrl}
+                          <img src={project.coverUrl} alt="封面" class="h-full w-full object-cover" />
                         {:else}
-                          <span class="text-sm text-gray-900 dark:text-white"
-                            >{video.room_id}</span
-                          >
-                        {/if}
-                      {:else if video.platform === "douyin"}
-                        <DouyinIcon class="w-4 h-4 flex-shrink-0" />
-                        {#if getRoomUrl(video.platform, video.room_id)}
-                          <a
-                            href={getRoomUrl(video.platform, video.room_id)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="text-blue-500 hover:text-blue-700 text-sm"
-                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
-                          >
-                            {video.room_id}
-                          </a>
-                        {:else}
-                          <span class="text-sm text-gray-900 dark:text-white"
-                            >{video.room_id}</span
-                          >
-                        {/if}
-                      {:else if video.platform === "douyu"}
-                        <DouyuIcon class="w-4 h-4 flex-shrink-0" />
-                        {#if getRoomUrl(video.platform, video.room_id)}
-                          <a
-                            href={getRoomUrl(video.platform, video.room_id)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="text-blue-500 hover:text-blue-700 text-sm"
-                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
-                          >
-                            {video.room_id}
-                          </a>
-                        {:else}
-                          <span class="text-sm text-gray-900 dark:text-white"
-                            >{video.room_id}</span
-                          >
-                        {/if}
-                      {:else if video.platform === "kuaishou"}
-                        <KuaishouIcon class="w-4 h-4 flex-shrink-0" />
-                        {#if getRoomUrl(video.platform, video.room_id)}
-                          <a
-                            href={getRoomUrl(video.platform, video.room_id)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="text-blue-500 hover:text-blue-700 text-sm"
-                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
-                          >
-                            {video.room_id}
-                          </a>
-                        {:else}
-                          <span class="text-sm text-gray-900 dark:text-white"
-                            >{video.room_id}</span
-                          >
-                        {/if}
-                      {:else if video.platform === "huya"}
-                        <HuyaIcon class="w-4 h-4 flex-shrink-0" />
-                        {#if getRoomUrl(video.platform, video.room_id)}
-                          <a
-                            href={getRoomUrl(video.platform, video.room_id)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="text-blue-500 hover:text-blue-700 text-sm"
-                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
-                          >
-                            {video.room_id}
-                          </a>
-                        {:else}
-                          <span class="text-sm text-gray-900 dark:text-white"
-                            >{video.room_id}</span
-                          >
-                        {/if}
-                      {:else if video.platform === "tiktok"}
-                        <TikTokIcon class="w-5 h-5 flex-shrink-0" />
-                        {#if getRoomUrl(video.platform, video.room_id)}
-                          <a
-                            href={getRoomUrl(video.platform, video.room_id)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="text-blue-500 hover:text-blue-700 text-sm"
-                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
-                          >
-                            {video.room_id}
-                          </a>
-                        {:else}
-                          <span class="text-sm text-gray-900 dark:text-white"
-                            >{video.room_id}</span
-                          >
-                        {/if}
-                      {:else if video.platform === "twitch"}
-                        <TwitchIcon class="w-5 h-5 flex-shrink-0 text-purple-600" />
-                        {#if getRoomUrl(video.platform, video.room_id)}
-                          <a
-                            href={getRoomUrl(video.platform, video.room_id)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="text-blue-500 hover:text-blue-700 text-sm"
-                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
-                          >
-                            {video.room_id}
-                          </a>
-                        {:else}
-                          <span class="text-sm text-gray-900 dark:text-white"
-                            >{video.room_id}</span
-                          >
-                        {/if}
-                      {:else if video.platform === "youtube"}
-                        <YouTubeIcon class="w-4 h-4 flex-shrink-0" />
-                        {#if getRoomUrl(video.platform, video.room_id)}
-                          <a
-                            href={getRoomUrl(video.platform, video.room_id)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="text-blue-500 hover:text-blue-700 text-sm"
-                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
-                          >
-                            {video.room_id}
-                          </a>
-                        {:else}
-                          <span class="text-sm text-gray-900 dark:text-white"
-                            >{video.room_id}</span
-                          >
-                        {/if}
-                      {:else}
-                        <Globe class="table-icon text-gray-400" />
-                        {#if getRoomUrl(video.platform, video.room_id)}
-                          <a
-                            href={getRoomUrl(video.platform, video.room_id)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="text-blue-500 hover:text-blue-700 text-sm"
-                            title={`打开 ${formatPlatform(video.platform)} 直播间`}
-                          >
-                            {video.room_id}
-                          </a>
-                        {:else}
-                          <span class="text-sm text-gray-900 dark:text-white"
-                            >{video.room_id}</span
-                          >
-                        {/if}
-                      {/if}
-                    </div>
-                  </td>
-
-                  <td class="px-4 py-3 w-64">
-                    <div class="flex items-center space-x-3 w-full">
-                      <div
-                        class="w-12 h-8 rounded-lg overflow-hidden bg-gray-100 dark:bg-gray-700 flex items-center justify-center flex-shrink-0"
-                      >
-                        {#if video.cover && video.cover.trim() !== ""}
-                          <img
-                            src={video.cover}
-                            alt="封面"
-                            class="w-full h-full object-cover"
-                            onerror={handleImageError}
-                          />
-                        {:else}
-                          <!-- 默认视频图标 -->
-                          <svg
-                            class="w-6 h-6 text-gray-400"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              stroke-width="2"
-                              d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
-                            ></path>
-                          </svg>
+                          <Clapperboard class="h-4 w-4 text-fg-faint" />
                         {/if}
                       </div>
-                      <div class="min-w-0 flex-1 w-64">
-                        <p
-                          class="text-sm font-medium text-gray-900 dark:text-white truncate w-full"
-                          title={video.title || video.file}
-                        >
-                          {video.title || video.file}
+                      <div class="min-w-0 flex-1">
+                        <p class="truncate text-[12px] font-medium text-fg" title={project.title}>
+                          {project.title || "未命名切片"}
                         </p>
-                        <p
-                          class="text-xs text-gray-500 dark:text-gray-400 truncate w-full"
-                          title={video.file}
-                        >
-                          {video.file}
+                        <p class="truncate text-[11px] text-fg-muted" title={project.note}>
+                          {project.note || "无备注"}
                         </p>
                       </div>
+                    </button>
+                  </td>
+                  <td class="px-4 py-2.5">
+                    <span class="truncate text-[12px] text-fg-secondary">{project.room_id || "—"}</span>
+                  </td>
+                  <td class="px-4 py-2.5">
+                    <div class="flex items-center gap-2 text-[12px] text-fg-secondary">
+                      <Clock class="table-icon text-fg-faint" />
+                      <span class="tabular-nums">{formatTimecode(project.duration, 0)}</span>
+                      <span class="text-fg-faint">· {project.clip_count} 段</span>
                     </div>
                   </td>
-
-                  <td class="px-4 py-3 w-20">
-                    <div class="flex items-center space-x-2">
-                      <AnnotationOutline class="table-icon text-gray-400" />
-                      <span class="text-sm text-gray-800 truncate"
-                        >{video.note}</span
+                  <td class="px-4 py-2.5">
+                    {#if project.bvid}
+                      <a
+                        href={`https://www.bilibili.com/video/${project.bvid}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="inline-flex items-center gap-1 truncate text-[12px] text-accent-fg hover:underline"
                       >
+                        <Upload class="h-3 w-3" />
+                        {project.bvid}
+                      </a>
+                    {:else}
+                      <span class="text-[12px] text-fg-faint">未投稿</span>
+                    {/if}
+                  </td>
+                  <td class="px-4 py-2.5">
+                    <div class="flex items-center gap-2 text-[12px] text-fg-secondary">
+                      <Calendar class="table-icon text-fg-faint" />
+                      <span class="truncate">{new Date(project.updated_at).toLocaleString()}</span>
                     </div>
                   </td>
-
-                  <td class="px-4 py-3 w-20">
-                    <div class="flex items-center space-x-2">
-                      <Clock class="table-icon text-gray-400" />
-                      <span class="text-sm text-gray-800"
-                        >{formatDuration(video.length)}</span
-                      >
-                    </div>
-                  </td>
-
-                  <td class="px-4 py-3 w-24">
-                    <div class="flex items-center space-x-2">
-                      <HardDrive class="table-icon text-gray-400" />
-                      <span class="text-sm text-gray-800"
-                        >{formatSize(video.size)}</span
-                      >
-                    </div>
-                  </td>
-
-                  <td class="px-4 py-3 w-28">
-                    <div class="flex items-center space-x-2">
-                      <Calendar class="table-icon text-gray-400" />
-                      <span class="text-sm text-gray-800 truncate"
-                        >{formatDate(video.created_at)}</span
-                      >
-                    </div>
-                  </td>
-
-                  <td class="px-4 py-3 w-28">
-                    <div class="flex items-center space-x-2">
-                      <Upload class="table-icon text-gray-400" />
-                      {#if video.bvid}
-                        <a
-                          href={`https://www.bilibili.com/video/${video.bvid}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          class="text-blue-500 hover:text-blue-700 text-sm truncate"
-                          title={video.bvid}
-                        >
-                          {video.bvid}
-                        </a>
-                      {:else}
-                        <span class="text-gray-500 dark:text-gray-400 text-sm"
-                          >未投稿</span
-                        >
-                      {/if}
-                    </div>
-                  </td>
-
-                  <td class="px-4 py-3 w-28">
-                    <div class="flex items-center space-x-2">
+                  <td class="px-4 py-2.5">
+                    <div class="flex items-center gap-1">
                       <button
-                        class="p-1.5 rounded-lg hover:bg-blue-500/10 transition-colors"
-                        title="播放"
-                        onclick={() => playVideo(video)}
+                        class="action-button hover:bg-accent-soft"
+                        title="编辑"
+                        onclick={() => openProject(project.id)}
                       >
-                        <Play class="w-4 h-4 text-blue-500" />
+                        <Pencil class="h-3.5 w-3.5 text-accent-fg" />
                       </button>
                       <button
-                        class="p-1.5 rounded-lg hover:bg-green-500/10 transition-colors"
+                        class="action-button hover:bg-accent-soft"
+                        title="投稿"
+                        onclick={() => requestUpload("project", project.id)}
+                      >
+                        <Upload class="h-3.5 w-3.5 text-accent-fg" />
+                      </button>
+                      <button
+                        class="action-button hover:bg-success-soft"
                         title="编辑备注"
-                        onclick={() => openEditNoteDialog(video)}
+                        onclick={() => openNoteDialog(project)}
                       >
-                        <Edit class="w-4 h-4 text-green-500" />
+                        <Edit class="h-3.5 w-3.5 text-success-fg" />
                       </button>
-                      {#if !TAURI_ENV}
-                        <button
-                          class="p-1.5 rounded-lg hover:bg-blue-500/10 transition-colors"
-                          title="导出"
-                          onclick={async () => await exportVideo(video)}
-                        >
-                          <Download class="w-4 h-4 text-blue-500" />
-                        </button>
-                      {/if}
                       <button
-                        class="p-1.5 rounded-lg hover:bg-red-500/10 transition-colors"
+                        class="action-button hover:bg-danger-soft"
                         title="删除"
-                        onclick={() => {
-                          videoToDelete = video;
-                          showDeleteConfirm = true;
-                        }}
+                        onclick={() => confirmDelete(project)}
                       >
-                        <Trash2 class="w-4 h-4 text-red-500" />
+                        <Trash2 class="h-3.5 w-3.5 text-danger-fg" />
                       </button>
                     </div>
                   </td>
@@ -1100,196 +399,101 @@
       {/if}
     </div>
   </div>
-</div>
+</BatchActionLayout>
 
-<!-- Delete Confirmation Modal -->
-{#if showDeleteConfirm}
-  <div
-    class="fixed inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center"
-  >
+{#if projectsToDelete}
+  <div class="ui-modal-backdrop">
     <div
-      class="mac-modal w-[400px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden"
+      use:trapFocus
+      class="ui-modal w-[400px] max-w-full"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="project-delete-title"
+      tabindex="-1"
     >
-      <div class="p-6 space-y-4">
-        <div class="text-center space-y-2">
-          <h3 class="text-base font-medium text-gray-900 dark:text-white">
-            确认删除
-          </h3>
-          <p class="text-sm text-gray-500 dark:text-gray-400">
-            {#if videoToDelete}
-              确定要删除视频 "{videoToDelete.title || videoToDelete.file}" 吗？
+      <div class="space-y-4 p-6">
+        <div class="space-y-2 text-center">
+          <h3 id="project-delete-title" class="text-[14px] font-semibold text-fg">确认删除</h3>
+          <p class="text-[12px] text-fg-muted">
+            {#if projectsToDelete.length === 0}
+              切片已删除，正在刷新列表…
+            {:else if projectsToDelete.length === 1}
+              确定要删除切片「{projectsToDelete[0].title || "未命名切片"}」吗？
             {:else}
-              确定要删除选中的 {selectedVideos.size} 个视频吗？
+              确定要删除选中的 {projectsToDelete.length} 个切片吗？
             {/if}
           </p>
-          <p class="text-xs text-red-600 dark:text-red-500">此操作无法撤销。</p>
+          {#if projectsToDelete.length > 1}
+            <ul class="max-h-28 overflow-y-auto text-[12px] text-fg custom-scrollbar-light">
+              {#each projectsToDelete as project (project.id)}
+                <li class="truncate" title={project.title || "未命名切片"}>「{project.title || "未命名切片"}」</li>
+              {/each}
+            </ul>
+          {/if}
+          <p class="text-[11px] text-fg-muted">素材不会被删除，切片的导出文件和封面会一并删除。</p>
         </div>
-        <div class="flex justify-center space-x-3">
-          <button
-            class="w-24 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
-            onclick={() => {
-              showDeleteConfirm = false;
-              videoToDelete = null;
-            }}
-          >
-            取消
-          </button>
-          <button
-            class="w-24 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors"
-            onclick={() => {
-              if (videoToDelete) {
-                deleteVideo(videoToDelete);
-              } else {
-                deleteSelectedVideos();
-              }
-            }}
-          >
-            删除
-          </button>
-        </div>
+        <DeleteConfirmActions
+          oncancel={() => (projectsToDelete = null)}
+          onconfirm={deleteProjects}
+        />
       </div>
     </div>
   </div>
 {/if}
 
-<!-- Edit Note Dialog -->
-{#if showEditNoteDialog && videoToEditNote}
+{#if projectToNote}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    class="fixed inset-0 bg-black/30 dark:bg-black/50 z-50 flex items-center justify-center p-4"
-    onclick={closeEditNoteDialog}
-  >
+  <div class="ui-modal-backdrop" onclick={() => (projectToNote = null)}>
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
-      class="mac-modal w-[480px] max-w-full bg-white dark:bg-[#2d2d30] rounded-xl shadow-xl border border-gray-200 dark:border-gray-600 overflow-hidden"
+      class="ui-modal w-[480px] max-w-full"
       onclick={(event) => event.stopPropagation()}
       role="dialog"
       tabindex="-1"
-      aria-labelledby="edit-note-title"
-      aria-describedby="edit-note-description"
+      aria-labelledby="project-note-title"
     >
-      <!-- Header -->
-      <div
-        class="px-6 pt-6 pb-4 border-b border-gray-100 dark:border-gray-700/50"
-      >
-        <div class="flex items-center space-x-3">
-          <div
-            class="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center"
-          >
-            <Edit class="w-4 h-4 text-blue-600 dark:text-blue-400" />
-          </div>
-          <div class="min-w-0 flex-1">
-            <h3
-              id="edit-note-title"
-              class="text-base font-semibold text-gray-900 dark:text-white"
-            >
-              编辑切片备注
-            </h3>
-            <p
-              id="edit-note-description"
-              class="text-sm text-gray-500 dark:text-gray-400 truncate mt-0.5"
-            >
-              {videoToEditNote.title || videoToEditNote.file}
-            </p>
-          </div>
-        </div>
+      <div class="ui-modal-header">
+        <h3 id="project-note-title" class="min-w-0 truncate">编辑切片备注</h3>
       </div>
-
-      <!-- Content -->
-      <div class="px-6 py-5">
-        <div class="space-y-3">
-          <label
-            for="edit-note-textarea"
-            class="block text-sm font-medium text-gray-700 dark:text-gray-300"
-          >
-            备注内容
-          </label>
-          <div class="relative">
-            <textarea
-              id="edit-note-textarea"
-              bind:value={editingNote}
-              placeholder="为这个切片添加备注信息，如高光时刻、重要内容等..."
-              class="w-full px-3 py-2 text-sm
-                     bg-white dark:bg-gray-800
-                     border border-gray-300 dark:border-gray-500 rounded-md
-                     text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400
-                     focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500
-                     transition-colors duration-150 resize-none"
-              rows="5"
-              onkeydown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                  saveNote();
-                }
-              }}
-            ></textarea>
-            <!-- Helper text -->
-            <div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
-              按 ⌘+Enter 快速保存
-            </div>
-          </div>
-        </div>
+      <div class="ui-modal-body space-y-2">
+        <label for="project-note-textarea" class="ui-label block">
+          「{projectToNote.title || "未命名切片"}」的备注
+        </label>
+        <textarea
+          id="project-note-textarea"
+          bind:value={editingNote}
+          placeholder="为这个切片添加备注"
+          class="ui-input w-full resize-none"
+          rows="4"
+          onkeydown={(event) => {
+            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void saveNote();
+          }}
+        ></textarea>
+        <div class="ui-hint">按 ⌘+Enter 快速保存</div>
       </div>
-
-      <!-- Footer -->
-      <div
-        class="px-6 py-4 bg-gray-50 dark:bg-gray-800 border-t border-gray-200 dark:border-gray-600"
-      >
-        <div class="flex justify-end space-x-3">
-          <button
-            class="w-24 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
-            onclick={closeEditNoteDialog}
-          >
-            取消
-          </button>
-          <button
-            class="w-24 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
-            onclick={saveNote}
-          >
-            保存
-          </button>
-        </div>
+      <div class="ui-modal-footer">
+        <button class="ui-btn w-20" onclick={() => (projectToNote = null)}>取消</button>
+        <button class="ui-btn ui-btn-primary w-20" onclick={saveNote}>保存</button>
       </div>
     </div>
   </div>
 {/if}
 
-<!-- 导入视频对话框 -->
-<ImportVideoDialog
-  bind:showDialog={showImportDialog}
-  roomId={selectedRoomId}
-  onImported={handleVideoImported}
-/>
-
 <style>
-  /* macOS style modal */
-  .mac-modal {
-    box-shadow:
-      0 20px 25px -5px rgba(0, 0, 0, 0.1),
-      0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  .action-button {
+    display: inline-flex;
+    width: 26px;
+    height: 26px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 7px;
+    transition: background-color 120ms ease;
   }
 
-  :global(.dark) .mac-modal {
-    box-shadow:
-      0 20px 25px -5px rgba(0, 0, 0, 0.3),
-      0 10px 10px -5px rgba(0, 0, 0, 0.1);
-  }
-
-  /* fixed icon size in tables */
-  :global(.table-icon) {
-    width: 1rem; /* 16px, same as Tailwind w-4 */
-    height: 1rem; /* 16px, same as Tailwind h-4 */
-    flex: 0 0 auto;
-  }
-
-  /* macOS style textarea */
-  .mac-modal textarea {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-      sans-serif;
-  }
-
-  .mac-modal textarea:focus {
-    box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.3);
+  .action-button:focus-visible {
+    outline: 2px solid rgb(var(--c-accent));
+    outline-offset: 1px;
   }
 </style>

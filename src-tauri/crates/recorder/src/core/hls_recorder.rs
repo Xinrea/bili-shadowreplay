@@ -2,23 +2,25 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::{path::PathBuf, sync::Arc};
+#[cfg(test)]
+use tokio::sync::broadcast;
 
 use chrono::Utc;
-use m3u8_rs::{DateRange, Map, MediaPlaylist, MediaSegment, Playlist, QuotedOrUnquoted, VariantStream};
+use m3u8_rs::{
+    DateRange, Map, MediaPlaylist, MediaSegment, Playlist, QuotedOrUnquoted, VariantStream,
+};
 use reqwest::header::HeaderMap;
 use std::time::Duration;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock};
 
 use crate::core::playlist::{playlist_content_preview, HlsPlaylist};
 use crate::core::{Codec, Format};
 use crate::errors::RecorderError;
 use crate::timeline::{append_skipped_ad_range, load_skipped_ad_ranges, AdTimeRange};
 use crate::{core::HlsStream, events::RecorderEvent};
-use ffmpeg_utils::{
-    extract_video_metadata, extract_video_metadata_with_init, VideoMetadata,
-};
+use ffmpeg_utils::{extract_video_metadata, extract_video_metadata_with_init, VideoMetadata};
 
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(20);
 const UPDATE_INTERVAL: Duration = Duration::from_secs(1);
@@ -53,7 +55,7 @@ pub struct HlsRecorder {
     selected_variant_key: Arc<RwLock<Option<String>>>,
     variant_selection: HlsVariantSelection,
     client: reqwest::Client,
-    event_channel: broadcast::Sender<RecorderEvent>,
+    event_channel: crate::events::RecorderEventSender,
     work_dir: PathBuf,
     playlist: Arc<Mutex<HlsPlaylist>>,
     headers: HeaderMap,
@@ -253,11 +255,7 @@ fn local_init_filename(uri: &str) -> String {
     // Twitch weaver init URIs often have no file extension; prefer the fMP4
     // fragment extension so HLS preview serves `video/iso.segment` instead of
     // falling back to MPEG-TS.
-    format!(
-        "init-{:x}.{}",
-        hasher.finish(),
-        media_extension(uri, "m4s")
-    )
+    format!("init-{:x}.{}", hasher.finish(), media_extension(uri, "m4s"))
 }
 
 /// Pick a local filename extension from a segment/init URI.
@@ -306,7 +304,7 @@ impl HlsRecorder {
         stream: Arc<HlsStream>,
         client: reqwest::Client,
         cookies: Option<String>,
-        event_channel: broadcast::Sender<RecorderEvent>,
+        event_channel: impl Into<crate::events::RecorderEventSender>,
         work_dir: PathBuf,
         enabled: Arc<AtomicBool>,
     ) -> Result<Self, RecorderError> {
@@ -329,7 +327,7 @@ impl HlsRecorder {
         stream: Arc<HlsStream>,
         client: reqwest::Client,
         cookies: Option<String>,
-        event_channel: broadcast::Sender<RecorderEvent>,
+        event_channel: impl Into<crate::events::RecorderEventSender>,
         work_dir: PathBuf,
         enabled: Arc<AtomicBool>,
         variant_selection: HlsVariantSelection,
@@ -436,7 +434,7 @@ impl HlsRecorder {
             selected_variant_key: Arc::new(RwLock::new(None)),
             variant_selection,
             client,
-            event_channel,
+            event_channel: event_channel.into(),
             work_dir,
             playlist: Arc::new(Mutex::new(playlist)),
             headers,
@@ -779,8 +777,11 @@ impl HlsRecorder {
         }
 
         let source_url = source_stream.ts_url(&segment.uri);
-        let local_uri =
-            local_segment_filename(sequence, &segment.uri, self.segment_fallback_extension().await);
+        let local_uri = local_segment_filename(
+            sequence,
+            &segment.uri,
+            self.segment_fallback_extension().await,
+        );
         let path = self.work_dir.join(&local_uri);
         let size = download(&self.client, &source_url, &path, DOWNLOAD_RETRY).await?;
 
@@ -930,9 +931,13 @@ impl HlsRecorder {
 
     /// Length used for archive accounting.
     ///
-    /// fMP4 fragments often report absolute decode timestamps to ffprobe, so
+    /// fMP4 fragments often report absolute decode timestamps to the probe, so
     /// the container duration is unusable; prefer the playlist `#EXTINF`.
-    fn segment_duration_secs(segment: &MediaSegment, metadata: &VideoMetadata, using_fmp4: bool) -> f64 {
+    fn segment_duration_secs(
+        segment: &MediaSegment,
+        metadata: &VideoMetadata,
+        using_fmp4: bool,
+    ) -> f64 {
         if using_fmp4 || metadata.duration <= 0.0 {
             segment.duration as f64
         } else {
@@ -1118,11 +1123,14 @@ impl HlsRecorder {
         }
 
         if updated {
-            let _ = self.event_channel.send(RecorderEvent::RecordUpdate {
-                live_id: self.stream.id.clone(),
-                duration_secs: duration_delta,
-                cached_size_bytes: size_delta,
-            });
+            let _ = self
+                .event_channel
+                .send(RecorderEvent::RecordUpdate {
+                    live_id: self.stream.id.clone(),
+                    duration_secs: duration_delta,
+                    cached_size_bytes: size_delta,
+                })
+                .await;
         }
 
         if self.stream.is_expired() {
@@ -1463,6 +1471,217 @@ mod tests {
         (recorder, work_dir)
     }
 
+    fn probe_fixture(name: &str) -> Vec<u8> {
+        fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures")
+                .join(name),
+        )
+        .unwrap()
+    }
+
+    async fn native_probe_recorder(
+        server: &MockServer,
+    ) -> (
+        HlsRecorder,
+        tempfile::TempDir,
+        broadcast::Receiver<RecorderEvent>,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let (events, receiver) = broadcast::channel(4);
+        let stream = Arc::new(HlsStream::new(
+            "probe-live".to_string(),
+            server.uri(),
+            "/master.m3u8".to_string(),
+            String::new(),
+            Format::TS,
+            Codec::Avc,
+            0,
+        ));
+        let recorder = HlsRecorder::new(
+            "probe-room".to_string(),
+            stream,
+            reqwest::Client::new(),
+            None,
+            events,
+            directory.path().to_path_buf(),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await
+        .unwrap();
+        (recorder, directory, receiver)
+    }
+
+    #[tokio::test]
+    async fn native_probe_fmp4_keeps_extinf_duration_and_restores_stream_shape_on_resume() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/video");
+        let init = fs::read(fixtures.join("init.m4s")).unwrap();
+        let media = fs::read(fixtures.join("segment.m4s")).unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/master.m3u8"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "#EXTM3U\n#EXT-X-TARGETDURATION:3\n#EXT-X-MEDIA-SEQUENCE:1\n\
+                 #EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:1.25,\nfirst.m4s\n\
+                 #EXTINF:2.5,\nsecond.m4s\n",
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/init.mp4"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(init))
+            .expect(1)
+            .mount(&server)
+            .await;
+        for name in ["/first.m4s", "/second.m4s"] {
+            Mock::given(method("GET"))
+                .and(path(name))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(media.clone()))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let (recorder, directory, mut events) = native_probe_recorder(&server).await;
+
+        recorder.update_entries().await.unwrap();
+
+        let metadata = recorder.pre_metadata.read().await.clone().unwrap();
+        assert_eq!((metadata.width, metadata.height), (1920, 1080));
+        assert_eq!(metadata.video_codec, "h264");
+        assert_eq!(metadata.audio_codec, "aac");
+        assert!(
+            metadata.duration > 10.0,
+            "fixture's absolute fMP4 time must differ from its EXTINF span"
+        );
+        let archive = recorder.playlist.lock().await.playlist.clone();
+        assert_eq!(archive.segments.len(), 2);
+        assert_eq!(archive.segments[0].duration, 1.25);
+        assert_eq!(archive.segments[1].duration, 2.5);
+        assert!(archive.segments[0].map.is_some());
+        assert_eq!(recorder.sequence.load(Ordering::Relaxed), 2);
+        match events.try_recv().unwrap() {
+            RecorderEvent::RecordUpdate {
+                duration_secs,
+                cached_size_bytes,
+                ..
+            } => {
+                assert_eq!(duration_secs, 3.75);
+                assert_eq!(cached_size_bytes, 2 * media.len() as u64);
+            }
+            event => panic!("unexpected event: {event:?}"),
+        }
+
+        // A restart probes the cached last media segment with its saved MAP.
+        // It must not lose the baseline used to detect the next stream change.
+        let (sender, _receiver) = broadcast::channel(1);
+        let resumed = HlsRecorder::new(
+            recorder.room_id.clone(),
+            recorder.stream.clone(),
+            reqwest::Client::new(),
+            None,
+            sender,
+            directory.path().to_path_buf(),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resumed.pre_metadata.read().await.as_ref(), Some(&metadata));
+        assert!(resumed.fmp4_init.read().await.is_some());
+        assert_eq!(resumed.sequence.load(Ordering::Relaxed), 2);
+        server.verify().await;
+        drop(resumed);
+        drop(recorder);
+    }
+
+    #[tokio::test]
+    async fn native_probe_hls_appends_fragment_without_sps_pps_to_previous_segment() {
+        let valid = probe_fixture("probe-h264.ts");
+        let incomplete = probe_fixture("probe-h264-no-parameters.ts");
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/master.m3u8"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n\
+                 #EXTINF:0.4,\nfirst.ts\n#EXTINF:0.4,\nsecond.ts\n",
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        for (name, bytes) in [
+            ("/first.ts", valid.clone()),
+            ("/second.ts", incomplete.clone()),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(name))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(bytes))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let (recorder, directory, mut events) = native_probe_recorder(&server).await;
+
+        recorder.update_entries().await.unwrap();
+
+        let archive = recorder.playlist.lock().await.playlist.clone();
+        assert_eq!(archive.segments.len(), 1);
+        assert!((archive.segments[0].duration - 0.8).abs() < 1e-6);
+        assert_eq!(
+            fs::read(directory.path().join(&archive.segments[0].uri)).unwrap(),
+            [valid, incomplete].concat()
+        );
+        assert!(!directory.path().join("segment-2.ts").exists());
+        assert_eq!(recorder.sequence.load(Ordering::Relaxed), 2);
+        let metadata = recorder.pre_metadata.read().await.clone().unwrap();
+        assert_eq!((metadata.width, metadata.height), (64, 48));
+        assert_eq!(metadata.video_codec, "h264");
+        match events.try_recv().unwrap() {
+            RecorderEvent::RecordUpdate { duration_secs, .. } => {
+                assert!((duration_secs - 0.8).abs() < 1e-6);
+            }
+            event => panic!("unexpected event: {event:?}"),
+        }
+        server.verify().await;
+        drop(recorder);
+    }
+
+    #[tokio::test]
+    async fn native_probe_hls_rejects_resolution_and_codec_changes() {
+        for changed in ["probe-h264-resized.ts", "probe-mpeg2.ts"] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/master.m3u8"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(
+                    "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n\
+                     #EXTINF:0.4,\nfirst.ts\n#EXTINF:0.4,\nsecond.ts\n",
+                ))
+                .expect(1)
+                .mount(&server)
+                .await;
+            for (name, fixture) in [("/first.ts", "probe-h264.ts"), ("/second.ts", changed)] {
+                Mock::given(method("GET"))
+                    .and(path(name))
+                    .respond_with(ResponseTemplate::new(200).set_body_bytes(probe_fixture(fixture)))
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+            }
+            let (recorder, _directory, _events) = native_probe_recorder(&server).await;
+
+            assert!(
+                matches!(
+                    recorder.update_entries().await,
+                    Err(RecorderError::ResolutionChanged { .. })
+                ),
+                "{changed} must start a new recording instead of joining incompatible packets"
+            );
+            assert_eq!(recorder.playlist.lock().await.playlist.segments.len(), 1);
+            assert_eq!(recorder.sequence.load(Ordering::Relaxed), 1);
+            server.verify().await;
+            drop(recorder);
+        }
+    }
+
     /// Serve `playlist` at the index URL and answer the program segment with a
     /// stub body. The ad segments must never be requested, which `server.verify()`
     /// asserts afterwards.
@@ -1570,8 +1789,8 @@ mod tests {
     /// Twitch hangs `#EXT-X-MAP` on the first stitched-ad segment. Skipping that
     /// ad must still cache the init so later program fragments inherit it.
     ///
-    /// This test intentionally avoids calling ffprobe: CI runners may not ship
-    /// ffmpeg, and the regression is about map discovery while skipping ads.
+    /// Stub media bytes keep this test focused on map discovery while skipping
+    /// ads. The native probe tests below cover real fMP4 fragments.
     #[tokio::test]
     async fn skipping_ad_that_carries_fmp4_map_still_caches_init_for_program() {
         let init_body = b"fmp4-init-section".to_vec();
@@ -2251,7 +2470,8 @@ high-100.ts
         // Twitch CloudFront weaver paths are commonly `/v1/segment/<token>`
         // with no `.mp4` / `.m4s` suffix. When MAP is present the recorder must
         // not invent `.ts` (that would serve `video/mp2t` in the HLS callback).
-        let weaver_seg = "https://aa.cloudfront.hls.ttvnw.net/v1/segment/CvICeYA1Fg1UXbdoIhjzy?dna=1";
+        let weaver_seg =
+            "https://aa.cloudfront.hls.ttvnw.net/v1/segment/CvICeYA1Fg1UXbdoIhjzy?dna=1";
         let weaver_init = "https://aa.cloudfront.hls.ttvnw.net/v1/segment/InitTokenNoExt?dna=1";
         assert_eq!(
             local_segment_filename(42, weaver_seg, "m4s"),
@@ -2261,10 +2481,7 @@ high-100.ts
         assert_eq!(media_extension(weaver_seg, "ts"), "ts");
         assert!(local_init_filename(weaver_init).ends_with(".m4s"));
         assert_eq!(
-            media_extension(
-                "https://cdn.test/v1/segment/token.mp4?dna=1",
-                "m4s"
-            ),
+            media_extension("https://cdn.test/v1/segment/token.mp4?dna=1", "m4s"),
             "mp4"
         );
     }

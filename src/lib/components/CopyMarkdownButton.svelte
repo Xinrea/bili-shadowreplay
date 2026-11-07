@@ -33,12 +33,12 @@
 <button
   type="button"
   onclick={copyMarkdown}
-  class="inline-flex h-6 w-6 items-center justify-center rounded text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+  class="inline-flex h-6 w-6 items-center justify-center rounded-[6px] text-fg-faint transition-colors hover:bg-control-hover hover:text-fg-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
   aria-label={copied ? "已复制 Markdown" : "复制为 Markdown"}
   title={copied ? "已复制" : "复制为 Markdown"}
 >
   {#if copied}
-    <Check class="h-3.5 w-3.5 text-green-500" />
+    <Check class="h-3.5 w-3.5 text-success" />
   {:else}
     <Copy class="h-3.5 w-3.5" />
   {/if}

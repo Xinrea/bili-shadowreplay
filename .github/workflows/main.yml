@@ -1,37 +1,59 @@
 name: Release
 on:
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: Platforms to build (partial builds require merging updater metadata separately)
+        type: choice
+        default: all
+        options:
+          - all
+          - macos
+          - macos-intel
+          - macos-apple-silicon
   push:
     tags:
       - "v*"
 jobs:
+  prepare-matrix:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: matrix
+        env:
+          BUILD_PLATFORMS: ${{ inputs.platforms || 'all' }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          // CUDA 13.1 supports VS 2019-2022; windows-latest uses VS 2026.
+          const matrix = [
+            { platform: 'macos-15-intel', args: '--target x86_64-apple-darwin', target: 'x86_64-apple-darwin', 'updater-target': 'darwin-x86_64' },
+            { platform: 'macos-15', args: '--target aarch64-apple-darwin', target: 'aarch64-apple-darwin', 'updater-target': 'darwin-aarch64' },
+            { platform: 'ubuntu-24.04', args: '', target: '', 'updater-target': 'linux-x86_64' },
+            { platform: 'windows-2022', args: '--features cuda', features: 'cuda', target: '', 'updater-target': 'windows-x86_64-cuda' },
+            { platform: 'windows-latest', args: '', features: 'cpu', target: '', 'updater-target': 'windows-x86_64-cpu' },
+          ];
+          const selection = process.env.BUILD_PLATFORMS;
+          if (!['all', 'macos', 'macos-intel', 'macos-apple-silicon'].includes(selection)) throw new Error(`Unknown platform selection: ${selection}`);
+          const selected = matrix.filter(entry => selection === 'all'
+            || (selection === 'macos' && entry.platform.startsWith('macos-'))
+            || (selection === 'macos-intel' && entry['updater-target'] === 'darwin-x86_64')
+            || (selection === 'macos-apple-silicon' && entry['updater-target'] === 'darwin-aarch64'));
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify(selected)}\n`);
+          NODE
+
   publish-tauri:
+    needs: prepare-matrix
+    outputs:
+      prerelease: ${{ steps.release_info.outputs.prerelease }}
     permissions:
       contents: write
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: "macos-latest" # for Intel based macs.
-            args: "--target x86_64-apple-darwin"
-            target: "x86_64-apple-darwin"
-          - platform: "macos-latest" # for Apple silicon macs.
-            args: "--target aarch64-apple-darwin"
-            target: "aarch64-apple-darwin"
-          - platform: "ubuntu-22.04"
-            args: ""
-            target: ""
-          # CUDA 13.1 nvcc only supports MSVC from VS 2019-2022. The
-          # windows-latest image migrated to VS 2026 in June 2026, which
-          # nvcc rejects, so pin the CUDA build to windows-2022.
-          - platform: "windows-2022"
-            args: "--features cuda"
-            features: "cuda"
-            target: ""
-          - platform: "windows-latest"
-            args: ""
-            features: "cpu"
-            target: ""
+        include: ${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -39,21 +61,30 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Set build type
-        id: build_type
-        run: |
-          if [[ "${{ github.ref }}" == *"rc"* ]]; then
-            echo "debug=true" >> $GITHUB_OUTPUT
-          else
-            echo "debug=false" >> $GITHUB_OUTPUT
-          fi
-        shell: bash
-
       - name: install dependencies (ubuntu only)
-        if: matrix.platform == 'ubuntu-22.04' # This must match the platform value defined above.
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+            libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libavfilter-dev
+            clang libclang-dev ninja-build python3 pkg-config
+            libicu-dev libharfbuzz-dev libfreetype-dev libfontconfig1-dev
+            libpng-dev zlib1g-dev libexpat1-dev libjpeg-dev
+
+      - name: Install FFmpeg development libraries (macOS only)
+        if: runner.os == 'macOS'
+        uses: ./.github/actions/setup-macos-ffmpeg
+
+      - name: Configure source Skia with system libraries (Linux only)
+        if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          # These flags are presence-based: do not set empty/false values on macOS or Windows.
+          # System FreeType supports COLRv1; versioned ICU avoids V8 symbol collisions.
+          echo "FORCE_SKIA_BUILD=1" >> "$GITHUB_ENV"
+          echo "SKIA_USE_SYSTEM_LIBRARIES=1" >> "$GITHUB_ENV"
+          echo "CC=clang" >> "$GITHUB_ENV"
+          echo "CXX=clang++" >> "$GITHUB_ENV"
 
       - name: setup node
         uses: actions/setup-node@v6
@@ -61,17 +92,45 @@ jobs:
           node-version: lts/*
           cache: "yarn" # Set this to npm, yarn or pnpm.
 
+      - name: Validate release tag and version
+        id: release_info
+        run: node scripts/updater-manifest.mjs release-info
+
       - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable # Set this to dtolnay/rust-toolchain@nightly
         with:
           # Those targets are only used on macos runners so it's in an `if` to slightly speed up windows and linux builds.
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          # llvm-objcopy patches the Windows Skia archive below.
+          components: ${{ runner.os == 'Windows' && 'llvm-tools' || '' }}
+
+      - name: Prepare Vulkan Skia without V8 ICU/STL symbol clashes (Windows only)
+        if: runner.os == 'Windows'
+        # Windows exports use Vulkan in both CPU and CUDA app variants.
+        # The helper defaults to Vulkan and sets SKIA_BINARIES_URL.
+        run: node scripts/prepare-windows-skia.mjs "${{ runner.temp }}/skia-binaries"
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
-          key: ${{ matrix.target || matrix.features || 'native' }}
+          # Native libraries outside Cargo's profile directories are pruned
+          # before saving this cache; the next step restores them when needed.
+          key: ${{ matrix.target || matrix.features || 'native' }}-sherpa-prebuilt
+
+      - name: Repair sherpa-onnx prebuilt libraries after cache restore
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.target }}
+        run: |
+          library=libsherpa-onnx-c-api.a
+          if [ "$RUNNER_OS" = Windows ]; then library=sherpa-onnx-c-api.lib; fi
+          if ! find src-tauri/target/sherpa-onnx-prebuilt -type f -name "$library" -size +0c 2>/dev/null | grep -q .; then
+            rm -rf src-tauri/target/sherpa-onnx-prebuilt
+            target_args=()
+            if [ -n "$RUST_TARGET" ]; then target_args+=(--target "$RUST_TARGET"); fi
+            cargo clean -p sherpa-onnx-sys --manifest-path src-tauri/Cargo.toml "${target_args[@]}"
+          fi
 
       - name: Install CUDA toolkit (Windows CUDA only)
         if: matrix.features == 'cuda'
@@ -99,17 +158,32 @@ jobs:
           ninja --version
           & $nvcc --version
 
-      - name: Setup ffmpeg
+      - name: Setup native FFmpeg SDK
         if: runner.os == 'Windows'
         working-directory: ./
         shell: pwsh
-        # running script ffmpeg_setup.ps1 to install ffmpeg on windows.
+        # Keep shared libraries/headers for native linking; no CLI executables are bundled.
         # This script is located in the root of the repository.
-        run: ./ffmpeg_setup.ps1
+        run: |
+          # rust-cache prunes non-Cargo headers beneath target. Re-extract the
+          # verified SDK archive instead of trusting a restored partial tree.
+          $sdkCache = "src-tauri/target/ffmpeg-sdk"
+          if (Test-Path $sdkCache) { Remove-Item -LiteralPath $sdkCache -Recurse -Force }
+          ./ffmpeg_setup.ps1
 
       - name: install frontend dependencies
         # If you don't have `beforeBuildCommand` configured you may want to build your frontend here too.
         run: yarn install # change this to npm or pnpm depending on which one you use.
+
+      - name: Validate updater signing key
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::Set the TAURI_SIGNING_PRIVATE_KEY repository secret before publishing signed updates. See docs/development/updater.md."
+            exit 1
+          fi
 
       - name: Copy CUDA DLLs (Windows CUDA only)
         if: matrix.features == 'cuda'
@@ -124,72 +198,93 @@ jobs:
 
       - name: Get previous tag
         id: get_previous_tag
+        env:
+          CURRENT_TAG: ${{ steps.release_info.outputs.tag }}
         run: |
-          # Get the previous tag (excluding the current one being pushed)
-          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
-          if [ -z "$PREVIOUS_TAG" ]; then
-            # If no previous tag found, use the first commit
-            PREVIOUS_TAG=$(git rev-list --max-parents=0 HEAD | head -1)
-          fi
+          # The checkout is shallow and has no tags, so fetch just the tags.
+          git fetch --force --tags --depth=1 origin
+          # Prerelease suffixes sort before their release (v2.1.0-beta.1 < v2.1.0).
+          TAGS=$(git -c versionsort.suffix=- tag --list 'v*' --sort=-v:refname)
+          # Take the tag sorted right below the current one. Manual runs may build
+          # a version that isn't tagged yet, so fall back to the newest other tag.
+          PREVIOUS_TAG=$(echo "$TAGS" | awk -v cur="$CURRENT_TAG" 'found { print; exit } $0 == cur { found = 1 }')
+          [ -n "$PREVIOUS_TAG" ] || PREVIOUS_TAG=$(echo "$TAGS" | grep -vFx "$CURRENT_TAG" | head -1)
           echo "previous_tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
-          echo "current_tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          echo "current_tag=$CURRENT_TAG" >> $GITHUB_OUTPUT
         shell: bash
 
-      - uses: tauri-apps/tauri-action@v0
+      - name: Check macOS native runtime bundling
+        if: runner.os == 'macOS'
+        run: node --test scripts/ffmpeg-bundle.test.mjs
+
+      - uses: tauri-apps/tauri-action@1ddc7b49b13c3038297360482fcb3e058764d7c9 # v0.6.2
+        id: tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUST_TARGET: ${{ matrix.target }}
           CMAKE_OSX_DEPLOYMENT_TARGET: "13.3"
           CMAKE_CUDA_ARCHITECTURES: "75"
           WHISPER_BACKEND: ${{ matrix.features }}
           # Sentry DSN baked into the binary at build time (option_env! in main.rs).
           # When unset, Sentry is disabled in the build instead of using a default.
           SENTRY_ENDPOINT: ${{ secrets.SENTRY_ENDPOINT }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: v__VERSION__
+          tagName: ${{ steps.release_info.outputs.tag }}
           releaseName: "BiliBili ShadowReplay v__VERSION__"
-          releaseBody: "> [!NOTE]\n> 如果你是第一次下载安装，请参考 [安装准备](https://bsr.xinrea.cn/getting-started/installation/desktop.html) 选择合适的版本。\n> Changelog: https://github.com/Xinrea/bili-shadowreplay/compare/${{ steps.get_previous_tag.outputs.previous_tag }}...${{ steps.get_previous_tag.outputs.current_tag }}"
+          releaseBody: "> [!NOTE]\n> 如果你是第一次下载安装，请参考 [安装准备](https://bsr.xinrea.cn/getting-started/installation/desktop.html) 选择合适的版本。\n> macOS 桌面版最低支持 macOS 15.8.1，Intel 和 Apple Silicon 版本均适用。\n> Linux 桌面版最低支持 Ubuntu 24.04；Ubuntu 22.04 不再受支持，AppImage 同样需要兼容的系统运行库。\n> Changelog: https://github.com/Xinrea/bili-shadowreplay/compare/${{ steps.get_previous_tag.outputs.previous_tag }}...${{ steps.get_previous_tag.outputs.current_tag }}"
           releaseDraft: true
-          prerelease: false
+          prerelease: ${{ steps.release_info.outputs.prerelease }}
+          # Merge once after all builds to avoid CPU/CUDA collisions and upload races.
+          includeUpdaterJson: false
           args: ${{ matrix.args }} ${{ matrix.features == 'cuda' && '--config src-tauri/tauri.windows.cuda.conf.json' || '' }}
 
-      - name: Generate dSYM for Sentry (macOS only)
-        if: matrix.platform == 'macos-latest'
-        shell: bash
+      - name: Verify macOS application signature
+        if: runner.os == 'macOS'
         env:
           RUST_TARGET: ${{ matrix.target }}
         run: |
-          set -euo pipefail
-          # Rust on macOS keeps DWARF in the object files; run dsymutil to
-          # produce a .dSYM bundle next to the binary so Sentry can symbolicate.
-          BIN="src-tauri/target/$RUST_TARGET/release/bili-shadowreplay"
-          if [ -f "$BIN" ]; then
-            echo "Running dsymutil on $BIN"
-            dsymutil "$BIN"
-          else
-            echo "Binary not found, skipping dsymutil: $BIN"
-          fi
+          node scripts/bundle-macos-ffmpeg.mjs --verify "src-tauri/target/$RUST_TARGET/release/bundle/macos/bili-shadowreplay.app"
+          codesign --verify --deep --strict --verbose=2 \
+            "src-tauri/target/$RUST_TARGET/release/bundle/macos/bili-shadowreplay.app"
 
-      - name: Upload debug symbols to Sentry
-        # Requires repository secrets: SENTRY_URL, SENTRY_AUTH_TOKEN, SENTRY_ORG, SENTRY_PROJECT
-        continue-on-error: true
+      - name: Create platform updater manifest
+        env:
+          UPDATER_ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
+          UPDATER_VERSION: ${{ steps.tauri.outputs.appVersion }}
+          UPDATER_TARGET: ${{ matrix.updater-target }}
+        run: node scripts/updater-manifest.mjs create updater-${{ matrix.updater-target }}.json
+
+      - name: Collect updater manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-${{ matrix.updater-target }}
+          path: updater-${{ matrix.updater-target }}.json
+          if-no-files-found: error
+
+  publish-updater:
+    needs: publish-tauri
+    # A partial rebuild must not replace the complete updater manifest.
+    if: needs.publish-tauri.outputs.prerelease == 'false' && (inputs.platforms == '' || inputs.platforms == 'all')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: updater-*
+          path: updater-manifests
+          merge-multiple: true
+      - name: Merge and upload complete updater manifest
         shell: bash
         env:
-          SENTRY_URL: ${{ secrets.SENTRY_URL }}
-          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
-          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          RUST_TARGET: ${{ matrix.target }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
-          if [ -z "${SENTRY_AUTH_TOKEN:-}" ]; then
-            echo "SENTRY_AUTH_TOKEN not set, skipping debug symbol upload."
-            exit 0
-          fi
-          # Use the explicit target triple from the matrix to locate the build output.
-          if [ -n "$RUST_TARGET" ]; then
-            DEBUG_DIR="src-tauri/target/$RUST_TARGET/release"
-          else
-            DEBUG_DIR="src-tauri/target/release"
-          fi
-          echo "Uploading debug files from: $DEBUG_DIR"
-          npx --yes @sentry/cli@2 debug-files upload --include-sources "$DEBUG_DIR"
+          node scripts/updater-manifest.mjs merge latest.json updater-manifests/*.json
+          VERSION=$(node -p "JSON.parse(require('fs').readFileSync('latest.json', 'utf8')).version")
+          gh release upload "v$VERSION" latest.json --clobber

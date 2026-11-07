@@ -58,7 +58,10 @@ impl UrlBuilder {
 
         let fm = params.get("fm").ok_or("anticode is missing `fm`")?;
         let ws_time = params.get("wsTime").ok_or("anticode is missing `wsTime`")?;
-        let ctype = params.get("ctype").map(String::as_str).unwrap_or("huya_live");
+        let ctype = params
+            .get("ctype")
+            .map(String::as_str)
+            .unwrap_or("huya_live");
         let fs = params.get("fs").map(String::as_str).unwrap_or("bgct");
 
         // `fm` is a base64 template like "<salt>_$0_$1_$2_$3"; only the salt

@@ -72,8 +72,26 @@ fn main() {
 
     // Platform-specific GPU acceleration
     let target_os = env::var("CARGO_CFG_TARGET_OS").expect("cargo sets CARGO_CFG_TARGET_OS");
+    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").expect("cargo sets CARGO_CFG_TARGET_ARCH");
+    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     let cuda_enabled = env::var("CARGO_FEATURE_CUDA").is_ok();
     let metal_enabled = target_os == "macos";
+
+    // GGML_NATIVE (on by default) compiles ggml for the build machine's CPU, so
+    // an AVX-512 CI runner ships AVX-512 code that crashes other CPUs with an
+    // illegal instruction. Release builds target a fixed AVX2 baseline instead.
+    // Turning GGML_NATIVE off also turns these defaults off, so enable them.
+    if target_arch == "x86_64" {
+        config.define("GGML_NATIVE", "OFF");
+        for option in ["GGML_SSE42", "GGML_AVX", "GGML_AVX2", "GGML_BMI2"] {
+            config.define(option, "ON");
+        }
+        // MSVC implies FMA and F16C with AVX2 and does not declare these options.
+        if target_env != "msvc" {
+            config.define("GGML_FMA", "ON");
+            config.define("GGML_F16C", "ON");
+        }
+    }
 
     match target_os.as_str() {
         "macos" => {
@@ -92,6 +110,9 @@ fn main() {
                 config.cxxflag(format!("-mmacosx-version-min={target}"));
             }
 
+            // Use ggml's pthread pool so local OpenMP installations cannot add an
+            // external runtime dependency to macOS builds.
+            config.define("GGML_OPENMP", "OFF");
             config.define("WHISPER_METAL", "ON");
             config.define("GGML_METAL", "ON");
             println!("cargo:warning=Building whisper.cpp with Metal support");
@@ -99,6 +120,11 @@ fn main() {
         _ => {
             if cuda_enabled {
                 config.define("GGML_CUDA", "ON");
+                // Without GGML_NATIVE, ggml picks its own architecture list
+                // unless the CMake variable is defined; honor the CI setting.
+                if let Ok(architectures) = env::var("CMAKE_CUDA_ARCHITECTURES") {
+                    config.define("CMAKE_CUDA_ARCHITECTURES", architectures);
+                }
                 println!("cargo:warning=Building whisper.cpp with CUDA support");
             } else {
                 config.define("GGML_CUDA", "OFF");
@@ -126,7 +152,6 @@ fn main() {
         println!("cargo:rustc-link-lib=stdc++");
     }
 
-    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     if target_os == "linux" && target_env == "gnu" {
         println!("cargo:rustc-link-lib=gomp");
     }
@@ -180,6 +205,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
     println!("cargo:rerun-if-env-changed=CUDACXX");
+    println!("cargo:rerun-if-env-changed=CMAKE_CUDA_ARCHITECTURES");
     println!(
         "cargo:rerun-if-changed={}",
         crate_dir.join("src/ffi_shim.cpp").display()

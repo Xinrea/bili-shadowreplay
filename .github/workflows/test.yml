@@ -6,21 +6,48 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+
 jobs:
+  frontend:
+    name: Frontend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+          cache: yarn
+      - run: yarn install --frozen-lockfile
+      # Runs every scripts/tests/*.test.mjs, so new test files need no CI change.
+      - run: yarn test
+
   test:
     name: Run Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # Bounds stalls such as a slow apt mirror on a cache miss.
+    timeout-minutes: 45
+    env:
+      # Debug info is unused in CI but slows compiling and linking and enlarges
+      # the Rust cache. Panic messages keep their locations.
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      # Build against modern FreeType and versioned ICU instead of the old archive.
+      FORCE_SKIA_BUILD: "1"
+      SKIA_USE_SYSTEM_LIBRARIES: "1"
+      CC: clang
+      CXX: clang++
 
     steps:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          # ffmpeg/ffprobe: needed for ffmpeg_utils fixture tests (fMP4 init+media probe)
-          sudo apt-get install -y libssl-dev pkg-config ffmpeg
+      # Use one pinned SDK for native linking and CLI parity tests.
+      - name: Setup FFmpeg and system dependencies
+        uses: ./.github/actions/setup-ffmpeg
+        with:
+          packages: fonts-wqy-microhei libclang-dev ninja-build python3 libicu-dev libpng-dev libexpat1-dev libjpeg-dev
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -29,6 +56,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          key: linux-system-skia-ffmpeg9-v1
+          # PRs restore main's cache. Saving one per PR fills the 10 GB repo
+          # cache limit and evicts the larger Lint cache.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run tests
         working-directory: src-tauri
@@ -37,7 +68,6 @@ jobs:
           cargo test --workspace --lib --exclude whisper-cpp-rs
         env:
           RUST_BACKTRACE: 1
-          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig
 
       - name: Run recorder integration tests
         working-directory: src-tauri
@@ -45,4 +75,3 @@ jobs:
           cargo test --package recorder --tests
         env:
           RUST_BACKTRACE: 1
-          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig

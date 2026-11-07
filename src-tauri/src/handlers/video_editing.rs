@@ -1,10 +1,12 @@
 use crate::state::State;
 use crate::state_type;
 use base64::Engine;
-use ffmpeg_utils::{extract_video_metadata, ffmpeg_command, path_str, VideoMetadata};
+use ffmpeg_utils::{extract_video_metadata, VideoMetadata};
+#[cfg(feature = "gui")]
 use recorder::platforms::PlatformType;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+#[cfg(feature = "gui")]
 use std::str::FromStr;
 
 #[cfg(feature = "gui")]
@@ -16,6 +18,7 @@ pub struct VideoFrame {
     pub image_base64: String,
 }
 
+#[cfg(feature = "gui")]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DanmuHighlight {
     pub start_time: f64,
@@ -25,6 +28,7 @@ pub struct DanmuHighlight {
     pub sample_comments: Vec<String>,
 }
 
+#[cfg(feature = "gui")]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DanmuKeywordMatch {
     pub timestamp: f64,
@@ -85,7 +89,7 @@ pub async fn extract_video_frames(
             continue;
         }
 
-        // Extract frame using ffmpeg
+        // Extract directly into memory, including concurrent requests.
         let frame_data = extract_frame_at_timestamp(&video_path, ts).await?;
         frames.push(VideoFrame {
             timestamp: ts,
@@ -98,49 +102,14 @@ pub async fn extract_video_frames(
 
 /// Extract a single frame at a specific timestamp
 async fn extract_frame_at_timestamp(video_path: &Path, timestamp: f64) -> Result<String, String> {
-    let output_path = std::env::temp_dir().join(format!("frame_{}.jpg", timestamp));
-
-    let mut cmd = ffmpeg_command();
-
-    cmd.args([
-        "-ss",
-        &timestamp.to_string(),
-        "-i",
-        path_str(video_path)?,
-        "-vframes",
-        "1",
-        "-q:v",
-        "2",
-        "-y",
-        path_str(&output_path)?,
-    ]);
-
-    let output = cmd
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run ffmpeg: {}", e))?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "FFmpeg failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    // Read and encode to base64
-    let image_data = tokio::fs::read(&output_path)
-        .await
-        .map_err(|e| format!("Failed to read frame: {}", e))?;
-
+    let image_data = ffmpeg_utils::extract_jpeg(video_path, timestamp, Some(2)).await?;
     let base64_data = base64::engine::general_purpose::STANDARD.encode(&image_data);
-
-    // Cleanup
-    let _ = tokio::fs::remove_file(&output_path).await;
 
     Ok(base64_data)
 }
 
 /// Get detailed video metadata
+#[cfg(feature = "gui")]
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_video_metadata(
     state: state_type!(),
@@ -167,6 +136,7 @@ async fn get_video_metadata_internal(video_path: &Path) -> Result<VideoMetadata,
 }
 
 /// Analyze danmu to find highlight moments based on comment density
+#[cfg(feature = "gui")]
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn analyze_danmu_highlights(
     state: state_type!(),
@@ -235,6 +205,7 @@ pub async fn analyze_danmu_highlights(
 }
 
 /// Search for specific keywords in danmu
+#[cfg(feature = "gui")]
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn search_danmu_keywords(
     state: state_type!(),
@@ -276,6 +247,7 @@ pub async fn search_danmu_keywords(
 }
 
 /// Merge multiple videos into one
+#[cfg(feature = "gui")]
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn merge_videos(
     state: state_type!(),
@@ -283,7 +255,11 @@ pub async fn merge_videos(
     output_title: String,
     output_note: String,
     transition: Option<String>,
+    render_settings: Option<crate::project::RenderSettings>,
 ) -> Result<i64, String> {
+    if let Some(settings) = &render_settings {
+        settings.validate()?;
+    }
     if video_ids.is_empty() {
         return Err("No videos to merge".to_string());
     }
@@ -315,70 +291,18 @@ pub async fn merge_videos(
     let transition_type = transition.as_deref().unwrap_or("none");
 
     // If no transition or only one video, use simple concat
-    if transition_type == "none" || videos.len() == 1 {
-        // Create concat file list
-        let concat_file = std::env::temp_dir().join(format!("concat_{}.txt", uuid::Uuid::new_v4()));
-        let mut concat_content = String::new();
-
-        for video_path in &video_paths {
-            // Escape path for FFmpeg concat demuxer
-            // Only escape backslashes and single quotes
-            // Square brackets work fine inside single quotes
-            let path_str = video_path
-                .to_string_lossy()
-                .replace('\\', "\\\\")
-                .replace('\'', "'\\''");
-            concat_content.push_str(&format!("file '{}'\n", path_str));
-        }
-
-        tokio::fs::write(&concat_file, concat_content)
-            .await
-            .map_err(|e| format!("Failed to write concat file: {}", e))?;
-
-        // Run ffmpeg concat
-        let mut cmd = ffmpeg_command();
-
-        cmd.args([
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            path_str(&concat_file)?,
-            "-c",
-            "copy",
-            "-y",
-            path_str(&output_path)?,
-        ]);
-
-        let output = cmd
-            .output()
-            .await
-            .map_err(|e| format!("Failed to run ffmpeg: {}", e))?;
-
-        // Cleanup concat file
-        let _ = tokio::fs::remove_file(&concat_file).await;
-
-        if !output.status.success() {
-            return Err(format!(
-                "FFmpeg merge failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
+    if render_settings.is_none() && (transition_type == "none" || videos.len() == 1) {
+        crate::ffmpeg::general::concat_copy_videos(
+            None::<&crate::progress::progress_reporter::ProgressReporter>,
+            &video_paths,
+            &output_path,
+        )
+        .await
+        .map_err(|error| format!("Video merge failed: {error}"))?;
     } else {
-        // Use xfade filter for transitions
-        let transition_duration = 1.0; // 1 second transition
-
-        // Build complex filter for xfade transitions
-        let mut filter_complex = String::new();
-
-        // Load all videos
-        for (i, _video) in videos.iter().enumerate() {
-            filter_complex.push_str(&format!("[{}:v]", i));
-        }
-
-        // Chain xfade filters
+        // Only pass known xfade transitions into the filter graph
         let xfade_transition = match transition_type {
+            "none" => "none",
             "fade" => "fade",
             "dissolve" => "dissolve",
             "wipeleft" => "wipeleft",
@@ -388,88 +312,18 @@ pub async fn merge_videos(
             _ => "fade",
         };
 
-        for i in 0..(videos.len() - 1) {
-            if i == 0 {
-                filter_complex.push_str(&format!(
-                    "[0:v][1:v]xfade=transition={}:duration={}:offset={}[v{}];",
-                    xfade_transition,
-                    transition_duration,
-                    videos[0].length as f64 - transition_duration,
-                    i + 1
-                ));
-            } else if i < videos.len() - 2 {
-                let offset: f64 = videos
-                    .iter()
-                    .take(i + 1)
-                    .map(|v| v.length as f64)
-                    .sum::<f64>()
-                    - (i as f64 + 1.0) * transition_duration;
-                filter_complex.push_str(&format!(
-                    "[v{}][{}:v]xfade=transition={}:duration={}:offset={}[v{}];",
-                    i,
-                    i + 1,
-                    xfade_transition,
-                    transition_duration,
-                    offset,
-                    i + 1
-                ));
-            } else {
-                let offset: f64 = videos
-                    .iter()
-                    .take(i + 1)
-                    .map(|v| v.length as f64)
-                    .sum::<f64>()
-                    - (i as f64 + 1.0) * transition_duration;
-                filter_complex.push_str(&format!(
-                    "[v{}][{}:v]xfade=transition={}:duration={}:offset={}[outv]",
-                    i,
-                    i + 1,
-                    xfade_transition,
-                    transition_duration,
-                    offset
-                ));
-            }
-        }
-
-        // Build ffmpeg command with multiple inputs
-        let mut cmd = ffmpeg_command();
-
-        // Add all input files
-        for video_path in &video_paths {
-            cmd.arg("-i").arg(video_path);
-        }
-
-        // Add filter complex
-        cmd.args([
-            "-filter_complex",
-            &filter_complex,
-            "-map",
-            "[outv]",
-            "-map",
-            "0:a",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "medium",
-            "-crf",
-            "23",
-            "-c:a",
-            "aac",
-            "-y",
-            path_str(&output_path)?,
-        ]);
-
-        let output = cmd
-            .output()
-            .await
-            .map_err(|e| format!("Failed to run ffmpeg: {}", e))?;
-
-        if !output.status.success() {
-            return Err(format!(
-                "FFmpeg merge with transition failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
+        // Shared with clip export: cross-fades the audio along with the video
+        // and conforms inputs of different size or frame rate for xfade.
+        crate::ffmpeg::general::concat_videos_with_settings(
+            None::<&crate::progress::progress_reporter::ProgressReporter>,
+            &video_paths,
+            &output_path,
+            Some(xfade_transition),
+            None,
+            render_settings.as_ref(),
+        )
+        .await
+        .map_err(|e| format!("FFmpeg merge with transition failed: {}", e))?;
     }
 
     // Get file size
@@ -478,15 +332,23 @@ pub async fn merge_videos(
         .map_err(|e| format!("Failed to get file size: {}", e))?
         .len();
 
-    // Calculate total duration
-    let total_duration: i64 = videos.iter().map(|v| v.length).sum();
+    // Transitions overlap neighbouring videos, so the merged length is shorter
+    // than the sum of the inputs; read it from the result instead.
+    let total_duration = match extract_video_metadata(&output_path).await {
+        Ok(metadata) => metadata.duration as i64,
+        Err(e) => {
+            log::warn!("Failed to read merged video length: {e}");
+            videos.iter().map(|v| v.length).sum()
+        }
+    };
 
     // Create new video row
     let new_video = crate::database::video::VideoRow {
         id: 0, // Will be auto-generated
         room_id: videos[0].room_id.clone(),
         cover: String::new(),
-        file: output_path.to_string_lossy().to_string(),
+        // Relative to the output directory, like every other video row
+        file: output_filename,
         note: output_note.clone(),
         length: total_duration,
         size: file_size as i64,
@@ -498,6 +360,10 @@ pub async fn merge_videos(
         area: 0,
         created_at: chrono::Utc::now().to_rfc3339(),
         platform: videos[0].platform.clone(),
+        live_id: String::new(),
+        source: String::new(),
+        duration: 0.0,
+        danmu_embedded: videos.iter().all(|video| video.danmu_embedded),
     };
 
     // Insert into database
@@ -510,7 +376,15 @@ pub async fn merge_videos(
     Ok(result.id)
 }
 
+#[cfg(any(feature = "gui", test))]
+async fn write_mp3_audio(input: &Path, output: &Path) -> Result<(), String> {
+    ffmpeg_utils::encode_mp3(input, output)
+        .await
+        .map_err(|error| format!("FFmpeg audio extraction failed: {error}"))
+}
+
 /// Extract audio from video
+#[cfg(feature = "gui")]
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn extract_video_audio(state: state_type!(), video_id: i64) -> Result<String, String> {
     let video = state
@@ -533,37 +407,13 @@ pub async fn extract_video_audio(state: state_type!(), video_id: i64) -> Result<
     );
     let output_path = output_dir.join(&output_filename);
 
-    // Extract audio using ffmpeg
-    let mut cmd = ffmpeg_command();
-
-    cmd.args([
-        "-i",
-        path_str(&video_path)?,
-        "-vn",
-        "-acodec",
-        "libmp3lame",
-        "-q:a",
-        "2",
-        "-y",
-        path_str(&output_path)?,
-    ]);
-
-    let output = cmd
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run ffmpeg: {}", e))?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "FFmpeg audio extraction failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
+    write_mp3_audio(&video_path, &output_path).await?;
 
     Ok(output_path.to_string_lossy().to_string())
 }
 
 /// Get archive metadata
+#[cfg(feature = "gui")]
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_archive_metadata(
     state: state_type!(),
@@ -614,6 +464,30 @@ pub async fn get_archive_metadata(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn frame_extraction_returns_base64_jpeg_without_gui() {
+        let video_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("crates/ffmpeg_utils/src/video_frame/fixtures/seek.mp4");
+        let (first, second) = tokio::join!(
+            extract_frame_at_timestamp(&video_path, 0.0),
+            extract_frame_at_timestamp(&video_path, 0.5)
+        );
+        let data = second.unwrap();
+        assert_ne!(first.unwrap(), data);
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .unwrap();
+        assert!(bytes.starts_with(&[0xff, 0xd8, 0xff]));
+        assert!(bytes.ends_with(&[0xff, 0xd9]));
+        assert_eq!(
+            bytes,
+            ffmpeg_utils::extract_jpeg(&video_path, 0.5, Some(2))
+                .await
+                .unwrap()
+        );
+        assert!(extract_frame_at_timestamp(&video_path, 20.0).await.is_err());
+    }
+
     #[test]
     fn relative_video_paths_are_resolved_from_output_directory() {
         let output_dir = Path::new("/configured/output");
@@ -633,5 +507,75 @@ mod tests {
             ),
             video_path
         );
+    }
+}
+
+#[cfg(test)]
+mod mp3_audio_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Count(u64);
+    impl ffmpeg_utils::AudioSink for Count {
+        fn write(&mut self, samples: &[i16]) -> Result<(), String> {
+            self.0 += samples.len() as u64;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn native_video_audio_export_keeps_the_complete_mp3_without_a_cli() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("视频 音轨.wav");
+        let output = directory.path().join("audio.mp3");
+        let mut writer = hound::WavWriter::create(
+            &input,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 48_000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for index in 0..48_017 {
+            writer
+                .write_sample((12_000.0 * (index as f64 * 0.031).sin()) as i16)
+                .unwrap();
+        }
+        writer.finalize().unwrap();
+        write_mp3_audio(&input, &output).await.unwrap();
+        assert_eq!(&std::fs::read(&output).unwrap()[..3], b"ID3");
+        let metadata = ffmpeg_utils::extract_video_metadata(&output).await.unwrap();
+        assert_eq!(metadata.audio_codec, "mp3");
+        let decoded = ffmpeg_utils::decode_audio(
+            &output,
+            ffmpeg_utils::AudioDecodeOptions {
+                sample_rate: 48_000,
+            },
+            Count::default(),
+        )
+        .await
+        .unwrap();
+        assert!(decoded.has_audio);
+        assert_eq!(decoded.samples, 48_017);
+        assert_eq!(decoded.sink.0, decoded.samples);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 2);
+    }
+
+    #[tokio::test]
+    async fn failed_native_mp3_export_keeps_existing_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("kept.mp3");
+        std::fs::write(&output, b"previous export").unwrap();
+        let video = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/video/test.mp4");
+        for input in [&video, &directory.path().join("missing.wav"), &output] {
+            assert!(write_mp3_audio(input, &output)
+                .await
+                .unwrap_err()
+                .starts_with("FFmpeg audio extraction failed: "));
+            assert_eq!(std::fs::read(&output).unwrap(), b"previous export");
+            assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+        }
     }
 }

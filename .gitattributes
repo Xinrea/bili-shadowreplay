@@ -1,0 +1,2 @@
+# Upstream source patches are verified by SHA-256 and must retain their bytes.
+scripts/ffmpeg-sdk-patches/0001-vulkan-encode-free-queued-picture-views.patch -text -whitespace

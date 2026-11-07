@@ -31,7 +31,7 @@ export interface HumanMessage {
   attachments: MessageAttachment[];
 }
 
-export function imageAttachmentSrc(attachment: ImageAttachment): string {
+export function imageAttachmentSrc(attachment: Pick<ImageAttachment, "data" | "mimeType">): string {
   if (attachment.data.startsWith("data:") || /^(https?:|blob:)/.test(attachment.data)) {
     return attachment.data;
   }
@@ -101,13 +101,9 @@ function imageDisplayPart(value: unknown): MessageImagePart | null {
   const safeMimeType = /^image\/[a-z0-9.+-]+$/i.test(mimeType)
     ? mimeType
     : "image/jpeg";
-  const src = source.startsWith("data:") || /^(https?:|blob:)/.test(source)
-    ? source
-    : `data:${safeMimeType};base64,${source}`;
-
   return {
     kind: "image",
-    src,
+    src: imageAttachmentSrc({ data: source, mimeType: safeMimeType }),
     alt: typeof value.alt === "string" ? value.alt : "消息图片",
   };
 }
@@ -247,18 +243,19 @@ function normalizeArgumentValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(normalizeArgumentValue);
   if (!isRecord(value)) return value;
 
-  const normalized: Record<string, unknown> = {};
+  // Treat every key as data, including __proto__ and constructor.
+  const normalized = new Map<string, unknown>();
   for (const [key, item] of Object.entries(value)) {
     const canonical = snakeCaseKey(key);
-    if (canonical === key) normalized[canonical] = normalizeArgumentValue(item);
+    if (canonical === key) normalized.set(canonical, normalizeArgumentValue(item));
   }
   for (const [key, item] of Object.entries(value)) {
     const canonical = snakeCaseKey(key);
-    if (!(canonical in normalized)) {
-      normalized[canonical] = normalizeArgumentValue(item);
+    if (!normalized.has(canonical)) {
+      normalized.set(canonical, normalizeArgumentValue(item));
     }
   }
-  return normalized;
+  return Object.fromEntries(normalized);
 }
 
 function messageContent(value: unknown): MessageContent {

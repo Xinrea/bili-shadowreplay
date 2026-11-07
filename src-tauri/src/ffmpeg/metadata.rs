@@ -1,79 +1,52 @@
-use std::{
-    path::{Path, PathBuf},
-    process::Stdio,
-};
+use std::path::{Path, PathBuf};
 
-use async_ffmpeg_sidecar::{event::FfmpegEvent, log_parser::FfmpegLogParser};
-use tokio::io::BufReader;
+use ffmpeg_utils::extract_video_metadata;
 
-use super::runner::FfmpegJob;
-use ffmpeg_utils::{extract_video_metadata, ffmpeg_command};
+/// Pick a random point in the video's middle 80% to avoid intros and outros.
+pub fn get_random_thumbnail_timestamp(duration: f64) -> f64 {
+    if !duration.is_finite() || duration <= 0.0 {
+        return 0.0;
+    }
+    duration * rand::random_range(0.1..0.9)
+}
 
-/// Generate thumbnail file from video, capturing a frame at the specified timestamp.
+/// Generate a JPEG thumbnail, retrying at the start if the requested seek fails.
 pub async fn generate_thumbnail(video_full_path: &Path, timestamp: f64) -> Result<PathBuf, String> {
     let thumbnail_full_path = video_full_path.with_extension("jpg");
-    FfmpegJob::new()
-        .args([
-            "-i".to_string(),
-            video_full_path.to_string_lossy().into_owned(),
-            "-ss".to_string(),
-            timestamp.to_string(),
-            "-vframes".to_string(),
-            "1".to_string(),
-            "-y".to_string(),
-        ])
-        .output(thumbnail_full_path.clone())
-        .context("生成缩略图")
-        .run_without_reporter()
-        .await
-        .map_err(|error| format!("ffmpeg生成缩略图失败: {error}"))?;
-
-    if let Ok(metadata) = std::fs::metadata(&thumbnail_full_path) {
-        log::info!(
-            "生成缩略图完成: {} (文件大小: {} bytes)",
-            thumbnail_full_path.display(),
-            metadata.len()
+    if let Err(error) = extract_frame(video_full_path, timestamp, &thumbnail_full_path).await {
+        if timestamp == 0.0 {
+            return Err(error);
+        }
+        log::warn!(
+            "Failed to capture thumbnail at {timestamp}s for {}: {error}; retrying at the start",
+            video_full_path.display()
         );
-    } else {
-        log::info!("生成缩略图完成: {}", thumbnail_full_path.display());
+        extract_frame(video_full_path, 0.0, &thumbnail_full_path).await?;
     }
     Ok(thumbnail_full_path)
 }
 
-/// Trying to run ffmpeg for version
+/// Save the frame of `video_full_path` at `timestamp` as the image `target`.
+pub async fn extract_frame(
+    video_full_path: &Path,
+    timestamp: f64,
+    target: &Path,
+) -> Result<(), String> {
+    ffmpeg_utils::write_jpeg(video_full_path, timestamp, None, target).await?;
+    let metadata = tokio::fs::metadata(target)
+        .await
+        .map_err(|error| format!("读取缩略图失败: {error}"))?;
+    log::info!(
+        "生成缩略图完成: {} (文件大小: {} bytes)",
+        target.display(),
+        metadata.len()
+    );
+    Ok(())
+}
+
+/// Identify the linked FFmpeg SDK without requiring a command-line executable.
 pub async fn check_ffmpeg() -> Result<String, String> {
-    let mut child = ffmpeg_command()
-        .arg("-version")
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            log::error!("Failed to spawn ffmpeg process: {e}");
-            e.to_string()
-        })?;
-
-    let stdout = child.stdout.take().ok_or_else(|| {
-        log::error!("Failed to take ffmpeg output");
-        "Failed to take ffmpeg output".to_string()
-    })?;
-    let reader = BufReader::new(stdout);
-    let mut parser = FfmpegLogParser::new(reader);
-
-    let mut version = None;
-    while let Ok(event) = parser.parse_next_event().await {
-        match event {
-            FfmpegEvent::ParsedVersion(v) => version = Some(v.version),
-            FfmpegEvent::LogEOF => break,
-            _ => {}
-        }
-    }
-
-    let _ = child.wait().await;
-
-    if let Some(version) = version {
-        Ok(version)
-    } else {
-        Err("Failed to parse version from output".into())
-    }
+    Ok(ffmpeg_utils::linked_ffmpeg_version())
 }
 
 /// Check if all videos have same encoding and resolution
@@ -129,4 +102,40 @@ pub async fn check_videos(video_paths: &[&Path]) -> bool {
     }
 
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn thumbnail_recovers_from_a_seek_past_eof_and_reports_missing_frames() {
+        let directory = tempfile::tempdir().unwrap();
+        let video = directory.path().join("short.mp4");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("crates/ffmpeg_utils/src/video_frame/fixtures/seek.mp4"),
+            &video,
+        )
+        .unwrap();
+
+        let missing_frame = directory.path().join("missing-frame.jpg");
+        assert!(extract_frame(&video, 60.0, &missing_frame).await.is_err());
+
+        let thumbnail = generate_thumbnail(&video, 60.0).await.unwrap();
+        assert_eq!(
+            std::fs::read(&thumbnail).unwrap(),
+            ffmpeg_utils::extract_jpeg(&video, 0.0, None).await.unwrap()
+        );
+        let retained = std::fs::read(&thumbnail).unwrap();
+        assert!(extract_frame(&video, 60.0, &thumbnail).await.is_err());
+        assert_eq!(std::fs::read(&thumbnail).unwrap(), retained);
+
+        // Neither the random position nor the first frame can read a missing video.
+        assert!(
+            generate_thumbnail(&directory.path().join("missing.mp4"), 60.0)
+                .await
+                .is_err()
+        );
+    }
 }

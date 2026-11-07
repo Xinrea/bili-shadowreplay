@@ -9,20 +9,23 @@ on:
 permissions:
   contents: read
 
+# A new push to a PR makes its earlier, still-running checks irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# The pre-commit hooks are split between two jobs: `format` runs the cheap
+# hooks on every change, and `clippy-test` runs the cargo clippy/test hooks
+# only when the Rust build inputs change. Each job skips the other's hooks, so
+# keep both SKIP lists in sync with `.pre-commit-config.yaml`.
 jobs:
-  pr-check:
+  format:
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
-        with:
-          submodules: recursive
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -32,26 +35,7 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
-
-      - name: Cache Rust dependencies
-        id: rust-cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      # On a partial cache hit Swatinem/rust-cache deletes every file under
-      # non-profile `target/` subdirectories, which strips the prebuilt native
-      # libs from `target/sherpa-onnx-prebuilt` but keeps the extracted `lib`
-      # directory. `sherpa-onnx-sys`'s build script only checks that the
-      # directory exists, so it never re-downloads and linking fails. Drop the
-      # whole directory and force the crate to rebuild so it fetches them again.
-      - name: Repair sherpa-onnx prebuilt libs
-        if: steps.rust-cache.outputs.cache-hit != 'true'
-        run: |
-          rm -rf src-tauri/target/sherpa-onnx-prebuilt
-          cargo clean -p sherpa-onnx-sys --manifest-path src-tauri/Cargo.toml
+          components: rustfmt
 
       - name: Cache pre-commit
         uses: actions/cache@v4
@@ -63,4 +47,109 @@ jobs:
         run: python -m pip install pre-commit
 
       - name: Run pre-commit
+        env:
+          SKIP: cargo-clippy,cargo-clippy-headless,cargo-test,cargo-test-headless
+        run: pre-commit run --all-files --show-diff-on-failure
+
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+
+    steps:
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          # Everything the cargo clippy/test hooks read. `public/icon.svg` is
+          # pulled in by `include_str!` in `src-tauri/src/powerlive.rs`, and
+          # `tauri.conf.json` reads its version from `package.json`.
+          filters: |
+            rust:
+              - 'src-tauri/**'
+              - 'public/icon.svg'
+              - 'package.json'
+              - '.pre-commit-config.yaml'
+              - '.github/workflows/lint.yml'
+              - '.github/actions/apt-install/**'
+              - '.github/actions/setup-ffmpeg/**'
+
+  clippy-test:
+    needs: changes
+    # Pushes to main always run, which also keeps the caches PRs restore fresh.
+    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.rust == 'true') }}
+    runs-on: ubuntu-24.04
+    # A warm run takes about 10 minutes; this bounds stalls such as a slow apt
+    # mirror on a cache miss.
+    timeout-minutes: 45
+    env:
+      # Debug info is unused in CI but slows compiling and linking and roughly
+      # doubles the size of the Rust cache. Panic messages keep their locations.
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      # 0.82's Linux archive lacks COLRv1 and bundles ICU that collides with V8.
+      FORCE_SKIA_BUILD: "1"
+      SKIA_USE_SYSTEM_LIBRARIES: "1"
+      CC: clang
+      CXX: clang++
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      # setup-python replaces PKG_CONFIG_PATH, so select the FFmpeg SDK afterward.
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Setup FFmpeg and system dependencies
+        uses: ./.github/actions/setup-ffmpeg
+        with:
+          packages: libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf fonts-wqy-microhei libclang-dev ninja-build python3 libicu-dev libpng-dev libexpat1-dev libjpeg-dev
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Rust dependencies
+        id: rust-cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: linux-system-skia-ffmpeg9-v1
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Swatinem/rust-cache deletes every file under non-profile `target/`
+      # subdirectories, which strips the prebuilt native libs from
+      # `target/sherpa-onnx-prebuilt` but keeps the extracted `lib` directory.
+      # `sherpa-onnx-sys`'s build script only checks that the directory exists,
+      # so whenever the crate rebuilds it never re-downloads and linking fails.
+      # It rebuilds on a partial cache hit, and also on an exact hit once a new
+      # runner image reruns the cached build scripts, so check for the libs
+      # rather than the cache result. Drop the whole directory and force the
+      # crate to rebuild so it fetches them again.
+      - name: Repair sherpa-onnx prebuilt libs
+        run: |
+          if ! find src-tauri/target/sherpa-onnx-prebuilt -name 'libsherpa-onnx-c-api.a' 2>/dev/null | grep -q .; then
+            rm -rf src-tauri/target/sherpa-onnx-prebuilt
+            cargo clean -p sherpa-onnx-sys --manifest-path src-tauri/Cargo.toml
+          fi
+
+      - name: Cache pre-commit
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+
+      - name: Install pre-commit
+        run: python -m pip install pre-commit
+
+      - name: Run pre-commit
+        env:
+          SKIP: trailing-whitespace,end-of-file-fixer,cargo-fmt
         run: pre-commit run --all-files --show-diff-on-failure

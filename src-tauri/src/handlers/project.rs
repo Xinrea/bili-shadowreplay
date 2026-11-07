@@ -1,0 +1,2523 @@
+//! Commands for materials (素材) and projects (切片).
+
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use chrono::{Local, Utc};
+use recorder::danmu::DanmuEntry;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use tokio::sync::oneshot;
+
+use crate::danmu2ass::Danmu2AssOptions;
+use crate::database::audio::AudioRow;
+use crate::database::project::ProjectRow;
+use crate::database::task::TaskRow;
+use crate::database::upload::UploadRow;
+use crate::database::video::VideoRow;
+use crate::database::{Database, DatabaseError};
+use crate::ffmpeg::hwaccel;
+use crate::ffmpeg::project::{
+    limit_segment_caches, project_frame_rate, render_project_with_resources, OverlayLayer,
+    ProjectRender, RenderClip, RenderOverlay, RenderSound, VideoLayer,
+};
+use crate::handlers::subtitle_fonts::prepare_subtitle_font_directory;
+use crate::handlers::utils::{decode_data_url, get_disk_info_inner};
+use crate::handlers::video::{
+    ass_primary_font_name, auto_subtitle_material, create_material, ensure_material_duration,
+    notify_materials_created, run_queued, validate_ass_document,
+};
+use crate::material::Peaks;
+use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
+use crate::project::{
+    srt_cues, AudioSource, OverlayContent, RenderSettings, Timeline, TimelineClip,
+};
+use crate::recorder_manager::ClipRangeParams;
+use crate::state::State;
+use crate::state_type;
+use crate::task::{Task, TaskPriority};
+
+#[cfg(feature = "gui")]
+use tauri::State as TauriState;
+
+/// Directory of a project's own files, relative to the output directory.
+fn project_dir(id: i64) -> String {
+    format!("projects/{id}")
+}
+
+/// Where web clients' exports wait to be downloaded, relative to the cache.
+fn web_export_dir(id: i64) -> String {
+    format!("exports/{id}")
+}
+
+/// Where projects' rendered segments are kept, in the cache.
+const SEGMENT_CACHES: &str = "project_segments";
+
+/// Where a project's rendered segments are kept, in the cache.
+fn segment_cache_dir(id: i64) -> String {
+    format!("{SEGMENT_CACHES}/{id}")
+}
+
+/// The most the segment caches of all projects may take together; the least
+/// recently used go first.
+const SEGMENT_CACHE_LIMIT: u64 = 10 * 1024 * 1024 * 1024;
+
+/// A project with what the lists and the editor show about it.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectView {
+    #[serde(flatten)]
+    pub project: ProjectRow,
+    pub duration: f64,
+    pub clip_count: usize,
+    /// Cover to show, relative to the output directory: the project's own or
+    /// the first material's thumbnail.
+    pub display_cover: String,
+    /// False when the project is one untouched material, which is exported
+    /// and uploaded as is.
+    pub needs_render: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectBrief {
+    pub id: i64,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GeneratedMaterials {
+    pub materials: Vec<VideoRow>,
+    pub project: Option<ProjectView>,
+}
+
+/// A text or sticker overlay as the editor drew it, to burn with an export.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OverlayImage {
+    /// The overlay's id.
+    pub id: String,
+    /// PNG data URL.
+    pub image: String,
+    /// Top left on the 1920×1080 picture.
+    pub x: f64,
+    pub y: f64,
+}
+
+/// Largest picture accepted for one overlay; a whole 1920×1080 frame is far less.
+const MAX_OVERLAY_IMAGE_BYTES: usize = 16 * 1024 * 1024;
+const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+/// An overlay's picture decoded, with its top left on the picture.
+struct DecodedOverlayImage {
+    png: Vec<u8>,
+    x: f64,
+    y: f64,
+}
+
+/// The picture of each overlay, by id.
+fn decode_overlay_images(
+    images: &[OverlayImage],
+) -> Result<HashMap<String, DecodedOverlayImage>, String> {
+    let mut decoded = HashMap::new();
+    for image in images {
+        let bytes = decode_data_url(&image.image)?;
+        if !bytes.starts_with(PNG_SIGNATURE) || bytes.len() > MAX_OVERLAY_IMAGE_BYTES {
+            return Err("文字或贴纸的画面无效".to_string());
+        }
+        if !(image.x.is_finite() && image.y.is_finite()) {
+            return Err("文字或贴纸的位置无效".to_string());
+        }
+        decoded.insert(
+            image.id.clone(),
+            DecodedOverlayImage {
+                png: bytes,
+                x: image.x,
+                y: image.y,
+            },
+        );
+    }
+    Ok(decoded)
+}
+
+/// Whether every visible text and sticker overlay has a picture to burn.
+fn has_overlay_images(timeline: &Timeline, images: &HashMap<String, DecodedOverlayImage>) -> bool {
+    timeline
+        .placed_overlays()
+        .iter()
+        .all(|placed| placed.overlay.video().is_some() || images.contains_key(&placed.overlay.id))
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExportStarted {
+    pub task: TaskRow,
+    /// The file being written.
+    pub path: String,
+    /// Where the web client downloads it, relative to the cache directory.
+    pub download: Option<String>,
+}
+
+async fn output_dir(state: &State) -> PathBuf {
+    PathBuf::from(&state.config.read().await.output)
+}
+
+/// The danmaku style now, kept with an export so its render matches its hash.
+async fn danmu_options(state: &State) -> Danmu2AssOptions {
+    state.config.read().await.danmu_ass_options.clone()
+}
+
+fn material_duration(video: &VideoRow) -> f64 {
+    if video.duration > 0.0 {
+        video.duration
+    } else {
+        video.length as f64
+    }
+}
+
+async fn materials_by_id(state: &State, ids: &[i64]) -> Result<HashMap<i64, VideoRow>, String> {
+    let mut materials = HashMap::new();
+    for &id in ids {
+        if let Ok(video) = state.db.get_video(id).await {
+            materials.insert(id, ensure_material_duration(state, video).await);
+        }
+    }
+    Ok(materials)
+}
+
+/// The files of the audio library with `ids` that are still there.
+async fn audio_by_id(state: &State, ids: &[i64]) -> HashMap<i64, AudioRow> {
+    let mut files = HashMap::new();
+    for &id in ids {
+        if let Ok(audio) = state.db.get_audio_file(id).await {
+            files.insert(id, audio);
+        }
+    }
+    files
+}
+
+/// Check a timeline against its materials and files of the audio library.
+fn validate_timeline(
+    timeline: &Timeline,
+    materials: &HashMap<i64, VideoRow>,
+    audio: &HashMap<i64, AudioRow>,
+) -> Result<(), String> {
+    timeline.validate(
+        |id| materials.get(&id).map(material_duration),
+        |id| audio.get(&id).map(|audio| audio.duration),
+    )
+}
+
+fn project_view(project: ProjectRow, materials: &HashMap<i64, VideoRow>) -> ProjectView {
+    let timeline = Timeline::parse(&project.timeline).unwrap_or_default();
+    let display_cover = if project.cover.is_empty() {
+        timeline
+            .clips
+            .first()
+            .and_then(|clip| materials.get(&clip.material_id))
+            .map(|material| material.cover.clone())
+            .unwrap_or_default()
+    } else {
+        project.cover.clone()
+    };
+    ProjectView {
+        needs_render: true,
+        duration: timeline.duration(),
+        clip_count: timeline.clips.len(),
+        display_cover,
+        project,
+    }
+}
+
+pub(crate) async fn single_project_view(
+    state: &State,
+    project: ProjectRow,
+) -> Result<ProjectView, String> {
+    let timeline = Timeline::parse(&project.timeline).unwrap_or_default();
+    let materials = materials_by_id(state, &timeline.material_ids()).await?;
+    Ok(project_view(project, &materials))
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_projects(state: state_type!()) -> Result<Vec<ProjectView>, String> {
+    let projects = state.db.get_projects().await?;
+    // Avoid probing every material for the list; durations are filled when
+    // materials are created or opened.
+    let materials: HashMap<i64, VideoRow> = state
+        .db
+        .get_all_videos()
+        .await?
+        .into_iter()
+        .map(|video| (video.id, video))
+        .collect();
+    let mut views = Vec::with_capacity(projects.len());
+    for project in projects {
+        views.push(project_view(project, &materials));
+    }
+    Ok(views)
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_project(state: state_type!(), id: i64) -> Result<ProjectView, String> {
+    let project = state.db.get_project(id).await?;
+    single_project_view(&state, project).await
+}
+
+/// Anchor each clip to the cached subtitles of its material.
+async fn import_material_subtitles(
+    output: &Path,
+    timeline: &mut Timeline,
+    materials: &HashMap<i64, VideoRow>,
+    only_material: Option<i64>,
+) {
+    let clips: Vec<(String, i64)> = timeline
+        .clips
+        .iter()
+        .filter(|clip| only_material.is_none_or(|id| id == clip.material_id))
+        .filter(|clip| !timeline.subtitles.iter().any(|s| s.clip_id == clip.id))
+        .map(|clip| (clip.id.clone(), clip.material_id))
+        .collect();
+    for (clip_id, material_id) in clips {
+        let Some(material) = materials.get(&material_id) else {
+            continue;
+        };
+        let srt = output.join(&material.file).with_extension("srt");
+        if let Ok(content) = tokio::fs::read_to_string(&srt).await {
+            timeline.set_clip_subtitles(&clip_id, srt_cues(&content));
+        }
+    }
+}
+
+/// Save the base64 data URL `cover` as the image file `path`.
+pub(crate) async fn write_cover(path: &Path, cover: &str) -> Result<(), String> {
+    let bytes = decode_data_url(cover)?;
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    tokio::fs::write(path, bytes)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn write_project_cover(
+    output: &Path,
+    project_id: i64,
+    cover: &str,
+) -> Result<String, String> {
+    let relative = format!("{}/cover.jpg", project_dir(project_id));
+    write_cover(&output.join(&relative), cover).await?;
+    Ok(relative)
+}
+
+struct NewProject<'a> {
+    title: String,
+    room_id: String,
+    platform: String,
+    materials: &'a [VideoRow],
+    cover: Option<&'a str>,
+}
+
+async fn create_project_inner(state: &State, new: NewProject<'_>) -> Result<ProjectView, String> {
+    let first = new.materials.first();
+    let title = if !new.title.trim().is_empty() {
+        new.title.trim().to_string()
+    } else if let Some(first) = first {
+        material_title(first)
+    } else {
+        "未命名切片".to_string()
+    };
+    let room_id = if new.room_id.is_empty() {
+        first.map(|m| m.room_id.clone()).unwrap_or_default()
+    } else {
+        new.room_id
+    };
+    let platform = if new.platform.is_empty() {
+        first.map(|m| m.platform.clone()).unwrap_or_default()
+    } else {
+        new.platform
+    };
+    let mut timeline = Timeline::from_materials(
+        &new.materials
+            .iter()
+            .map(|m| (m.id, material_duration(m)))
+            .collect::<Vec<_>>(),
+    );
+    let output = output_dir(state).await;
+    let materials: HashMap<i64, VideoRow> =
+        new.materials.iter().map(|m| (m.id, m.clone())).collect();
+    import_material_subtitles(&output, &mut timeline, &materials, None).await;
+    let now = Local::now().to_rfc3339();
+    let mut project = state
+        .db
+        .add_project(&ProjectRow {
+            id: 0,
+            room_id,
+            platform,
+            title,
+            note: String::new(),
+            cover: String::new(),
+            timeline: timeline.to_json(),
+            profile: String::new(),
+            status: 0,
+            bvid: String::new(),
+            created_at: now.clone(),
+            updated_at: now,
+        })
+        .await?;
+    if let Some(cover) = new.cover.filter(|cover| !cover.is_empty()) {
+        match write_project_cover(&output, project.id, cover).await {
+            Ok(relative) => {
+                state.db.set_project_cover(project.id, &relative).await?;
+                project.cover = relative;
+            }
+            Err(e) => log::warn!("Failed to save project cover: {e}"),
+        }
+    }
+    Ok(project_view(project, &materials))
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn create_project(
+    state: state_type!(),
+    title: String,
+    room_id: String,
+    platform: String,
+    material_ids: Vec<i64>,
+) -> Result<ProjectView, String> {
+    let materials = materials_by_id(&state, &material_ids).await?;
+    let materials: Vec<VideoRow> = material_ids
+        .iter()
+        .filter_map(|id| materials.get(id).cloned())
+        .collect();
+    create_project_inner(
+        &state,
+        NewProject {
+            title,
+            room_id,
+            platform,
+            materials: &materials,
+            cover: None,
+        },
+    )
+    .await
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+/// Save the title, the note or both: the editor saves only the title and the
+/// projects list only the note, so neither undoes the other.
+pub async fn update_project_info(
+    state: state_type!(),
+    id: i64,
+    title: Option<String>,
+    note: Option<String>,
+) -> Result<(), String> {
+    let now = Local::now().to_rfc3339();
+    Ok(state
+        .db
+        .update_project_info(id, title.as_deref(), note.as_deref(), &now)
+        .await?)
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+/// Save the editor's timeline. `base` is the saved timeline the editor last
+/// knew, so edits the backend made since are kept.
+pub async fn update_project_timeline(
+    state: state_type!(),
+    id: i64,
+    timeline: Timeline,
+    base: Option<Timeline>,
+) -> Result<ProjectView, String> {
+    save_editor_timeline(&state.db, id, timeline, base).await?;
+    let project = state.db.get_project(id).await?;
+    single_project_view(&state, project).await
+}
+
+/// A main-track clip as an external client asks for it: `clip_id` keeps an
+/// existing clip of the same material, with what is anchored to it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClipRequest {
+    #[serde(default)]
+    pub clip_id: Option<String>,
+    pub material_id: i64,
+    /// In point within the material, in seconds.
+    #[serde(default)]
+    pub start: f64,
+    /// Out point within the material; the material's end when absent.
+    #[serde(default)]
+    pub end: Option<f64>,
+    #[serde(default)]
+    pub volume: Option<f64>,
+}
+
+/// Replace the project's main track with `clips`, in order. Clips kept by id
+/// keep their subtitles, overlays and sounds; new clips get their material's
+/// recognized subtitles, as clips of a new project do.
+pub(crate) async fn set_project_clips(
+    state: &State,
+    id: i64,
+    clips: Vec<ClipRequest>,
+) -> Result<ProjectView, String> {
+    if clips.is_empty() {
+        return Err("切片至少需要一个片段".to_string());
+    }
+    let ids: Vec<i64> = clips.iter().map(|clip| clip.material_id).collect();
+    let materials = materials_by_id(state, &ids).await?;
+    let mut requested = Vec::with_capacity(clips.len());
+    for (index, clip) in clips.into_iter().enumerate() {
+        let material = materials
+            .get(&clip.material_id)
+            .ok_or_else(|| format!("第 {} 个片段的素材不存在", index + 1))?;
+        let duration = material_duration(material);
+        if clip
+            .end
+            .is_some_and(|end| duration > 0.0 && end > duration + 0.5)
+        {
+            return Err(format!(
+                "第 {} 个片段超出了素材的长度（{duration:.2} 秒）",
+                index + 1
+            ));
+        }
+        requested.push(TimelineClip {
+            id: clip.clip_id.unwrap_or_default(),
+            material_id: clip.material_id,
+            start: clip.start,
+            end: clip.end.unwrap_or(duration),
+            volume: clip.volume.unwrap_or(1.0),
+        });
+    }
+    // Checked as an export checks it, before anything is saved.
+    Timeline {
+        clips: requested.clone(),
+        ..Timeline::default()
+    }
+    .validate(|id| materials.get(&id).map(material_duration), |_| None)?;
+    let output = output_dir(state).await;
+    let mut cues = HashMap::new();
+    for material in materials.values() {
+        let srt = output.join(&material.file).with_extension("srt");
+        if let Ok(content) = tokio::fs::read_to_string(&srt).await {
+            cues.insert(material.id, srt_cues(&content));
+        }
+    }
+    edit_project_timeline(&state.db, id, |timeline| {
+        let mut used = Vec::new();
+        let clips = requested
+            .iter()
+            .cloned()
+            .map(|mut clip| {
+                let existing = timeline
+                    .clips
+                    .iter()
+                    .any(|old| old.id == clip.id && old.material_id == clip.material_id);
+                if !existing || used.contains(&clip.id) {
+                    clip.id = crate::project::new_id();
+                }
+                used.push(clip.id.clone());
+                clip
+            })
+            .collect();
+        timeline.replace_clips(clips);
+        let bare: Vec<(String, i64)> = timeline
+            .clips
+            .iter()
+            .filter(|clip| !timeline.subtitles.iter().any(|s| s.clip_id == clip.id))
+            .map(|clip| (clip.id.clone(), clip.material_id))
+            .collect();
+        for (clip_id, material_id) in bare {
+            if let Some(cues) = cues.get(&material_id) {
+                timeline.set_clip_subtitles(&clip_id, cues.clone());
+            }
+        }
+        true
+    })
+    .await?;
+    single_project_view(state, state.db.get_project(id).await?).await
+}
+
+/// Turn burning danmaku into the project's exports and uploads on or off.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_project_danmu(
+    state: state_type!(),
+    id: i64,
+    danmu: bool,
+) -> Result<(), String> {
+    set_project_danmu(&state, id, danmu).await
+}
+
+/// Patch output settings shared with uploads, independently of timeline edits.
+/// Omitted fields keep their latest saved values; render settings are one field
+/// because codec, priority and bitrate together select the encoding behavior.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_project_output_settings(
+    state: state_type!(),
+    id: i64,
+    danmu: Option<bool>,
+    render_settings: Option<RenderSettings>,
+) -> Result<(), String> {
+    patch_project_output_settings(&state.db, id, danmu, render_settings).await
+}
+
+async fn patch_project_output_settings(
+    db: &Database,
+    id: i64,
+    danmu: Option<bool>,
+    render_settings: Option<RenderSettings>,
+) -> Result<(), String> {
+    if let Some(settings) = &render_settings {
+        settings.validate()?;
+    }
+    edit_project_timeline(db, id, |timeline| {
+        let mut changed = false;
+        if let Some(danmu) = danmu {
+            changed |= timeline.danmu != danmu;
+            timeline.danmu = danmu;
+        }
+        if let Some(settings) = &render_settings {
+            changed |= timeline.render_settings != *settings;
+            timeline.render_settings = settings.clone();
+        }
+        changed
+    })
+    .await
+}
+
+/// Save timeline edits while preserving output settings changed independently
+/// in an export or upload dialog.
+async fn save_editor_timeline(
+    db: &Database,
+    id: i64,
+    edited: Timeline,
+    base: Option<Timeline>,
+) -> Result<Timeline, String> {
+    for _ in 0..TIMELINE_EDIT_ATTEMPTS {
+        let saved = db.get_project(id).await?.timeline;
+        let current = Timeline::parse(&saved)?;
+        let mut timeline = edited.clone();
+        // The backend's edits since the editor last heard: without what it
+        // last saw, only the output settings.
+        match &base {
+            Some(base) => timeline.merge_saved_edits(base, &current),
+            None => {
+                timeline.danmu = current.danmu;
+                timeline.render_settings = current.render_settings.clone();
+            }
+        }
+        // An editor that has not heard of a deletion yet must not restore its
+        // clips; checked on each attempt, as a deletion edits the timeline.
+        for material_id in timeline.material_ids() {
+            if let Err(DatabaseError::DB(sqlx::Error::RowNotFound)) =
+                db.get_video(material_id).await
+            {
+                timeline.remove_material(material_id);
+            }
+        }
+        for audio_id in timeline.audio_ids() {
+            if let Err(DatabaseError::DB(sqlx::Error::RowNotFound)) =
+                db.get_audio_file(audio_id).await
+            {
+                timeline.remove_audio(audio_id);
+            }
+        }
+        let now = Local::now().to_rfc3339();
+        if db
+            .replace_project_timeline(id, &saved, &timeline.to_json(), &now)
+            .await?
+        {
+            return Ok(timeline);
+        }
+    }
+    Err("切片正在被修改，请稍后重试".to_string())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn delete_project(state: state_type!(), id: i64) -> Result<(), String> {
+    state.db.delete_project(id).await?;
+    let cache = PathBuf::from(&state.config.read().await.cache);
+    for directory in [
+        output_dir(&state).await.join(project_dir(id)),
+        cache.join(web_export_dir(id)),
+        cache.join(segment_cache_dir(id)),
+    ] {
+        if directory.exists() {
+            if let Err(e) = tokio::fs::remove_dir_all(&directory).await {
+                log::warn!("删除切片目录失败: {} - {e}", directory.display());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Projects that use the material.
+async fn projects_using(db: &Database, material_id: i64) -> Result<Vec<ProjectRow>, String> {
+    Ok(db
+        .get_projects()
+        .await?
+        .into_iter()
+        .filter(|project| {
+            Timeline::parse(&project.timeline).is_ok_and(|t| t.uses_material(material_id))
+        })
+        .collect())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_material_usage(
+    state: state_type!(),
+    id: i64,
+) -> Result<Vec<ProjectBrief>, String> {
+    Ok(projects_using(&state.db, id)
+        .await?
+        .into_iter()
+        .map(|project| ProjectBrief {
+            id: project.id,
+            title: project.title,
+        })
+        .collect())
+}
+
+/// Take a material that is about to be deleted out of every project.
+pub(crate) async fn remove_material_from_projects(
+    state: &State,
+    material_id: i64,
+) -> Result<(), String> {
+    for project in projects_using(&state.db, material_id).await? {
+        edit_project_timeline(&state.db, project.id, |timeline| {
+            timeline.remove_material(material_id)
+        })
+        .await?;
+    }
+    Ok(())
+}
+
+/// Attempts at an edit before giving up on a timeline that keeps changing.
+const TIMELINE_EDIT_ATTEMPTS: usize = 5;
+
+/// Apply `edit`, which tells whether it changed anything, to the project's
+/// saved timeline. The write only replaces the timeline it was made from, so
+/// a save from the editor in between is edited again instead of overwritten.
+pub(crate) async fn edit_project_timeline(
+    db: &Database,
+    id: i64,
+    mut edit: impl FnMut(&mut Timeline) -> bool,
+) -> Result<(), String> {
+    for _ in 0..TIMELINE_EDIT_ATTEMPTS {
+        let saved = db.get_project(id).await?.timeline;
+        let mut timeline = Timeline::parse(&saved)?;
+        if !edit(&mut timeline) {
+            return Ok(());
+        }
+        let now = Local::now().to_rfc3339();
+        if db
+            .replace_project_timeline(id, &saved, &timeline.to_json(), &now)
+            .await?
+        {
+            return Ok(());
+        }
+    }
+    Err("切片正在被修改，请稍后重试".to_string())
+}
+
+/// The frame rate a project of clips of `material_ids`, with danmaku burned or
+/// not, is rendered at; the editor puts edits on its frames.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_project_frame_rate(
+    state: state_type!(),
+    material_ids: Vec<i64>,
+    danmu: bool,
+) -> Result<f64, String> {
+    let materials = materials_by_id(&state, &material_ids).await?;
+    let output = output_dir(&state).await;
+    let mut rates = Vec::with_capacity(materials.len());
+    for material in materials.values() {
+        // Probed as an export probes it, which reads its rate the same way.
+        let (_, fps, _) = probe_material(&mut HashMap::new(), &output.join(&material.file)).await?;
+        rates.push(fps);
+    }
+    Ok(project_frame_rate(rates, danmu))
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_material_peaks(state: state_type!(), id: i64) -> Result<Peaks, String> {
+    let video = state.db.get_video(id).await?;
+    let path = output_dir(&state).await.join(&video.file);
+    crate::material::peaks(&path).await
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_material_danmu(state: state_type!(), id: i64) -> Result<Vec<DanmuEntry>, String> {
+    let video = state.db.get_video(id).await?;
+    let path = output_dir(&state).await.join(&video.file);
+    Ok(crate::material::load_danmus(&path).await)
+}
+
+/// Kept free on every disk written to, for other use.
+const FREE_SPACE_RESERVE: u64 = 1024 * 1024 * 1024;
+/// Baseline space budget for video and encoded sound. Higher selected bitrates
+/// add their headroom to both output and segment budgets.
+const EXPORT_BYTES_PER_SECOND: u64 = 12_000_000 / 8 + 192_000 / 8;
+/// Bytes its segments take per second besides: the same video, and WAV sound.
+const SEGMENT_BYTES_PER_SECOND: u64 = 12_000_000 / 8 + 48_000 * 2 * 2;
+
+/// `bytes` in GB, or in MB below one.
+fn readable_size(bytes: u64) -> String {
+    let megabytes = bytes as f64 / 1024.0 / 1024.0;
+    if megabytes < 1024.0 {
+        format!("{} MB", megabytes.ceil())
+    } else {
+        format!("{:.1} GB", megabytes / 1024.0)
+    }
+}
+
+/// What the files directly in `directory` take, 0 when it does not exist.
+async fn directory_size(directory: &Path) -> u64 {
+    let mut size = 0;
+    if let Ok(mut entries) = tokio::fs::read_dir(directory).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            if let Ok(metadata) = entry.metadata().await {
+                if metadata.is_file() {
+                    size += metadata.len();
+                }
+            }
+        }
+    }
+    size
+}
+
+/// What the segments of `seconds` of a project add to a segment cache holding
+/// `cached` bytes: those found there are used, not written again.
+fn segment_writes(seconds: u64, cached: u64, extra_video_bytes: u64) -> u64 {
+    (seconds * SEGMENT_BYTES_PER_SECOND + extra_video_bytes).saturating_sub(cached)
+}
+
+/// Refuse to start writing `writes`, bytes to each directory, unless every
+/// disk keeps [`FREE_SPACE_RESERVE`] free after all that goes to it.
+async fn check_free_space(writes: &[(PathBuf, u64)]) -> Result<(), String> {
+    let mut disks: Vec<(String, u64, u64)> = Vec::new();
+    for (directory, bytes) in writes {
+        let mut directory = directory.clone();
+        if directory.is_relative() {
+            let cwd = std::env::current_dir()
+                .map_err(|e| format!("Failed to get current directory: {e}"))?;
+            directory = cwd.join(directory);
+        }
+        // An export creates its folder; `df` needs one that exists.
+        let directory = existing_ancestor(&directory).await.to_path_buf();
+        let Ok(info) = get_disk_info_inner(directory).await else {
+            continue;
+        };
+        match disks.iter_mut().find(|(disk, _, _)| *disk == info.disk) {
+            Some((_, _, needed)) => *needed += bytes,
+            None => disks.push((info.disk, info.free, *bytes)),
+        }
+    }
+    for (disk, free, needed) in disks {
+        if free < needed + FREE_SPACE_RESERVE {
+            return Err(if needed == 0 {
+                format!("存储空间不足（{disk} 少于 1GB），已取消")
+            } else {
+                format!(
+                    "存储空间不足：需要约 {}，{disk} 剩余 {}（另需保留 1GB），已取消",
+                    readable_size(needed),
+                    readable_size(free),
+                )
+            });
+        }
+    }
+    Ok(())
+}
+
+/// `path`, or the nearest folder above it that exists.
+async fn existing_ancestor(path: &Path) -> &Path {
+    let mut existing = path;
+    while !tokio::fs::try_exists(existing).await.unwrap_or(false) {
+        match existing.parent() {
+            Some(parent) => existing = parent,
+            None => break,
+        }
+    }
+    existing
+}
+
+/// Cut each range of a recording into its own material, or with `merge` join
+/// them into one, optionally creating a project that plays them in order.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn generate_materials(
+    state: state_type!(),
+    event_id: String,
+    params: ClipRangeParams,
+    create_project: bool,
+    merge: bool,
+) -> Result<GeneratedMaterials, String> {
+    check_free_space(&[(output_dir(&state).await, 0)]).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &state.events, &event_id).await?;
+    let mut params_without_cover = params.clone();
+    params_without_cover.cover = String::new();
+    state
+        .db
+        .add_task(&TaskRow {
+            id: event_id.clone(),
+            task_type: "generate_materials".to_string(),
+            status: "pending".to_string(),
+            message: String::new(),
+            metadata: json!({
+                "params": params_without_cover,
+                "create_project": create_project,
+                "merge": merge,
+            })
+            .to_string(),
+            created_at: Utc::now().to_rfc3339(),
+        })
+        .await?;
+
+    #[cfg(feature = "gui")]
+    let state_clone = (*state).clone();
+    #[cfg(feature = "headless")]
+    let state_clone = state.clone();
+    let task_id = event_id.clone();
+    run_queued(
+        &state,
+        &event_id,
+        async move {
+            let result = generate_materials_inner(
+                &state_clone,
+                &reporter,
+                &task_id,
+                params,
+                create_project,
+                merge,
+            )
+            .await;
+            let (status, message) = match &result {
+                Ok(generated) => (
+                    "success",
+                    format!("已生成 {} 个素材", generated.materials.len()),
+                ),
+                Err(e) => ("failed", format!("生成素材失败: {e}")),
+            };
+            reporter.finish(result.is_ok(), &message).await;
+            let _ = state_clone
+                .db
+                .update_task(&task_id, status, &message, None)
+                .await;
+            result
+        },
+        "生成素材任务已取消",
+        "生成素材任务失败",
+    )
+    .await
+}
+
+async fn generate_materials_inner(
+    state: &State,
+    reporter: &ProgressReporter,
+    task_id: &str,
+    params: ClipRangeParams,
+    create_project: bool,
+    merge: bool,
+) -> Result<GeneratedMaterials, String> {
+    // No ranges means the whole recording, as for `clip_range`. A merged
+    // material joins every range first, so embedded danmaku is burned once
+    // over the joined video and external danmaku follows its timeline.
+    let ranges = if merge || params.ranges.is_empty() {
+        vec![params.ranges.clone()]
+    } else {
+        params
+            .ranges
+            .iter()
+            .cloned()
+            .map(|range| vec![range])
+            .collect()
+    };
+    let count = ranges.len();
+    let mut materials = Vec::with_capacity(count);
+    for (index, ranges) in ranges.into_iter().enumerate() {
+        let mut material_params = params.clone();
+        material_params.ranges = ranges;
+        material_params.transition = None;
+        // A captured frame only represents a single range.
+        if params.ranges.len() > 1 {
+            material_params.cover = String::new();
+        }
+        let stage = if count > 1 {
+            reporter.stage(&format!("生成素材 {}/{count}", index + 1))
+        } else {
+            reporter.clone()
+        };
+        materials.push(create_material(state, &stage, &material_params).await?);
+    }
+    notify_materials_created(state, &params.room_id, &materials).await?;
+
+    let project = if create_project {
+        Some(
+            create_project_inner(
+                state,
+                NewProject {
+                    title: params.title.clone(),
+                    room_id: params.room_id.clone(),
+                    platform: params.platform.clone(),
+                    materials: &materials,
+                    cover: Some(&params.cover),
+                },
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+
+    for material in &materials {
+        if auto_subtitle_material(state, task_id, material.id).await {
+            if let Some(project) = &project {
+                attach_material_subtitles(state, project.project.id, material).await?;
+            }
+        }
+    }
+
+    Ok(GeneratedMaterials { materials, project })
+}
+
+/// Give the material's clips in a project its freshly generated subtitles.
+async fn attach_material_subtitles(
+    state: &State,
+    project_id: i64,
+    material: &VideoRow,
+) -> Result<(), String> {
+    let srt = output_dir(state)
+        .await
+        .join(&material.file)
+        .with_extension("srt");
+    let Ok(content) = tokio::fs::read_to_string(&srt).await else {
+        return Ok(());
+    };
+    let cues = srt_cues(&content);
+    edit_project_timeline(&state.db, project_id, |timeline| {
+        let clips: Vec<String> = timeline
+            .clips
+            .iter()
+            .filter(|clip| clip.material_id == material.id)
+            .filter(|clip| !timeline.subtitles.iter().any(|s| s.clip_id == clip.id))
+            .map(|clip| clip.id.clone())
+            .collect();
+        for clip_id in &clips {
+            timeline.set_clip_subtitles(clip_id, cues.clone());
+        }
+        !clips.is_empty()
+    })
+    .await
+}
+
+/// The video to upload for a project: its plain material, or a render of its
+/// timeline kept in `directory` until the upload succeeds. While that render is
+/// queued, the receiver yields its result.
+pub(crate) async fn project_upload_video(
+    state: &State,
+    event_id: &str,
+    id: i64,
+    subtitle_ass: Option<String>,
+    overlay_images: Vec<OverlayImage>,
+    directory: &Path,
+) -> Result<(PathBuf, Option<oneshot::Receiver<Result<(), String>>>), String> {
+    let project = state.db.get_project(id).await?;
+    let timeline = Timeline::parse(&project.timeline)?;
+    if timeline.clips.is_empty() {
+        return Err("切片没有片段".to_string());
+    }
+    let materials = materials_by_id(state, &timeline.material_ids()).await?;
+    let audio = audio_by_id(state, &timeline.audio_ids()).await;
+    validate_timeline(&timeline, &materials, &audio)?;
+    if timeline.has_visible_subtitles() && subtitle_ass.is_none() {
+        return Err("切片有字幕，但没有提供字幕样式".to_string());
+    }
+    let source = ExportSource {
+        task_type: "export_project",
+        title: project.title.clone(),
+        metadata: json!({ "project_id": project.id, "title": project.title }),
+        subtitle_ass: subtitle_ass.filter(|_| timeline.has_visible_subtitles()),
+        overlay_images,
+        timeline,
+        materials: &materials,
+        audio: &audio,
+        danmu_options: danmu_options(state).await,
+        project: Some(project.id),
+    };
+    upload_render(state, event_id, source, directory).await
+}
+
+/// The video to upload for a material with its danmaku burned in, rendered as
+/// a project of the whole material and kept in `directory` like a project's.
+pub(crate) async fn material_danmu_video(
+    state: &State,
+    event_id: &str,
+    id: i64,
+    directory: &Path,
+    render_settings: RenderSettings,
+) -> Result<(PathBuf, Option<oneshot::Receiver<Result<(), String>>>), String> {
+    render_settings.validate()?;
+    let materials = materials_by_id(state, &[id]).await?;
+    let material = materials
+        .get(&id)
+        .ok_or_else(|| "素材已被删除".to_string())?;
+    let duration = material_duration(material);
+    if duration <= 0.0 {
+        return Err("无法读取素材时长".to_string());
+    }
+    let title = material_title(material);
+    let audio = HashMap::new();
+    let source = ExportSource {
+        task_type: "render_material_danmu",
+        metadata: json!({ "video_id": id, "title": title }),
+        title,
+        // A fixed clip id keeps the render hash, and so a retry's reuse, stable.
+        timeline: Timeline {
+            clips: vec![TimelineClip {
+                id: "material".to_string(),
+                material_id: id,
+                start: 0.0,
+                end: duration,
+                volume: 1.0,
+            }],
+            danmu: true,
+            render_settings,
+            ..Timeline::default()
+        },
+        materials: &materials,
+        audio: &audio,
+        subtitle_ass: None,
+        overlay_images: Vec::new(),
+        danmu_options: danmu_options(state).await,
+        project: None,
+    };
+    upload_render(state, event_id, source, directory).await
+}
+
+/// Render `source` into `directory` for an upload. A retry after a failed
+/// upload reuses the render when nothing changed.
+async fn upload_render(
+    state: &State,
+    event_id: &str,
+    source: ExportSource<'_>,
+    directory: &Path,
+) -> Result<(PathBuf, Option<oneshot::Receiver<Result<(), String>>>), String> {
+    let pipeline = hwaccel::get_render_pipeline(&source.timeline.render_settings).await;
+    let hash = source.render_hash(pipeline);
+    let target = directory.join(format!("{UPLOAD_RENDER_PREFIX}{hash}.mp4"));
+    if target.is_file() {
+        return Ok((target, None));
+    }
+    remove_upload_renders(directory).await;
+    let (_, done) = queue_export(
+        state,
+        event_id,
+        source,
+        ExportTarget::Upload(target.clone()),
+    )
+    .await?;
+    Ok((target, Some(done)))
+}
+
+/// Turn burning danmaku into the project's exports and uploads on or off.
+pub(crate) async fn set_project_danmu(state: &State, id: i64, danmu: bool) -> Result<(), String> {
+    edit_project_timeline(&state.db, id, |timeline| {
+        let changed = timeline.danmu != danmu;
+        timeline.danmu = danmu;
+        changed
+    })
+    .await
+}
+
+pub(crate) async fn set_project_render_settings(
+    state: &State,
+    id: i64,
+    settings: RenderSettings,
+) -> Result<(), String> {
+    settings.validate()?;
+    edit_project_timeline(&state.db, id, |timeline| {
+        let changed = timeline.render_settings != settings;
+        timeline.render_settings = settings.clone();
+        changed
+    })
+    .await
+}
+
+/// A material's title, or its file name without the extension.
+pub(crate) fn material_title(material: &VideoRow) -> String {
+    if material.title.is_empty() {
+        Path::new(&material.file)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default()
+            .to_string()
+    } else {
+        material.title.clone()
+    }
+}
+
+const UPLOAD_RENDER_PREFIX: &str = "render_";
+
+/// Delete the videos rendered for an upload in `directory`.
+pub(crate) async fn remove_upload_renders(directory: &Path) {
+    let Ok(mut entries) = tokio::fs::read_dir(directory).await else {
+        return;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(UPLOAD_RENDER_PREFIX)
+        {
+            let _ = tokio::fs::remove_file(entry.path()).await;
+        }
+    }
+}
+
+/// The project's cover, or the first material's thumbnail.
+pub(crate) async fn project_cover_file(
+    state: &State,
+    project: &ProjectRow,
+) -> Result<PathBuf, String> {
+    let output = output_dir(state).await;
+    if !project.cover.is_empty() {
+        return Ok(output.join(&project.cover));
+    }
+    let timeline = Timeline::parse(&project.timeline)?;
+    let first = timeline
+        .clips
+        .first()
+        .ok_or_else(|| "切片没有片段".to_string())?;
+    let material = state.db.get_video(first.material_id).await?;
+    let path = output.join(&material.file).with_extension("jpg");
+    if path.exists() {
+        Ok(path)
+    } else {
+        Err("切片没有封面，请先设置封面".to_string())
+    }
+}
+
+/// Where an export is written.
+enum ExportTarget {
+    /// A file the user asked for, who is told when it is done.
+    User(PathBuf),
+    /// A video rendered for an upload, which reports its own result.
+    Upload(PathBuf),
+}
+
+impl ExportTarget {
+    fn path(&self) -> &Path {
+        match self {
+            Self::User(path) | Self::Upload(path) => path,
+        }
+    }
+}
+
+/// A timeline to export over its materials, and how its task is listed.
+struct ExportSource<'a> {
+    task_type: &'static str,
+    /// Shown in the task list and messages.
+    title: String,
+    /// Task metadata naming what is exported.
+    metadata: serde_json::Value,
+    timeline: Timeline,
+    materials: &'a HashMap<i64, VideoRow>,
+    /// The files of the audio library it plays.
+    audio: &'a HashMap<i64, AudioRow>,
+    subtitle_ass: Option<String>,
+    /// Pictures of the text and sticker overlays.
+    overlay_images: Vec<OverlayImage>,
+    danmu_options: Danmu2AssOptions,
+    /// The project rendered, whose segments are kept for its next render.
+    project: Option<i64>,
+}
+
+impl ExportSource<'_> {
+    /// Identifies what rendering this source contains.
+    fn render_hash(&self, pipeline: hwaccel::RenderPipeline) -> String {
+        let mut extra = format!(
+            "encoder:{}\nrenderer:{}\nnative:{}\n",
+            pipeline.encoder,
+            pipeline.cache_identity(),
+            native_overlay::RENDERER_VERSION
+        );
+        extra.push_str(&serde_json::to_string(&self.timeline.render_settings).unwrap());
+        extra.push('\0');
+        // Match segment caching: changes to effective encoder defaults (e.g.
+        // GOP length) must also invalidate the complete video prepared for upload.
+        extra.push_str(
+            &serde_json::to_string(&hwaccel::project_quality_args(
+                pipeline.encoder,
+                &self.timeline.render_settings,
+            ))
+            .unwrap(),
+        );
+        extra.push('\0');
+        extra.push_str(self.subtitle_ass.as_deref().unwrap_or_default());
+        if self.timeline.danmu {
+            extra.push_str(&serde_json::to_string(&self.danmu_options).unwrap_or_default());
+        }
+        // The same overlays can look different, as with fonts installed since.
+        for image in &self.overlay_images {
+            extra.push_str(&format!(
+                "\0{}:{}:{}:{}",
+                image.id, image.x, image.y, image.image
+            ));
+        }
+        self.timeline.render_hash(&extra)
+    }
+}
+
+/// Everything an export needs, fixed when it is queued so that later edits
+/// cannot change a waiting job.
+struct ExportJob {
+    title: String,
+    timeline: Timeline,
+    /// Each material's file, by id.
+    files: HashMap<i64, PathBuf>,
+    /// Each audio library file's path, by id.
+    audio_files: HashMap<i64, PathBuf>,
+    subtitle_ass: Option<String>,
+    font_name: Option<String>,
+    /// The picture of each text and sticker overlay, by id.
+    overlay_images: HashMap<String, DecodedOverlayImage>,
+    danmu_options: Danmu2AssOptions,
+    cache: PathBuf,
+    /// Where the project's rendered segments are kept, if it is a project.
+    segment_cache: Option<PathBuf>,
+    target: ExportTarget,
+}
+
+/// Export the timeline to `target`, a file the user picked, or without one to
+/// the cache for the web client to download.
+#[cfg_attr(feature = "gui", tauri::command)]
+#[allow(clippy::too_many_arguments)]
+pub async fn export_project(
+    state: state_type!(),
+    event_id: String,
+    id: i64,
+    timeline: Timeline,
+    subtitle_ass: Option<String>,
+    overlays: Option<Vec<OverlayImage>>,
+    target: Option<String>,
+    base: Option<Timeline>,
+) -> Result<ExportStarted, String> {
+    let project = state.db.get_project(id).await?;
+    if timeline.clips.is_empty() {
+        return Err("时间轴上还没有片段".to_string());
+    }
+    let materials = materials_by_id(&state, &timeline.material_ids()).await?;
+    let audio = audio_by_id(&state, &timeline.audio_ids()).await;
+    validate_timeline(&timeline, &materials, &audio)?;
+    // Rendered with the project's danmaku setting, as saved.
+    let timeline = save_editor_timeline(&state.db, id, timeline, base).await?;
+
+    let (path, download) = match target {
+        Some(path) => (mp4_path(PathBuf::from(path)), None),
+        None => {
+            let relative = format!("{}/export.mp4", web_export_dir(id));
+            let cache = PathBuf::from(&state.config.read().await.cache);
+            (cache.join(&relative), Some(relative))
+        }
+    };
+    let output = output_dir(&state).await;
+    if materials
+        .values()
+        .any(|material| output.join(&material.file) == path)
+    {
+        return Err("不能覆盖切片使用的素材文件".to_string());
+    }
+    let source = ExportSource {
+        task_type: "export_project",
+        title: project.title.clone(),
+        metadata: json!({ "project_id": project.id, "title": project.title }),
+        timeline,
+        materials: &materials,
+        audio: &audio,
+        subtitle_ass,
+        overlay_images: overlays.unwrap_or_default(),
+        danmu_options: danmu_options(&state).await,
+        project: Some(project.id),
+    };
+    let (task, _) =
+        queue_export(&state, &event_id, source, ExportTarget::User(path.clone())).await?;
+    Ok(ExportStarted {
+        task,
+        path: path.to_string_lossy().into_owned(),
+        download,
+    })
+}
+
+/// `path` with the `.mp4` extension the encoder writes.
+fn mp4_path(path: PathBuf) -> PathBuf {
+    if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("mp4"))
+    {
+        path
+    } else {
+        let mut name = path.into_os_string();
+        name.push(".mp4");
+        PathBuf::from(name)
+    }
+}
+
+/// Copy the plain material or render the timeline to `target` on the task
+/// queue. The receiver yields the result, or closes if the export is cancelled.
+async fn queue_export(
+    state: &State,
+    event_id: &str,
+    source: ExportSource<'_>,
+    target: ExportTarget,
+) -> Result<(TaskRow, oneshot::Receiver<Result<(), String>>), String> {
+    let ExportSource {
+        task_type,
+        title,
+        metadata,
+        timeline,
+        materials,
+        audio,
+        subtitle_ass,
+        overlay_images,
+        danmu_options,
+        project,
+    } = source;
+    let output = output_dir(state).await;
+    let overlay_images = decode_overlay_images(&overlay_images)?;
+    if !has_overlay_images(&timeline, &overlay_images) {
+        return Err("切片有文字或贴纸，但没有提供它们的画面".to_string());
+    }
+    let subtitle_ass = subtitle_ass.filter(|_| timeline.has_visible_subtitles());
+    if let Some(ass) = &subtitle_ass {
+        validate_ass_document(ass)?;
+    }
+    let font_name = subtitle_ass
+        .as_deref()
+        .map(ass_primary_font_name)
+        .transpose()?;
+    let cache = PathBuf::from(&state.config.read().await.cache);
+    let segment_cache = project.map(|id| cache.join(segment_cache_dir(id)));
+    // The export beside its target, and its segments in the project's cache,
+    // or else beside the target too. Every project is encoded.
+    let target_path = target.path();
+    let beside_target = target_path.parent().unwrap_or(target_path).to_path_buf();
+    let seconds = timeline.duration().max(0.0).ceil() as u64;
+    // Higher selected bitrates also need more space for the output and segments.
+    let peak_kbps = u64::from(timeline.render_settings.bitrate_kbps) * 5 / 4;
+    let extra_video_bytes = peak_kbps.saturating_sub(12_000) * 1000 / 8 * seconds;
+    // Existing segments are either reused or removed before writing replacements.
+    let cached = match &segment_cache {
+        Some(directory) => directory_size(directory).await,
+        None => 0,
+    };
+    let writes = vec![
+        (
+            beside_target.clone(),
+            seconds * EXPORT_BYTES_PER_SECOND + extra_video_bytes,
+        ),
+        (
+            segment_cache.clone().unwrap_or(beside_target),
+            segment_writes(seconds, cached, extra_video_bytes),
+        ),
+    ];
+    check_free_space(&writes).await?;
+
+    let job = ExportJob {
+        title,
+        files: materials
+            .iter()
+            .map(|(id, material)| (*id, output.join(&material.file)))
+            .collect(),
+        audio_files: audio
+            .iter()
+            .map(|(id, audio)| (*id, output.join(&audio.file)))
+            .collect(),
+        timeline,
+        subtitle_ass,
+        font_name,
+        overlay_images,
+        danmu_options,
+        cache,
+        segment_cache,
+        target,
+    };
+    let task = TaskRow {
+        id: event_id.to_string(),
+        task_type: task_type.to_string(),
+        status: "pending".to_string(),
+        message: "等待导出".to_string(),
+        metadata: metadata.to_string(),
+        created_at: Utc::now().to_rfc3339(),
+    };
+    state.db.add_task(&task).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &state.events, event_id).await?;
+
+    let state_clone = state.clone();
+    let task_id = event_id.to_string();
+    let (done_tx, done) = oneshot::channel();
+    let enqueue_result = state
+        .task_manager
+        .add_task(Task::new(
+            task_id.clone(),
+            TaskPriority::Normal,
+            async move {
+                reporter.update("准备导出").await;
+                let result = export_project_inner(&state_clone, &reporter, job).await;
+                let (status, message) = match &result {
+                    Ok(()) => ("success", "导出完成".to_string()),
+                    Err(error) => ("failed", format!("导出失败: {error}")),
+                };
+                state_clone
+                    .db
+                    .update_task(&task_id, status, &message, None)
+                    .await?;
+                reporter.finish(result.is_ok(), &message).await;
+                let _ = done_tx.send(result.clone());
+                result
+            },
+        ))
+        .await;
+    if let Err(error) = enqueue_result {
+        state
+            .db
+            .update_task(
+                event_id,
+                "failed",
+                &format!("加入导出队列失败: {error}"),
+                None,
+            )
+            .await?;
+        return Err(error);
+    }
+    Ok((task, done))
+}
+
+async fn export_project_inner(
+    state: &State,
+    reporter: &ProgressReporter,
+    job: ExportJob,
+) -> Result<(), String> {
+    let target = job.target.path().to_path_buf();
+    if let Some(parent) = target.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    // Written beside the target and moved over it once complete, so a failed
+    // export never replaces an existing file with a broken one.
+    let stem = target.file_stem().unwrap_or_default().to_string_lossy();
+    let staging = target.with_file_name(format!("{stem}.part.mp4"));
+    render_timeline(reporter, &job, &staging).await?;
+    if let Err(e) = tokio::fs::rename(&staging, &target).await {
+        let _ = tokio::fs::remove_file(&staging).await;
+        return Err(format!("保存导出文件失败: {e}"));
+    }
+    if let ExportTarget::User(path) = &job.target {
+        state
+            .db
+            .new_message(
+                "切片导出完成",
+                &format!("切片「{}」已导出到 {}", job.title, path.display()),
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+/// Whether the file has sound, its frame rate and the length of its video.
+async fn probe_material(
+    probed: &mut HashMap<PathBuf, (bool, f64, f64)>,
+    path: &Path,
+) -> Result<(bool, f64, f64), String> {
+    if let Some(found) = probed.get(path) {
+        return Ok(*found);
+    }
+    let metadata = ffmpeg_utils::extract_video_metadata(path).await?;
+    let found = (
+        !metadata.audio_codec.is_empty(),
+        metadata.fps,
+        metadata.duration,
+    );
+    probed.insert(path.to_path_buf(), found);
+    Ok(found)
+}
+
+async fn render_timeline(
+    reporter: &ProgressReporter,
+    job: &ExportJob,
+    output: &Path,
+) -> Result<(), String> {
+    let file = |material_id: i64| {
+        job.files
+            .get(&material_id)
+            .ok_or_else(|| format!("素材 {material_id} 不存在"))
+    };
+    // Probed once per material, however many clips and overlays show it.
+    let mut probed = HashMap::new();
+    let mut clips = Vec::with_capacity(job.timeline.clips.len());
+    for clip in &job.timeline.clips {
+        let (has_audio, fps, file_duration) =
+            probe_material(&mut probed, file(clip.material_id)?).await?;
+        clips.push(RenderClip {
+            id: clip.id.clone(),
+            path: file(clip.material_id)?.clone(),
+            start: clip.start,
+            duration: clip.duration(),
+            has_audio,
+            fps,
+            file_duration,
+            volume: clip.volume,
+        });
+    }
+
+    // Black on to the end of the overlays and sounds running past the clips.
+    let tail = job.timeline.duration() - job.timeline.main_duration();
+    if tail > 1e-6 {
+        clips.push(RenderClip::blank(tail));
+    }
+
+    let mut sounds = Vec::new();
+    for placed in job.timeline.placed_audio() {
+        let item = placed.item;
+        let (path, seek) = match item.source {
+            AudioSource::File { audio_id } => (
+                job.audio_files
+                    .get(&audio_id)
+                    .ok_or_else(|| format!("声音文件 {audio_id} 不存在"))?,
+                false,
+            ),
+            AudioSource::Material { material_id } => (file(material_id)?, true),
+        };
+        let (has_audio, _, _) = probe_material(&mut probed, path).await?;
+        if has_audio {
+            sounds.push(RenderSound {
+                path: path.clone(),
+                start: placed.start,
+                end: placed.end,
+                source_start: item.source_start + placed.skip,
+                seek,
+                volume: item.volume,
+                fade_in: item.fade_in,
+                fade_out: item.fade_out,
+            });
+        }
+    }
+
+    let mut overlays = Vec::new();
+    for placed in job.timeline.placed_overlays() {
+        let layer = match &placed.overlay.content {
+            OverlayContent::Video(video) => {
+                let (has_audio, _, duration) =
+                    probe_material(&mut probed, file(video.material_id)?).await?;
+                OverlayLayer::Video(VideoLayer {
+                    path: file(video.material_id)?.clone(),
+                    source_start: video.source_start + placed.skip,
+                    duration,
+                    has_audio,
+                    x: video.element.x,
+                    y: video.element.y,
+                    width: video.element.width,
+                    rotation: video.element.rotation,
+                    volume: video.volume,
+                    opacity: video.opacity,
+                })
+            }
+            OverlayContent::Text { .. } | OverlayContent::Sticker { .. } => {
+                let image = job
+                    .overlay_images
+                    .get(&placed.overlay.id)
+                    .ok_or_else(|| "缺少文字或贴纸的画面".to_string())?;
+                OverlayLayer::Image {
+                    png: image.png.clone(),
+                    x: image.x,
+                    y: image.y,
+                }
+            }
+        };
+        overlays.push(RenderOverlay {
+            start: placed.start,
+            end: placed.end,
+            layer,
+        });
+    }
+
+    let danmus = if job.timeline.danmu {
+        // Only the main track's danmaku is burned.
+        let mut by_material = HashMap::new();
+        for clip in &job.timeline.clips {
+            if let Entry::Vacant(entry) = by_material.entry(clip.material_id) {
+                entry.insert(crate::material::load_danmus(file(clip.material_id)?).await);
+            }
+        }
+        // On the frames of the render, which burns danmaku.
+        let fps = project_frame_rate(clips.iter().map(|clip| clip.fps), true);
+        job.timeline
+            .map_danmus(fps, |id| by_material.get(&id).map(Vec::as_slice))
+    } else {
+        Vec::new()
+    };
+
+    let fonts_directory = match &job.font_name {
+        Some(font_name) => {
+            Some(prepare_subtitle_font_directory(job.cache.clone(), font_name.clone()).await?)
+        }
+        None => None,
+    };
+    let fonts_path = fonts_directory
+        .as_ref()
+        .map(|directory| directory.path().to_path_buf());
+    let resources = fonts_directory
+        .map(ffmpeg_utils::MediaResourceLease::new)
+        .into_iter()
+        .collect();
+    render_project_with_resources(
+        reporter,
+        ProjectRender {
+            clips,
+            overlays,
+            sounds,
+            subtitle_ass: job.subtitle_ass.clone(),
+            fonts_directory: fonts_path.as_deref(),
+            danmus,
+            danmu_options: job.danmu_options.clone(),
+            render_settings: job.timeline.render_settings.clone(),
+            output,
+            segment_cache: job.segment_cache.as_deref(),
+        },
+        resources,
+    )
+    .await?;
+    if let Some(segment_cache) = &job.segment_cache {
+        let root = job.cache.join(SEGMENT_CACHES);
+        limit_segment_caches(&root, segment_cache, SEGMENT_CACHE_LIMIT).await;
+    }
+    Ok(())
+}
+
+/// Give every video that existed before projects its own single-material
+/// project, carrying over its title, note, upload state and subtitles.
+pub async fn create_legacy_projects(db: Arc<Database>, output: PathBuf) {
+    let videos = match db.get_videos_needing_project().await {
+        Ok(videos) => videos,
+        Err(e) => {
+            log::error!("Failed to list videos for project migration: {e}");
+            return;
+        }
+    };
+    if videos.is_empty() {
+        return;
+    }
+    log::info!("Creating projects for {} existing videos", videos.len());
+    for mut video in videos {
+        let path = output.join(&video.file);
+        if video.duration <= 0.0 {
+            if let Ok(metadata) = ffmpeg_utils::extract_video_metadata(&path).await {
+                if metadata.duration > 0.0 {
+                    video.duration = metadata.duration;
+                    let _ = db.update_video_duration(video.id, video.duration).await;
+                }
+            }
+        }
+        let mut timeline = Timeline::from_materials(&[(video.id, material_duration(&video))]);
+        let materials = HashMap::from([(video.id, video.clone())]);
+        import_material_subtitles(&output, &mut timeline, &materials, None).await;
+        let title = material_title(&video);
+        let posted = !video.bvid.is_empty();
+        let profile = if posted {
+            json!({
+                "title": video.title,
+                "desc": video.desc,
+                "tag": video.tags,
+                "tid": video.area,
+            })
+            .to_string()
+        } else {
+            String::new()
+        };
+        let project = ProjectRow {
+            id: 0,
+            room_id: video.room_id.clone(),
+            platform: video.platform.clone(),
+            title,
+            note: video.note.clone(),
+            cover: String::new(),
+            timeline: timeline.to_json(),
+            profile,
+            status: i64::from(posted),
+            bvid: video.bvid.clone(),
+            created_at: video.created_at.clone(),
+            updated_at: video.created_at.clone(),
+        };
+        let upload = posted.then(|| UploadRow {
+            id: 0,
+            source: "project".to_string(),
+            // Set to the new project's id.
+            source_id: 0,
+            file: String::new(),
+            room_id: project.room_id.clone(),
+            uid: String::new(),
+            cover: String::new(),
+            cover43: String::new(),
+            profile: project.profile.clone(),
+            danmu: false,
+            render_settings_json: "{}".to_string(),
+            status: "posted".to_string(),
+            message: String::new(),
+            bvid: project.bvid.clone(),
+            created_at: project.created_at.clone(),
+            updated_at: project.created_at.clone(),
+        });
+        if let Err(e) = db.add_legacy_project(video.id, &project, upload).await {
+            log::error!("Failed to create project for video {}: {e}", video.id);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::project::{EncodingPriority, VideoCodec};
+
+    #[tokio::test]
+    async fn segments_in_the_cache_are_not_counted_as_written_again() {
+        let directory = tempfile::tempdir().unwrap();
+        assert_eq!(directory_size(&directory.path().join("none")).await, 0);
+        std::fs::write(directory.path().join("a.mp4"), vec![0; 3000]).unwrap();
+        std::fs::write(directory.path().join("a.wav"), vec![0; 1000]).unwrap();
+        std::fs::create_dir(directory.path().join("folder")).unwrap();
+        let cached = directory_size(directory.path()).await;
+        assert_eq!(cached, 4000);
+        // Of a minute, what is cached is not written again, and nothing for
+        // a cache holding as much.
+        assert_eq!(
+            segment_writes(60, cached, 0),
+            60 * SEGMENT_BYTES_PER_SECOND - 4000
+        );
+        assert_eq!(segment_writes(60, 60 * SEGMENT_BYTES_PER_SECOND, 0), 0);
+        assert_eq!(
+            segment_writes(60, 60 * SEGMENT_BYTES_PER_SECOND, 9000),
+            9000
+        );
+        assert_eq!(readable_size(20 * 1024 * 1024), "20 MB");
+        assert_eq!(readable_size(3 * 1024 * 1024 * 1024 / 2), "1.5 GB");
+    }
+
+    #[tokio::test]
+    async fn exports_need_the_space_they_write_on_each_disk() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("export");
+        let free = get_disk_info_inner(directory.path().to_path_buf())
+            .await
+            .unwrap()
+            .free;
+        let writes = |bytes: u64| {
+            vec![
+                (target.clone(), bytes / 2),
+                (target.join("segments"), bytes - bytes / 2),
+            ]
+        };
+        assert!(check_free_space(&writes(0)).await.is_ok());
+        // On one disk, the two together are what counts.
+        let error = check_free_space(&writes(free)).await.unwrap_err();
+        assert!(error.contains("需要约"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn free_space_is_checked_on_the_nearest_folder_that_exists() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("export").join("project");
+        assert_eq!(existing_ancestor(&missing).await, directory.path());
+        assert_eq!(existing_ancestor(directory.path()).await, directory.path());
+    }
+    use crate::database::credentials::CredentialCipher;
+    use base64::Engine;
+
+    #[tokio::test]
+    async fn a_video_whose_migration_fails_is_left_for_the_next_start() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for migration in crate::get_migrations() {
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+        }
+        sqlx::raw_sql(
+            "INSERT INTO videos (room_id, cover, file, note, length, size, status, bvid, title, desc, tags, area, created_at, platform, needs_project)
+             VALUES ('1', 'a.jpg', 'a.mp4', '', 30, 1, 1, 'BV1xx', 'Posted', '', '', 21, '2026-01-01T00:00:00+08:00', 'bilibili', 1);
+             DROP TABLE uploads;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let db = Arc::new(Database::new(
+            pool,
+            CredentialCipher::new(&[0; 32]).unwrap(),
+            crate::events::EventBus::new(),
+        ));
+        let output = tempfile::tempdir().unwrap();
+
+        // Recording its upload fails, so its project must not be kept either.
+        create_legacy_projects(db.clone(), output.path().to_path_buf()).await;
+
+        assert!(db.get_projects().await.unwrap().is_empty());
+        assert_eq!(db.get_videos_needing_project().await.unwrap().len(), 1);
+    }
+
+    async fn output_settings_project() -> (Database, ProjectRow) {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for migration in crate::get_migrations() {
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+        }
+        let db = Database::new(
+            pool,
+            CredentialCipher::new(&[0; 32]).unwrap(),
+            crate::events::EventBus::new(),
+        );
+        let project = db
+            .add_project(&ProjectRow {
+                id: 0,
+                room_id: "1".into(),
+                platform: "bilibili".into(),
+                title: "t".into(),
+                note: String::new(),
+                cover: String::new(),
+                timeline: Timeline::from_materials(&[(1, 10.0)]).to_json(),
+                profile: String::new(),
+                status: 0,
+                bvid: String::new(),
+                created_at: "2026-10-18".into(),
+                updated_at: "2026-10-18".into(),
+            })
+            .await
+            .unwrap();
+        (db, project)
+    }
+
+    #[tokio::test]
+    async fn output_settings_patches_preserve_omitted_fields_and_timeline_edits() {
+        let (db, project) = output_settings_project().await;
+        let bitrate_settings = RenderSettings {
+            codec: VideoCodec::H264,
+            priority: EncodingPriority::Quality,
+            bitrate_kbps: 12_000,
+            resolution: crate::project::RenderResolution::Original,
+        };
+        // Another dialog and the editor save after this export dialog opened.
+        edit_project_timeline(&db, project.id, |timeline| {
+            timeline.danmu = true;
+            timeline.render_settings = bitrate_settings.clone();
+            timeline.clips[0].end = 8.0;
+            true
+        })
+        .await
+        .unwrap();
+        patch_project_output_settings(&db, project.id, Some(false), None)
+            .await
+            .unwrap();
+        let stored = Timeline::parse(&db.get_project(project.id).await.unwrap().timeline).unwrap();
+        assert!(!stored.danmu);
+        assert_eq!(stored.render_settings, bitrate_settings);
+        assert_eq!(stored.clips[0].end, 8.0);
+
+        patch_project_output_settings(&db, project.id, Some(true), None)
+            .await
+            .unwrap();
+        let default_settings = RenderSettings::default();
+        patch_project_output_settings(&db, project.id, None, Some(default_settings.clone()))
+            .await
+            .unwrap();
+        let stored = Timeline::parse(&db.get_project(project.id).await.unwrap().timeline).unwrap();
+        assert!(stored.danmu);
+        // Replacing render settings replaces codec, priority and bitrate together.
+        assert_eq!(stored.render_settings, default_settings);
+        assert_eq!(stored.clips[0].end, 8.0);
+    }
+
+    #[tokio::test]
+    async fn output_settings_no_op_patches_do_not_write() {
+        let (db, project) = output_settings_project().await;
+        let timeline = Timeline::parse(&project.timeline).unwrap();
+        for (danmu, settings) in [
+            (None, None),
+            (Some(timeline.danmu), Some(timeline.render_settings)),
+        ] {
+            patch_project_output_settings(&db, project.id, danmu, settings)
+                .await
+                .unwrap();
+            let stored = db.get_project(project.id).await.unwrap();
+            assert_eq!(stored.timeline, project.timeline);
+            assert_eq!(stored.updated_at, project.updated_at);
+        }
+    }
+
+    #[tokio::test]
+    async fn output_settings_invalid_patches_do_not_change_any_field() {
+        let (db, project) = output_settings_project().await;
+        let timeline = Timeline::parse(&project.timeline).unwrap();
+        for bitrate_kbps in [0, 1, 499, 100_001] {
+            let settings = RenderSettings {
+                bitrate_kbps,
+                ..RenderSettings::default()
+            };
+            let expected_error = settings.validate().unwrap_err();
+            let error = patch_project_output_settings(
+                &db,
+                project.id,
+                Some(!timeline.danmu),
+                Some(settings),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error, expected_error);
+            let stored = db.get_project(project.id).await.unwrap();
+            assert_eq!(stored.timeline, project.timeline);
+            assert_eq!(stored.updated_at, project.updated_at);
+        }
+    }
+
+    #[tokio::test]
+    async fn editor_saves_keep_output_settings_switched_elsewhere() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for migration in crate::get_migrations() {
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+        }
+        sqlx::raw_sql(
+            "INSERT INTO videos (id, room_id, cover, file, note, length, size, status, bvid, title, desc, tags, area, created_at, platform)
+             VALUES (1, '1', '', 'a.mp4', '', 10, 1, 0, '', '', '', '', 0, '', 'bilibili');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let db = Database::new(
+            pool,
+            CredentialCipher::new(&[0; 32]).unwrap(),
+            crate::events::EventBus::new(),
+        );
+        let editor = Timeline::from_materials(&[(1, 10.0)]);
+        let project = db
+            .add_project(&ProjectRow {
+                id: 0,
+                room_id: "1".into(),
+                platform: "bilibili".into(),
+                title: "t".into(),
+                note: String::new(),
+                cover: String::new(),
+                timeline: editor.to_json(),
+                profile: String::new(),
+                status: 0,
+                bvid: String::new(),
+                created_at: "2026-10-18".into(),
+                updated_at: "2026-10-18".into(),
+            })
+            .await
+            .unwrap();
+
+        // The uploads page turns danmaku on while the editor still has it off.
+        edit_project_timeline(&db, project.id, |timeline| {
+            timeline.danmu = true;
+            timeline.render_settings = RenderSettings {
+                codec: VideoCodec::H264,
+                priority: EncodingPriority::Quality,
+                bitrate_kbps: 12_000,
+                resolution: crate::project::RenderResolution::Original,
+            };
+            true
+        })
+        .await
+        .unwrap();
+        let mut trimmed = editor.clone();
+        trimmed.clips[0].end = 8.0;
+        for base in [None, Some(editor)] {
+            let saved = save_editor_timeline(&db, project.id, trimmed.clone(), base)
+                .await
+                .unwrap();
+            // Both new and old editors preserve settings saved by the upload dialog.
+            assert!(saved.danmu);
+            assert_eq!(saved.render_settings.codec, VideoCodec::H264);
+            assert_eq!(saved.render_settings.priority, EncodingPriority::Quality);
+            assert_eq!(saved.render_settings.bitrate_kbps, 12_000);
+        }
+        let stored = Timeline::parse(&db.get_project(project.id).await.unwrap().timeline).unwrap();
+        assert_eq!((stored.danmu, stored.clips[0].end), (true, 8.0));
+    }
+
+    #[tokio::test]
+    async fn editor_saves_drop_audio_files_deleted_since_the_editor_last_heard() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for migration in crate::get_migrations() {
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+        }
+        sqlx::raw_sql(
+            "INSERT INTO videos (id, room_id, cover, file, note, length, size, status, bvid, title, desc, tags, area, created_at, platform)
+             VALUES (1, '1', '', 'a.mp4', '', 10, 1, 0, '', '', '', '', 0, '', 'bilibili');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let db = Database::new(
+            pool,
+            CredentialCipher::new(&[0; 32]).unwrap(),
+            crate::events::EventBus::new(),
+        );
+        let mut library = Vec::new();
+        for name in ["kept", "deleted"] {
+            let audio = db
+                .add_audio_file(&AudioRow {
+                    id: 0,
+                    name: name.into(),
+                    file: format!("audio/{name}.wav"),
+                    duration: 30.0,
+                    size: 1,
+                    created_at: "2026-10-21".into(),
+                })
+                .await
+                .unwrap();
+            library.push(audio.id);
+        }
+        let mut editor = Timeline::from_materials(&[(1, 10.0)]);
+        let clip_id = editor.clips[0].id.clone();
+        editor.audio_tracks = library
+            .iter()
+            .map(|&audio_id| crate::project::AudioTrack {
+                id: format!("track{audio_id}"),
+                items: vec![crate::project::AudioItem {
+                    id: format!("sound{audio_id}"),
+                    clip_id: clip_id.clone(),
+                    start: 0.0,
+                    duration: 5.0,
+                    source: AudioSource::File { audio_id },
+                    source_start: 0.0,
+                    volume: 1.0,
+                    fade_in: 0.0,
+                    fade_out: 0.0,
+                }],
+            })
+            .collect();
+        let project = db
+            .add_project(&ProjectRow {
+                id: 0,
+                room_id: "1".into(),
+                platform: "bilibili".into(),
+                title: "t".into(),
+                note: String::new(),
+                cover: String::new(),
+                timeline: Timeline::from_materials(&[(1, 10.0)]).to_json(),
+                profile: String::new(),
+                status: 0,
+                bvid: String::new(),
+                created_at: "2026-10-21".into(),
+                updated_at: "2026-10-21".into(),
+            })
+            .await
+            .unwrap();
+
+        // Deleted while the editor, which has not heard yet, still plays it.
+        db.delete_audio_file(library[1]).await.unwrap();
+        let saved = save_editor_timeline(&db, project.id, editor, None)
+            .await
+            .unwrap();
+
+        assert_eq!(saved.audio_ids(), vec![library[0]]);
+        let stored = Timeline::parse(&db.get_project(project.id).await.unwrap().timeline).unwrap();
+        assert_eq!(stored.audio_ids(), vec![library[0]]);
+    }
+
+    #[tokio::test]
+    async fn editor_saves_keep_subtitles_recognized_since_the_editor_last_heard() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for migration in crate::get_migrations() {
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+        }
+        sqlx::raw_sql(
+            "INSERT INTO videos (id, room_id, cover, file, note, length, size, status, bvid, title, desc, tags, area, created_at, platform)
+             VALUES (1, '1', '', 'a.mp4', '', 10, 1, 0, '', '', '', '', 0, '', 'bilibili'),
+                    (2, '1', '', 'b.mp4', '', 10, 1, 0, '', '', '', '', 0, '', 'bilibili');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let db = Database::new(
+            pool,
+            CredentialCipher::new(&[0; 32]).unwrap(),
+            crate::events::EventBus::new(),
+        );
+        // Clip b already has subtitles the editor knows about.
+        let mut base = Timeline::from_materials(&[(1, 10.0), (2, 10.0)]);
+        let (a, b) = (base.clips[0].id.clone(), base.clips[1].id.clone());
+        base.set_clip_subtitles(&b, vec![(1.0, 2.0, "old".into())]);
+        let project = db
+            .add_project(&ProjectRow {
+                id: 0,
+                room_id: "1".into(),
+                platform: "bilibili".into(),
+                title: "t".into(),
+                note: String::new(),
+                cover: String::new(),
+                timeline: base.to_json(),
+                profile: String::new(),
+                status: 0,
+                bvid: String::new(),
+                created_at: "2026-10-18".into(),
+                updated_at: "2026-10-18".into(),
+            })
+            .await
+            .unwrap();
+
+        // Recognition fills clip a while the editor trims it and deletes
+        // clip b's subtitles, without having heard of the recognition.
+        edit_project_timeline(&db, project.id, |timeline| {
+            timeline.set_clip_subtitles(&a, vec![(3.0, 4.0, "recognized".into())]);
+            true
+        })
+        .await
+        .unwrap();
+        let mut edited = base.clone();
+        edited.clips[0].end = 8.0;
+        edited.subtitles.clear();
+        let saved = save_editor_timeline(&db, project.id, edited, Some(base))
+            .await
+            .unwrap();
+
+        let stored = Timeline::parse(&db.get_project(project.id).await.unwrap().timeline).unwrap();
+        assert_eq!(stored.to_json(), saved.to_json());
+        assert_eq!(stored.clips[0].end, 8.0);
+        let texts: Vec<&str> = stored.subtitles.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, ["recognized"]);
+    }
+
+    #[tokio::test]
+    async fn editor_saves_drop_clips_of_deleted_materials() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for migration in crate::get_migrations() {
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+        }
+        sqlx::raw_sql(
+            "INSERT INTO videos (id, room_id, cover, file, note, length, size, status, bvid, title, desc, tags, area, created_at, platform)
+             VALUES (1, '1', '', 'a.mp4', '', 10, 1, 0, '', '', '', '', 0, '', 'bilibili');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let db = Database::new(
+            pool,
+            CredentialCipher::new(&[0; 32]).unwrap(),
+            crate::events::EventBus::new(),
+        );
+        // Material 2 was deleted while an editor still had a clip of it.
+        let editor = Timeline::from_materials(&[(1, 10.0), (2, 5.0)]);
+        let project = db
+            .add_project(&ProjectRow {
+                id: 0,
+                room_id: "1".into(),
+                platform: "bilibili".into(),
+                title: "t".into(),
+                note: String::new(),
+                cover: String::new(),
+                timeline: Timeline::from_materials(&[(1, 10.0)]).to_json(),
+                profile: String::new(),
+                status: 0,
+                bvid: String::new(),
+                created_at: "2026-10-18".into(),
+                updated_at: "2026-10-18".into(),
+            })
+            .await
+            .unwrap();
+
+        let saved = save_editor_timeline(&db, project.id, editor, None)
+            .await
+            .unwrap();
+
+        assert_eq!(saved.material_ids(), vec![1]);
+        let stored = Timeline::parse(&db.get_project(project.id).await.unwrap().timeline).unwrap();
+        assert_eq!(stored.material_ids(), vec![1]);
+    }
+
+    #[test]
+    fn texts_and_stickers_are_exported_only_with_their_pictures() {
+        let mut timeline = Timeline::from_materials(&[(1, 10.0)]);
+        let clip_id = timeline.clips[0].id.clone();
+        let overlay = |id: &str, content| crate::project::Overlay {
+            id: id.into(),
+            clip_id: clip_id.clone(),
+            start: 1.0,
+            duration: 2.0,
+            content,
+        };
+        timeline.tracks = vec![crate::project::OverlayTrack {
+            id: "t".into(),
+            kind: None,
+            items: vec![
+                overlay("text", OverlayContent::Text { element: json!({}) }),
+                overlay(
+                    "video",
+                    OverlayContent::Video(crate::project::VideoOverlay {
+                        material_id: 1,
+                        source_start: 0.0,
+                        volume: 1.0,
+                        opacity: 1.0,
+                        element: crate::project::VideoPlacement {
+                            x: 960.0,
+                            y: 540.0,
+                            width: 640.0,
+                            rotation: 0.0,
+                        },
+                    }),
+                ),
+            ],
+        }];
+        let png = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\nrest")
+        );
+        let image = |id: &str, image: &str| OverlayImage {
+            id: id.into(),
+            image: image.into(),
+            x: 10.0,
+            y: 20.0,
+        };
+        // Videos are rendered from their material; texts need a picture.
+        assert!(!has_overlay_images(&timeline, &HashMap::new()));
+        let decoded = decode_overlay_images(&[image("text", &png)]).unwrap();
+        assert_eq!(decoded["text"].x, 10.0);
+        assert!(has_overlay_images(&timeline, &decoded));
+        let jpeg = format!(
+            "data:image/jpeg;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(b"\xff\xd8\xff")
+        );
+        assert!(decode_overlay_images(&[image("text", &jpeg)]).is_err());
+    }
+
+    #[test]
+    fn a_render_is_identified_by_effective_encoding_and_overlay_pictures() {
+        let (materials, audio) = (HashMap::new(), HashMap::new());
+        let timeline = Timeline::from_materials(&[(1, 10.0)]);
+        let source = |images: Vec<OverlayImage>| ExportSource {
+            task_type: "export_project",
+            title: String::new(),
+            metadata: json!({}),
+            timeline: timeline.clone(),
+            materials: &materials,
+            audio: &audio,
+            subtitle_ass: None,
+            overlay_images: images,
+            danmu_options: Danmu2AssOptions::default(),
+            project: None,
+        };
+        let image = |data: &str, x: f64| OverlayImage {
+            id: "text".into(),
+            image: data.into(),
+            x,
+            y: 0.0,
+        };
+        let drawn = source(vec![image("data:image/png;base64,AAAA", 10.0)])
+            .render_hash(hwaccel::RenderPipeline::cpu("libx265"));
+        assert_eq!(
+            drawn,
+            source(vec![image("data:image/png;base64,AAAA", 10.0)])
+                .render_hash(hwaccel::RenderPipeline::cpu("libx265"))
+        );
+        assert_ne!(
+            drawn,
+            source(vec![image("data:image/png;base64,AAAA", 10.0)])
+                .render_hash(hwaccel::RenderPipeline::cpu("hevc_nvenc"))
+        );
+        // Drawn differently, as with another font, or placed elsewhere.
+        assert_ne!(
+            drawn,
+            source(vec![image("data:image/png;base64,AAAB", 10.0)])
+                .render_hash(hwaccel::RenderPipeline::cpu("libx265"))
+        );
+        assert_ne!(
+            drawn,
+            source(vec![image("data:image/png;base64,AAAA", 11.0)])
+                .render_hash(hwaccel::RenderPipeline::cpu("libx265"))
+        );
+        assert_ne!(
+            drawn,
+            source(Vec::new()).render_hash(hwaccel::RenderPipeline::cpu("libx265"))
+        );
+        let plain = source(Vec::new());
+        assert_ne!(
+            plain.render_hash(hwaccel::RenderPipeline::cpu("hevc_videotoolbox")),
+            plain.render_hash(hwaccel::RenderPipeline::gpu("hevc_videotoolbox"))
+        );
+        let mut extra = format!(
+            "encoder:libx265\nrenderer:{}\nnative:{}\n",
+            hwaccel::RenderPipeline::cpu("libx265").cache_identity(),
+            native_overlay::RENDERER_VERSION,
+        );
+        extra.push_str(&serde_json::to_string(&timeline.render_settings).unwrap());
+        extra.push('\0');
+        assert_ne!(
+            plain.render_hash(hwaccel::RenderPipeline::cpu("libx265")),
+            timeline.render_hash(&extra)
+        );
+        extra.push_str(
+            &serde_json::to_string(&hwaccel::project_quality_args(
+                "libx265",
+                &timeline.render_settings,
+            ))
+            .unwrap(),
+        );
+        extra.push('\0');
+        assert_eq!(
+            plain.render_hash(hwaccel::RenderPipeline::cpu("libx265")),
+            timeline.render_hash(&extra)
+        );
+        // A previously cached complete upload can have a landscape canvas for
+        // rotated portrait media. Both rendering backends must regenerate it.
+        for (pipeline, old_identity) in [
+            (
+                hwaccel::RenderPipeline::cpu("libx265"),
+                "cpu-bgra-overlay-v1",
+            ),
+            (
+                hwaccel::RenderPipeline::gpu("libx265"),
+                "vulkan-nv12-compute-v4-srgb",
+            ),
+        ] {
+            let old_extra = extra.replace(
+                hwaccel::RenderPipeline::cpu("libx265").cache_identity(),
+                old_identity,
+            );
+            assert_ne!(
+                plain.render_hash(pipeline),
+                timeline.render_hash(&old_extra)
+            );
+        }
+    }
+
+    #[test]
+    fn exports_keep_the_mp4_extension_the_encoder_writes() {
+        assert_eq!(mp4_path("a/b.mp4".into()), PathBuf::from("a/b.mp4"));
+        assert_eq!(mp4_path("a/b.MP4".into()), PathBuf::from("a/b.MP4"));
+        assert_eq!(mp4_path("a/b".into()), PathBuf::from("a/b.mp4"));
+        // A dot in the name is not an extension to replace.
+        assert_eq!(mp4_path("a/v1.2".into()), PathBuf::from("a/v1.2.mp4"));
+    }
+
+    #[tokio::test]
+    async fn existing_videos_get_one_project_each_with_their_upload_state_and_subtitles() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let migrations = crate::get_migrations();
+        let (before, after): (Vec<_>, Vec<_>) =
+            migrations.into_iter().partition(|m| m.version < 18);
+        for migration in before {
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+        }
+        sqlx::raw_sql(
+            "INSERT INTO videos (room_id, cover, file, note, length, size, status, bvid, title, desc, tags, area, created_at, platform)
+             VALUES ('1', 'a.jpg', 'a.mp4', 'note', 30, 1, 1, 'BV1xx', 'Posted', 'desc', 'tag', 21, '2026-01-01T00:00:00+08:00', 'bilibili'),
+                    ('1', 'b.jpg', 'b.mp4', '', 12, 1, 0, '', '', '', '', 0, '2026-01-02T00:00:00+08:00', 'bilibili');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for migration in after {
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+        }
+        let db = Arc::new(Database::new(
+            pool,
+            CredentialCipher::new(&[0; 32]).unwrap(),
+            crate::events::EventBus::new(),
+        ));
+        let output = tempfile::tempdir().unwrap();
+        std::fs::write(
+            output.path().join("a.srt"),
+            "1\n00:00:01,000 --> 00:00:02,000\nhello\n",
+        )
+        .unwrap();
+
+        create_legacy_projects(db.clone(), output.path().to_path_buf()).await;
+        // Running again, as on every startup, must not duplicate projects.
+        create_legacy_projects(db.clone(), output.path().to_path_buf()).await;
+
+        let mut projects = db.get_projects().await.unwrap();
+        projects.sort_by_key(|project| project.id);
+        assert_eq!(projects.len(), 2);
+        let posted = &projects[0];
+        assert_eq!((posted.title.as_str(), posted.status), ("Posted", 1));
+        assert_eq!(
+            (posted.bvid.as_str(), posted.note.as_str()),
+            ("BV1xx", "note")
+        );
+        // Its submission is listed with the other uploads.
+        let uploads = db.get_uploads().await.unwrap();
+        assert_eq!(uploads.len(), 1);
+        assert_eq!(
+            (
+                uploads[0].source.as_str(),
+                uploads[0].source_id,
+                uploads[0].status.as_str(),
+                uploads[0].bvid.as_str()
+            ),
+            ("project", posted.id, "posted", "BV1xx")
+        );
+        let timeline = Timeline::parse(&posted.timeline).unwrap();
+        assert_eq!(timeline.clips.len(), 1);
+        // The file cannot be probed, so the stored whole-second length is used.
+        assert_eq!(
+            (timeline.clips[0].start, timeline.clips[0].end),
+            (0.0, 30.0)
+        );
+        assert_eq!(timeline.subtitles.len(), 1);
+        assert_eq!(timeline.subtitles[0].clip_id, timeline.clips[0].id);
+        assert_eq!(
+            timeline.subtitle_span(&timeline.subtitles[0]),
+            Some((1.0, 2.0))
+        );
+        let unposted = &projects[1];
+        assert_eq!((unposted.title.as_str(), unposted.status), ("b", 0));
+        assert!(Timeline::parse(&unposted.timeline)
+            .unwrap()
+            .subtitles
+            .is_empty());
+
+        // Videos created from now on are materials only.
+        db.add_video(&VideoRow {
+            id: 0,
+            room_id: "1".into(),
+            cover: String::new(),
+            file: "c.mp4".into(),
+            note: String::new(),
+            length: 1,
+            size: 1,
+            status: 0,
+            bvid: String::new(),
+            title: String::new(),
+            desc: String::new(),
+            tags: String::new(),
+            area: 0,
+            created_at: String::new(),
+            platform: "bilibili".into(),
+            live_id: "live".into(),
+            source: String::new(),
+            duration: 1.0,
+            danmu_embedded: false,
+        })
+        .await
+        .unwrap();
+        create_legacy_projects(db.clone(), output.path().to_path_buf()).await;
+        assert_eq!(db.get_projects().await.unwrap().len(), 2);
+    }
+}

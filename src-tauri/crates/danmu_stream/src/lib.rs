@@ -6,6 +6,45 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use thiserror::Error;
 
+/// Image metadata attached to a danmaku message. Text remains the export content.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EmojiContent {
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub emoticon_unique: Option<String>,
+}
+
+impl EmojiContent {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        let url = value.get("url")?.as_str()?.to_string();
+        if url.trim().is_empty() {
+            return None;
+        }
+        Some(Self {
+            url,
+            width: value.get("width").and_then(Value::as_u64),
+            height: value.get("height").and_then(Value::as_u64),
+            emoticon_unique: value
+                .get("emoticon_unique")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        })
+    }
+
+    /// Bilibili marks standalone image danmaku in the first info array.
+    pub fn from_bilibili_raw(raw: &Value) -> Option<Self> {
+        let header = raw.get("info")?.get(0)?.as_array()?;
+        if header.get(12).and_then(Value::as_i64) != Some(1) {
+            return None;
+        }
+        Self::from_value(header.get(13)?)
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum DanmuStreamError {
     #[error("HttpError {0:?}")]
@@ -52,6 +91,21 @@ pub struct LiveEvent {
 }
 
 impl LiveEvent {
+    /// Also supports recordings written before image metadata was normalized.
+    pub fn emoji_content(&self) -> Option<EmojiContent> {
+        if self.event_type != "danmu" {
+            return None;
+        }
+        self.data
+            .get("emoji_content")
+            .and_then(EmojiContent::from_value)
+            .or_else(|| {
+                (self.platform == "bilibili")
+                    .then(|| EmojiContent::from_bilibili_raw(&self.raw))
+                    .flatten()
+            })
+    }
+
     pub fn new(platform: &str, room_id: &str, event_type: &str, data: Value) -> Self {
         Self {
             ts: chrono::Utc::now().timestamp_millis(),

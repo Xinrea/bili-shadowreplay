@@ -14,6 +14,40 @@ pub async fn get_config(state: state_type!()) -> Result<Config, ()> {
     Ok(state.config.read().await.clone())
 }
 
+/// Show the settings in the main window, scrolled to the option `target`.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn request_settings(state: state_type!(), target: Option<String>) -> Result<(), String> {
+    state
+        .events
+        .publish(crate::events::AppEvent::SettingsRequested { target });
+    crate::handlers::utils::focus_main_window(&state);
+    Ok(())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_mcp_server_status(
+    state: state_type!(),
+) -> Result<crate::mcp::McpServerStatus, String> {
+    Ok(state.mcp_server.status(&state).await)
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_mcp_server(
+    state: state_type!(),
+    enabled: bool,
+    port: Option<u16>,
+) -> Result<crate::mcp::McpServerStatus, String> {
+    #[cfg(feature = "headless")]
+    if state.readonly {
+        return Err("MCP settings cannot be changed in readonly mode".into());
+    }
+    #[cfg(feature = "gui")]
+    let app_state = state.inner().clone();
+    #[cfg(feature = "headless")]
+    let app_state = state.clone();
+    state.mcp_server.set_enabled(app_state, enabled, port).await
+}
+
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_llm_config(state: state_type!()) -> Result<LlmConfig, ()> {
     Ok(state.config.read().await.llm.clone())
@@ -238,25 +272,28 @@ pub async fn update_notify(
     clip_notify: bool,
     post_notify: bool,
 ) -> Result<(), ()> {
-    state.config.write().await.live_start_notify = live_start_notify;
-    state.config.write().await.live_end_notify = live_end_notify;
-    state.config.write().await.clip_notify = clip_notify;
-    state.config.write().await.post_notify = post_notify;
-    state.config.write().await.save();
+    let mut config = state.config.write().await;
+    config.live_start_notify = live_start_notify;
+    config.live_end_notify = live_end_notify;
+    config.clip_notify = clip_notify;
+    config.post_notify = post_notify;
+    config.save();
     Ok(())
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_whisper_model(state: state_type!(), whisper_model: String) -> Result<(), ()> {
-    state.config.write().await.whisper_model = whisper_model;
-    state.config.write().await.save();
+    let mut config = state.config.write().await;
+    config.whisper_model = whisper_model;
+    config.save();
     Ok(())
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_subtitle_setting(state: state_type!(), auto_subtitle: bool) -> Result<(), ()> {
-    state.config.write().await.auto_subtitle = auto_subtitle;
-    state.config.write().await.save();
+    let mut config = state.config.write().await;
+    config.auto_subtitle = auto_subtitle;
+    config.save();
     Ok(())
 }
 
@@ -265,16 +302,48 @@ pub async fn update_clip_name_format(
     state: state_type!(),
     clip_name_format: String,
 ) -> Result<(), ()> {
-    state.config.write().await.clip_name_format = clip_name_format;
-    state.config.write().await.save();
+    let mut config = state.config.write().await;
+    config.clip_name_format = clip_name_format;
+    config.save();
     Ok(())
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_whisper_prompt(state: state_type!(), whisper_prompt: String) -> Result<(), ()> {
-    state.config.write().await.whisper_prompt = whisper_prompt;
-    state.config.write().await.save();
+    let mut config = state.config.write().await;
+    config.whisper_prompt = whisper_prompt;
+    config.save();
     Ok(())
+}
+
+/// Save one PowerLive dictionary and return it as stored, not the merged list.
+/// Omit both scope keys for global, or supply both for a room.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_powerlive_hotwords(
+    state: state_type!(),
+    hotwords: Vec<String>,
+    platform: Option<String>,
+    room_id: Option<String>,
+) -> Result<Vec<String>, String> {
+    let mut config = state.config.write().await;
+    let hotwords =
+        config.set_powerlive_hotwords(hotwords, platform.as_deref(), room_id.as_deref())?;
+    config.try_save()?;
+    Ok(hotwords)
+}
+
+/// Save the PowerLive subtitle line length and return it as stored.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_powerlive_sentence_max_length(
+    state: state_type!(),
+    sentence_max_length: u32,
+) -> Result<u32, String> {
+    let length =
+        crate::subtitle_generator::powerlive::clamp_sentence_max_length(sentence_max_length);
+    let mut config = state.config.write().await;
+    config.powerlive_sentence_max_length = length;
+    config.try_save()?;
+    Ok(length)
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -322,11 +391,20 @@ pub async fn update_auto_generate(
     state: state_type!(),
     enabled: bool,
     encode_danmu: bool,
+    render_settings: Option<crate::project::RenderSettings>,
 ) -> Result<(), String> {
     let mut config = state.config.write().await;
-    config.auto_generate.enabled = enabled;
-    config.auto_generate.encode_danmu = encode_danmu;
-    config.save();
+    let mut next = config.clone();
+    next.auto_generate.enabled = enabled;
+    next.auto_generate.encode_danmu = encode_danmu;
+    if let Some(settings) = render_settings {
+        next.auto_generate.render_settings = settings;
+    }
+    next.auto_generate.render_settings.validate()?;
+    // Persist first so validation or I/O errors cannot partially change the
+    // running configuration. Omitted settings retain the latest saved value.
+    next.try_save()?;
+    *config = next;
     Ok(())
 }
 
@@ -353,8 +431,11 @@ pub async fn update_whisper_language(
     whisper_language: String,
 ) -> Result<(), ()> {
     log::info!("Updating whisper language to {whisper_language}");
-    state.config.write().await.whisper_language = whisper_language;
-    state.config.write().await.save();
+    state
+        .config
+        .write()
+        .await
+        .set_whisper_language(&whisper_language);
     Ok(())
 }
 
@@ -368,8 +449,9 @@ pub async fn update_webhook_url(state: state_type!(), webhook_url: String) -> Re
             ..Default::default()
         })
         .await;
-    state.config.write().await.webhook_url = webhook_url;
-    state.config.write().await.save();
+    let mut config = state.config.write().await;
+    config.webhook_url = webhook_url;
+    config.save();
     Ok(())
 }
 
@@ -385,14 +467,5 @@ pub async fn update_danmu_ass_options(
         .write()
         .await
         .set_danmu_ass_options(Danmu2AssOptions { font_size, opacity });
-    Ok(())
-}
-
-#[cfg_attr(feature = "gui", tauri::command)]
-#[cfg(feature = "gui")]
-pub async fn update_powerlive_key(state: state_type!(), powerlive_key: String) -> Result<(), ()> {
-    state.config.write().await.powerlive_key = powerlive_key.clone();
-    state.config.write().await.save();
-    log::info!("Updated powerlive key");
     Ok(())
 }

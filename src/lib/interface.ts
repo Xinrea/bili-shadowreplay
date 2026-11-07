@@ -1,4 +1,5 @@
 import { invoke } from "../lib/invoker";
+import type { StickerElement, TextElement } from "./cover-elements";
 
 // #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Default)]
 // pub struct RoomInfo {
@@ -40,6 +41,27 @@ export interface RecorderInfo {
   enabled: boolean;
 }
 
+export interface RoomCheckSample {
+  checked_at: number;
+  duration_ms: number;
+  error: string | null;
+}
+
+export interface RecorderStatus {
+  recorder: RecorderInfo;
+  active: boolean;
+  check: {
+    checked_at: number | null;
+    last_success_at: number | null;
+    duration_ms: number | null;
+    error: string | null;
+    checking: boolean;
+    history: RoomCheckSample[];
+  };
+  check_interval_secs: number;
+  current_record: import("./db").RecordItem | null;
+}
+
 export interface RecorderList {
   count: number;
   recorders: RecorderInfo[];
@@ -73,6 +95,288 @@ export interface VideoItem {
   area: number;
   created_at: string;
   platform?: string;
+  /** Source recording of a material; empty for imported videos. */
+  live_id?: string;
+  /** JSON `{ ranges, local_offset }` describing where the material was cut from. */
+  source?: string;
+  /** Exact length in seconds; 0 for old rows that were never probed. */
+  duration?: number;
+  /** Danmaku was burned in when the material was made; it keeps none of its own. */
+  danmu_embedded?: boolean;
+}
+
+/** A material is one video file; `VideoItem` keeps its historical name. */
+export type MaterialItem = VideoItem;
+
+export interface TimelineClip {
+  id: string;
+  material_id: number;
+  /** In point within the material, in seconds. */
+  start: number;
+  /** Out point within the material, in seconds. */
+  end: number;
+  /** Of the material's own sound, 0 to 1.5; full when absent. */
+  volume?: number;
+}
+
+/** A subtitle anchored to a clip, timed in that clip's material time. */
+export interface TimelineSubtitle {
+  id: string;
+  clip_id: string;
+  start: number;
+  end: number;
+  text: string;
+}
+
+/**
+ * Something drawn over the main track. Like a subtitle it is anchored to the
+ * clip it starts over, in that clip's material time, so it follows the
+ * picture when clips move or are trimmed; its length is free and may run on
+ * over later clips.
+ */
+interface OverlayBase {
+  id: string;
+  clip_id: string;
+  /** Where it starts, in the anchor clip's material time. */
+  start: number;
+  /** Length in project time. */
+  duration: number;
+}
+
+export interface TextOverlay extends OverlayBase {
+  kind: "text";
+  /** Drawn as on a cover, on the 1920×1080 picture; its `id` is unused. */
+  element: TextElement;
+}
+
+export interface StickerOverlay extends OverlayBase {
+  kind: "sticker";
+  /** As on a cover, except that `src` is a sticker reference such as `builtin:1f600`. */
+  element: StickerElement;
+}
+
+/** Where a video overlay sits on the 1920×1080 picture. */
+export interface VideoPlacement {
+  /** Center. */
+  x: number;
+  y: number;
+  /** The height follows the material's aspect ratio. */
+  width: number;
+  /** Degrees, clockwise. */
+  rotation: number;
+}
+
+export interface VideoOverlay extends OverlayBase {
+  kind: "video";
+  material_id: number;
+  /** Material time shown at the overlay's start. */
+  source_start: number;
+  /** 0 to 1.5. */
+  volume: number;
+  /** 0 to 1; opaque when absent. */
+  opacity?: number;
+  element: VideoPlacement;
+}
+
+export type OverlayItem = TextOverlay | StickerOverlay | VideoOverlay;
+
+/** What a track above the main one holds: video overlays, or texts and stickers. */
+export type TrackKind = "video" | "sticker";
+
+/** A track above the main one; items on a track do not overlap in time. */
+export interface OverlayTrack {
+  id: string;
+  kind: TrackKind;
+  items: OverlayItem[];
+}
+
+/**
+ * Sound heard with the main track, anchored like an overlay to the clip it
+ * starts over.
+ */
+interface AudioBase extends OverlayBase {
+  /** Time in the source heard at the item's start. */
+  source_start: number;
+  /** 0 to 1.5. */
+  volume: number;
+  /**
+   * Seconds it fades in over from where it is first heard, and out over
+   * until where it is last heard; none when absent.
+   */
+  fade_in?: number;
+  fade_out?: number;
+}
+
+/** A file of the audio library. */
+export interface FileAudio extends AudioBase {
+  kind: "file";
+  audio_id: number;
+}
+
+/** The sound of a material, without its picture. */
+export interface MaterialAudio extends AudioBase {
+  kind: "material";
+  material_id: number;
+}
+
+export type AudioItem = FileAudio | MaterialAudio;
+
+/** A track below the main one; items on a track do not overlap in time. */
+export interface AudioTrack {
+  id: string;
+  items: AudioItem[];
+}
+
+/** A file of the audio library, shared by every project. */
+export interface AudioFile {
+  id: number;
+  name: string;
+  /** Relative to the output directory. */
+  file: string;
+  /** Seconds. */
+  duration: number;
+  size: number;
+  created_at: string;
+}
+
+export type RenderResolution = "original" | "4k" | "2k" | "1080p";
+
+export interface RenderSettings {
+  codec: "h264" | "hevc";
+  priority: "quality" | "speed";
+  /** Target video bitrate in Kbps, independent of encoding priority. */
+  bitrate_kbps: number;
+  /** Presets use fixed landscape sizes; original preserves source dimensions. */
+  resolution: RenderResolution;
+}
+
+export interface ProjectTimeline {
+  version: number;
+  /** The main track: clips play back to back. */
+  clips: TimelineClip[];
+  subtitles: TimelineSubtitle[];
+  /**
+   * Drawn over the main track, the bottom one first; a higher track covers
+   * lower ones. Video and sticker tracks come in any order.
+   */
+  tracks: OverlayTrack[];
+  subtitle_style?: SubtitleStyle | null;
+  /** Burn the materials' danmaku when exporting. */
+  danmu: boolean;
+  render_settings?: RenderSettings;
+  /** Heard with the main track, the top one, nearest it, first. */
+  audio_tracks: AudioTrack[];
+}
+
+/** A text or sticker overlay drawn by the editor, which the export burns in. */
+export interface OverlayImage {
+  id: string;
+  /** PNG data URL. */
+  image: string;
+  /** Top left on the 1920×1080 picture. */
+  x: number;
+  y: number;
+}
+
+/** A project (切片) as listed by the backend. */
+export interface ProjectItem {
+  id: number;
+  room_id: string;
+  platform: string;
+  title: string;
+  note: string;
+  /** Relative to the output directory; empty to use the first material's thumbnail. */
+  cover: string;
+  /** `ProjectTimeline` JSON. */
+  timeline: string;
+  /** Upload `Profile` JSON carried over from before uploads existed. */
+  profile: string;
+  status: number;
+  bvid: string;
+  created_at: string;
+  updated_at: string;
+  duration: number;
+  clip_count: number;
+  /** Cover to show, relative to the output directory. */
+  display_cover: string;
+  /** False when the project is one untouched material, exported and uploaded as is. */
+  needs_render: boolean;
+}
+
+export interface GeneratedMaterials {
+  materials: VideoItem[];
+  project: ProjectItem | null;
+}
+
+export interface ExportStarted {
+  task: { id: string };
+  /** The file being written. */
+  path: string;
+  /** Where the web client downloads it, relative to the cache directory. */
+  download: string | null;
+}
+
+export type UploadSource = "material" | "project" | "file";
+export type UploadStatus = "draft" | "exporting" | "posting" | "posted" | "failed";
+
+/** A file the static server serves under `base`. */
+export interface StaticFile {
+  base: "output" | "cache";
+  path: string;
+}
+
+/** An upload (投稿) as listed by the backend. */
+export interface UploadItem {
+  id: number;
+  source: UploadSource;
+  /** Material or project id; 0 for files. */
+  source_id: number;
+  /** Absolute path of a `file` source. */
+  file: string;
+  room_id: string;
+  /** Bilibili account that posts it. */
+  uid: string;
+  /** Relative to output; empty to use the source's cover. */
+  cover: string;
+  /** 4:3 homepage cover, relative to output; empty to let Bilibili crop `cover`. */
+  cover43: string;
+  /** Profile JSON; may be partial for uploads from before this page. */
+  profile: string;
+  status: UploadStatus;
+  /** Why the last attempt failed. */
+  message: string;
+  bvid: string;
+  created_at: string;
+  updated_at: string;
+  /** Name of the source; empty when it no longer exists. */
+  source_title: string;
+  /**
+   * `material` when the material is uploaded as is (also a project of one
+   * untouched material), `render` when the video is rendered when posting (a
+   * project, or a material burning its danmaku), `file`, or `missing` when the
+   * source is gone.
+   */
+  source_state: "material" | "render" | "file" | "missing";
+  /** Burn danmaku into the posted video; a project's setting is its own. */
+  danmu: boolean;
+  /** The material, or one of the project's materials, has saved danmaku. */
+  danmu_available: boolean;
+  /** Shared project settings, or this material upload's burn-in settings. */
+  render_settings: RenderSettings;
+  /**
+   * The material already shows its danmaku in the picture; for a project, some
+   * of its materials do and none has danmaku left to burn.
+   */
+  danmu_embedded: boolean;
+  /** Relative to output. */
+  display_cover: string;
+  /** Video to pick cover frames from, when it can be served. */
+  video: StaticFile | null;
+}
+
+export interface MaterialPeaks {
+  rate: number;
+  peaks: number[];
 }
 
 export interface Profile {
@@ -140,9 +444,14 @@ export interface Config {
   post_notify: boolean;
   auto_cleanup: boolean;
   auto_subtitle: boolean;
+  mcp_enabled: boolean;
+  mcp_port: number;
   subtitle_generator_type: string;
   whisper_model: string;
   whisper_prompt: string;
+  powerlive_hotwords: string[];
+  powerlive_room_hotwords: import("./powerlive-subtitle").RoomHotwords;
+  powerlive_sentence_max_length: number;
   openai_api_endpoint: string;
   openai_api_key: string;
   clip_name_format: string;
@@ -151,8 +460,15 @@ export interface Config {
   whisper_language: string;
   webhook_url: string;
   danmu_ass_options: Danmu2AssOptions;
-  powerlive_key: string;
   llm: LlmConfig;
+}
+
+export interface McpServerStatus {
+  enabled: boolean;
+  running: boolean;
+  port: number;
+  url: string;
+  error: string | null;
 }
 
 export interface LlmConfig {
@@ -170,6 +486,7 @@ export interface Danmu2AssOptions {
 export interface AutoGenerateConfig {
   enabled: boolean;
   encode_danmu: boolean;
+  render_settings: RenderSettings;
 }
 
 export interface DiskInfo {
@@ -219,9 +536,21 @@ export interface Marker {
   content: string;
 }
 
+/** Measurable progress of one processing stage; times are media seconds. */
+export interface StageProgress {
+  stage: string;
+  processed: number;
+  total?: number;
+  /** Processing speed relative to realtime. */
+  speed?: number;
+}
+
 export interface ProgressUpdate {
   id: string;
+  /** Plain-text form, always present. */
   content: string;
+  /** Present when the stage reports measurable progress. */
+  progress?: StageProgress;
 }
 
 export interface ProgressFinished {
@@ -240,27 +569,8 @@ export interface SubtitleStyle {
   marginV: number;
   marginL: number;
   marginR: number;
-}
-
-export function parseSubtitleStyle(style: SubtitleStyle): string {
-  // Convert hex color to ASS/SSA format (&HBBGGRR)
-  function hexToAssColor(hex: string): string {
-    if (!hex.startsWith("#")) return hex;
-    const r = hex.slice(1, 3);
-    const g = hex.slice(3, 5);
-    const b = hex.slice(5, 7);
-    return `&H${b}${g}${r}`;
-  }
-
-  return `FontName=${style.fontName},FontSize=${
-    style.fontSize
-  },PrimaryColour=${hexToAssColor(
-    style.fontColor
-  )},OutlineColour=${hexToAssColor(style.outlineColor)},Outline=${
-    style.outlineWidth
-  },Alignment=${style.alignment},MarginV=${style.marginV},MarginL=${
-    style.marginL
-  },MarginR=${style.marginR}`;
+  /** Canonical V4+ Format/Style source, in the 1920 × 1080 script coordinate space. */
+  assStyle?: string;
 }
 
 export interface Range {
@@ -278,6 +588,10 @@ export interface ClipRangeParams {
   live_id: string;
   ranges: Range[];
   danmu: boolean;
+  /** Video bitrate in kbps for burning danmaku; null keeps the encoder default. */
+  danmu_bitrate?: number | null;
+  /** Omit to stream-copy; explicit settings re-encode with or without danmaku. */
+  render_settings?: RenderSettings;
   local_offset: number;
   fix_encoding: boolean;
   transition?: string;
@@ -287,8 +601,22 @@ export function generateEventId() {
   return Math.random().toString(36).substring(2, 15);
 }
 
-export async function clipRange(eventId: string, params: ClipRangeParams) {
-  return await invoke("clip_range", { eventId, params });
+/**
+ * Cut each range into its own material, or with `merge` join them into one,
+ * optionally in a new project.
+ */
+export async function generateMaterials(
+  eventId: string,
+  params: ClipRangeParams,
+  createProject: boolean,
+  merge: boolean,
+): Promise<GeneratedMaterials> {
+  return await invoke<GeneratedMaterials>("generate_materials", {
+    eventId,
+    params,
+    createProject,
+    merge,
+  });
 }
 
 export interface DanmuEntry {
@@ -299,6 +627,13 @@ export interface DanmuEntry {
    */
   type: string;
   content: string;
+  /** Image replacing the text of an emoji danmaku; text remains searchable. */
+  emoji_content?: {
+    url: string;
+    width?: number;
+    height?: number;
+    emoticon_unique?: string;
+  } | null;
   user_name?: string;
   /** Super chat price in CNY. Present for super chats. */
   price?: number;

@@ -78,6 +78,8 @@ Rust Agent 注册一个名为 `bsr` 的工具，通过带类型约束的 `oneOf`
 - 字幕与弹幕：`get_archive_subtitle`、`get_danmu_record`
 - 内容分析：`analyze_danmu_highlights`、`search_danmu_keywords`
 
+媒体处理使用结构化操作及各自的参数，例如 `clip_range`、`merge_videos`、`extract_video_frames`、`extract_video_audio` 和 `encode_video_subtitle`。任意 FFmpeg 参数入口 `generic_ffmpeg_command` 已从内置助手、Tauri 和 HTTP API 移除；旧客户端应改用对应的结构化操作。历史对话中的旧工具确认不会再执行该命令。
+
 工具在 Rust 进程内直接访问 `Database` 和 `RecorderManager`。`get_accounts` 返回前会屏蔽 Cookie，避免凭据进入模型上下文。
 
 删除、上传、修改录制配置以及生成文件等操作不会在 Rust Agent 中自动执行。工具先返回 `confirmation_required`，前端展示工具名和完整参数；用户点击确认后，前端只执行该调用一次，追加具有匹配 `toolCallId` 的 ToolMessage，再携带完整历史继续 Agent。拒绝也会生成对应的 ToolMessage。存在未处理调用时，普通消息发送会被禁用。

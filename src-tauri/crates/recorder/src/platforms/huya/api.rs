@@ -8,9 +8,9 @@ use super::errors::HuyaClientError;
 
 use m3u8_rs::Playlist;
 use reqwest::Client;
-use std::time::Duration;
 use scraper::Html;
 use scraper::Selector;
+use std::time::Duration;
 
 /// The page that issues the pull URLs expects the mobile player's Referer.
 pub const PULL_REFERER: &str = "https://m.huya.com/";
@@ -135,7 +135,12 @@ async fn fetch_index_content(
     headers: reqwest::header::HeaderMap,
     timeout: Duration,
 ) -> Result<String, HuyaClientError> {
-    let response = client.get(url).headers(headers).timeout(timeout).send().await?;
+    let response = client
+        .get(url)
+        .headers(headers)
+        .timeout(timeout)
+        .send()
+        .await?;
 
     if response.status().is_success() {
         Ok(response.text().await?)
@@ -185,14 +190,15 @@ pub async fn pick_pull_url_with_timeout(
 }
 
 /// Verify an FLV URL serves actual FLV data (`FLV` magic bytes).
-async fn probe_flv_stream(
-    client: &Client,
-    url: &str,
-    user_agent: &str,
-    timeout: Duration,
-) -> bool {
+async fn probe_flv_stream(client: &Client, url: &str, user_agent: &str, timeout: Duration) -> bool {
     let headers = pull_headers(user_agent);
-    let Ok(mut response) = client.get(url).headers(headers).timeout(timeout).send().await else {
+    let Ok(mut response) = client
+        .get(url)
+        .headers(headers)
+        .timeout(timeout)
+        .send()
+        .await
+    else {
         return false;
     };
     if !response.status().is_success() {
@@ -213,12 +219,7 @@ async fn probe_flv_stream(
 /// Verify an HLS URL leads to a media playlist. The Huya dispatch may serve a
 /// master playlist, so its variants are followed one level deep (the recorder
 /// resolves master playlists the same way).
-async fn probe_hls_stream(
-    client: &Client,
-    url: &str,
-    user_agent: &str,
-    timeout: Duration,
-) -> bool {
+async fn probe_hls_stream(client: &Client, url: &str, user_agent: &str, timeout: Duration) -> bool {
     let headers = pull_headers(user_agent);
     let Ok(content) = fetch_index_content(client, url, headers.clone(), timeout).await else {
         return false;
@@ -296,7 +297,14 @@ mod tests {
     #[tokio::test]
     async fn test_pick_pull_url_selects_candidate_with_flv_magic() {
         let server = MockServer::start().await;
-        serve(&server, "/bad.flv", 403, b"forbidden".to_vec(), Duration::ZERO).await;
+        serve(
+            &server,
+            "/bad.flv",
+            403,
+            b"forbidden".to_vec(),
+            Duration::ZERO,
+        )
+        .await;
         serve(&server, "/good.flv", 200, flv_body(), Duration::ZERO).await;
 
         let stream = StreamInfo {
@@ -306,14 +314,10 @@ mod tests {
             ],
         };
 
-        let picked = pick_pull_url_with_timeout(
-            &reqwest::Client::new(),
-            &stream,
-            TEST_UA,
-            short_timeout(),
-        )
-        .await
-        .unwrap();
+        let picked =
+            pick_pull_url_with_timeout(&reqwest::Client::new(), &stream, TEST_UA, short_timeout())
+                .await
+                .unwrap();
 
         assert_eq!(picked, PullUrl::Flv(format!("{}/good.flv", server.uri())));
     }
@@ -322,7 +326,14 @@ mod tests {
     #[tokio::test]
     async fn test_pick_pull_url_rejects_non_flv_body() {
         let server = MockServer::start().await;
-        serve(&server, "/html.flv", 200, b"<html>error</html>".to_vec(), Duration::ZERO).await;
+        serve(
+            &server,
+            "/html.flv",
+            200,
+            b"<html>error</html>".to_vec(),
+            Duration::ZERO,
+        )
+        .await;
         serve(&server, "/good.flv", 200, flv_body(), Duration::ZERO).await;
 
         let stream = StreamInfo {
@@ -332,14 +343,10 @@ mod tests {
             ],
         };
 
-        let picked = pick_pull_url_with_timeout(
-            &reqwest::Client::new(),
-            &stream,
-            TEST_UA,
-            short_timeout(),
-        )
-        .await
-        .unwrap();
+        let picked =
+            pick_pull_url_with_timeout(&reqwest::Client::new(), &stream, TEST_UA, short_timeout())
+                .await
+                .unwrap();
 
         assert_eq!(picked, PullUrl::Flv(format!("{}/good.flv", server.uri())));
     }
@@ -358,13 +365,9 @@ mod tests {
             ],
         };
 
-        let result = pick_pull_url_with_timeout(
-            &reqwest::Client::new(),
-            &stream,
-            TEST_UA,
-            short_timeout(),
-        )
-        .await;
+        let result =
+            pick_pull_url_with_timeout(&reqwest::Client::new(), &stream, TEST_UA, short_timeout())
+                .await;
 
         assert!(matches!(result, Err(HuyaClientError::InvalidStream)));
     }
@@ -373,7 +376,14 @@ mod tests {
     #[tokio::test]
     async fn test_pick_pull_url_skips_candidate_past_timeout() {
         let server = MockServer::start().await;
-        serve(&server, "/hung.flv", 200, flv_body(), Duration::from_secs(2)).await;
+        serve(
+            &server,
+            "/hung.flv",
+            200,
+            flv_body(),
+            Duration::from_secs(2),
+        )
+        .await;
         serve(&server, "/fast.flv", 200, flv_body(), Duration::ZERO).await;
 
         let stream = StreamInfo {
@@ -499,7 +509,9 @@ mod tests {
         println!("candidates: {:?}", stream_info.candidates.len());
 
         let (user_agent, _) = pull_http_identity();
-        let picked = pick_pull_url(&client, &stream_info, &user_agent).await.unwrap();
+        let picked = pick_pull_url(&client, &stream_info, &user_agent)
+            .await
+            .unwrap();
         println!("picked: {picked:?}");
     }
 

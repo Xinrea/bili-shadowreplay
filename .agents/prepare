@@ -58,6 +58,15 @@ for SUB in $SUBMODULES; do
     continue # already initialized at the pinned commit
   fi
 
+  # A forked thread inherits Delta's replica of the parent's submodule: its
+  # loose top-level files, without .git or any subdirectory. git refuses to
+  # clone into a non-empty directory, so drop that partial copy first. A real
+  # checkout (anything with a .git entry) is never touched.
+  if [ -d "$SUB" ] && [ ! -e "$SUB/.git" ] && [ -n "$(ls -A "$SUB")" ]; then
+    log "removing partial, non-git copy of $SUB before initializing it"
+    rm -rf -- "$SUB"
+  fi
+
   if [ -n "$MAIN_ROOT" ] && \
      [ "$(git -C "$MAIN_ROOT/$SUB" rev-parse HEAD 2>/dev/null)" = "$PINNED" ]; then
     log "cloning $SUB from primary checkout"

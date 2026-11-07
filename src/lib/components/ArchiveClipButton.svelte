@@ -1,25 +1,28 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
-  import { Loader2, Scissors } from "lucide-svelte";
+  import { Scissors } from "lucide-svelte";
   import type { RecordItem } from "../db";
   import {
-    clipRange,
     generateEventId,
+    generateMaterials,
+    type ClipRangeParams,
+    type GeneratedMaterials,
     type Range,
-    type VideoItem,
   } from "../interface";
-  import { invoke, listen, log } from "../invoker";
+  import { announceTask, openTaskCenter, settleTask, wasCancelled } from "../stores/tasks";
+  import { defaultRenderSettings } from "../project-timeline";
+  import RenderSettingsFields from "./RenderSettingsFields.svelte";
+
+  // Progress is shown by <TaskCenter />, which the host window must mount.
 
   interface Props {
     archive?: RecordItem | null;
     ranges?: Range[];
     initialNote?: string;
     localOffset?: number | null;
-    captureCover?: boolean;
     variant?: "primary" | "compact";
     disabled?: boolean;
-    running?: boolean;
-    onGenerated?: (video: VideoItem) => void;
+    onGenerated?: (result: GeneratedMaterials) => void;
     onFailed?: (message: string) => void;
   }
 
@@ -28,38 +31,29 @@
     ranges = [],
     initialNote = "",
     localOffset = null,
-    captureCover = false,
     variant = "primary",
     disabled = false,
-    running = $bindable(false),
     onGenerated,
     onFailed
   }: Props = $props();
 
-  const transitionOptions = [
-    { value: "none", label: "无" },
-    { value: "fade", label: "淡入淡出" },
-    { value: "dissolve", label: "溶解" },
-    { value: "wipeleft", label: "向左擦除" },
-    { value: "wiperight", label: "向右擦除" },
-    { value: "slideup", label: "向上滑动" },
-    { value: "slidedown", label: "向下滑动" },
-  ];
-
   let showConfirm = $state(false);
-  let currentEventId: string | null = $state(null);
-  let progressText = $state("生成切片");
   let clipNote = $state("");
-  let danmuEnabled = $state(false);
-  let fixEncoding = $state(false);
-  let transition = $state("none");
-  let clearUpdateListener: (() => void) | null = null;
-  let clearFinishedListener: (() => void) | null = null;
+  let reencode = $state(false);
+  let createProject = $state(true);
+  /** Burn danmaku into the material instead of saving it alongside. */
+  let embedDanmu = $state(false);
+  /** Join the ranges into a single material instead of one per range. */
+  let mergeRanges = $state(false);
+  let renderSettings = $state(defaultRenderSettings());
+  /** Requests still awaiting a result; several may run at once. */
+  let inFlight = 0;
 
   let activeRanges = $derived(ranges.filter((range) => range.activated !== false));
+  let merged = $derived(mergeRanges && activeRanges.length > 1);
 
   function openConfirm() {
-    if (!archive || disabled || currentEventId) return;
+    if (!archive || disabled) return;
     clipNote = initialNote;
     showConfirm = true;
   }
@@ -90,159 +84,89 @@
     return parts.join(" ");
   }
 
-  function getCover() {
-    if (!captureCover) return "";
-    const video = document.getElementById("video") as HTMLVideoElement | null;
-    if (!video || !video.videoWidth || !video.videoHeight) return "";
-    const canvas = document.createElement("canvas");
-    canvas.width = 1280;
-    canvas.height = 720;
-    const context = canvas.getContext("2d");
-    if (!context) return "";
-    context.drawImage(
-      video,
-      0,
-      0,
-      video.videoWidth,
-      video.videoHeight,
-      0,
-      0,
-      canvas.width,
-      canvas.height,
-    );
-    return canvas.toDataURL();
-  }
-
-  function clearListeners() {
-    clearUpdateListener?.();
-    clearUpdateListener = null;
-    clearFinishedListener?.();
-    clearFinishedListener = null;
-  }
-
-  function resetTaskState(eventId?: string) {
-    if (eventId && currentEventId !== eventId) return;
-    clearListeners();
-    currentEventId = null;
-    running = false;
-    progressText = "生成切片";
-  }
-
   async function generateClip() {
-    if (!archive || activeRanges.length === 0 || currentEventId) return;
+    if (!archive || activeRanges.length === 0) return;
     showConfirm = false;
+    const merge = merged;
+    const shouldReencode = embedDanmu || reencode;
     const eventId = generateEventId();
-    currentEventId = eventId;
-    running = true;
-    progressText = "切片生成中";
-
-    clearUpdateListener = await listen(`progress-update:${eventId}`, (event) => {
-      progressText = event.payload.content;
+    const params: ClipRangeParams = {
+      title: archive.title,
+      note: clipNote,
+      room_id: archive.room_id,
+      platform: archive.platform,
+      // Generate a random cover from each material after the video is saved.
+      cover: "",
+      live_id: archive.live_id,
+      ranges: activeRanges,
+      danmu: embedDanmu,
+      render_settings: shouldReencode ? { ...renderSettings } : undefined,
+      local_offset:
+        localOffset ??
+        (parseInt(
+          localStorage.getItem(`local_offset:${archive.live_id}`) || "0",
+          10,
+        ) || 0),
+      fix_encoding: shouldReencode,
+    };
+    announceTask({
+      id: eventId,
+      task_type: "generate_materials",
+      metadata: JSON.stringify({
+        params: { ...params, cover: "" },
+        create_project: createProject,
+        merge,
+      }),
     });
-    clearFinishedListener = await listen(
-      `progress-finished:${eventId}`,
-      (event) => {
-        if (!event.payload.success) {
-          const message = String(event.payload.message || "未知错误");
-          alert("请检查 ffmpeg 是否配置正确：" + message);
-          onFailed?.(message);
-        }
-        resetTaskState(eventId);
-      },
-    );
+    openTaskCenter(eventId);
 
+    inFlight += 1;
     try {
-      const video = await clipRange(eventId, {
-        title: archive.title,
-        note: clipNote,
-        room_id: archive.room_id,
-        platform: archive.platform,
-        cover: getCover(),
-        live_id: archive.live_id,
-        ranges: activeRanges,
-        danmu: danmuEnabled,
-        local_offset:
-          localOffset ??
-          (parseInt(
-            localStorage.getItem(`local_offset:${archive.live_id}`) || "0",
-            10,
-          ) || 0),
-        fix_encoding: fixEncoding,
-        transition: transition !== "none" ? transition : undefined,
-      });
-      clipNote = "";
-      transition = "none";
-      onGenerated?.(video as VideoItem);
+      onGenerated?.(await generateMaterials(eventId, params, createProject, merge));
     } catch (error) {
-      if (currentEventId === eventId) {
-        const message = String(error);
-        alert("切片生成失败：" + message);
+      const message = String(error);
+      // Cancelled from the task center, or elsewhere such as the task page.
+      // Desktop and web invoke wrappers prepend context to the backend error.
+      if (!wasCancelled(eventId) && !message.endsWith("任务已取消")) {
+        alert("素材生成失败：" + message);
         onFailed?.(message);
       }
     } finally {
-      resetTaskState(eventId);
-    }
-  }
-
-  async function cancelClip() {
-    if (!currentEventId) return;
-    const eventId = currentEventId;
-    try {
-      await invoke("cancel", { eventId });
-    } catch (error) {
-      log.warn("Failed to cancel clip task", error);
-    } finally {
-      resetTaskState(eventId);
+      inFlight -= 1;
+      settleTask(eventId);
     }
   }
 
   function handleBeforeUnload(event: BeforeUnloadEvent) {
-    if (!currentEventId) return;
-    const message = "切片任务将在后台继续运行，可前往任务页面管理后台任务。";
+    if (inFlight === 0) return;
+    const message = "素材生成任务将在后台继续运行，可前往任务页面管理后台任务。";
     event.preventDefault();
     event.returnValue = message;
     return message;
   }
 
   onMount(() => window.addEventListener("beforeunload", handleBeforeUnload));
-  onDestroy(() => {
-    window.removeEventListener("beforeunload", handleBeforeUnload);
-    clearListeners();
-  });
+  onDestroy(() => window.removeEventListener("beforeunload", handleBeforeUnload));
 </script>
 
-<div class={variant === "compact" ? "contents" : "flex items-center gap-2"}>
-    <button
-      type="button"
-      onclick={openConfirm}
-      disabled={disabled || !archive || currentEventId !== null}
-      class={variant === "compact"
-        ? "inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-violet-200 bg-white px-2.5 py-1.5 text-xs font-medium text-violet-700 transition-colors hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-violet-700 dark:bg-gray-900 dark:text-violet-300 dark:hover:bg-violet-950/60"
-        : "inline-flex items-center gap-2 rounded-lg bg-[#0A84FF] px-4 py-1.5 text-sm text-white transition-all duration-200 hover:bg-[#0A84FF]/90 disabled:cursor-not-allowed disabled:opacity-50"}
-    >
-      {#if currentEventId}
-        <Loader2 class="h-4 w-4 animate-spin" />
-      {:else if variant === "compact"}
-        <Scissors class="h-3.5 w-3.5" />
-      {/if}
-      <span>{progressText}</span>
-    </button>
-
-    {#if currentEventId && variant === "primary"}
-      <button
-        type="button"
-        onclick={cancelClip}
-        class="rounded-lg px-4 py-1.5 text-sm text-red-500 transition-all duration-200 hover:bg-red-500/10"
-      >
-        取消
-      </button>
-    {/if}
-</div>
+<button
+  type="button"
+  onclick={openConfirm}
+  disabled={disabled || !archive}
+  class={variant === "compact"
+    ? "ui-btn ui-btn-sm bg-surface text-accent-fg"
+    : "ui-btn ui-btn-primary"}
+>
+  {#if variant === "compact"}
+    <Scissors class="h-3.5 w-3.5" />
+  {/if}
+  <span>生成素材</span>
+</button>
 
 {#if showConfirm}
   <div class="fixed inset-0 z-[100] flex items-center justify-center">
     <div
-      class="absolute inset-0 bg-black/60 backdrop-blur-md"
+      class="absolute inset-0 bg-black/50 backdrop-blur-sm"
       role="button"
       tabindex="0"
       aria-label="关闭对话框"
@@ -258,104 +182,182 @@
     <div
       role="dialog"
       aria-modal="true"
-      class="relative mx-4 w-full max-w-md rounded-2xl border border-white/10 bg-[#1c1c1e] shadow-2xl ring-1 ring-black/5"
+      class="ui-modal relative mx-4 w-full max-w-3xl text-left"
     >
-      <div class="p-5">
-        <h3 class="text-[17px] font-semibold text-white">确认生成切片</h3>
-        <p class="mt-1 text-[13px] text-white/70">请确认以下设置后继续</p>
+      <div class="ui-modal-body custom-scrollbar-light">
+        <h3 class="text-[15px] font-semibold text-fg">确认生成素材</h3>
+        <p class="mt-1 text-[12px] text-fg-muted">
+          {merged ? "按选区顺序合并为一个素材" : "每个选区生成一个素材"}
+        </p>
 
-        <div class="mt-3 space-y-3">
-          <div class="text-[13px] font-medium text-white/90">待合并选区列表</div>
-          <div class="max-h-48 space-y-2 overflow-y-auto custom-scrollbar-light">
-            {#each activeRanges as range, index}
-              <div class="flex items-center justify-between rounded-lg border border-white/5 bg-[#2c2c2e] px-3 py-2 transition-colors hover:border-white/10">
-                <div class="flex items-center space-x-3">
-                  <div class="flex h-6 w-6 items-center justify-center rounded-full bg-[#0A84FF]/20 text-[11px] font-semibold text-[#0A84FF]">
-                    {index + 1}
-                  </div>
-                  <div class="flex flex-col space-y-0.5">
-                    <div class="text-[12px] text-white/90">
-                      {formatTime(range.start)} → {formatTime(range.end)}
+        <div class="mt-4 grid gap-x-6 gap-y-4 sm:grid-cols-2">
+          <!-- What is generated: the selections and their note. -->
+          <div class="min-w-0 space-y-4">
+            <div class="space-y-2">
+              <div class="ui-label">选区列表</div>
+              <div class="max-h-64 space-y-1.5 overflow-y-auto custom-scrollbar-light">
+                {#each activeRanges as range, index}
+                  <div class="flex items-center justify-between rounded-[8px] border border-line bg-control px-3 py-2 transition-colors hover:border-line-strong">
+                    <div class="flex items-center space-x-3">
+                      <div class="flex h-6 w-6 items-center justify-center rounded-full bg-accent-soft text-[11px] font-semibold tabular-nums text-accent-fg">
+                        {index + 1}
+                      </div>
+                      <div class="flex flex-col space-y-0.5">
+                        <div class="text-[12px] tabular-nums text-fg">
+                          {formatTime(range.start)} → {formatTime(range.end)}
+                        </div>
+                        <div class="text-[11px] text-fg-muted">
+                          时长: {formatDuration(range.end - range.start)}
+                        </div>
+                      </div>
                     </div>
-                    <div class="text-[11px] text-white/60">
-                      时长: {formatDuration(range.end - range.start)}
-                    </div>
                   </div>
-                </div>
+                {:else}
+                  <div class="py-4 text-center text-[12px] text-fg-muted">
+                    没有已激活的选区，请选择或添加选区。
+                  </div>
+                {/each}
               </div>
-            {:else}
-              <div class="py-4 text-center text-[13px] text-white/60">
-                没有已激活的选区，请选择或添加选区。
+              <div class="border-t border-line pt-2.5 text-[14px] font-semibold text-fg">
+                总时长: {formatDuration(
+                  activeRanges.reduce(
+                    (total, range) => total + range.end - range.start,
+                    0,
+                  ),
+                )}
               </div>
-            {/each}
-          </div>
-          <div class="mt-2 border-t border-white/10 pt-2 text-[15px] font-semibold text-white">
-            总时长: {formatDuration(
-              activeRanges.reduce(
-                (total, range) => total + range.end - range.start,
-                0,
-              ),
-            )}
-          </div>
-        </div>
+            </div>
 
-        <div class="mt-3 space-y-3">
-          <label for="archive-clip-note" class="mt-1 block text-[13px] text-white/80">
-            切片备注（可选）
-          </label>
-          <input
-            id="archive-clip-note"
-            type="text"
-            bind:value={clipNote}
-            class="w-full rounded-lg border border-gray-800/50 bg-[#2c2c2e] px-3 py-2 text-white outline-none transition duration-200 placeholder-gray-500 focus:border-[#0A84FF]"
-          />
-        </div>
-
-        <div class="mt-3 space-y-3">
-          <label class="flex items-center gap-2.5">
-            <input
-              type="checkbox"
-              bind:checked={danmuEnabled}
-              class="h-4 w-4 rounded border-white/30 bg-[#2c2c2e] text-[#0A84FF] accent-[#0A84FF] focus:outline-none focus:ring-2 focus:ring-[#0A84FF]/40"
-            />
-            <span class="text-[13px] text-white/80">压制弹幕</span>
-          </label>
-
-          <label class="flex items-center gap-2.5">
-            <input
-              type="checkbox"
-              bind:checked={fixEncoding}
-              class="h-4 w-4 rounded border-white/30 bg-[#2c2c2e] text-[#0A84FF] accent-[#0A84FF] focus:outline-none focus:ring-2 focus:ring-[#0A84FF]/40"
-            />
-            <span class="text-[13px] text-white/80">修复编码（切片异常时使用）</span>
-          </label>
-        </div>
-
-        {#if activeRanges.length > 1}
-          <div class="mt-3 space-y-2">
-            <div class="text-[13px] font-medium text-white/90">转场效果</div>
-            <div class="grid grid-cols-4 gap-1.5">
-              {#each transitionOptions as option}
-                <button
-                  type="button"
-                  class="rounded-lg border px-2 py-1.5 text-[12px] transition-colors {transition === option.value
-                    ? 'border-[#0A84FF] bg-[#0A84FF]/20 text-[#0A84FF]'
-                    : 'border-white/5 bg-[#2c2c2e] text-white/70 hover:border-white/20'}"
-                  onclick={() => (transition = option.value)}
-                >
-                  {option.label}
-                </button>
-              {/each}
+            <div class="space-y-1.5">
+              <label for="archive-clip-note" class="block text-[13px] text-fg-secondary">
+                素材备注（可选）
+              </label>
+              <input
+                id="archive-clip-note"
+                type="text"
+                bind:value={clipNote}
+                class="ui-input w-full"
+              />
             </div>
           </div>
-        {/if}
+
+          <!-- How it is generated. -->
+          <div class="min-w-0 space-y-4">
+            {#if activeRanges.length > 1}
+              <div class="space-y-1.5">
+                <div class="ui-label">素材</div>
+                <div class="ui-tabs" role="radiogroup" aria-label="素材">
+                  <button
+                    type="button"
+                    role="radio"
+                    class="ui-tab"
+                    class:active={!mergeRanges}
+                    aria-checked={!mergeRanges}
+                    onclick={() => (mergeRanges = false)}
+                  >
+                    分别生成
+                  </button>
+                  <button
+                    type="button"
+                    role="radio"
+                    class="ui-tab"
+                    class:active={mergeRanges}
+                    aria-checked={mergeRanges}
+                    onclick={() => (mergeRanges = true)}
+                  >
+                    合并生成
+                  </button>
+                </div>
+                <p class="text-[11px] text-fg-muted">
+                  {mergeRanges
+                    ? "按选区顺序拼接成一个素材，可以直接投稿"
+                    : "每个选区单独生成素材，可以放进切片里继续剪辑"}
+                </p>
+              </div>
+            {/if}
+
+            <div class="space-y-1.5">
+              <div class="ui-label">弹幕</div>
+              <div class="ui-tabs" role="radiogroup" aria-label="弹幕">
+                <button
+                  type="button"
+                  role="radio"
+                  class="ui-tab"
+                  class:active={!embedDanmu}
+                  aria-checked={!embedDanmu}
+                  onclick={() => (embedDanmu = false)}
+                >
+                  外挂
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  class="ui-tab"
+                  class:active={embedDanmu}
+                  aria-checked={embedDanmu}
+                  onclick={() => (embedDanmu = true)}
+                >
+                  内嵌
+                </button>
+              </div>
+              <p class="text-[11px] text-fg-muted">
+                {embedDanmu
+                  ? merged
+                    ? "选区合并后再把弹幕压进画面，素材不再单独保存弹幕；压制需要重新编码，耗时较长"
+                    : "生成时把弹幕压进画面，素材不再单独保存弹幕；压制需要重新编码，耗时较长"
+                  : merged
+                    ? "各选区的弹幕按合并后的时间合在一起，和素材分开保存，导出切片或投稿时再选择是否压制"
+                    : "弹幕和素材分开保存，导出切片或投稿时再选择是否压制"}
+              </p>
+            </div>
+
+            <div class="space-y-1.5">
+              <label class="flex items-center gap-2.5">
+                <input
+                  type="checkbox"
+                  checked={embedDanmu || reencode}
+                  onchange={(event) => (reencode = event.currentTarget.checked)}
+                  disabled={embedDanmu}
+                  class="ui-checkbox"
+                />
+                <span class="text-[13px] text-fg-secondary">重新编码</span>
+              </label>
+              <p class="text-[11px] text-fg-muted">
+                {embedDanmu
+                  ? "内嵌弹幕需要重新编码，无法取消"
+                  : reencode
+                    ? "按以下设置重新编码，耗时较长"
+                    : "保留原始编码，直接复制并拼接片段"}
+              </p>
+              <RenderSettingsFields bind:value={renderSettings} streamCopy={!embedDanmu && !reencode} />
+            </div>
+
+            <div class="space-y-2.5">
+              <label class="flex cursor-pointer items-start gap-2.5">
+                <input
+                  type="checkbox"
+                  bind:checked={createProject}
+                  class="ui-checkbox mt-0.5"
+                />
+                <span class="text-[13px] text-fg-secondary">
+                  同时新建切片
+                  <span class="block text-[11px] text-fg-muted">
+                    {merged
+                      ? "把合并后的素材放入一个新切片，便于继续剪辑"
+                      : "按选区顺序把生成的素材放入一个新切片，便于直接剪辑和投稿"}
+                  </span>
+                </span>
+              </label>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <div class="flex items-center justify-end gap-2 rounded-b-2xl border-t border-white/10 bg-[#111113] px-5 py-3">
+      <div class="ui-modal-footer">
         <button
           type="button"
           onclick={closeConfirm}
-          class="rounded-lg border border-white/20 px-3.5 py-2 text-[13px] text-white/90 transition-colors hover:bg-white/10"
+          class="ui-btn"
         >
           取消
         </button>
@@ -363,7 +365,7 @@
           type="button"
           onclick={generateClip}
           disabled={activeRanges.length === 0}
-          class="rounded-lg bg-[#0A84FF] px-3.5 py-2 text-[13px] text-white shadow-[inset_0_1px_0_rgba(255,255,255,.15)] transition-colors hover:bg-[#0A84FF]/90 disabled:cursor-not-allowed disabled:opacity-50"
+          class="ui-btn ui-btn-primary"
         >
           确认生成
         </button>

@@ -1,11 +1,8 @@
 import { invoke as tauri_invoke } from "@tauri-apps/api/core";
-import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { fetch as tauri_fetch } from "@tauri-apps/plugin-http";
-import { listen as tauri_listen } from "@tauri-apps/api/event";
 import { open as tauri_open } from "@tauri-apps/plugin-shell";
 import { onOpenUrl as tauri_onOpenUrl } from "@tauri-apps/plugin-deep-link";
-import { io, Socket } from "socket.io-client";
-import type { Config } from "./interface";
+import { createEventClient } from "./events";
 
 declare global {
   interface Window {
@@ -64,7 +61,12 @@ async function invoke<T>(
     }
 
     if (command === "open_clip") {
-      window.open(`index_clip.html?id=${args.videoId}`, "_blank");
+      window.open(`index_clip.html?material=${args.videoId}`, "_blank");
+      return;
+    }
+
+    if (command === "open_project") {
+      window.open(`index_clip.html?project=${args.projectId}`, "_blank");
       return;
     }
 
@@ -122,162 +124,47 @@ async function get(url: string) {
 
 async function set_title(title: string) {
   if (TAURI_ENV) {
-    return await getCurrentWebviewWindow().setTitle(title);
+    // Not `setTitle()`: on macOS that resets the traffic light position.
+    return await invoke("set_window_title", { title });
   }
 
   document.title = title;
 }
 
-let STATIC_PORT = 0;
-let config: Config | null = null;
+let staticPort: Promise<number> | null = null;
+
+async function static_origin() {
+  if (TAURI_ENV) {
+    // Share the first lookup across concurrent assets; failures remain retryable.
+    staticPort ??= invoke<number>("get_static_port").catch((error) => {
+      staticPort = null;
+      throw error;
+    });
+    return `http://localhost:${await staticPort}`;
+  }
+  // In headless/web mode static assets are served by the same server as the
+  // API, so follow the configured endpoint as-is. Rewriting the port here
+  // breaks remapped ports, reverse proxies and HTTPS.
+  return ENDPOINT;
+}
 
 async function get_static_url(base: string, path: string) {
-  if (config === null) {
-    config = (await invoke("get_config")) as any;
-  }
-  let staticUrl;
-  if (TAURI_ENV) {
-    if (STATIC_PORT === 0) {
-      STATIC_PORT = await invoke("get_static_port");
-    }
-    staticUrl = `http://localhost:${STATIC_PORT}`;
-  } else {
-    // In headless/web mode static assets are served by the same server as the
-    // API, so follow the configured endpoint as-is. Rewriting the port here
-    // breaks remapped ports, reverse proxies and HTTPS.
-    staticUrl = ENDPOINT;
-  }
-
   const encodedPath = path.split('/').map(encodeURIComponent).join('/');
-  return `${staticUrl}/${base}/${encodedPath}`;
+  return `${await static_origin()}/${base}/${encodedPath}`;
 }
 
-let socket: Socket | null = null;
-
-// Socket.IO 事件监听器映射
-const eventListeners: Map<string, Array<(data: any) => void>> = new Map();
-
-function createSocket() {
-  if (socket) {
-    socket.disconnect();
-  }
-
-  // 构建 Socket.IO URL
-  console.log("endpoint:", ENDPOINT);
-  const socketUrl = ENDPOINT;
-  socket = io(`${socketUrl}/ws`, {
-    transports: ["websocket", "polling"],
-    autoConnect: true,
-    reconnection: true,
-  });
-
-  socket.on("connect", () => {
-    console.log("[Socket.IO] Connected to server");
-  });
-
-  socket.on("disconnect", (reason) => {
-    console.log("[Socket.IO] Disconnected from server:", reason);
-  });
-
-  socket.on("connect_error", (error) => {
-    console.error("[Socket.IO] Connection error:", error);
-  });
-
-  // 监听服务器发送的事件
-  socket.on("progress-finished", (data) => {
-    const eventType = `progress-finished:${data.id}`;
-    // 触发对应的事件监听器
-    const listeners = eventListeners.get(eventType);
-    if (listeners) {
-      listeners.forEach((callback) => {
-        try {
-          callback({
-            payload: data,
-          });
-        } catch (e) {
-          console.error(
-            `[Socket.IO] Event listener error for ${eventType}:`,
-            e
-          );
-        }
-      });
-    }
-  });
-
-  socket.on("progress-update", (data) => {
-    const eventType = `progress-update:${data.id}`;
-    const listeners = eventListeners.get(eventType);
-    if (listeners) {
-      listeners.forEach((callback) => {
-        callback({
-          payload: data,
-        });
-      });
-    }
-  });
-
-  socket.on("danmu", (data) => {
-    // 触发对应的事件监听器
-    console.log("danmu:", data);
-    const listeners = eventListeners.get("danmu");
-    if (listeners) {
-      listeners.forEach((callback) => {
-        try {
-          callback({
-            payload: data,
-          });
-        } catch (e) {
-          console.error(`[Socket.IO] Event listener error for danmu:`, e);
-        }
-      });
-    }
-  });
+/** Chunk `chunk` of the sound of `file`, relative to the output directory, for the project preview. */
+async function get_preview_audio_url(file: string, chunk: number) {
+  return `${await static_origin()}/preview_audio?file=${encodeURIComponent(file)}&chunk=${chunk}`;
 }
 
-if (!TAURI_ENV) {
-  createSocket();
-}
-
-async function listen<T>(event: string, callback: (data: any) => void) {
-  log.info("listen to event:", event);
-  if (TAURI_ENV) {
-    return await tauri_listen(event, callback);
-  }
-
-  // 将事件监听器添加到映射中
-  if (!eventListeners.has(event)) {
-    eventListeners.set(event, []);
-  }
-  eventListeners.get(event)!.push(callback);
-
-  // 返回一个清理函数
-  return () => {
-    const listeners = eventListeners.get(event);
-    if (listeners) {
-      const index = listeners.indexOf(callback);
-      if (index > -1) {
-        listeners.splice(index, 1);
-      }
-      // 如果没有监听器了，删除这个事件
-      if (listeners.length === 0) {
-        eventListeners.delete(event);
-      }
-    }
-  };
-}
+const { listen } = createEventClient({ tauri: TAURI_ENV, endpoint: ENDPOINT });
 
 async function open(url: string) {
   if (TAURI_ENV) {
     return await tauri_open(url);
   }
   window.open(url, "_blank");
-}
-
-async function close_window() {
-  if (TAURI_ENV) {
-    return await getCurrentWebviewWindow().close();
-  }
-  window.close();
 }
 
 async function onOpenUrl(func: (urls: string[]) => void) {
@@ -295,8 +182,8 @@ export {
   listen,
   open,
   log,
-  close_window,
   onOpenUrl,
   get_static_url,
+  get_preview_audio_url,
   normalizeEndpoint,
 };

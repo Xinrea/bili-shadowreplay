@@ -1,7 +1,12 @@
 {
   "bundle": {
     "macOS": {
-      "minimumSystemVersion": "15.0"
+      "minimumSystemVersion": "15.8.1",
+      "signingIdentity": "-",
+      "entitlements": "Entitlements.plist",
+      "files": {
+        "Frameworks": "./target/ffmpeg-runtime"
+      }
     }
   },
   "app": {
@@ -15,8 +20,13 @@
         "height": 600,
         "transparent": false,
         "decorations": true,
-        "theme": "Light"
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 16, "y": 22 }
       }
     ]
+  },
+  "build": {
+    "beforeBundleCommand": "node scripts/bundle-macos-ffmpeg.mjs"
   }
 }

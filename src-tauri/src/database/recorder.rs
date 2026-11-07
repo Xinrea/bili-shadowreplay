@@ -1,5 +1,6 @@
 use super::Database;
 use super::DatabaseError;
+use crate::events::DataChange;
 use chrono::Utc;
 use recorder::platforms::PlatformType;
 /// Recorder in database is pretty simple
@@ -38,6 +39,7 @@ impl Database {
         .bind(extra)
         .execute(&self.pool)
         .await?;
+        self.notify_change(DataChange::Recorders);
         Ok(recorder)
     }
 
@@ -57,6 +59,7 @@ impl Database {
 
         // remove related archive
         let _ = self.remove_archive(room_id).await;
+        self.notify_change(DataChange::Recorders);
         Ok(recorder)
     }
 
@@ -73,6 +76,7 @@ impl Database {
             .bind(room_id)
             .execute(&self.pool)
             .await?;
+        self.notify_change(DataChange::Records);
         Ok(())
     }
 
@@ -90,6 +94,7 @@ impl Database {
         .bind(room_id)
         .execute(&self.pool)
         .await?;
+        self.notify_change(DataChange::Recorders);
         Ok(())
     }
 }

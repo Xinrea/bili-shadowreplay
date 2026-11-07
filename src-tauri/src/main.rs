@@ -2,18 +2,30 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agent;
+mod archive_timing;
 mod audio_utils;
 mod config;
 mod constants;
 mod danmu2ass;
 mod database;
+mod events;
+mod feedback;
 mod ffmpeg;
 mod handlers;
 #[cfg(feature = "headless")]
 mod http_server;
+#[cfg(any(feature = "gui", test))]
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
+mod legacy_dirs;
+mod material;
+mod mcp;
 mod migration;
+mod powerlive;
+mod preview_audio;
 mod progress;
+mod project;
 mod recorder_manager;
+mod safe_path;
 mod state;
 #[cfg(feature = "gui")]
 mod static_server;
@@ -27,6 +39,7 @@ use chrono::Utc;
 use config::Config;
 use database::credentials::CredentialCipher;
 use database::Database;
+use events::EventBus;
 use migration::migration_methods::try_add_parent_id_to_records;
 use migration::migration_methods::try_convert_clip_covers;
 use migration::migration_methods::try_convert_entry_to_m3u8;
@@ -504,6 +517,115 @@ fn get_migrations() -> Vec<Migration> {
             sql: "CREATE TABLE account_credential_cleanup (id INTEGER PRIMARY KEY);",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 18,
+            description: "add_materials_and_projects",
+            // Existing videos become materials. `needs_project` marks the rows
+            // that get a single-material project at startup, which also needs
+            // their subtitle files and therefore cannot happen in SQL.
+            sql: r"
+                ALTER TABLE videos ADD COLUMN live_id TEXT NOT NULL DEFAULT '';
+                ALTER TABLE videos ADD COLUMN source TEXT NOT NULL DEFAULT '';
+                ALTER TABLE videos ADD COLUMN duration REAL NOT NULL DEFAULT 0;
+                ALTER TABLE videos ADD COLUMN needs_project INTEGER NOT NULL DEFAULT 0;
+                UPDATE videos SET needs_project = 1;
+                CREATE TABLE projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    room_id TEXT NOT NULL DEFAULT '',
+                    platform TEXT NOT NULL DEFAULT '',
+                    title TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT '',
+                    cover TEXT NOT NULL DEFAULT '',
+                    timeline TEXT NOT NULL DEFAULT '',
+                    profile TEXT NOT NULL DEFAULT '',
+                    output TEXT NOT NULL DEFAULT '',
+                    output_hash TEXT NOT NULL DEFAULT '',
+                    status INTEGER NOT NULL DEFAULT 0,
+                    bvid TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX idx_projects_room_id ON projects(room_id);
+            ",
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 19,
+            description: "add_uploads",
+            // Projects posted before uploads existed keep their history. Legacy
+            // projects created at startup add their own records.
+            sql: r"
+                CREATE TABLE uploads (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source TEXT NOT NULL DEFAULT 'file',
+                    source_id INTEGER NOT NULL DEFAULT 0,
+                    file TEXT NOT NULL DEFAULT '',
+                    room_id TEXT NOT NULL DEFAULT '',
+                    uid TEXT NOT NULL DEFAULT '',
+                    cover TEXT NOT NULL DEFAULT '',
+                    profile TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    message TEXT NOT NULL DEFAULT '',
+                    bvid TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                INSERT INTO uploads (source, source_id, room_id, profile, status, bvid, created_at, updated_at)
+                    SELECT 'project', id, room_id, profile, 'posted', bvid, updated_at, updated_at
+                    FROM projects WHERE bvid != '';
+            ",
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 20,
+            description: "drop_project_exports",
+            // Exports are written to a file the user picks and uploads render
+            // their own video, so projects no longer track an export.
+            sql: r"
+                ALTER TABLE projects DROP COLUMN output;
+                ALTER TABLE projects DROP COLUMN output_hash;
+            ",
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 21,
+            description: "add_upload_danmu",
+            sql: "ALTER TABLE uploads ADD COLUMN danmu INTEGER NOT NULL DEFAULT 0;",
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 22,
+            description: "add_upload_cover43",
+            sql: "ALTER TABLE uploads ADD COLUMN cover43 TEXT NOT NULL DEFAULT '';",
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 23,
+            description: "add_audio_files",
+            sql: r"
+                CREATE TABLE audio_files (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL DEFAULT '',
+                    file TEXT NOT NULL,
+                    duration REAL NOT NULL DEFAULT 0,
+                    size INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+            ",
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 24,
+            description: "add_video_danmu_embedded",
+            sql: "ALTER TABLE videos ADD COLUMN danmu_embedded INTEGER NOT NULL DEFAULT 0;",
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 25,
+            description: "add_material_upload_render_settings",
+            sql: "ALTER TABLE uploads ADD COLUMN render_settings_json TEXT NOT NULL DEFAULT '{}';",
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -537,8 +659,6 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     use std::path::PathBuf;
 
     use crate::task::TaskManager;
-    use progress::progress_manager::ProgressManager;
-    use progress::progress_reporter::EventEmitter;
 
     setup_logging(Path::new("./")).await?;
     log::info!("Setting up server state...");
@@ -578,13 +698,13 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     migrator.run(&db_pool).await?;
 
     let credentials = CredentialCipher::load(&db_pool).await?;
-    let db = Arc::new(Database::new(db_pool, credentials));
+    let events = EventBus::new();
+    let db = Arc::new(Database::new(db_pool, credentials, events.clone()));
     db.migrate_account_credentials().await?;
     db.finish_pending_tasks().await?;
+    db.fail_interrupted_uploads().await?;
     db.finish_pending_record_summaries().await?;
 
-    let progress_manager = Arc::new(ProgressManager::new());
-    let emitter = EventEmitter::new(progress_manager.get_event_sender());
     let webhook_poster =
         webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None)
             .map_err(|e| e.to_string())?;
@@ -592,7 +712,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     task_manager.start();
     let task_manager = Arc::new(task_manager);
     let recorder_manager = Arc::new(RecorderManager::new(
-        emitter,
+        events.clone(),
         db.clone(),
         config.clone(),
         task_manager.clone(),
@@ -605,23 +725,31 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     let _ = try_convert_clip_covers(&db, config.read().await.output.clone().into()).await;
     let _ = try_add_parent_id_to_records(&db).await;
     let _ = try_convert_entry_to_m3u8(&db, config.read().await.cache.clone().into()).await;
+    tokio::spawn(crate::handlers::project::create_legacy_projects(
+        db.clone(),
+        config.read().await.output.clone().into(),
+    ));
 
-    Ok(State {
+    let state = State {
+        mcp_server: Arc::new(mcp::McpServer::default()),
         db,
         config,
         webhook_poster,
         recorder_manager,
         task_manager,
-        progress_manager,
+        events,
         resource_dir,
         readonly: args.readonly,
-    })
+    };
+    state
+        .recorder_manager
+        .on_material_created(crate::handlers::video::material_hook(&state));
+    Ok(state)
 }
 
 #[cfg(feature = "gui")]
 async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std::error::Error>> {
     use platform_dirs::AppDirs;
-    use progress::progress_reporter::EventEmitter;
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
     use crate::{static_server::start_static_server, task::TaskManager};
@@ -631,8 +759,16 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
 
     log::info!("Setting up app state...");
     let app_dirs =
-        AppDirs::new(Some("cn.vjoi.bili-shadowreplay"), false).ok_or("系统未提供应用配置目录")?;
-    let config_path = app_dirs.config_dir.join("Conf.toml");
+        AppDirs::new(Some(&app.config().identifier), false).ok_or("系统未提供应用配置目录")?;
+    // Older versions kept the config, cache and output under another name.
+    let legacy = AppDirs::new(Some(legacy_dirs::LEGACY_IDENTIFIER), false);
+    if let Some(legacy) = &legacy {
+        legacy_dirs::migrate(legacy, &app_dirs);
+    }
+    let config_path = match &legacy {
+        Some(legacy) => legacy_dirs::config_path(legacy, &app_dirs, "Conf.toml"),
+        None => app_dirs.config_dir.join("Conf.toml"),
+    };
     let cache_path = app_dirs.cache_dir.join("cache");
     let output_path = app_dirs.data_dir.join("output");
     let mut resource_dir = app.path().resource_dir()?;
@@ -641,18 +777,22 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
         resource_dir = Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf();
     }
     log::info!("Loading config from {config_path:?}");
-    let config = match Config::load(&config_path, &cache_path, &output_path) {
+    let mut config = match Config::load(&config_path, &cache_path, &output_path) {
         Ok(config) => config,
         Err(e) => {
             log::error!("Failed to load config, exiting: {e}");
             return Err(e.into());
         }
     };
+    if let Some(legacy) = &legacy {
+        legacy_dirs::relocate_config(&mut config, legacy, &app_dirs);
+    }
 
     let config = Arc::new(RwLock::new(config));
     let config_clone = config.clone();
     let dbs = app.state::<tauri_plugin_sql::DbInstances>().inner();
-    let emitter = EventEmitter::new(app.handle().clone());
+    let events = EventBus::new();
+    events.forward_to_app(app.handle().clone());
     let binding = dbs.0.read().await;
     let dbpool = binding
         .get("sqlite:data_v2.db")
@@ -697,10 +837,18 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
         }
         Err(error) => return Err(error.into()),
     };
-    let db = Arc::new(Database::new(sqlite_pool.clone(), credentials));
+    let db = Arc::new(Database::new(
+        sqlite_pool.clone(),
+        credentials,
+        events.clone(),
+    ));
     db.migrate_account_credentials().await?;
     db.finish_pending_tasks().await?;
+    db.fail_interrupted_uploads().await?;
     db.finish_pending_record_summaries().await?;
+    if let Some(legacy) = &legacy {
+        legacy_dirs::relocate_uploads(&db, legacy, &app_dirs).await;
+    }
     let webhook_poster =
         webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None)
             .map_err(|e| e.to_string())?;
@@ -711,7 +859,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
 
     let recorder_manager = Arc::new(RecorderManager::new(
         app.app_handle().clone(),
-        emitter,
+        events.clone(),
         db.clone(),
         config.clone(),
         task_manager.clone(),
@@ -731,8 +879,14 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
     let _ = try_convert_clip_covers(&db, output_path.clone().into()).await;
     let _ = try_add_parent_id_to_records(&db).await;
     let _ = try_convert_entry_to_m3u8(&db, cache_path.clone().into()).await;
+    tauri::async_runtime::spawn(crate::handlers::project::create_legacy_projects(
+        db.clone(),
+        output_path.clone().into(),
+    ));
 
-    Ok(Some(State {
+    let state = State {
+        mcp_server: Arc::new(mcp::McpServer::default()),
+        events,
         db,
         config,
         recorder_manager,
@@ -741,17 +895,33 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
         app_handle: app.handle().clone(),
         resource_dir,
         webhook_poster,
-    }))
+    };
+    state
+        .recorder_manager
+        .on_material_created(crate::handlers::video::material_hook(&state));
+    Ok(Some(state))
 }
 
 #[cfg(feature = "gui")]
 fn setup_plugins(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     let migrations = get_migrations();
+    let updater = tauri_plugin_updater::Builder::new();
+    // Keep CPU and CUDA installations on their respective Windows release tracks.
+    #[cfg(target_os = "windows")]
+    let updater = updater.target(format!(
+        "windows-{}-{}",
+        std::env::consts::ARCH,
+        if cfg!(feature = "cuda") {
+            "cuda"
+        } else {
+            "cpu"
+        }
+    ));
     let builder = builder
+        .plugin(updater.build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_focus();
-            }
+            tray::show_main_window(app);
         }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_os::init())
@@ -795,6 +965,9 @@ fn remove_legacy_macos_launch_agent() {
 #[cfg(feature = "gui")]
 fn setup_event_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.on_window_event(|window, event| {
+        if let WindowEvent::Destroyed = event {
+            window.state::<State>().events.remove_window(window.label());
+        }
         if let WindowEvent::CloseRequested { api, .. } = event {
             // main window is not closable
             if window.label() == "main" {
@@ -810,6 +983,7 @@ fn setup_event_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<t
 #[cfg(feature = "gui")]
 fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.invoke_handler(tauri::generate_handler![
+        crate::handlers::events::set_event_rooms,
         crate::handlers::account::get_accounts,
         crate::handlers::account::add_account,
         crate::handlers::account::remove_account,
@@ -817,6 +991,9 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::account::get_qr_status,
         crate::handlers::account::get_qr,
         crate::handlers::config::get_config,
+        crate::handlers::config::request_settings,
+        crate::handlers::config::get_mcp_server_status,
+        crate::handlers::config::update_mcp_server,
         crate::handlers::config::get_llm_config,
         crate::handlers::config::list_llm_models,
         crate::handlers::config::get_static_port,
@@ -828,6 +1005,8 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::config::update_clip_name_format,
         crate::handlers::config::update_whisper_prompt,
         crate::handlers::config::update_subtitle_generator_type,
+        crate::handlers::config::update_powerlive_hotwords,
+        crate::handlers::config::update_powerlive_sentence_max_length,
         crate::handlers::config::update_openai_api_key,
         crate::handlers::config::update_openai_api_endpoint,
         crate::handlers::config::update_auto_generate,
@@ -835,15 +1014,22 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::config::update_whisper_language,
         crate::handlers::config::update_webhook_url,
         crate::handlers::config::update_danmu_ass_options,
-        crate::handlers::config::update_powerlive_key,
+        crate::powerlive::get_powerlive_status,
+        crate::powerlive::get_powerlive_account,
+        crate::powerlive::begin_powerlive_login,
+        crate::powerlive::cancel_powerlive_login,
+        crate::powerlive::logout_powerlive,
+        crate::feedback::submit_feedback,
         crate::handlers::config::update_llm_config,
         crate::handlers::message::get_messages,
         crate::handlers::message::read_message,
         crate::handlers::message::delete_message,
         crate::handlers::recorder::get_recorder_list,
+        crate::handlers::recorder::get_rtmp_ingest,
         crate::handlers::recorder::add_recorder,
         crate::handlers::recorder::remove_recorder,
         crate::handlers::recorder::get_room_info,
+        crate::handlers::recorder::get_recorder_status,
         crate::handlers::recorder::get_archive_disk_usage,
         crate::handlers::recorder::get_archives,
         crate::handlers::recorder::get_archive,
@@ -880,13 +1066,46 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::video::update_video_subtitle,
         crate::handlers::video::update_video_note,
         crate::handlers::video::encode_video_subtitle,
-        crate::handlers::video::generic_ffmpeg_command,
+        crate::handlers::native_overlay_preview::render_generated_subtitle_preview,
+        crate::handlers::subtitle_fonts::get_subtitle_font_families,
         crate::handlers::video::import_external_video,
         crate::handlers::video::batch_import_external_videos,
         crate::handlers::video::clip_video,
         crate::handlers::video::get_file_size,
         crate::handlers::video::get_import_progress,
         crate::handlers::video::generate_audio_sample,
+        crate::handlers::project::get_projects,
+        crate::handlers::project::get_project,
+        crate::handlers::project::create_project,
+        crate::handlers::project::update_project_info,
+        crate::handlers::project::update_project_timeline,
+        crate::handlers::project::update_project_danmu,
+        crate::handlers::project::update_project_output_settings,
+        crate::handlers::project::delete_project,
+        crate::handlers::project::export_project,
+        crate::handlers::project::get_material_usage,
+        crate::handlers::project::get_material_peaks,
+        crate::handlers::project::get_project_frame_rate,
+        crate::handlers::project::get_material_danmu,
+        crate::handlers::project::generate_materials,
+        crate::handlers::sticker::get_cover_stickers,
+        crate::handlers::audio::get_audio_files,
+        crate::handlers::audio::import_audio_file,
+        crate::handlers::audio::rename_audio_file,
+        crate::handlers::audio::delete_audio_file,
+        crate::handlers::audio::get_audio_usage,
+        crate::handlers::audio::get_audio_peaks,
+        crate::handlers::sticker::add_cover_sticker,
+        crate::handlers::sticker::delete_cover_sticker,
+        crate::handlers::upload::get_uploads,
+        crate::handlers::upload::get_upload,
+        crate::handlers::upload::create_upload,
+        crate::handlers::upload::update_upload,
+        crate::handlers::upload::update_upload_cover,
+        crate::handlers::upload::update_upload_danmu,
+        crate::handlers::upload::update_upload_render_settings,
+        crate::handlers::upload::delete_upload,
+        crate::handlers::upload::post_upload,
         crate::handlers::task::get_tasks,
         crate::handlers::task::delete_task,
         crate::handlers::utils::show_in_folder,
@@ -894,7 +1113,10 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::utils::get_disk_info,
         crate::handlers::utils::open_live,
         crate::handlers::utils::open_clip,
+        crate::handlers::utils::open_project,
+        crate::handlers::utils::set_window_title,
         crate::handlers::utils::open_log_folder,
+        crate::handlers::utils::open_material_folder,
         crate::handlers::utils::file_exists,
         crate::handlers::utils::console_log,
         crate::handlers::utils::list_folder,
@@ -982,22 +1204,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let Some(state) = setup_app_state(app).await? else {
                     return Ok(());
                 };
-                let _ = tray::create_tray(app.handle());
+                if let Err(e) = tray::create_tray(app.handle()) {
+                    log::error!("Failed to create tray: {e}");
+                }
                 #[cfg(target_os = "macos")]
                 remove_legacy_macos_launch_agent();
 
-                // check ffmpeg status
+                // Identify the linked SDK; this does not launch a CLI process.
                 match ffmpeg::check_ffmpeg().await {
-                    Err(e) => log::error!("Failed to check ffmpeg version: {e}"),
-                    Ok(v) => log::info!("Checked ffmpeg version: {v}"),
+                    Err(e) => log::error!("Failed to check FFmpeg SDK version: {e}"),
+                    Ok(v) => log::info!("Linked FFmpeg SDK version: {v}"),
                 }
 
-                app.manage(state);
+                app.manage(state.clone());
+                state.mcp_server.restore(state.clone()).await;
                 Ok(())
             })
         })
         .build(context)?
         .run(|app_handle: &tauri::AppHandle, event| {
+            // Dock clicks and LaunchServices reopening an already-running app
+            // do not necessarily invoke the single-instance plugin callback.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                tray::show_main_window(app_handle);
+            }
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 let Some(state) = app_handle.try_state::<State>() else {
                     return;
@@ -1006,6 +1237,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let recorder_manager = state.recorder_manager.clone();
                 log::info!("Stopping all recorders...");
                 tauri::async_runtime::block_on(async move {
+                    state.mcp_server.stop().await;
                     recorder_manager.stop_all().await;
                 });
                 log::info!("All recorders stopped successfully.");
@@ -1071,14 +1303,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // get params from command line
     let args = Args::parse();
     let state = setup_server_state(args).await?;
+    state.mcp_server.restore(state.clone()).await;
 
-    // check ffmpeg status
+    // Identify the linked SDK; this does not launch a CLI process.
     match ffmpeg::check_ffmpeg().await {
-        Err(e) => log::error!("Failed to check ffmpeg version: {e}"),
-        Ok(v) => log::info!("Checked ffmpeg version: {v}"),
+        Err(e) => log::error!("Failed to check FFmpeg SDK version: {e}"),
+        Ok(v) => log::info!("Linked FFmpeg SDK version: {v}"),
     }
 
     let recorder_manager = state.recorder_manager.clone();
+    let mcp_server = state.mcp_server.clone();
     tokio::select! {
         _ = http_server::api_server::start_api_server(state) => {}
         _ = shutdown_signal() => {
@@ -1087,6 +1321,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     log::info!("Stopping all recorders...");
+    mcp_server.stop().await;
     recorder_manager.stop_all().await;
     log::info!("All recorders stopped successfully.");
     Ok(())

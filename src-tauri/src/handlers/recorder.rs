@@ -4,10 +4,11 @@ use crate::danmu2ass;
 use crate::database::record::RecordRow;
 use crate::database::recorder::RecorderRow;
 use crate::database::task::TaskRow;
-use crate::progress::progress_reporter::EventEmitter;
 use crate::progress::progress_reporter::ProgressReporter;
 use crate::progress::progress_reporter::ProgressReporterTrait;
-use crate::recorder_manager::{GenerateWholeClipParams, RecorderList};
+use crate::recorder_manager::{
+    ArchiveRecord, GenerateWholeClipParams, RecorderList, RecorderStatus,
+};
 use crate::state::State;
 use crate::state_type;
 use crate::task::Task;
@@ -18,6 +19,7 @@ use recorder::danmu::DanmuEntry;
 use recorder::platforms::bilibili;
 use recorder::platforms::douyin;
 use recorder::platforms::douyu;
+use recorder::platforms::rtmp::{self, RtmpConfig};
 use recorder::platforms::twitch;
 use recorder::platforms::youtube;
 use recorder::platforms::PlatformType;
@@ -34,6 +36,42 @@ pub async fn get_recorder_list(state: state_type!()) -> Result<RecorderList, ()>
     Ok(state.recorder_manager.get_recorder_list().await)
 }
 
+#[derive(Serialize)]
+pub struct RtmpIngestInfo {
+    pub room_id: String,
+    #[serde(flatten)]
+    pub config: RtmpConfig,
+    pub listening: bool,
+    pub live: bool,
+    pub recording: bool,
+}
+
+/// Fetch credentials only on demand, keeping them out of room lifecycle events.
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_rtmp_ingest(
+    state: state_type!(),
+    room_id: String,
+) -> Result<RtmpIngestInfo, String> {
+    let row = state
+        .db
+        .get_recorders()
+        .await?
+        .into_iter()
+        .find(|row| row.platform == "rtmp" && row.room_id == room_id)
+        .ok_or("RTMP 房间不存在")?;
+    let recorder = state
+        .recorder_manager
+        .get_recorder_info(PlatformType::Rtmp, &room_id)
+        .await;
+    Ok(RtmpIngestInfo {
+        room_id,
+        config: RtmpConfig::parse(&row.extra)?,
+        listening: recorder.is_some(),
+        live: recorder.as_ref().is_some_and(|info| info.room_info.status),
+        recording: recorder.as_ref().is_some_and(|info| info.recording),
+    })
+}
+
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn add_recorder(
     state: state_type!(),
@@ -42,6 +80,11 @@ pub async fn add_recorder(
     mut extra: String,
 ) -> Result<RecorderRow, String> {
     let platform = PlatformType::from_str(&platform).map_err(|e| e.to_string())?;
+    if platform == PlatformType::Rtmp {
+        room_id = rtmp::normalize_room_id(&room_id)?;
+        extra =
+            serde_json::to_string(&RtmpConfig::for_new_room(&extra)?).map_err(|e| e.to_string())?;
+    }
     if platform == PlatformType::Youtube {
         room_id = youtube::normalize_room_id(&room_id).map_err(|error| error.to_string())?;
     }
@@ -102,7 +145,7 @@ pub async fn add_recorder(
                 Ok(Account::default())
             }
         }
-        PlatformType::Twitch => Ok(Account::default()),
+        PlatformType::Twitch | PlatformType::Rtmp => Ok(Account::default()),
         PlatformType::Youtube => {
             if let Ok(account) = state.db.get_account_by_platform("youtube").await {
                 Ok(account.to_account())
@@ -132,8 +175,21 @@ pub async fn add_recorder(
             .add_recorder(&account, platform, &room_id, &extra, true)
             .await
         {
-            Ok(()) => {
-                let room = state.db.add_recorder(platform, &room_id, &extra).await?;
+            Ok(resolved_extra) => {
+                let room = match state
+                    .db
+                    .add_recorder(platform, &room_id, &resolved_extra)
+                    .await
+                {
+                    Ok(room) => room,
+                    Err(error) => {
+                        state
+                            .recorder_manager
+                            .discard_unpersisted_recorder(platform, &room_id)
+                            .await;
+                        return Err(error.to_string());
+                    }
+                };
                 state
                     .db
                     .new_message("添加直播间", &format!("添加了新直播间 {room_id}"))
@@ -220,16 +276,39 @@ pub async fn get_archive_disk_usage(state: state_type!()) -> Result<i64, String>
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_recorder_status(
+    state: state_type!(),
+    platform: String,
+    room_id: String,
+) -> Result<RecorderStatus, String> {
+    let platform = PlatformType::from_str(&platform).map_err(|error| error.to_string())?;
+    Ok(state
+        .recorder_manager
+        .get_recorder_status(platform, &room_id)
+        .await?)
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_archives(
     state: state_type!(),
     room_id: String,
     offset: i64,
     limit: i64,
-) -> Result<Vec<RecordRow>, String> {
-    Ok(state
-        .recorder_manager
-        .get_archives(&room_id, offset, limit)
-        .await?)
+    platform: Option<String>,
+) -> Result<Vec<ArchiveRecord>, String> {
+    let records = if let Some(platform) = platform {
+        let platform = PlatformType::from_str(&platform).map_err(|error| error.to_string())?;
+        state
+            .db
+            .get_room_records(platform.as_str(), &room_id, offset, limit)
+            .await?
+    } else {
+        state
+            .recorder_manager
+            .get_archives(&room_id, offset, limit)
+            .await?
+    };
+    Ok(state.recorder_manager.archive_records(records).await)
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -498,6 +577,8 @@ pub async fn fetch_hls(state: state_type!(), uri: String) -> Result<Vec<u8>, Str
         .map_err(|e| e.to_string())
 }
 
+// Keep the flat IPC arguments compatible with existing desktop and web callers.
+#[allow(clippy::too_many_arguments)]
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn generate_whole_clip(
     state: state_type!(),
@@ -507,7 +588,11 @@ pub async fn generate_whole_clip(
     parent_id: String,
     selected_live_ids: Option<Vec<String>>,
     output_name: Option<String>,
+    render_settings: Option<crate::project::RenderSettings>,
 ) -> Result<TaskRow, String> {
+    if let Some(settings) = &render_settings {
+        settings.validate()?;
+    }
     log::info!("Generate whole clip for {platform} {room_id} {parent_id}");
 
     let task = state
@@ -522,16 +607,13 @@ pub async fn generate_whole_clip(
                 "encode_danmu": encode_danmu,
                 "selected_live_ids": selected_live_ids,
                 "output_name": output_name,
+                "render_settings": render_settings,
             })
             .to_string(),
         )
         .await?;
 
-    #[cfg(feature = "gui")]
-    let emitter = EventEmitter::new(state.app_handle.clone());
-    #[cfg(feature = "headless")]
-    let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
-    let reporter = ProgressReporter::new(state.db.clone(), &emitter, &task.id).await?;
+    let reporter = ProgressReporter::new(state.db.clone(), &state.events, &task.id).await?;
 
     log::info!("Create task: {} {}", task.id, task.task_type);
     // create a tokio task to run in background
@@ -541,7 +623,7 @@ pub async fn generate_whole_clip(
     let state_clone = state.clone();
 
     let task_id = task.id.clone();
-    state
+    let enqueue_result = state
         .task_manager
         .add_task(Task::new(
             task_id.clone(),
@@ -558,30 +640,39 @@ pub async fn generate_whole_clip(
                             parent_id,
                             selected_live_ids,
                             output_name,
+                            render_settings,
                         },
                     )
                     .await
                 {
                     Ok(()) => {
-                        reporter.finish(true, "切片生成完成").await;
+                        reporter.finish(true, "素材生成完成").await;
                         let _ = state_clone
                             .db
-                            .update_task(&task_id, "success", "切片生成完成", None)
+                            .update_task(&task_id, "success", "素材生成完成", None)
                             .await;
                         Ok(())
                     }
                     Err(e) => {
-                        reporter.finish(false, &format!("切片生成失败: {e}")).await;
+                        reporter.finish(false, &format!("素材生成失败: {e}")).await;
                         let _ = state_clone
                             .db
-                            .update_task(&task_id, "failed", &format!("切片生成失败: {e}"), None)
+                            .update_task(&task_id, "failed", &format!("素材生成失败: {e}"), None)
                             .await;
-                        Err(format!("切片生成失败: {e}"))
+                        Err(format!("素材生成失败: {e}"))
                     }
                 }
             },
         ))
-        .await?;
+        .await;
+    if let Err(error) = enqueue_result {
+        // Never leave the recorded task pending with no worker to run or cancel it.
+        state
+            .db
+            .update_task(&task.id, "failed", &format!("加入队列失败: {error}"), None)
+            .await?;
+        return Err(error);
+    }
     Ok(task)
 }
 
@@ -624,6 +715,7 @@ mod prepare_danmus_for_export_tests {
             ts,
             event_type: "danmu".to_string(),
             content: content.to_string(),
+            emoji_content: None,
             user_name: None,
             price: None,
             sc_duration: None,

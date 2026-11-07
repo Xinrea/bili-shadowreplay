@@ -3,6 +3,7 @@ import {
   default_profile,
   generateEventId,
   type ClipRangeParams,
+  type RenderSettings,
 } from "../interface";
 import { normalizeToolArguments } from "./messages";
 
@@ -86,8 +87,8 @@ const confirmedToolExecutors: Record<string, ToolExecutor> = {
   ),
 
   encode_video_subtitle: executor(
-    async ({ id, srt_style }: { id: number; srt_style: string }) =>
-      invoke("encode_video_subtitle", { id, srtStyle: srt_style }),
+    async ({ id, srt_style, render_settings }: { id: number; srt_style: string; render_settings?: RenderSettings }) =>
+      invoke("encode_video_subtitle", { eventId: generateEventId(), id, srtStyle: srt_style, renderSettings: render_settings }),
   ),
 
   post_video_to_bilibili: executor(
@@ -125,11 +126,6 @@ const confirmedToolExecutors: Record<string, ToolExecutor> = {
       eventId: generateEventId(),
       params: { ...clip_range_params } as ClipRangeParams,
     }),
-  ),
-
-  generic_ffmpeg_command: executor(
-    async ({ args }: { args: string[] }) =>
-      invoke("generic_ffmpeg_command", { args }),
   ),
 
   open_clip: executor(
@@ -193,16 +189,18 @@ const confirmedToolExecutors: Record<string, ToolExecutor> = {
   ),
 
   merge_videos: executor(
-    async ({ video_ids, output_title, output_note, transition }: {
+    async ({ video_ids, output_title, output_note, transition, render_settings }: {
       video_ids: number[];
       output_title: string;
       output_note: string;
       transition?: string;
+      render_settings?: RenderSettings;
     }) => invoke("merge_videos", {
       videoIds: video_ids,
       outputTitle: output_title,
       outputNote: output_note,
       transition: transition ?? "none",
+      renderSettings: render_settings,
     }),
   ),
 

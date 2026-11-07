@@ -5,8 +5,8 @@ pub mod entry;
 pub mod errors;
 pub mod events;
 pub mod platforms;
-pub mod traits;
 pub mod timeline;
+pub mod traits;
 pub mod utils;
 use crate::danmu::DanmuStorage;
 use crate::events::RecorderEvent;
@@ -14,14 +14,30 @@ use crate::{account::Account, platforms::PlatformType};
 
 use chrono::Utc;
 use std::{
+    collections::VecDeque,
     fmt::Display,
     path::PathBuf,
     sync::{atomic, Arc},
 };
 use tokio::{
-    sync::{broadcast, Mutex, RwLock},
+    sync::{Mutex, RwLock},
     task::JoinHandle,
 };
+
+/// Archive IDs are global database keys as well as millisecond timestamps.
+/// Simultaneous push/pull sessions must not share an ID across rooms.
+pub(crate) fn new_recording_id() -> String {
+    static LAST_ID: atomic::AtomicI64 = atomic::AtomicI64::new(0);
+    let now = Utc::now().timestamp_millis();
+    let previous = LAST_ID
+        .fetch_update(
+            atomic::Ordering::Relaxed,
+            atomic::Ordering::Relaxed,
+            |last| Some(now.max(last.saturating_add(1))),
+        )
+        .expect("recording ID update always returns Some");
+    now.max(previous.saturating_add(1)).to_string()
+}
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 pub struct RecorderInfo {
@@ -31,6 +47,62 @@ pub struct RecorderInfo {
     pub live_id: String,
     pub recording: bool,
     pub enabled: bool,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
+pub struct RoomCheckSample {
+    pub checked_at: i64,
+    pub duration_ms: u64,
+    pub error: Option<String>,
+}
+
+/// Poll results are independent of cached metadata, including when a check fails.
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Default)]
+pub struct RoomCheckStatus {
+    /// Unix timestamps in milliseconds.
+    pub checked_at: Option<i64>,
+    pub last_success_at: Option<i64>,
+    pub duration_ms: Option<u64>,
+    pub error: Option<String>,
+    pub checking: bool,
+    /// Recent completed checks, retained even while the status dialog is closed.
+    #[serde(default)]
+    pub history: VecDeque<RoomCheckSample>,
+}
+
+impl RoomCheckStatus {
+    pub(crate) fn finish(&mut self, started: std::time::Instant, error: Option<String>) {
+        self.finish_at(
+            Utc::now().timestamp_millis(),
+            started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+            error,
+        );
+    }
+
+    fn finish_at(&mut self, checked_at: i64, duration_ms: u64, error: Option<String>) {
+        const HISTORY_WINDOW_MS: i64 = 5 * 60 * 1000;
+        const HISTORY_LIMIT: usize = 300;
+
+        self.checked_at = Some(checked_at);
+        self.duration_ms = Some(duration_ms);
+        self.checking = false;
+        if error.is_none() {
+            self.last_success_at = self.checked_at;
+        }
+        self.error = error.clone();
+        while self.history.len() >= HISTORY_LIMIT
+            || self.history.front().is_some_and(|sample| {
+                sample.checked_at < checked_at.saturating_sub(HISTORY_WINDOW_MS)
+            })
+        {
+            self.history.pop_front();
+        }
+        self.history.push_back(RoomCheckSample {
+            checked_at,
+            duration_ms,
+            error,
+        });
+    }
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Default)]
@@ -65,7 +137,8 @@ where
     /// The client for the recorder
     client: reqwest::Client,
     /// The event channel for the recorder
-    event_channel: broadcast::Sender<RecorderEvent>,
+    event_channel: crate::events::RecorderEventSender,
+    preview_sink: Arc<std::sync::RwLock<Option<events::PreviewEventSink>>>,
     /// The cache directory for the recorder
     cache_dir: PathBuf,
     /// Whether the recorder is quitting
@@ -78,6 +151,8 @@ where
     room_info: Arc<RwLock<RoomInfo>>,
     /// The user info for the recorder
     user_info: Arc<RwLock<UserInfo>>,
+    /// Result of the latest room metadata check, including failures.
+    check_status: Arc<RwLock<RoomCheckStatus>>,
     /// The update interval for room status
     update_interval: Arc<atomic::AtomicU64>,
 
@@ -114,7 +189,7 @@ impl<T: Send + Sync> Recorder<T> {
         room_id: &str,
         account: &Account,
         cache_dir: PathBuf,
-        event_channel: broadcast::Sender<RecorderEvent>,
+        event_channel: impl Into<crate::events::RecorderEventSender>,
         update_interval: Arc<atomic::AtomicU64>,
         enabled: bool,
         extra: T,
@@ -124,13 +199,15 @@ impl<T: Send + Sync> Recorder<T> {
             room_id: room_id.to_string(),
             account: account.clone(),
             client: reqwest::Client::new(),
-            event_channel,
+            event_channel: event_channel.into(),
+            preview_sink: Arc::new(std::sync::RwLock::new(None)),
             cache_dir,
             quit: Arc::new(atomic::AtomicBool::new(false)),
             enabled: Arc::new(atomic::AtomicBool::new(enabled)),
             is_recording: Arc::new(atomic::AtomicBool::new(false)),
             room_info: Arc::new(RwLock::new(RoomInfo::default())),
             user_info: Arc::new(RwLock::new(UserInfo::default())),
+            check_status: Arc::new(RwLock::new(RoomCheckStatus::default())),
             platform_live_id: Arc::new(RwLock::new(String::new())),
             live_id: Arc::new(RwLock::new(String::new())),
             danmu_storage: Arc::new(RwLock::new(None)),
@@ -163,8 +240,22 @@ impl<T: Send + Sync> traits::RecorderBasicTrait for Recorder<T> {
         &self.client
     }
 
-    fn event_channel(&self) -> &broadcast::Sender<RecorderEvent> {
+    fn event_channel(&self) -> &crate::events::RecorderEventSender {
         &self.event_channel
+    }
+
+    fn set_preview_sink(&self, sink: events::PreviewEventSink) {
+        *self.preview_sink.write().unwrap() = Some(sink);
+    }
+
+    fn emit_preview_event(&self, event: RecorderEvent) {
+        let sink = self.preview_sink.read().unwrap().clone();
+        if let Some(sink) = sink {
+            sink(event);
+        } else {
+            // Preserve the library API for standalone consumers.
+            self.event_channel.send_preview(event);
+        }
     }
 
     fn cache_dir(&self) -> PathBuf {
@@ -189,6 +280,10 @@ impl<T: Send + Sync> traits::RecorderBasicTrait for Recorder<T> {
 
     fn user_info(&self) -> Arc<RwLock<UserInfo>> {
         self.user_info.clone()
+    }
+
+    fn check_status(&self) -> Arc<RwLock<RoomCheckStatus>> {
+        self.check_status.clone()
     }
 
     fn platform_live_id(&self) -> Arc<RwLock<String>> {
@@ -296,6 +391,97 @@ impl Display for CachePath {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::traits::RecorderBasicTrait;
+
+    #[test]
+    fn room_check_history_keeps_failures_after_recovery() {
+        let mut status = RoomCheckStatus::default();
+        status.finish_at(1_000, 120, None);
+        status.checking = true;
+        status.finish_at(2_000, 940, Some("request failed".into()));
+        assert_eq!(status.last_success_at, Some(1_000));
+        assert!(!status.checking);
+        status.finish_at(3_000, 178, None);
+
+        assert_eq!(status.checked_at, Some(3_000));
+        assert_eq!(status.last_success_at, Some(3_000));
+        assert!(status.error.is_none());
+        assert_eq!(status.history.len(), 3);
+        assert_eq!(status.history[1].checked_at, 2_000);
+        assert_eq!(status.history[1].duration_ms, 940);
+        assert_eq!(status.history[1].error.as_deref(), Some("request failed"));
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["history"][1]["error"], "request failed");
+    }
+
+    #[test]
+    fn room_check_history_expires_old_samples_and_bounds_rapid_polls() {
+        let mut status = RoomCheckStatus::default();
+        status.finish_at(0, 1, None);
+        status.finish_at(1, 2, None);
+        status.finish_at(300_001, 3, None);
+        assert_eq!(status.history.len(), 2);
+        assert_eq!(status.history.front().unwrap().checked_at, 1);
+
+        for checked_at in 400_000..400_400 {
+            status.finish_at(checked_at, 10, None);
+        }
+        assert_eq!(status.history.len(), 300);
+        assert_eq!(status.history.front().unwrap().checked_at, 400_100);
+        assert_eq!(status.history.back().unwrap().checked_at, 400_399);
+    }
+
+    #[test]
+    fn room_check_history_accepts_legacy_status_snapshots() {
+        let status: RoomCheckStatus = serde_json::from_value(serde_json::json!({
+            "checked_at": 1000, "last_success_at": 1000, "duration_ms": 178,
+            "error": null, "checking": false,
+        }))
+        .unwrap();
+        assert!(status.history.is_empty());
+    }
+
+    #[tokio::test]
+    async fn preview_sink_is_shared_by_recorder_clones_and_bypasses_lifecycle_queue() {
+        let (sender, mut receiver) = events::recorder_event_channel(1);
+        let recorder = Recorder::with_extra(
+            PlatformType::BiliBili,
+            "1",
+            &Account::default(),
+            PathBuf::from("/tmp"),
+            sender,
+            Arc::new(atomic::AtomicU64::new(30)),
+            true,
+            (),
+        );
+        let cloned = recorder.clone();
+        let count = Arc::new(atomic::AtomicUsize::new(0));
+        let observed = count.clone();
+        recorder.set_preview_sink(Arc::new(move |event| {
+            assert!(matches!(event, RecorderEvent::DanmuReceived { .. }));
+            observed.fetch_add(1, atomic::Ordering::Relaxed);
+        }));
+        for _ in 0..10_000 {
+            cloned.emit_preview_event(RecorderEvent::danmu_received("1".into(), 1, "hello", None));
+        }
+        assert_eq!(count.load(atomic::Ordering::Relaxed), 10_000);
+        cloned
+            .event_channel()
+            .send(RecorderEvent::ProgressFinished {
+                id: "task".into(),
+                success: true,
+                message: "done".into(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            receiver.recv().await,
+            Some(RecorderEvent::ProgressFinished { .. })
+        ));
+        drop(cloned);
+        drop(recorder);
+        assert!(receiver.recv().await.is_none());
+    }
 
     #[test]
     fn test_cache_path_relative_without_filename() {

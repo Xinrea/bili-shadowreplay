@@ -56,10 +56,11 @@ export default withMermaid({
             items: [
               { text: "工作流程", link: "/usage/features/workflow" },
               { text: "直播间管理", link: "/usage/features/room" },
-              { text: "切片功能", link: "/usage/features/clip" },
+              { text: "素材、切片与投稿", link: "/usage/features/clip" },
               { text: "字幕功能", link: "/usage/features/subtitle" },
               { text: "弹幕功能", link: "/usage/features/danmaku" },
               { text: "Webhook", link: "/usage/features/webhook" },
+              { text: "MCP Server", link: "/usage/features/mcp" },
             ],
           },
           { text: "常见问题", link: "/usage/faq" },
@@ -72,6 +73,7 @@ export default withMermaid({
             text: "架构设计",
             items: [
               { text: "架构概览", link: "/development/architecture/overview" },
+              { text: "素材、切片与投稿", link: "/development/architecture/material-project" },
             ],
           },
           {
@@ -87,6 +89,7 @@ export default withMermaid({
             items: [
               { text: "录制管理器", link: "/development/backend/recorder-manager" },
               { text: "数据库模块", link: "/development/backend/database" },
+              { text: "原生弹幕渲染构建", link: "/development/native-overlay" },
             ],
           },
           {

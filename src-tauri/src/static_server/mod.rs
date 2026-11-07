@@ -1,6 +1,9 @@
 use crate::config::Config;
+use crate::preview_audio::{self, ChunkQuery};
+use axum::extract::Query;
+use axum::routing::get;
 use axum::Router;
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, path::Path, sync::Arc};
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tower_http::cors::{Any, CorsLayer};
@@ -43,7 +46,14 @@ pub async fn start_static_server(
             .allow_origin(Any)
             .allow_methods(Any)
             .allow_headers(Any);
+        let (output, cache) = (output_path.clone(), cache_path.clone());
         let router = Router::new()
+            .route(
+                "/preview_audio",
+                get(move |Query(query): Query<ChunkQuery>| async move {
+                    preview_audio::respond(Path::new(&output), Path::new(&cache), query).await
+                }),
+            )
             .nest_service("/output", ServeDir::new(output_path))
             .nest_service("/cache", ServeDir::new(cache_path))
             .layer(cors);

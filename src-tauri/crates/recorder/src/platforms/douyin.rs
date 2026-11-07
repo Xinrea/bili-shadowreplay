@@ -1,3 +1,5 @@
+#[cfg(test)]
+use tokio::sync::broadcast;
 pub mod api;
 mod response;
 pub mod stream_info;
@@ -8,7 +10,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use danmu_stream::provider::ProviderType;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::RwLock;
 
 use crate::account::Account;
 use crate::errors::RecorderError;
@@ -79,7 +81,7 @@ impl DouyinRecorder {
         sec_user_id: &str,
         account: &Account,
         cache_dir: PathBuf,
-        channel: broadcast::Sender<crate::events::RecorderEvent>,
+        channel: impl Into<crate::events::RecorderEventSender>,
         update_interval: Arc<AtomicU64>,
         enabled: bool,
     ) -> Result<Self, crate::errors::RecorderError> {

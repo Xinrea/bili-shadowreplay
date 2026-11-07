@@ -1,199 +1,161 @@
 use async_trait::async_trait;
+use serde::Serialize;
 use std::sync::Arc;
 
-use recorder::events::RecorderEvent;
+use crate::events::{AppEvent, EventBus};
 
 use crate::database::Database;
 
-#[cfg(feature = "gui")]
-use {
-    recorder::danmu::DanmuEntry,
-    serde::Serialize,
-    tauri::{AppHandle, Emitter},
-};
+/// Measurable progress of one processing stage, such as an ffmpeg job.
+///
+/// Times are seconds of media, which is what ffmpeg reports, not wall-clock time.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StageProgress {
+    /// User-facing stage name, e.g. "压制弹幕".
+    pub stage: String,
+    /// Media seconds processed so far.
+    pub processed: f64,
+    /// Media seconds the stage produces, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<f64>,
+    /// Processing speed relative to realtime, when reported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed: Option<f64>,
+}
 
-#[cfg(feature = "headless")]
-use tokio::sync::broadcast;
+impl StageProgress {
+    /// Whole completed percentage, when the total is known.
+    pub fn percent(&self) -> Option<u32> {
+        self.total
+            .filter(|total| *total > 0.0)
+            .map(|total| ((self.processed / total).clamp(0.0, 1.0) * 100.0).floor() as u32)
+    }
+
+    /// Plain-text form for consumers that only show a message, such as the task list.
+    pub fn message(&self) -> String {
+        match self.percent() {
+            Some(percent) => format!("{} {percent}%", self.stage),
+            None => format!("{} {}", self.stage, format_clock(self.processed)),
+        }
+    }
+}
+
+fn format_clock(seconds: f64) -> String {
+    let total = seconds.max(0.0).floor() as u64;
+    let (hours, minutes, secs) = (total / 3600, total % 3600 / 60, total % 60);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{secs:02}")
+    } else {
+        format!("{minutes:02}:{secs:02}")
+    }
+}
 
 #[derive(Clone)]
 pub struct ProgressReporter {
-    emitter: EventEmitter,
+    events: EventBus,
     pub event_id: String,
     db: Arc<Database>,
+    stage: Option<String>,
 }
 
-// async_trait stamps `#[must_use]` on the boxed-future methods it generates;
-// newer clippy (1.99+) flags that as redundant for `Pin<Box<dyn Future>>`.
+// async_trait generates #[must_use] on methods returning an already must-use Future.
 #[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait ProgressReporterTrait: Send + Sync + Clone {
     async fn update(&self, content: &str);
+
+    /// Report measurable progress. Reporters that only handle text receive its message.
+    async fn progress(&self, progress: StageProgress) {
+        self.update(&progress.message()).await;
+    }
+
     async fn finish(&self, success: bool, message: &str);
-}
 
-#[derive(Clone)]
-pub struct EventEmitter {
-    #[cfg(feature = "gui")]
-    app_handle: AppHandle,
-    #[cfg(feature = "headless")]
-    sender: broadcast::Sender<RecorderEvent>,
-}
-
-#[cfg(feature = "gui")]
-#[derive(Clone, Serialize)]
-struct UpdateEvent<'a> {
-    id: &'a str,
-    content: &'a str,
-}
-
-#[cfg(feature = "gui")]
-#[derive(Clone, Serialize)]
-struct FinishEvent<'a> {
-    id: &'a str,
-    success: bool,
-    message: &'a str,
-}
-
-#[cfg(feature = "gui")]
-#[derive(Clone, Serialize)]
-struct DanmuEvent<'a> {
-    room: &'a str,
-    #[serde(flatten)]
-    entry: DanmuEntry,
-}
-
-impl EventEmitter {
-    pub fn new(
-        #[cfg(feature = "gui")] app_handle: AppHandle,
-        #[cfg(feature = "headless")] sender: broadcast::Sender<RecorderEvent>,
-    ) -> Self {
-        Self {
-            #[cfg(feature = "gui")]
-            app_handle,
-            #[cfg(feature = "headless")]
-            sender,
-        }
-    }
-
-    pub fn emit(&self, event: &RecorderEvent) {
-        #[cfg(feature = "gui")]
-        {
-            match event {
-                RecorderEvent::ProgressUpdate { id, content } => {
-                    self.app_handle
-                        .emit(
-                            &format!("progress-update:{}", id),
-                            UpdateEvent { id, content },
-                        )
-                        .unwrap_or_else(|e| log::error!("Failed to emit progress update: {e}"));
-                }
-                RecorderEvent::ProgressFinished {
-                    id,
-                    success,
-                    message,
-                } => {
-                    self.app_handle
-                        .emit(
-                            &format!("progress-finished:{}", id),
-                            FinishEvent {
-                                id,
-                                success: *success,
-                                message,
-                            },
-                        )
-                        .unwrap_or_else(|e| log::error!("Failed to emit progress finish: {e}"));
-                }
-                RecorderEvent::DanmuReceived {
-                    room,
-                    ts,
-                    event_type,
-                    content,
-                    user_name,
-                    price,
-                    sc_duration,
-                } => {
-                    self.app_handle
-                        .emit(
-                            "danmu",
-                            DanmuEvent {
-                                room,
-                                entry: DanmuEntry {
-                                    ts: *ts,
-                                    event_type: event_type.clone(),
-                                    content: content.clone(),
-                                    user_name: user_name.clone(),
-                                    price: *price,
-                                    sc_duration: *sc_duration,
-                                },
-                            },
-                        )
-                        .unwrap_or_else(|e| log::error!("Failed to emit danmu event: {e}"));
-                }
-                _ => {}
-            }
-        }
-
-        #[cfg(feature = "headless")]
-        let _ = self.sender.send(event.clone());
+    /// Return a reporter that attributes measurable progress to `stage`.
+    ///
+    /// Pipelines use this to name steps in user terms ("提取片段 2/3") rather
+    /// than after whichever ffmpeg job runs inside them ("裁剪").
+    fn stage(&self, _stage: &str) -> Self {
+        self.clone()
     }
 }
+
 impl ProgressReporter {
-    pub async fn new(
-        db: Arc<Database>,
-        emitter: &EventEmitter,
-        event_id: &str,
-    ) -> Result<Self, String> {
+    pub async fn new(db: Arc<Database>, events: &EventBus, event_id: &str) -> Result<Self, String> {
         Ok(Self {
             db,
-            emitter: emitter.clone(),
+            events: events.clone(),
             event_id: event_id.to_string(),
+            stage: None,
         })
+    }
+
+    async fn publish(&self, content: String, progress: Option<StageProgress>) {
+        self.events.publish(AppEvent::ProgressUpdate {
+            id: self.event_id.clone(),
+            content: content.clone(),
+            progress,
+        });
+        let _ = self
+            .db
+            .update_task(&self.event_id, "processing", &content, None)
+            .await;
     }
 }
 
 #[async_trait]
 impl ProgressReporterTrait for ProgressReporter {
     async fn update(&self, content: &str) {
-        self.emitter.emit(&RecorderEvent::ProgressUpdate {
-            id: self.event_id.clone(),
-            content: content.to_string(),
-        });
-        let _ = self
-            .db
-            .update_task(&self.event_id, "processing", content, None)
-            .await;
+        self.publish(content.to_string(), None).await;
+    }
+
+    async fn progress(&self, mut progress: StageProgress) {
+        if let Some(stage) = &self.stage {
+            progress.stage.clone_from(stage);
+        }
+        self.publish(progress.message(), Some(progress)).await;
     }
 
     async fn finish(&self, success: bool, message: &str) {
-        self.emitter.emit(&RecorderEvent::ProgressFinished {
+        self.events.publish(AppEvent::ProgressFinished {
             id: self.event_id.clone(),
             success,
             message: message.to_string(),
         });
     }
+
+    fn stage(&self, stage: &str) -> Self {
+        Self {
+            stage: Some(stage.to_string()),
+            ..self.clone()
+        }
+    }
 }
 
-#[cfg(all(test, feature = "gui"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn danmu_payload_preserves_room_names_outside_tauri_event_charset() {
-        let event = DanmuEvent {
-            room: "@EliraPendora",
-            entry: DanmuEntry {
-                ts: 123,
-                event_type: "danmu".into(),
-                content: "hello".into(),
-                user_name: None,
-                price: None,
-                sc_duration: None,
-            },
-        };
+    fn progress(processed: f64, total: Option<f64>) -> StageProgress {
+        StageProgress {
+            stage: "压制弹幕".into(),
+            processed,
+            total,
+            speed: None,
+        }
+    }
 
-        let payload = serde_json::to_value(event).unwrap();
-        assert_eq!(payload["room"], "@EliraPendora");
-        assert_eq!(payload["type"], "danmu");
-        assert_eq!(payload["content"], "hello");
+    #[test]
+    fn message_shows_percent_when_total_is_known() {
+        assert_eq!(progress(12.0, Some(30.0)).message(), "压制弹幕 40%");
+        // Never claim completion before ffmpeg actually finishes.
+        assert_eq!(progress(29.9, Some(30.0)).message(), "压制弹幕 99%");
+        assert_eq!(progress(31.0, Some(30.0)).percent(), Some(100));
+    }
+
+    #[test]
+    fn message_falls_back_to_processed_time() {
+        assert_eq!(progress(75.4, None).message(), "压制弹幕 01:15");
+        assert_eq!(progress(3725.0, Some(0.0)).message(), "压制弹幕 1:02:05");
     }
 }

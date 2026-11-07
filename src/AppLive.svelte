@@ -10,8 +10,14 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import Player from "./lib/components/Player.svelte";
   import type { AccountItem, RecordItem } from "./lib/db";
-  import { Maximize, Minimize, PanelRightOpen } from "lucide-svelte";
   import {
+    Maximize,
+    Minimize,
+    PanelRightClose,
+    PanelRightOpen,
+  } from "lucide-svelte";
+  import {
+    type GeneratedMaterials,
     type VideoItem,
     type Marker,
     type DanmuEntry,
@@ -20,6 +26,9 @@
   } from "./lib/interface";
   import ArchiveInspector from "./lib/components/ArchiveInspector.svelte";
   import ArchiveTimeline from "./lib/components/ArchiveTimeline.svelte";
+  import TaskCenter from "./lib/components/TaskCenter.svelte";
+  import TaskCenterButton from "./lib/components/TaskCenterButton.svelte";
+  import TitleBar from "./lib/components/TitleBar.svelte";
   import { onDestroy, onMount } from "svelte";
   import {
     createThrottledRunner,
@@ -30,6 +39,8 @@
     seek(offset: number): void;
     togglePlayback(): void;
     setVolume(volume: number): void;
+    toggleMute(): void;
+    setPlaybackRate(rate: number): void;
     toggleDanmu(): void;
     setDanmuOffset(offset: number): void;
     sendDanmaku(message: string): Promise<void>;
@@ -344,7 +355,6 @@
   ));
   let global_offset = $state(0);
 
-  let clip_running = $state(false);
   let videos: PreviewVideo[] = $state([]);
 
   let selected_video: PreviewVideo | null = $state(null);
@@ -354,6 +364,8 @@
   let player_duration = $state(0);
   let selected_range_index = $state(-1);
   let player_volume = $state(1);
+  let player_muted = $state(false);
+  let player_playback_rate = $state(1);
   let player_is_playing = $state(false);
   let player_is_live = $state(false);
   let danmu_enabled = $state(true);
@@ -446,13 +458,18 @@
     selected_video = videos.find((video) => video.value === id) || null;
   }
 
-  async function handleClipGenerated(newVideo: VideoItem) {
+  async function handleClipGenerated(result: GeneratedMaterials) {
     await get_video_list();
-    newVideo.cover = await get_static_url("output", newVideo.cover);
-    selected_video =
-      videos.find((video) => video.value === newVideo.id) || null;
-    if (selected_video) {
-      selected_video.cover = newVideo.cover;
+    const newVideo = result.materials[result.materials.length - 1];
+    selected_video = newVideo
+      ? videos.find((video) => video.value === newVideo.id) || null
+      : null;
+    // Tauri's dialog plugin makes confirm() asynchronous.
+    if (
+      result.project &&
+      (await confirm(`已生成 ${result.materials.length} 个素材并创建切片「${result.project.title}」，是否打开切片进行编辑？`))
+    ) {
+      await invoke("open_project", { projectId: result.project.id });
     }
   }
 
@@ -605,14 +622,47 @@
 
 <svelte:document onfullscreenchange={syncFullscreen} />
 <svelte:window onkeydowncapture={onFullscreenKeydown} />
+<TaskCenter />
 
 <main>
+  <TitleBar tone="dark" title={archive?.title || "录播预览"}>
+    <span class="room-tag">{platform?.toUpperCase()}#{room_id}</span>
+    {#if player_is_live}
+      <span class="live-tag"><span></span>直播中</span>
+    {/if}
+    {#snippet actions()}
+      <TaskCenterButton tone="dark" />
+      <button
+        type="button"
+        class="titlebar-icon-button"
+        title="全屏播放"
+        aria-label="全屏播放"
+        onclick={toggleFullscreen}
+      >
+        <Maximize size={16} />
+      </button>
+      <button
+        type="button"
+        class="titlebar-icon-button"
+        class:active={!rpanel_collapsed}
+        title={rpanel_collapsed ? "展开素材检查器" : "收起素材检查器"}
+        aria-label={rpanel_collapsed ? "展开素材检查器" : "收起素材检查器"}
+        aria-pressed={!rpanel_collapsed}
+        onclick={() => (rpanel_collapsed = !rpanel_collapsed)}
+      >
+        {#if rpanel_collapsed}
+          <PanelRightOpen size={16} />
+        {:else}
+          <PanelRightClose size={16} />
+        {/if}
+      </button>
+    {/snippet}
+  </TitleBar>
   <div class="preview-workspace">
     <div class="preview-main">
       <div
         class="video-stage"
         class:native-fullscreen={TAURI_ENV && is_fullscreen}
-        class:inspector-collapsed={rpanel_collapsed}
         bind:this={video_stage}
       >
         <Player
@@ -623,6 +673,8 @@
           bind:danmu_enabled
           bind:local_offset={danmu_offset}
           bind:volume={player_volume}
+          bind:muted={player_muted}
+          bind:playback_rate={player_playback_rate}
           bind:is_playing={player_is_playing}
           bind:playback_time={current_time}
           bind:duration={player_duration}
@@ -647,19 +699,17 @@
             ].sort((a, b) => a.offset - b.offset);
           }}
         />
-        <button
-          type="button"
-          class="fullscreen-button"
-          title={is_fullscreen ? "退出全屏" : "全屏播放"}
-          aria-label={is_fullscreen ? "退出全屏" : "全屏播放"}
-          onclick={toggleFullscreen}
-        >
-          {#if is_fullscreen}
+        {#if is_fullscreen}
+          <button
+            type="button"
+            class="fullscreen-button"
+            title="退出全屏"
+            aria-label="退出全屏"
+            onclick={toggleFullscreen}
+          >
             <Minimize size={19} />
-          {:else}
-            <Maximize size={19} />
-          {/if}
-        </button>
+          </button>
+        {/if}
       </div>
       <ArchiveTimeline
         bind:ranges
@@ -675,6 +725,8 @@
         isPlaying={player_is_playing}
         isLive={player_is_live}
         volume={player_volume}
+        muted={player_muted}
+        playbackRate={player_playback_rate}
         danmuEnabled={danmu_enabled}
         danmuOffset={danmu_offset}
         canSendDanmaku={can_send_danmaku}
@@ -687,6 +739,8 @@
         onTogglePlayback={() => player?.togglePlayback()}
         onSeekLive={() => player?.seekLive()}
         onVolumeChange={(value) => player?.setVolume(value)}
+        onToggleMute={() => player?.toggleMute()}
+        onPlaybackRateChange={(value) => player?.setPlaybackRate(value)}
         onToggleDanmu={() => player?.toggleDanmu()}
         onDanmuOffsetChange={(value) => player?.setDanmuOffset(value)}
         onSendDanmaku={(message) => player?.sendDanmaku(message)}
@@ -698,48 +752,30 @@
         onRangeDrag={seekDuringRangeDrag}
       />
     </div>
-    <div
-      class="inspector-shell"
-      class:w-[340px]={!rpanel_collapsed}
-      class:w-0={rpanel_collapsed}
-    >
-      {#if rpanel_collapsed}
-        <button
-          type="button"
-          class="open-inspector"
-          title="展开素材检查器"
-          onclick={() => (rpanel_collapsed = false)}
-        >
-          <PanelRightOpen size={17} />
-        </button>
-      {:else}
-        <ArchiveInspector
-          {archive}
-          bind:ranges
-          bind:markers
-          danmuRecords={danmu_records}
-          globalOffset={global_offset}
-          danmuPeaks={danmu_peaks}
-          peakThreshold={peak_threshold}
-          danmuKeywords={danmu_keywords}
-          onPeakThresholdChange={handlePeakThresholdChange}
-          onDanmuKeywordsChange={handleDanmuKeywordsChange}
-          {videos}
-          selectedVideo={selected_video}
-          bind:clipRunning={clip_running}
-          bind:selectedRangeIndex={selected_range_index}
-          onCollapse={() => (rpanel_collapsed = true)}
-          onSeek={(seconds) => player?.seek(seconds)}
-          onAddPeak={add_peak_to_ranges}
-          onAddAllPeaks={add_all_peaks_to_ranges}
-          onVideoSelect={selectVideo}
-          onDeleteVideo={delete_video}
-          onDownloadVideo={save_video}
-          onOpenVideo={open_clip}
-          onGenerated={handleClipGenerated}
-        />
-      {/if}
-    </div>
+    <ArchiveInspector
+      {archive}
+      bind:ranges
+      bind:markers
+      danmuRecords={danmu_records}
+      globalOffset={global_offset}
+      danmuPeaks={danmu_peaks}
+      peakThreshold={peak_threshold}
+      danmuKeywords={danmu_keywords}
+      onPeakThresholdChange={handlePeakThresholdChange}
+      onDanmuKeywordsChange={handleDanmuKeywordsChange}
+      {videos}
+      selectedVideo={selected_video}
+      bind:selectedRangeIndex={selected_range_index}
+      collapsed={rpanel_collapsed}
+      onSeek={(seconds) => player?.seek(seconds)}
+      onAddPeak={add_peak_to_ranges}
+      onAddAllPeaks={add_all_peaks_to_ranges}
+      onVideoSelect={selectVideo}
+      onDeleteVideo={delete_video}
+      onDownloadVideo={save_video}
+      onOpenVideo={open_clip}
+      onGenerated={handleClipGenerated}
+    />
   </div>
 </main>
 
@@ -809,21 +845,6 @@
     cursor: pointer;
   }
 
-  .video-stage.inspector-collapsed .fullscreen-button {
-    right: 54px;
-  }
-
-  @media (max-width: 1099px) {
-    .video-stage:not(.inspector-collapsed) .fullscreen-button {
-      right: min(352px, calc(100% - 48px));
-    }
-  }
-
-  .video-stage:fullscreen .fullscreen-button,
-  .video-stage.native-fullscreen .fullscreen-button {
-    right: 12px;
-  }
-
   .fullscreen-button:hover {
     background: rgb(0 0 0 / 75%);
   }
@@ -833,43 +854,32 @@
     outline-offset: 2px;
   }
 
-  .inspector-shell {
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 510;
-    flex: 0 0 auto;
-    overflow: visible;
-    box-shadow: -12px 0 32px rgb(0 0 0 / 28%);
-    transition: width 200ms ease;
+  .room-tag {
+    flex-shrink: 0;
+    border-radius: 5px;
+    background: #222a36;
+    padding: 2px 6px;
+    color: #8c98aa;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    white-space: nowrap;
   }
 
-  .open-inspector {
-    position: absolute;
-    top: 12px;
-    right: 8px;
+  .live-tag {
     display: inline-flex;
-    width: 34px;
-    height: 34px;
+    flex-shrink: 0;
     align-items: center;
-    justify-content: center;
-    border: 1px solid #344052;
-    border-radius: 9px;
-    background: #202733;
-    color: #dce5f3;
-    box-shadow: 0 6px 18px rgb(0 0 0 / 30%);
+    gap: 5px;
+    color: #ff6b6b;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
   }
 
-  .open-inspector:focus-visible {
-    outline: 2px solid #0a84ff;
-    outline-offset: 2px;
-  }
-
-  @media (min-width: 1100px) {
-    .inspector-shell {
-      position: relative;
-      box-shadow: none;
-    }
+  .live-tag span {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
   }
 </style>

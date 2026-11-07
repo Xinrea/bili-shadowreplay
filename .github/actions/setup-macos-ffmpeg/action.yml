@@ -1,0 +1,72 @@
+name: Setup FFmpeg for macOS releases
+description: Build a pinned SDK for the product's macOS deployment target.
+
+runs:
+  using: composite
+  steps:
+    - name: Install codec build dependencies
+      id: dependencies
+      shell: bash
+      run: |
+        brew install pkg-config nasm lame opus x264 x265 vulkan-headers molten-vk
+        identity=$(brew list --versions lame opus x264 x265 vulkan-headers | shasum -a 256 | cut -d ' ' -f 1)
+        echo "identity=$identity" >> "$GITHUB_OUTPUT"
+
+    - id: cache
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.temp }}/ffmpeg-sdk
+        key: macos15-ffmpeg-${{ runner.arch }}-${{ steps.dependencies.outputs.identity }}-${{ hashFiles('.github/actions/setup-macos-ffmpeg/build.sh', 'src-tauri/tauri.macos.conf.json') }}
+
+    - name: Build FFmpeg for the configured macOS minimum
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/build.sh" "$RUNNER_TEMP/ffmpeg-sdk"
+
+    - name: Select the SDK and matching CLI
+      shell: bash
+      run: |
+        prefix="$RUNNER_TEMP/ffmpeg-sdk"
+        echo "FFMPEG_DIR=$prefix" >> "$GITHUB_ENV"
+        echo "PKG_CONFIG_PATH=$prefix/lib/pkgconfig" >> "$GITHUB_ENV"
+        echo "BSR_MOLTENVK_LIBRARY=$(brew --prefix molten-vk)/lib/libMoltenVK.dylib" >> "$GITHUB_ENV"
+        echo "$prefix/bin" >> "$GITHUB_PATH"
+
+    - name: Verify required FFmpeg components
+      shell: bash
+      run: |
+        ffmpeg -version
+        ffprobe -version
+        test "$(ffmpeg -version | head -n 1 | cut -d ' ' -f 3)" = "9.0.2"
+        for library in libavcodec libavformat libavutil libavfilter libswresample libswscale; do
+          test "$(pkg-config --variable=prefix "$library")" = "$RUNNER_TEMP/ffmpeg-sdk"
+        done
+        ffmpeg -hide_banner -encoders > "$RUNNER_TEMP/ffmpeg-encoders.txt"
+        for encoder in libx264 libx265 libopus libmp3lame aac flac pcm_s16le mjpeg png h264_videotoolbox hevc_videotoolbox; do
+          grep -w "$encoder" "$RUNNER_TEMP/ffmpeg-encoders.txt"
+        done
+        ffmpeg -hide_banner -hwaccels | grep -w vulkan
+
+    - name: Check deployment baseline before compiling the application
+      shell: bash
+      run: |
+        probe=$(mktemp -d)
+        trap 'rm -rf "$probe"' EXIT
+        cat > "$probe/probe.c" <<'EOF'
+        #include <libavformat/avformat.h>
+        #include <libavcodec/avcodec.h>
+        #include <libavfilter/avfilter.h>
+        #include <libswresample/swresample.h>
+        int main(void) { return !(avformat_version() && avcodec_version() && avfilter_version() && swresample_version()); }
+        EOF
+        minimum=$(node -p "JSON.parse(require('fs').readFileSync('src-tauri/tauri.macos.conf.json', 'utf8')).bundle.macOS.minimumSystemVersion")
+        cc "$probe/probe.c" -I"$FFMPEG_DIR/include" -L"$FFMPEG_DIR/lib" \
+          -lavformat -lavcodec -lavfilter -lswresample \
+          "-mmacosx-version-min=$minimum" -Wl,-headerpad_max_install_names -o "$probe/probe"
+        node scripts/bundle-macos-ffmpeg.mjs --binary "$probe/probe" --runtime "$probe/runtime"
+
+    - uses: actions/cache/save@v4
+      if: steps.cache.outputs.cache-hit != 'true'
+      with:
+        path: ${{ runner.temp }}/ffmpeg-sdk
+        key: ${{ steps.cache.outputs.cache-primary-key }}

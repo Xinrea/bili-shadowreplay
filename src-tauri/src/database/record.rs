@@ -2,6 +2,7 @@ use recorder::platforms::PlatformType;
 
 use super::Database;
 use super::DatabaseError;
+use crate::events::DataChange;
 use chrono::Utc;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
@@ -49,6 +50,25 @@ impl Database {
         .await?)
     }
 
+    pub async fn get_room_records(
+        &self,
+        platform: &str,
+        room_id: &str,
+        offset: i64,
+        limit: i64,
+    ) -> Result<Vec<RecordRow>, DatabaseError> {
+        Ok(sqlx::query_as::<_, RecordRow>(
+            "SELECT * FROM records WHERE platform = $1 AND room_id = $2 \
+             ORDER BY created_at DESC, live_id DESC LIMIT $3 OFFSET $4",
+        )
+        .bind(platform)
+        .bind(room_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     pub async fn get_archives_by_parent_id(
         &self,
         room_id: &str,
@@ -89,7 +109,9 @@ impl Database {
                 if e.to_string().contains("UNIQUE constraint failed") {
                     return self.get_record(room_id, live_id).await;
                 }
+                return Err(e.into());
             }
+        self.notify_change(DataChange::Records);
         Ok(record)
     }
 
@@ -110,6 +132,7 @@ impl Database {
             .bind(live_id)
             .execute(&self.pool)
             .await?;
+        self.notify_change(DataChange::Records);
         Ok(to_delete)
     }
 
@@ -126,6 +149,7 @@ impl Database {
             .bind(live_id)
             .execute(&self.pool)
             .await?;
+        self.notify_coalesced_change(DataChange::Records);
         Ok(())
     }
 
@@ -139,6 +163,7 @@ impl Database {
             .bind(live_id)
             .execute(&self.pool)
             .await?;
+        self.notify_change(DataChange::Records);
         Ok(())
     }
 
@@ -152,6 +177,7 @@ impl Database {
             .bind(live_id)
             .execute(&self.pool)
             .await?;
+        self.notify_change(DataChange::Records);
         Ok(())
     }
 

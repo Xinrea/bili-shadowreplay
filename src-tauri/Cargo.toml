@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/danmu_stream", "crates/ffmpeg_utils", "crates/recorder", "crates/whisper-cpp-rs"]
+members = ["crates/danmu_stream", "crates/ffmpeg_utils", "crates/native-overlay", "crates/recorder", "crates/whisper-cpp-rs"]
 resolver = "2"
 
 [workspace.lints.clippy]
@@ -11,7 +11,7 @@ perf = "deny"
 
 [package]
 name = "bili-shadowreplay"
-version = "2.23.1"
+version = "2.26.0"
 description = "BiliBili ShadowReplay"
 authors = ["Xinrea"]
 license = ""
@@ -26,14 +26,15 @@ workspace = true
 [dependencies]
 danmu_stream = { path = "crates/danmu_stream" }
 ffmpeg_utils = { path = "crates/ffmpeg_utils" }
+native-overlay = { path = "crates/native-overlay" }
 recorder = { path = "crates/recorder" }
 serde_json = "1.0"
+sha2 = "0.10"
 reqwest = { workspace = true}
 serde_derive = "1.0.158"
 serde = "1.0.158"
 sysinfo = "0.32.0"
 m3u8-rs = { workspace = true }
-async-ffmpeg-sidecar = { workspace = true }
 chrono = { version = "0.4.24", features = ["serde"] }
 toml = "0.9"
 tokio = { version = "1.27.0", features = ["process", "fs", "sync"] }
@@ -57,8 +58,11 @@ clap = { version = "4.5.37", features = ["derive"] }
 url = "2.5.4"
 srtparse = "0.2.0"
 thiserror = "2"
+regex = "1.13"
 sanitize-filename = "0.6.0"
 tempfile = "3.20.0"
+fontdb = { version = "0.23", default-features = false, features = ["fs", "fontconfig"] }
+ttf-parser = { version = "0.25", default-features = false, features = ["std"] }
 socketioxide = "0.17.2"
 sentry = { version = "0.46.0", features = ["log", "logs"] }
 # Use Rig's core crate directly. The facade crate enables every provider and
@@ -66,11 +70,24 @@ sentry = { version = "0.46.0", features = ["log", "logs"] }
 # dependencies to the desktop application.
 rig-core = { version = "0.40.0", default-features = false, features = ["derive", "rustls"] }
 
+[dev-dependencies]
+# Dependency crates do not inherit cfg(test); opt in only for application tests.
+ffmpeg_utils = { path = "crates/ffmpeg_utils", features = ["cli-test-oracles"] }
+
 [target.'cfg(windows)'.dependencies]
+# The normal Windows application includes GPU composition. Runtime probes
+# choose a supported device/codec before falling back to the CPU renderer.
+ffmpeg_utils = { path = "crates/ffmpeg_utils", features = ["vulkan-video"] }
+native-overlay = { path = "crates/native-overlay", features = ["vulkan"] }
 sherpa-onnx = { version = "1.13.4", default-features = false, features = ["shared"] }
 
 [target.'cfg(not(windows))'.dependencies]
 sherpa-onnx = "1.13.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+ffmpeg_utils = { path = "crates/ffmpeg_utils", features = ["vulkan-video"] }
+native-overlay = { path = "crates/native-overlay", features = ["vulkan"] }
+libc = "0.2"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem
@@ -93,8 +110,12 @@ gui = [
     "tauri-plugin-notification",
     "tauri-plugin-deep-link",
     "tauri-plugin-autostart",
+    "tauri-plugin-updater",
+    "tauri-plugin-process",
     "fix-path-env",
     "tauri-build",
+    "objc2-app-kit",
+    "objc2-foundation",
 ]
 
 [dependencies.tauri]
@@ -148,6 +169,14 @@ optional = true
 version = "=2.5.0"
 optional = true
 
+[dependencies.tauri-plugin-updater]
+version = "=2.9.0"
+optional = true
+
+[dependencies.tauri-plugin-process]
+version = "=2.3.0"
+optional = true
+
 [dependencies.fix-path-env]
 git = "https://github.com/tauri-apps/fix-path-env-rs"
 optional = true
@@ -155,6 +184,20 @@ optional = true
 [build-dependencies.tauri-build]
 version = "2"
 features = []
+optional = true
+
+# Set the window title without losing the custom traffic light position; see
+# `set_window_title`. Same versions as the ones wry and tao already pull in.
+[target.'cfg(target_os = "macos")'.dependencies.objc2-app-kit]
+version = "0.3"
+default-features = false
+features = ["std", "NSResponder", "NSView", "NSWindow"]
+optional = true
+
+[target.'cfg(target_os = "macos")'.dependencies.objc2-foundation]
+version = "0.3"
+default-features = false
+features = ["std", "NSString"]
 optional = true
 
 
@@ -168,7 +211,12 @@ md5 = "0.8"
 pct-str = "2.0"
 rand = "0.10"
 m3u8-rs = "6.0"
-async-ffmpeg-sidecar = "0.0.3"
 
-[profile.release]
-debug = 1
+# ffmpeg-sys-next 9's unoptimized build script overflows Windows' 1 MiB
+# executable stack. Build scripts are unoptimized even in release by default,
+# so override this FFI crate in both profiles without global linker/stack flags.
+[profile.dev.package.ffmpeg-sys-next]
+opt-level = 1
+
+[profile.release.package.ffmpeg-sys-next]
+opt-level = 3

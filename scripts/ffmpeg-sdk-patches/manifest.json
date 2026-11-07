@@ -1,0 +1,10 @@
+{
+  "upstream_commit": "ddfa842088cd86bd48bc4533f10a4b5badcbd02d",
+  "upstream_url": "https://github.com/FFmpeg/FFmpeg/commit/ddfa842088cd86bd48bc4533f10a4b5badcbd02d",
+  "patch_file": "0001-vulkan-encode-free-queued-picture-views.patch",
+  "patch_sha256": "5d4731d387e458d5e35a4b26bcd67bf30330b6eace60892bdda39f5eebf2410d",
+  "source_ref": "n9.0.2",
+  "source_file": "libavcodec/vulkan_encode.c",
+  "source_sha256": "73a83e53d322b70e4e615bcffc8abebe252fa7f29f06abb99d8f118437f10b41",
+  "patched_sha256": "e7d5875d489099248d89303373c54fce0183ad9c476fe63f61004cd9308e3798"
+}

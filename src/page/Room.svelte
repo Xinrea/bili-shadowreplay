@@ -1,21 +1,22 @@
 <script lang="ts">
-  import { invoke, open, onOpenUrl, get_static_url, get } from "../lib/invoker";
+  import { createStateRefresh, watchStateChanges } from "../lib/state-refresh";
+  import { liveRoomUrl } from "../lib/platform";
+  import { invoke, open, onOpenUrl, get } from "../lib/invoker";
   import { message } from "@tauri-apps/plugin-dialog";
   import { fade, scale } from "svelte/transition";
   import { Dropdown, DropdownItem } from "flowbite-svelte";
   import type { RecorderList, RecorderInfo } from "../lib/interface";
-  import type { RecordItem } from "../lib/db";
   import {
     Ellipsis,
     Play,
     Plus,
-    FileVideo,
     Search,
     Trash2,
     X,
     History,
     PlayIcon,
     Globe,
+    Radio,
   } from "lucide-svelte";
   import BilibiliIcon from "../lib/components/BilibiliIcon.svelte";
   import DouyinIcon from "../lib/components/DouyinIcon.svelte";
@@ -27,8 +28,12 @@
   import YouTubeIcon from "../lib/components/YouTubeIcon.svelte";
   import PlatformIconTabs from "../lib/components/PlatformIconTabs.svelte";
   import AutoRecordIcon from "../lib/components/AutoRecordIcon.svelte";
-  import GenerateWholeClipModal from "../lib/components/GenerateWholeClipModal.svelte";
+  import PageTitlebar from "../lib/components/PageTitlebar.svelte";
+  import DeleteConfirmActions from "../lib/components/DeleteConfirmActions.svelte";
+  import RoomStatusModal from "../lib/components/RoomStatusModal.svelte";
+  import RoomArchiveModal from "../lib/components/RoomArchiveModal.svelte";
   import { onMount } from "svelte";
+  import { registerCommands } from "../lib/stores/commands";
 
   interface Props {
     room_count?: number;
@@ -63,6 +68,7 @@
       tiktok: "/imgs/tiktok.png",
       twitch: "/imgs/twitch.svg",
       youtube: "/imgs/youtube.svg",
+      rtmp: "/imgs/rtmp.svg",
     };
     return avatarMap[platform] || "/imgs/huya_avatar.png";
   }
@@ -77,6 +83,7 @@
       tiktok: "/imgs/tiktok.png",
       twitch: "/imgs/twitch.svg",
       youtube: "/imgs/youtube.svg",
+      rtmp: "/imgs/rtmp.svg",
     };
     return coverMap[platform] || "/imgs/huya.png";
   }
@@ -106,6 +113,8 @@
     image_cache.set(url, cover_url);
     return cover_url;
   }
+
+  const stateRefresh = createStateRefresh(update_summary);
 
   async function update_summary() {
     let new_summary = (await invoke("get_recorder_list")) as RecorderList;
@@ -148,142 +157,60 @@
 
     summary = new_summary;
   }
-  update_summary();
-  setInterval(update_summary, 5000);
+  onMount(() => watchStateChanges(stateRefresh, ["recorders-changed"]));
+
+  let searchInput: HTMLInputElement | null = $state(null);
+
+  onMount(() =>
+    registerCommands([
+      {
+        id: "room:add",
+        group: "action",
+        title: "添加直播间",
+        detail: "直播间",
+        icon: Plus,
+        keywords: ["add room", "new room", "record"],
+        page: "直播间",
+        run: () => (addModal = true),
+      },
+      {
+        id: "room:search",
+        group: "action",
+        title: "搜索直播间",
+        detail: "直播间",
+        icon: Search,
+        keywords: ["search room", "find", "filter"],
+        page: "直播间",
+        run: () => searchInput?.focus({ preventScroll: true }),
+      },
+    ]),
+  );
 
   // modals
+  let statusRoom: RecorderInfo | null = $state(null);
+  let roomMenuTrigger: HTMLButtonElement | null = null;
+
+  function closeRoomStatus() {
+    statusRoom = null;
+    queueMicrotask(() => roomMenuTrigger?.focus({ preventScroll: true }));
+  }
+
   let deleteModal = $state(false);
+  let deletingRoom = $state(false);
   let deleteRoom = $state(null);
 
   let addModal = $state(false);
   let addRoom = $state("");
   let selectedPlatform = $state("bilibili");
+  let creatingRoom = $state(false);
 
-  let archiveModal = $state(false);
-  let archiveRoom: RecorderInfo = $state(null);
-  let archives: RecordItem[] = $state([]);
-
-  // 分页相关状态
-  let currentPage = $state(0);
-  let pageSize = 20;
-  let hasMore = $state(true);
-  let isLoading = $state(false);
-  let loadError = $state("");
-
-  async function showArchives(room_id: string) {
-    // 重置分页状态
-    currentPage = 0;
-    archives = [];
-    hasMore = true;
-    isLoading = false;
-    loadError = "";
-
-    updateArchives();
-    archiveModal = true;
-    console.log(archives);
-  }
-
-  async function updateArchives() {
-    if (isLoading || !hasMore) return;
-
-    isLoading = true;
-
-    try {
-      let new_archives = (await invoke("get_archives", {
-        roomId: archiveRoom.room_info.room_id,
-        offset: currentPage * pageSize,
-        limit: pageSize,
-      })) as RecordItem[];
-
-      for (const archive of new_archives) {
-        archive.cover = await get_static_url(
-          "cache",
-          `${archive.platform}/${archive.room_id}/${archive.live_id}/cover.jpg`,
-        );
-      }
-
-      // 如果是第一页，直接替换；否则追加数据
-      if (currentPage === 0) {
-        archives = new_archives;
-      } else {
-        archives = [...archives, ...new_archives];
-      }
-
-      // 检查是否还有更多数据
-      hasMore = new_archives.length === pageSize;
-
-      // 按时间排序
-      archives.sort((a, b) => {
-        return (
-          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-        );
-      });
-
-      // 更新总数（如果后端支持的话）
-      // totalCount = await invoke("get_archives_count", { roomId: archiveRoom.room_id });
-
-      currentPage++;
-    } catch (error) {
-      console.error("Failed to load archives:", error);
-      loadError = "加载失败，请重试";
-    } finally {
-      isLoading = false;
-    }
-  }
-
-  async function loadMoreArchives() {
-    await updateArchives();
-  }
-
-  function handleScroll(event: Event) {
-    const target = event.target as HTMLElement;
-    const { scrollTop, scrollHeight, clientHeight } = target;
-
-    // 当滚动到距离底部100px时，自动加载更多
-    if (
-      scrollHeight - scrollTop - clientHeight < 100 &&
-      hasMore &&
-      !isLoading
-    ) {
-      loadMoreArchives();
-    }
-  }
-
-  function format_ts(ts_string: string) {
-    const date = new Date(ts_string);
-    return date.toLocaleString();
-  }
-
-  function format_duration(duration: number) {
-    duration = Math.round(duration);
-    const hours = Math.floor(duration / 3600)
-      .toString()
-      .padStart(2, "0");
-    const minutes = Math.floor((duration % 3600) / 60)
-      .toString()
-      .padStart(2, "0");
-    const seconds = (duration % 60).toString().padStart(2, "0");
-
-    return `${hours}:${minutes}:${seconds}`;
-  }
-
-  function format_size(size: number) {
-    if (size < 1024) {
-      return `${size} B`;
-    } else if (size < 1024 * 1024) {
-      return `${(size / 1024).toFixed(2)} KiB`;
-    } else if (size < 1024 * 1024 * 1024) {
-      return `${(size / 1024 / 1024).toFixed(2)} MiB`;
-    } else {
-      return `${(size / 1024 / 1024 / 1024).toFixed(2)} GiB`;
-    }
-  }
-
-  function calc_bitrate(size: number, duration: number) {
-    return ((size * 8) / duration / 1024).toFixed(0);
-  }
+  let archiveRoom: RecorderInfo | null = $state(null);
+  const currentArchiveRoom = $derived(archiveRoom && (summary.recorders.find((room) =>
+    room.room_info.platform === archiveRoom.room_info.platform &&
+    room.room_info.room_id === archiveRoom.room_info.room_id) ?? archiveRoom));
 
   function handleModalClickOutside(event) {
+    if (statusRoom || archiveRoom) return;
     // 检查点击是否在任何modal内部
     const clickedElement = event.target;
 
@@ -292,30 +219,7 @@
       return;
     }
 
-    // 按层级顺序检查modal，优先处理最上层的modal
-    // 如果点击在最上层modal内部，则不处理任何modal关闭
-
-    // 最上层：generateWholeClipModal (handled by component)
-    if (generateWholeClipModal) {
-      return; // Let the component handle its own modal closing
-    }
-
-    // 第二层：archiveModal
-    if (archiveModal) {
-      const archiveModalEl = document.querySelector(".archive-modal");
-      if (archiveModalEl) {
-        if (archiveModalEl.contains(clickedElement)) {
-          // 点击在archiveModal内部，不关闭任何modal
-          return;
-        } else {
-          // 点击在archiveModal外部，关闭它
-          archiveModal = false;
-          return;
-        }
-      }
-    }
-
-    // 第三层：addModal
+    // 添加直播间弹窗
     if (addModal) {
       const addModalEl = document.querySelector(".add-modal");
       if (addModalEl) {
@@ -330,8 +234,9 @@
       }
     }
 
-    // 第四层：deleteModal
+    // 删除直播间弹窗
     if (deleteModal) {
+      if (deletingRoom) return;
       const deleteModalEl = document.querySelector(".delete-modal");
       if (deleteModalEl) {
         if (deleteModalEl.contains(clickedElement)) {
@@ -390,50 +295,12 @@
   }
 
   function openLiveUrl(room: RecorderInfo) {
-    switch (room.room_info.platform) {
-      case "bilibili":
-        open("https://live.bilibili.com/" + room.room_info.room_id);
-        break;
-      case "douyin":
-        open("https://live.douyin.com/" + room.room_info.room_id);
-        break;
-      case "douyu":
-        open("https://www.douyu.com/" + room.room_info.room_id);
-        break;
-      case "huya":
-        open("https://www.huya.com/" + room.room_info.room_id);
-        break;
-      case "kuaishou":
-        open("https://live.kuaishou.com/u/" + room.room_info.room_id);
-        break;
-      case "tiktok":
-        open(`https://www.tiktok.com/${room.room_info.room_id}/live`);
-        break;
-      case "twitch":
-        open(`https://www.twitch.tv/${room.room_info.room_id}`);
-        break;
-      case "youtube":
-        if (room.room_info.room_id.startsWith("http")) {
-          open(room.room_info.room_id);
-        } else if (room.room_info.room_id.startsWith("legacy-c-")) {
-          open(`https://www.youtube.com/c/${room.room_info.room_id.slice(9)}/live`);
-        } else if (room.room_info.room_id.startsWith("legacy-user-")) {
-          open(`https://www.youtube.com/user/${room.room_info.room_id.slice(12)}/live`);
-        } else if (/^[A-Za-z0-9_-]{11}$/.test(room.room_info.room_id)) {
-          open(`https://www.youtube.com/watch?v=${room.room_info.room_id}`);
-        } else if (room.room_info.room_id.startsWith("UC")) {
-          open(`https://www.youtube.com/channel/${room.room_info.room_id}/live`);
-        } else {
-          const handle = room.room_info.room_id.startsWith("@")
-            ? room.room_info.room_id
-            : `@${room.room_info.room_id}`;
-          open(`https://www.youtube.com/${handle}/live`);
-        }
-        break;
-    }
+    const url = liveRoomUrl(room.room_info.platform, room.room_info.room_id);
+    if (url) open(url);
   }
 
   function addNewRecorder(room_id: string, platform: string) {
+    if (creatingRoom) return;
     const room_input = room_id.trim();
     const douyu_room_id =
       platform === "douyu"
@@ -504,10 +371,11 @@
         break;
     }
 
-    invoke("add_recorder", {
-      roomId: room_id,
+    creatingRoom = true;
+    invoke<{ room_id: string }>("add_recorder", {
+      roomId: platform === "rtmp" ? "" : room_id,
       platform: platform,
-      extra: "",
+      extra: platform === "rtmp" ? JSON.stringify({ name: room_input }) : "",
     })
       .then(() => {
         addModal = false;
@@ -515,20 +383,8 @@
       })
       .catch(async (e) => {
         await message(e);
-      });
-  }
-
-  let generateWholeClipModal = $state(false);
-  let generateWholeClipArchive: RecordItem = $state(null);
-
-  async function openGenerateWholeClipModal(archive: RecordItem) {
-    generateWholeClipModal = true;
-    generateWholeClipArchive = archive;
-  }
-
-  function handleWholeClipGenerated() {
-    generateWholeClipModal = false;
-    generateWholeClipArchive = null;
+      })
+      .finally(() => { creatingRoom = false; });
   }
 
   onMount(async () => {
@@ -589,128 +445,125 @@
   });
 </script>
 
-<div
-  class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50 dark:bg-black"
->
-  <div class="space-y-6">
-    <!-- Header -->
-    <div class="flex justify-between items-center">
-      <div class="flex items-center space-x-4">
-        <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">
-          直播间
-        </h1>
-        <div
-          class="flex items-center space-x-2 text-sm text-gray-500 dark:text-gray-400"
-        >
-          <span class="flex items-center space-x-1">
-            <span class="w-2 h-2 rounded-full bg-green-500"></span>
-            <span>{room_active} 直播中</span>
-          </span>
-          <span>•</span>
-          <span>{room_inactive} 未直播</span>
-        </div>
-      </div>
-      <div class="flex items-center space-x-3">
-        <div class="relative">
-          <Search
-            class="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 dark:text-gray-500"
-          />
-          <input
-            type="text"
-            bind:value={searchQuery}
-            placeholder="搜索直播间..."
-            class="pl-10 pr-4 py-2 rounded-lg bg-gray-100 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 text-gray-900 dark:text-white"
-          />
-        </div>
-        <button
-          class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center space-x-2"
-          onclick={() => {
-            addModal = true;
-          }}
-        >
-          <Plus class="w-5 h-5 icon-white" />
-          <span>添加新直播间</span>
-        </button>
-      </div>
-    </div>
+<PageTitlebar title="直播间">
+  {#snippet subtitle()}
+    <span
+      class="flex items-center gap-1.5 whitespace-nowrap text-[12px] text-fg-muted"
+    >
+      <span class="h-1.5 w-1.5 rounded-full bg-success"></span>
+      {room_active} 直播中
+      <span class="text-fg-faint">·</span>
+      {room_inactive} 未直播
+    </span>
+  {/snippet}
+  <div class="relative">
+    <Search
+      class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-fg-faint"
+    />
+    <input
+      bind:this={searchInput}
+      type="text"
+      bind:value={searchQuery}
+      placeholder="搜索直播间..."
+      class="ui-input h-7 w-44 rounded-[7px] pl-7 pr-2"
+    />
+  </div>
+  <button
+    class="ui-btn ui-btn-primary h-7 gap-1 rounded-[7px] px-2.5"
+    onclick={() => {
+      addModal = true;
+    }}
+  >
+    <Plus class="h-3.5 w-3.5" />
+    添加直播间
+  </button>
+</PageTitlebar>
 
+<div class="custom-scrollbar-light flex-1 overflow-auto bg-canvas p-5">
+  <div class="space-y-6">
     <!-- Room Grid -->
     <div class="grid grid-cols-3 gap-4">
       <!-- Active Room Card -->
       {#each filteredRecorders as room (room.room_info.room_id)}
-        <div
-          class="p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-400 transition-colors"
-        >
+        <div class="ui-card p-3 transition-colors hover:border-line-strong">
           <div class="relative">
             <img
               src={room.room_info.room_cover}
               alt="cover"
-              class={"w-full h-40 object-cover rounded-lg " +
+              class={"h-40 w-full rounded-[8px] bg-sunken object-cover " +
                 (room.room_info.status ? "" : "brightness-75")}
             />
             <!-- Room ID watermark -->
             <div
-              class="absolute bottom-2 left-2 px-2 py-1 rounded-md bg-black/30 backdrop-blur-sm flex items-center"
+              class="absolute bottom-2 left-2 flex h-6 max-w-[55%] items-center rounded-[6px] bg-black/50 px-1.5 backdrop-blur-sm"
             >
-              <span class="text-xs text-white/80 font-mono"
+              <span class="truncate font-mono text-[11px] text-white/85"
                 >{room.room_info.platform.toUpperCase()}#{room.room_info
                   .room_id}</span
               >
             </div>
-            {#if room.enabled}
+            {#if room.enabled || room.room_info.platform === "rtmp"}
               <div
-                class={"absolute top-2 left-2 p-1.5 px-2 rounded-md text-white text-xs flex items-center justify-center " +
-                  (room.recording ? "bg-red-500" : "bg-gray-700/90")}
+                class={"absolute left-2 top-2 flex h-6 items-center justify-center gap-1 rounded-[6px] px-1.5 text-[11px] font-medium text-white " +
+                  (room.recording ? "bg-danger" : "bg-black/50 backdrop-blur-sm")}
               >
-                <AutoRecordIcon class="w-4 h-4 text-white" />
+                <AutoRecordIcon class="h-4 w-4 text-white" />
                 {#if room.recording}
-                  <span class="text-white ml-1">录制中</span>
+                  <span class="text-white">{room.room_info.platform === "rtmp" ? "正在录制" : "录制中"}</span>
+                {:else if room.room_info.platform === "rtmp"}
+                  <span class="text-white">未录制</span>
                 {/if}
               </div>
             {/if}
             {#if !room.room_info.status}
               <div
-                class={"absolute bottom-2 right-2 p-1.5 px-2 rounded-md text-white text-xs flex items-center justify-center bg-gray-700"}
+                class="absolute bottom-2 right-2 flex h-6 items-center justify-center rounded-[6px] bg-black/50 px-2 text-[11px] text-white/80 backdrop-blur-sm"
               >
-                <span>直播未开始</span>
+                <span>{room.room_info.platform === "rtmp" ? "未开播" : "直播未开始"}</span>
               </div>
             {:else}
               <div
-                class={"absolute bottom-2 right-2 p-1.5 px-2 rounded-md text-white text-xs flex items-center justify-center bg-green-500"}
+                class="absolute bottom-2 right-2 flex h-6 items-center justify-center gap-1.5 rounded-[6px] bg-black/50 px-2 text-[11px] font-medium text-white backdrop-blur-sm"
               >
-                <span>直播进行中</span>
+                <span class="h-1.5 w-1.5 rounded-full bg-success"></span>
+                <span>{room.room_info.platform === "rtmp" ? "已开播" : "直播进行中"}</span>
               </div>
             {/if}
             <button
-              class="absolute top-2 right-2 p-1.5 rounded-lg bg-gray-900/50 hover:bg-gray-900/70 transition-colors"
+              class="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-[7px] bg-black/50 text-white backdrop-blur-sm transition-colors hover:bg-black/70"
+              aria-label={`管理直播间 ${room.user_info.user_name || room.room_info.room_id}`}
+              onfocus={(event) => (roomMenuTrigger = event.currentTarget)}
+              onpointerdown={(event) => (roomMenuTrigger = event.currentTarget)}
             >
-              <Ellipsis class="w-5 h-5 icon-white" />
+              <Ellipsis class="h-4 w-4" />
             </button>
-            <Dropdown class="whitespace-nowrap">
+            <Dropdown
+              class="min-w-[176px] whitespace-nowrap p-1"
+              classContainer="rounded-[10px] border border-line dark:border-line bg-surface dark:bg-surface text-fg dark:text-fg divide-line dark:divide-line shadow-xl"
+            >
               <button
-                class="px-4 py-2 flex items-center justify-between hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"
+                class="ui-menu-item cursor-pointer justify-between gap-4"
                 onclick={() => toggleEnabled(room)}
               >
-                <span
-                  class="text-sm text-gray-700 dark:text-gray-200 font-medium"
-                  >启用直播间</span
-                >
-                <label class="toggle-switch ml-1">
+                <span class="font-medium">启用</span>
+                <label class="ui-switch">
                   <input type="checkbox" checked={room.enabled} />
-                  <span class="toggle-slider"></span>
+                  <span></span>
                 </label>
               </button>
               <DropdownItem
-                onclick={() => {
-                  openLiveUrl(room);
-                }}>打开网页直播间</DropdownItem
+                defaultClass="ui-menu-item"
+                onclick={() => (statusRoom = room)}>状态</DropdownItem
               >
+              {#if room.room_info.platform !== "rtmp"}
+                <DropdownItem defaultClass="ui-menu-item" onclick={() => openLiveUrl(room)}>打开网页直播间</DropdownItem>
+              {/if}
               <DropdownItem
-                class="text-red-500"
+                defaultClass="ui-menu-item danger"
                 onclick={() => {
                   deleteRoom = room;
                   deleteModal = true;
-                }}>移除直播间</DropdownItem
+                }}>移除</DropdownItem
               >
             </Dropdown>
           </div>
@@ -735,11 +588,13 @@
                       <TwitchIcon class="w-5 h-5 text-purple-600" />
                     {:else if room.room_info.platform === "youtube"}
                       <YouTubeIcon class="w-4 h-4" />
+                    {:else if room.room_info.platform === "rtmp"}
+                      <Radio class="w-4 h-4" />
                     {:else}
-                      <Globe class="w-4 h-4 text-gray-400" />
+                      <Globe class="h-4 w-4 text-fg-faint" />
                     {/if}
                   </span>
-                  <h3 class="font-medium text-gray-900 dark:text-white">
+                  <h3 class="text-[13px] font-medium text-fg">
                     {room.room_info.room_title}
                   </h3>
                 </div>
@@ -747,10 +602,10 @@
             </div>
             <div class="flex items-center justify-between">
               <div
-                class="flex items-center space-x-2 text-sm text-gray-600 dark:text-gray-400"
+                class="flex items-center space-x-2 text-[12px] text-fg-secondary"
               >
                 <button
-                  class="flex items-center space-x-2 p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
+                  class="-ml-1 flex items-center space-x-2 rounded-[8px] p-1 pr-2 transition-colors hover:bg-control-hover"
                   onclick={() => {
                     openUserUrl(room);
                   }}
@@ -758,7 +613,7 @@
                   <img
                     src={room.user_info.user_avatar}
                     alt="avatar"
-                    class="w-8 h-8 rounded-full"
+                    class="h-7 w-7 rounded-full"
                   />
                   <span>{room.user_info.user_name}</span>
                 </button>
@@ -766,7 +621,7 @@
               <div class="flex items-center space-x-1">
                 {#if room.recording}
                   <button
-                    class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
+                    class="ui-btn ui-btn-ghost ui-btn-icon"
                     onclick={() => {
                       invoke("open_live", {
                         platform: room.room_info.platform,
@@ -775,17 +630,16 @@
                       });
                     }}
                   >
-                    <Play class="w-5 h-5 dark:icon-white" />
+                    <Play class="h-4 w-4" />
                   </button>
                 {/if}
                 <button
-                  class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
-                  onclick={() => {
-                    archiveRoom = room;
-                    showArchives(room.room_info.room_id);
-                  }}
+                  class="ui-btn ui-btn-ghost ui-btn-icon"
+                  title="录播历史"
+                  aria-label={`查看 ${room.user_info.user_name || room.room_info.room_id} 的录播历史`}
+                  onclick={() => { archiveRoom = room; }}
                 >
-                  <History class="w-5 h-5 dark:icon-white" />
+                  <History class="h-4 w-4" />
                 </button>
               </div>
             </div>
@@ -795,20 +649,18 @@
 
       <!-- Add Room Card -->
       <button
-        class="p-4 rounded-xl border-2 border-dashed border-gray-300 dark:border-gray-600 hover:border-blue-500 dark:hover:border-blue-400 transition-colors flex flex-col items-center justify-center space-y-2"
+        class="flex flex-col items-center justify-center space-y-2 rounded-[10px] border border-dashed border-line-strong p-4 transition-colors hover:border-accent/60 hover:bg-surface/60"
         onclick={() => {
           addModal = true;
         }}
       >
         <div
-          class="w-12 h-12 rounded-full bg-blue-500/10 flex items-center justify-center"
+          class="flex h-10 w-10 items-center justify-center rounded-full bg-accent-soft"
         >
-          <Plus class="w-6 h-6 icon-primary" />
+          <Plus class="h-5 w-5 text-accent-fg" />
         </div>
-        <span class="text-sm font-medium text-blue-600 dark:text-blue-400"
-          >添加新直播间</span
-        >
-        <span class="text-xs text-gray-500 dark:text-gray-400"
+        <span class="text-[13px] font-medium text-accent-fg">添加新直播间</span>
+        <span class="text-[11px] text-fg-muted"
           >配置一个新直播间以及其相关设置</span
         >
       </button>
@@ -816,388 +668,115 @@
   </div>
 </div>
 {#if deleteModal}
-  <div
-    class="fixed inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center"
-    transition:fade={{ duration: 200 }}
-  >
+  <div class="ui-modal-backdrop" transition:fade={{ duration: 200 }}>
     <div
-      class="mac-modal delete-modal w-[320px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden"
+      class="ui-modal delete-modal w-[320px]"
       transition:scale={{ duration: 150, start: 0.95 }}
     >
-      <div class="p-6 space-y-4">
-        <div class="text-center space-y-2">
-          <h3 class="text-base font-medium text-gray-900 dark:text-white">
-            移除直播间
-          </h3>
-          <p class="text-sm text-gray-500 dark:text-gray-400">
+      <div class="space-y-4 p-5">
+        <div class="space-y-1.5 text-center">
+          <h3 class="text-[14px] font-semibold text-fg">移除直播间</h3>
+          <p class="text-[12px] text-fg-muted">
             此操作将移除所有相关的录制记录
           </p>
         </div>
-        <div class="flex justify-center space-x-3">
-          <button
-            class="w-24 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
-            onclick={() => {
-              deleteModal = false;
-            }}
-          >
-            取消
-          </button>
-          <button
-            class="w-24 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors"
-            onclick={async () => {
-              await invoke("remove_recorder", {
-                roomId: deleteRoom.room_info.room_id,
-                platform: deleteRoom.room_info.platform,
-              });
-              deleteModal = false;
-            }}
-          >
-            移除
-          </button>
-        </div>
+        <DeleteConfirmActions
+          bind:busy={deletingRoom}
+          confirmLabel="移除"
+          oncancel={() => (deleteModal = false)}
+          onconfirm={async () => {
+            await invoke("remove_recorder", {
+              roomId: deleteRoom.room_info.room_id,
+              platform: deleteRoom.room_info.platform,
+            });
+            deleteModal = false;
+          }}
+        />
       </div>
     </div>
   </div>
 {/if}
 
 {#if addModal}
-  <div
-    class="fixed inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center"
-    transition:fade={{ duration: 200 }}
-  >
+  <div class="ui-modal-backdrop" transition:fade={{ duration: 200 }}>
     <div
-      class="mac-modal add-modal w-[400px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden"
+      class="ui-modal add-modal w-[400px]"
       transition:scale={{ duration: 150, start: 0.95 }}
     >
       <!-- Header -->
-      <div class="px-6 py-4 border-b border-gray-200 dark:border-gray-700/50">
-        <h2 class="text-base font-medium text-gray-900 dark:text-white">
-          添加直播间
-        </h2>
+      <div class="ui-modal-header">
+        <h2>添加直播间</h2>
       </div>
 
-      <div class="p-6 space-y-6">
-        <div class="space-y-4">
-          <PlatformIconTabs
-            bind:value={selectedPlatform}
-            platforms={[
-              { id: "bilibili", label: "哔哩哔哩" },
-              { id: "douyin", label: "抖音" },
-              { id: "douyu", label: "斗鱼" },
-              { id: "huya", label: "虎牙" },
-              { id: "kuaishou", label: "快手" },
-              { id: "tiktok", label: "TikTok" },
-              { id: "twitch", label: "Twitch" },
-              { id: "youtube", label: "YouTube" },
-            ]}
+      <div class="ui-modal-body space-y-4">
+        <PlatformIconTabs
+          bind:value={selectedPlatform}
+          platforms={[
+            { id: "bilibili", label: "哔哩哔哩" },
+            { id: "douyin", label: "抖音" },
+            { id: "douyu", label: "斗鱼" },
+            { id: "huya", label: "虎牙" },
+            { id: "kuaishou", label: "快手" },
+            { id: "tiktok", label: "TikTok" },
+            { id: "twitch", label: "Twitch" },
+            { id: "youtube", label: "YouTube" },
+            { id: "rtmp", label: "RTMP 推流" },
+          ]}
+        />
+
+        <div class="space-y-1.5">
+          <label for="room_id" class="ui-label block">
+            {selectedPlatform === "rtmp" ? "房间名称" : "直播间 ID 或链接"}
+          </label>
+          <input
+            id="room_id"
+            type="text"
+            bind:value={addRoom}
+            class="ui-input w-full"
+            placeholder={selectedPlatform === "rtmp" ? "例如：我的 OBS" : "请输入直播间 ID 或链接"}
           />
-
-          <div class="space-y-2">
-            <label
-              for="room_id"
-              class="block text-sm font-medium text-gray-700 dark:text-gray-300"
-            >
-              直播间 ID 或链接
-            </label>
-            <input
-              id="room_id"
-              type="text"
-              bind:value={addRoom}
-              class="w-full px-3 py-2 bg-[#f5f5f7] dark:bg-[#1c1c1e] border-0 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
-              placeholder="请输入直播间 ID 或链接"
-            />
-          </div>
-
-          <div class="flex justify-end space-x-3">
-            <button
-              class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
-              onclick={() => {
-                addModal = false;
-              }}
-            >
-              取消
-            </button>
-            <button
-              class="px-4 py-2 bg-[#0A84FF] hover:bg-[#0A84FF]/90 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              disabled={!addRoom}
-              onclick={() => {
-                addNewRecorder(addRoom, selectedPlatform);
-                addModal = false;
-                addRoom = "";
-              }}
-            >
-              添加
-            </button>
-          </div>
         </div>
+        {#if selectedPlatform === "rtmp"}
+          <p class="text-[12px] text-fg-muted">端口和推流密钥自动生成，创建后可在房间菜单的「状态」中查看。</p>
+        {/if}
       </div>
-    </div>
-  </div>
-{/if}
 
-{#if archiveModal}
-  <div
-    class="fixed inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center"
-    transition:fade={{ duration: 200 }}
-  >
-    <div
-      class="mac-modal archive-modal w-[900px] bg-white dark:bg-[#323234] rounded-xl shadow-xl overflow-hidden flex flex-col max-h-[80vh]"
-      transition:scale={{ duration: 150, start: 0.95 }}
-    >
-      <!-- Header -->
-      <div
-        class="flex justify-between items-center px-6 py-4 border-b border-gray-200 dark:border-gray-700/50"
-      >
-        <div class="flex items-center space-x-3">
-          <h2 class="text-base font-medium text-gray-900 dark:text-white">
-            直播间记录
-          </h2>
-          <span class="text-sm text-gray-500 dark:text-gray-400">
-            {archiveRoom?.user_info.user_name} · {archiveRoom?.room_info
-              .room_id}
-          </span>
-        </div>
+      <div class="ui-modal-footer">
         <button
-          class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors"
-          onclick={() => (archiveModal = false)}
+          class="ui-btn"
+          onclick={() => {
+            addModal = false;
+          }}
         >
-          <X class="w-5 h-5 dark:icon-white" />
+          取消
+        </button>
+        <button
+          class="ui-btn ui-btn-primary"
+          disabled={creatingRoom || !addRoom.trim()}
+          onclick={() => {
+            addNewRecorder(addRoom, selectedPlatform);
+          }}
+        >
+          {creatingRoom ? "添加中…" : "添加"}
         </button>
       </div>
-
-      <div
-        class="flex-1 overflow-auto custom-scrollbar-light"
-        onscroll={handleScroll}
-      >
-        <div class="p-6">
-          <div class="overflow-x-auto custom-scrollbar-light">
-            <table class="w-full">
-              <thead>
-                <tr class="border-b border-gray-200 dark:border-gray-700/50">
-                  <th
-                    class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400"
-                    >直播时间</th
-                  >
-                  <th
-                    class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400"
-                    >标题</th
-                  >
-                  <th
-                    class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400"
-                    >时长</th
-                  >
-                  <th
-                    class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400"
-                    >大小</th
-                  >
-                  <th
-                    class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400"
-                    >码率</th
-                  >
-                  <th
-                    class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400"
-                    >操作</th
-                  >
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-gray-200 dark:divide-gray-700/50">
-                {#each archives as archive (archive.parent_id + ":" + archive.live_id)}
-                  <tr
-                    class="group hover:bg-[#f5f5f7] dark:hover:bg-[#3a3a3c] transition-colors"
-                  >
-                    <td class="px-4 py-3">
-                      <div class="flex flex-col">
-                        <span class="text-sm text-gray-900 dark:text-white"
-                          >{format_ts(archive.created_at).split(" ")[0]}</span
-                        >
-                        <span class="text-xs text-gray-500 dark:text-gray-400"
-                          >{format_ts(archive.created_at).split(" ")[1]}</span
-                        >
-                      </div>
-                    </td>
-                    <td class="px-4 py-3">
-                      <div class="flex items-center space-x-3">
-                        <img
-                          src={archive.cover}
-                          alt="cover"
-                          class="w-12 h-8 rounded object-cover"
-                        />
-                        <span class="text-sm text-gray-900 dark:text-white"
-                          >{archive.title}</span
-                        >
-                      </div>
-                    </td>
-                    <td class="px-4 py-3 text-sm text-gray-900 dark:text-white"
-                      >{format_duration(archive.length)}</td
-                    >
-                    <td class="px-4 py-3 text-sm text-gray-900 dark:text-white"
-                      >{format_size(archive.size)}</td
-                    >
-                    <td
-                      class="px-4 py-3 text-sm text-gray-500 dark:text-gray-400"
-                      >{calc_bitrate(archive.size, archive.length)} Kbps</td
-                    >
-                    <td class="px-4 py-3">
-                      <div class="flex items-center space-x-2">
-                        <button
-                          class="p-1.5 rounded-lg hover:bg-blue-500/10 transition-colors"
-                          title="预览录播"
-                          onclick={() => {
-                            invoke("open_live", {
-                              platform: archiveRoom.room_info.platform,
-                              roomId: archiveRoom.room_info.room_id,
-                              liveId: archive.live_id,
-                            });
-                          }}
-                        >
-                          <PlayIcon class="w-4 h-4 icon-primary" />
-                        </button>
-                        <button
-                          class="p-1.5 rounded-lg hover:bg-blue-500/10 transition-colors"
-                          title="生成完整切片"
-                          onclick={() => {
-                            openGenerateWholeClipModal(archive);
-                          }}
-                        >
-                          <FileVideo class="w-4 h-4 icon-primary" />
-                        </button>
-                        <button
-                          class="p-1.5 rounded-lg hover:bg-red-500/10 transition-colors"
-                          title="删除记录"
-                          onclick={() => {
-                            invoke("delete_archive", {
-                              platform: archiveRoom.room_info.platform,
-                              roomId: archiveRoom.room_info.room_id,
-                              liveId: archive.live_id,
-                            })
-                              .then(async () => {
-                                // 删除后重新加载第一页数据
-                                currentPage = 0;
-                                archives = [];
-                                hasMore = true;
-                                loadError = "";
-                                await updateArchives();
-                              })
-                              .catch((e) => {
-                                alert(e);
-                              });
-                          }}
-                        >
-                          <Trash2 class="w-4 h-4 text-red-500" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </div>
-
-          <!-- 加载更多区域 -->
-          <div class="mt-6 flex justify-center">
-            {#if loadError}
-              <div class="text-red-500 dark:text-red-400 text-sm mb-3">
-                {loadError}
-                <button
-                  class="ml-2 text-blue-500 hover:text-blue-600 underline"
-                  onclick={() => {
-                    loadError = "";
-                    loadMoreArchives();
-                  }}
-                >
-                  重试
-                </button>
-              </div>
-            {/if}
-
-            {#if isLoading && currentPage === 0}
-              <div
-                class="flex items-center space-x-2 text-gray-500 dark:text-gray-400"
-              >
-                <div
-                  class="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-500"
-                ></div>
-                <span>加载中...</span>
-              </div>
-            {:else if isLoading}
-              <div
-                class="flex items-center space-x-2 text-gray-500 dark:text-gray-400"
-              >
-                <div
-                  class="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"
-                ></div>
-                <span>加载更多...</span>
-              </div>
-            {:else if archives.length === 0 && !isLoading}
-              <div class="text-gray-500 dark:text-gray-400 text-sm">
-                暂无录制记录
-              </div>
-            {/if}
-          </div>
-        </div>
-      </div>
     </div>
   </div>
 {/if}
 
-<!-- Generate Whole Clip Modal -->
-<GenerateWholeClipModal
-  bind:showModal={generateWholeClipModal}
-  archive={generateWholeClipArchive}
-  roomId={generateWholeClipArchive?.room_id || ""}
-  onGenerated={handleWholeClipGenerated}
-/>
+{#if currentArchiveRoom}
+  {#key currentArchiveRoom.room_info.platform + ":" + currentArchiveRoom.room_info.room_id}
+    <RoomArchiveModal room={currentArchiveRoom} onclose={() => { archiveRoom = null; }} />
+  {/key}
+{/if}
+
+{#if statusRoom}
+  <RoomStatusModal room={statusRoom} onclose={closeRoomStatus} />
+{/if}
 
 <svelte:window onmousedown={handleModalClickOutside} />
 
 <style>
-  /* macOS style toggle switch */
-  .toggle-switch {
-    position: relative;
-    display: inline-block;
-    width: 36px;
-    height: 20px;
-  }
-
-  .toggle-switch input {
-    opacity: 0;
-    width: 0;
-    height: 0;
-  }
-
-  .toggle-slider {
-    position: absolute;
-    cursor: pointer;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-color: rgba(120, 120, 128, 0.32);
-    transition: 0.2s;
-    border-radius: 20px;
-  }
-
-  .toggle-slider:before {
-    position: absolute;
-    content: "";
-    height: 16px;
-    width: 16px;
-    left: 2px;
-    bottom: 2px;
-    background-color: white;
-    transition: 0.2s;
-    border-radius: 50%;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-  }
-
-  input:checked + .toggle-slider {
-    background-color: #34c759;
-  }
-
-  input:checked + .toggle-slider:before {
-    transform: translateX(16px);
-  }
-
   @keyframes spin-slow {
     from {
       transform: rotate(0deg);

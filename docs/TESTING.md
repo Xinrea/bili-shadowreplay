@@ -18,7 +18,7 @@ src-tauri/
 │   │   │   └── helpers_test.rs
 │   │   └── Cargo.toml
 │   ├── danmu_stream/      # Danmu provider tests
-│   ├── ffmpeg_utils/      # Shared ffmpeg/ffprobe plumbing; probes the
+│   ├── ffmpeg_utils/      # Native ffmpeg-next media pipeline and optional CLI oracles;
 │   │                      # fixtures in `src-tauri/tests/video/`
 │   └── whisper-cpp-rs/    # (Excluded from CI - requires CMake)
 ```
@@ -30,7 +30,10 @@ src-tauri/
 1. **System Dependencies** (Ubuntu/Debian):
    ```bash
    sudo apt-get update
-   sudo apt-get install -y libssl-dev pkg-config
+   sudo apt-get install -y libssl-dev pkg-config clang libclang-dev \
+     libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libavfilter-dev
+   # Optional: independent fixture generation and CLI parity oracles.
+   sudo apt-get install -y ffmpeg
    ```
 
 2. **Rust Toolchain**:
@@ -65,8 +68,129 @@ cargo test --package recorder -- --nocapture
 cargo test --package recorder test_platform_type_string_conversion
 ```
 
+The native media layer requires matching FFmpeg development libraries; see
+[FFmpeg build configuration](getting-started/config/ffmpeg.md).
+To verify metadata and recording behavior:
+
+```bash
+cargo test --package ffmpeg_utils
+cargo test --package recorder --lib core::hls_recorder::tests
+cargo test --package bili-shadowreplay ffmpeg::audio
+cargo test --package bili-shadowreplay material::tests
+```
+
+These tests use real MP4, WAV, TS and fMP4 fixtures. Native probing does not
+require `ffprobe` on `PATH`; one optional parity test compares fields with
+ffprobe when available. HLS tests download fixtures from a local HTTP server
+and verify init-map inheritance, EXTINF accounting, damaged TS appends and
+stream-shape changes. Native audio tests cover streaming decode/resampling,
+resampler tail draining, waveform windows, WAV output and contiguous 30-second
+chunks. Optional CLI comparisons also check compressed-audio PCM output and stream
+selection. Range extraction comparisons require identical sample counts and PCM
+samples for AAC (M4A, MP4, FLV, ADTS), MP3 and PCM, covering seek-zero priming,
+fractional starts, delayed/shifted audio, codec tails, EOF and sample-rate changes.
+Fixture-based range and cancellation tests run without a CLI; optional oracle
+tests skip when `ffmpeg` is unavailable. WAV application tests also check atomic
+publication and cleanup after cancelling blocked HTTP input. Historical fixture generation and optional packet/pixel parity tests still use the CLI; production paths and fixture-based native tests do not.
+
+For PCM parity tests, put the CLI from the linked SDK on `PATH`. Different FFmpeg
+releases can schedule the last audio frame differently; each native result is
+compared strictly with its matching CLI, without sample-count or PCM tolerances.
+
+Native material Opus tests verify the fixed 16 kHz mono / 64 kbps VBR profile,
+including floating-point input negotiation, short final frames, Ogg pre-skip and
+end granules, source timestamps, metadata and atomic output cleanup. Optional
+comparisons check encoded audio packets and timestamps against the matching CLI;
+Ogg stream serial numbers are random and are excluded from file comparisons.
+The linked SDK must provide the `libopus` encoder and Ogg/Opus muxer.
+
+The 128 kbps upload profile shares this pipeline, retaining source layouts and
+negotiating supported sample rates. Its CLI comparisons also cover stereo and
+surround audio, unsupported layouts, unusual sample rates, empty streams and
+midstream rate/channel changes. Application tests verify the PowerLive call and
+its subtitle-error mapping without making an external upload.
+
+Preview FLAC tests cover 48 kHz stereo PCM, AAC frame-grid trimming, preroll,
+adjacent chunks, first-track selection, metadata, EOF and cancellation. Native
+output uses fixed 4096-sample blocks (with a short final block) on both SDKs.
+FFmpeg 6.1's old CLI instead repacks into 4608-sample blocks: comparisons retain
+exact decoded PCM, counts and metadata, plus a separate CLI encode with explicit
+frame size for strict packet/STREAMINFO comparison. FFmpeg 9 keeps the original
+command as the strict encoded-output oracle. Nonempty clips below 16 output
+samples fail consistently with FFmpeg 9; empty clips write headers only.
+
+Audio import/export tests compare copied packets, codec extradata, timestamps,
+metadata/chapters, M4A faststart and exact converted PCM. AAC256 and MP3 q2
+comparisons retain encoded-packet equality, including MP3 Xing/Info headers and
+LAME delay/padding. The tests distinguish explicit first-track imports from
+automatic export selection and exercise planar audio across input format changes.
+Application import/export and WAV chunk tests also execute without a CLI.
+
+JPEG tests use a small checked-in H.264 B-frame clip and generated PPM images.
+Both quality modes, accurate seeking, display matrices, color range, SAR and
+automatic video selection are compared byte-for-byte with the matching CLI.
+On FFmpeg 6, the single-image zero-position oracle omits the broken `-ss 0`;
+video seek comparisons retain the original command. Native tests also cover
+concurrent extraction, atomic publication, EOF fallback and interrupting HTTP I/O.
+
+Image normalization tests compare PNG bytes against the former CLI for alpha,
+animated PNG/GIF, JPEG, WebP, scaling and ICC profiles on FFmpeg 6 and 9. They also
+exercise encoded-byte/pixel limits, compressed PNG metadata expansion, deadlines,
+cancellation and preservation of existing output on failure. Native calls cancel
+cooperatively; these bounds do not provide a hard per-job memory or time limit.
+
+Single-input media tests compare copied and encoded streams with the matching
+FFmpeg 6/9 CLI, including packet payloads, codec headers, timestamps, durations,
+key flags, side data and metadata. Their CLI oracle fixes simple and complex
+filter graphs to one thread, matching the native pipeline; encoded-byte parity
+does not assert equivalence with host-dependent automatic filter threading.
+They cover input-side copy seeks, output-side
+encoded seeks, negative timestamps, default subtitle selection and explicitly
+incompatible subtitle copies. Matroska's initially missing B-frame DTS is
+predicted before copying. Frame scheduling has 25 additional exact framehash
+cases for CFR/VFR, gaps, initial offsets, EOF tails and trim rounding. Native
+application tests run without a CLI and check publication before 100% progress,
+failed-output retention and cancellation of stalled network input.
+
+Concat-demuxer tests compare MP4 and MPEG-TS packets, stream headers, duration
+hints and the default mux delay on FFmpeg 6/9. The library-only fixture checks
+coded NALs across both files while accounting for the demuxer's SPS/PPS insertion.
+Cancellation verifies that network input closes before its worker-owned list is
+released; application tests also run with an empty PATH and retain prior output
+when a later input is missing.
+
+Native Skia subtitle tests cover generated styles, color emoji, cue boundaries,
+preview/export agreement, copied audio and invalid-input output retention.
+Project tests exercise generated subtitles and danmaku across segment boundaries
+and invalidate cached segments when subtitle contents or font identity change.
+External ASS/libass burn-in and its CLI parity tests have been removed.
+
+Shared-graph tests compare decoded concat and xfade/acrossfade against matching
+FFmpeg 6/9 commands, including mixed 12/24 fps inputs, explicit 30 fps, every
+coded packet, stream disposition and all copied audio tracks. Library-only tests
+cover generated color, simultaneous video/WAV outputs, exact PCM, predictable
+and late publication errors, and resources retained through final publication.
+An empty-audio atrim/apad graph also checks missing-PTS continuation and terminal
+filter-chain separators. The raw-frame reader has separate bounded-queue,
+buffer-ownership, cancellation, EOF/count and downstream-error tests.
+
+The project-render suite now executes the native segment and final-mix paths.
+Its 39 tests (including the opt-in cases) cover exact frame/sample boundaries,
+cross-segment audio, overlays, ASS/SRT, cache reuse, cancellation, scratch cleanup
+and retaining an earlier export after failure. Raw-overlay, SRT and danmaku
+application tests also run with libraries alone. FFmpeg 6/9 alpha oracles compare
+every BGRA byte over three base colors; streaming tests verify reuse of the
+bounded producer buffers and preserve copied audio.
+
+Native FLV-to-HLS tests use a six-second checked-in audiovisual fixture. They
+compare the playlist, segment durations and every copied packet with the CLI,
+including timestamps, and verify append behavior without replacing old segments.
+Local HTTP tests check headers, idle timeout, graceful input stop with final-tail
+publication, and cancellation without a surviving writer. Recorder tests verify
+ENDLIST and complete final duration/size updates without invoking a CLI.
+
 To smoke-test Douyu against a **currently live** numeric room using the
-production `DouyuRecorder` loop for five minutes (requires `ffmpeg` on `PATH`):
+production `DouyuRecorder` loop for five minutes (requires the matching native media libraries and network access):
 
 ```bash
 cd src-tauri
@@ -77,6 +201,47 @@ The test is ignored in normal runs because the room and CDN must be reachable.
 It requires one archive and roughly one minute of new HLS segments each minute,
 and removes the temporary recording when the test finishes. Replace `1667826`
 if it is offline.
+
+### Windows native media validation
+
+Use an x64 MSVC developer PowerShell and the pinned Gyan **FFmpeg 9.0.2
+shared SDK**. Run setup and Cargo in the same shell: `ffmpeg_setup.ps1` sets
+`FFMPEG_DIR` and the SDK DLL/optional CLI search path for that process. It locates
+`LIBCLANG_PATH` when LLVM is available; otherwise set it to LLVM's `bin` directory.
+The Skia preparation script prints its URL; explicitly set
+`SKIA_BINARIES_URL` to that value, preserving the `{key}` placeholder.
+Windows application builds include the Vulkan backend by default, including
+headless builds; the preparation script now selects the Vulkan archive without
+an extra option. Re-run it if the environment previously prepared a CPU archive.
+
+From the repository root:
+
+```powershell
+& .\ffmpeg_setup.ps1
+rustup component add llvm-tools
+$skia = node scripts/prepare-windows-skia.mjs
+$env:SKIA_BINARIES_URL = ($skia | Where-Object { $_ -like 'SKIA_BINARIES_URL=*' }) -replace '^SKIA_BINARIES_URL=', ''
+cargo test --manifest-path src-tauri/Cargo.toml -p ffmpeg_utils --locked --lib
+cargo test --manifest-path src-tauri/Cargo.toml -p bili-shadowreplay --locked ffmpeg:: -- --include-ignored --test-threads=1 --skip native_gpu_
+cargo test --manifest-path src-tauri/Cargo.toml -p recorder --locked
+
+# On a Vulkan Video-capable device: actual production GPU exports, no feature opt-in.
+cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features headless native_gpu_ -- --ignored --nocapture --test-threads=1
+
+# Targeted GOP check: both CLI and native plans must retain 301 frames and GOP <=120.
+cargo test --manifest-path src-tauri/Cargo.toml -p bili-shadowreplay --locked encoded_keyframe_gaps_respect_the_120_frame_gop -- --include-ignored
+```
+
+The GOP test covers both priorities for software encoders and available
+NVENC/VideoToolbox encoders. Both paths require a first keyframe at zero, gaps
+and a final tail of at most 120 frames, and at least one exact 120-frame gap.
+Its 320x240 fixture matches the native probe's supported geometry.
+For deployment checks, place the core test executable beside the packaged SDK
+DLLs, then remove SDK variables and SDK/CLI directories from `PATH`. Native
+media tests must still pass; optional CLI oracles skip when executables are
+absent. Check that packaged DLLs match the build SDK and that the installer
+contains no FFmpeg CLI executables. Package tests do not replace an interactive
+GUI smoke test.
 
 ### Running All Tests (including integration)
 
@@ -101,7 +266,7 @@ cargo test --package recorder --test '*'
 | Recorder core | ✅ Good | Playlist, HLS recorder internals |
 | Pure utilities | ✅ Excellent | Platform type, sanitize filename, etc. |
 | Danmu providers | ⚠️ Limited | Basic tests, mostly inline |
-| FFmpeg integration | ❌ None | Requires further work |
+| FFmpeg integration | ✅ Probe coverage | Native metadata parity, fMP4 AVIO and real HLS segment processing |
 | End-to-end flows | ❌ None | Future work |
 
 **Total**: ~91 library tests passing (live-network smoke tests are `#[ignore]`)
@@ -242,9 +407,9 @@ The following areas need test coverage in future work:
    - Reconnection and error recovery
 
 2. **FFmpeg operations**
-   - Command construction (without actually running FFmpeg)
-   - Argument validation
-   - Error handling for FFmpeg failures
+   - Successful hardware encoding on physical devices beyond the available test host
+   - Longer network interruption/reconnect and codec-change recording soaks
+   - Release installation on Windows/Linux after native library packaging changes
 
 3. **End-to-end recording flows**
    - Would require long-running integration tests
@@ -283,3 +448,11 @@ Some tests create tokio runtimes - ensure you're using `#[tokio::test]` for asyn
 ## Contact
 
 For test infrastructure questions, open an issue.
+
+## macOS 开发启动运行库
+
+`node --test scripts/tests/macos-runtime.test.mjs` 覆盖 SDK 显式配置、下载校验失败、运行库签名和 FFmpeg 裸文件名加载、离线缓存复用及损坏缓存拒绝。动态库加载测试仅在 macOS 执行，其余测试无需网络。完整开发启动验证应清除手工 `FFMPEG_DIR`、`PKG_CONFIG_PATH`、`BSR_VULKAN_LIBRARY`、`BSR_MOLTENVK_LIBRARY` 和 `DYLD_*` 配置，通过 `yarn tauri dev` 确认自动准备，并执行 GPU 导出探测；不要用此前测试目录里的运行库代替首次准备流程。
+
+## Windows 开发启动依赖
+
+`node --test scripts/tests/windows-runtime.test.mjs scripts/tests/prepare-windows-skia.test.mjs` 覆盖 Windows 环境变量大小写、开发者环境解析、自定义 FFmpeg SDK、DLL 部署与重复启动、SDK 缺失文件拒绝、Skia 缓存版本及校验。PowerShell 集成测试仅在 Windows 运行，不联网。实机验证应在普通终端清除手动 `FFMPEG_DIR`、`SKIA_BINARIES_URL`、`LIBCLANG_PATH` 和 VS 开发环境，确认首次准备、缓存复用、`yarn tauri dev` 构建及原生 GPU 导出探测；使用独立应用数据，避免触碰现有录像和账号。

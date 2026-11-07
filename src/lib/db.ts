@@ -1,9 +1,3 @@
-export interface RecorderItem {
-  platform: string;
-  room_id: string;
-  created_at: string;
-}
-
 export interface AccountItem {
   platform: string;
   uid: string;
@@ -11,14 +5,6 @@ export interface AccountItem {
   avatar: string;
   csrf: string;
   cookies: string;
-  created_at: string;
-}
-
-export interface MessageItem {
-  id: number;
-  title: string;
-  content: string;
-  read: number;
   created_at: string;
 }
 
@@ -33,6 +19,9 @@ export interface RecordItem {
   size: number;
   created_at: string;
   cover: string;
+  /** Retained segment coverage in Unix milliseconds; older servers may omit it. */
+  recording_started_at?: number | null;
+  recording_ended_at?: number | null;
 }
 
 export interface AccountInfo {

@@ -1,18 +1,58 @@
 <script lang="ts">
   import Room from "./page/Room.svelte";
-  import BSidebar from "./lib/components/BSidebar.svelte";
+  import BSidebar, {
+    SIDEBAR_RAIL_WIDTH,
+    SIDEBAR_WIDTH,
+  } from "./lib/components/BSidebar.svelte";
+  import SidebarToggle from "./lib/components/SidebarToggle.svelte";
+  import { MAC_TRAFFIC_LIGHTS } from "./lib/window-chrome";
   import Summary from "./page/Summary.svelte";
   import Setting from "./page/Setting.svelte";
   import Account from "./page/Account.svelte";
   import About from "./page/About.svelte";
-  import { log, onOpenUrl } from "./lib/invoker";
+  import { listen, log, onOpenUrl } from "./lib/invoker";
   import Clip from "./page/Clip.svelte";
+  import Material from "./page/Material.svelte";
+  import Upload from "./page/Upload.svelte";
   import Task from "./page/Task.svelte";
   import AI from "./page/AI.svelte";
   import Archive from "./page/Archive.svelte";
-  import { onMount } from "svelte";
+  import TaskCenter from "./lib/components/TaskCenter.svelte";
+  import TaskCenterButton from "./lib/components/TaskCenterButton.svelte";
+  import TitleBar from "./lib/components/TitleBar.svelte";
+  import PageView from "./lib/components/PageView.svelte";
+  import type { PageTitlebarContent } from "./lib/page-titlebar";
+  import CommandPalette from "./lib/components/CommandPalette.svelte";
+  import { pages } from "./lib/pages";
+  import { registerCommands } from "./lib/stores/commands";
+  import { openTaskCenter } from "./lib/stores/tasks";
+  import { uploadRequest } from "./lib/uploads";
+  import { ListChecks, PanelLeft } from "lucide-svelte";
+  import { onMount, tick } from "svelte";
 
   let active = $state("总览");
+  // Filled by each page's `PageTitlebar`, keyed by sidebar label.
+  let titlebars: Record<string, PageTitlebarContent | null> = $state({});
+  let titlebar = $derived(titlebars[active]);
+
+  let sidebarCollapsed = $state(
+    localStorage.getItem("sidebar-collapsed") === "true",
+  );
+  function toggleSidebar() {
+    sidebarCollapsed = !sidebarCollapsed;
+    localStorage.setItem("sidebar-collapsed", String(sidebarCollapsed));
+  }
+
+  let settingPage: ReturnType<typeof Setting> | undefined = $state();
+
+  /** Shows the settings page, optionally scrolled to one of its options. */
+  async function openSettings(target?: string) {
+    active = "设置";
+    if (!target) return;
+    await tick();
+    settingPage?.reveal(target);
+  }
+
   onMount(async () => {
     await onOpenUrl((urls: string[]) => {
       console.log("Received Deep Link:", urls);
@@ -85,88 +125,152 @@
   log.info("App loaded");
 
   onMount(() => {
-    const onNavSettings = () => (active = "设置");
+    // `detail` optionally names the option to scroll to.
+    const onNavSettings = (event: Event) =>
+      void openSettings((event as CustomEvent<string | undefined>).detail);
     window.addEventListener("navigate-settings", onNavSettings);
     return () => window.removeEventListener("navigate-settings", onNavSettings);
   });
+
+  // Posting from the material or project lists continues on the uploads page.
+  onMount(() =>
+    uploadRequest.subscribe((request) => {
+      if (request) active = "投稿";
+    }),
+  );
+
+  // A project editor window asks for an option, such as signing in to PowerLive.
+  onMount(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void listen("settings-requested", (event) => openSettings(event.payload.target ?? undefined)).then(
+      (stop) => (disposed ? stop() : (unlisten = stop)),
+    );
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  });
+
+  onMount(() =>
+    registerCommands([
+      ...pages.map((page) => ({
+        id: `page:${page.label}`,
+        group: "page" as const,
+        title: page.label,
+        icon: page.icon,
+        keywords: page.keywords,
+        page: page.label,
+      })),
+      {
+        id: "task-center",
+        group: "action",
+        title: "查看进行中的任务",
+        detail: "任务",
+        icon: ListChecks,
+        keywords: ["task center", "progress", "running"],
+        run: () => openTaskCenter(),
+      },
+      {
+        id: "sidebar:toggle",
+        group: "action",
+        title: "收起 / 展开侧边栏",
+        icon: PanelLeft,
+        keywords: ["sidebar", "collapse", "expand"],
+        run: toggleSidebar,
+      },
+    ]),
+  );
 </script>
 
-<main>
-  <div class="wrap">
-    <div class="sidebar">
-      <BSidebar
-        bind:activeUrl={active}
-        onActiveChange={(label) => {
-          active = label;
-        }}
-      />
-    </div>
-    <div class="content bg-white dark:bg-[#2c2c2e]">
-      <div class="page" class:visible={active == "总览"}>
+<CommandPalette onNavigate={(page) => (active = page)} />
+<TaskCenter />
+
+<main class="wrap">
+  <BSidebar
+    bind:activeUrl={active}
+    collapsed={sidebarCollapsed}
+    onActiveChange={(label) => {
+      active = label;
+    }}
+    onToggleCollapsed={toggleSidebar}
+  />
+  <div class="main-column">
+    <TitleBar
+      title={titlebar?.title ?? active}
+      trafficLightOffset={sidebarCollapsed ? SIDEBAR_RAIL_WIDTH : SIDEBAR_WIDTH}
+    >
+      {#snippet leading()}
+        <!-- The collapsed rail cannot fit it after the traffic lights. -->
+        {#if MAC_TRAFFIC_LIGHTS && sidebarCollapsed}
+          <SidebarToggle collapsed onToggle={toggleSidebar} />
+        {/if}
+      {/snippet}
+      {@render titlebar?.subtitle?.()}
+      {#snippet actions()}
+        {#if titlebar?.actions}
+          {@render titlebar.actions()}
+          <span class="mx-1 h-4 w-px bg-line"></span>
+        {/if}
+        <TaskCenterButton />
+      {/snippet}
+    </TitleBar>
+    <div class="content bg-canvas">
+      <PageView visible={active == "总览"} bind:titlebar={titlebars["总览"]}>
         <Summary />
-      </div>
-      <div class="page" class:visible={active == "直播间"}>
+      </PageView>
+      <PageView visible={active == "直播间"} bind:titlebar={titlebars["直播间"]}>
         <Room />
-      </div>
-      <div class="page" class:visible={active == "录播"}>
+      </PageView>
+      <PageView visible={active == "录播"} bind:titlebar={titlebars["录播"]}>
         <Archive />
-      </div>
-      <div class="page" class:visible={active == "切片"}>
+      </PageView>
+      <PageView visible={active == "素材"} bind:titlebar={titlebars["素材"]}>
+        <Material />
+      </PageView>
+      <PageView visible={active == "切片"} bind:titlebar={titlebars["切片"]}>
         <Clip />
-      </div>
-      <div class="page" class:visible={active == "任务"}>
+      </PageView>
+      <PageView visible={active == "投稿"} bind:titlebar={titlebars["投稿"]}>
+        <Upload />
+      </PageView>
+      <PageView visible={active == "任务"} bind:titlebar={titlebars["任务"]}>
         <Task />
-      </div>
-      <div class="page" class:visible={active == "助手"}>
-        <AI onNavigateSettings={() => (active = "设置")} />
-      </div>
-      <div class="page" class:visible={active == "账号"}>
+      </PageView>
+      <PageView visible={active == "助手"} bind:titlebar={titlebars["助手"]}>
+        <AI onNavigateSettings={() => openSettings("llm")} />
+      </PageView>
+      <PageView visible={active == "账号"} bind:titlebar={titlebars["账号"]}>
         <Account />
-      </div>
-      <div class="page" class:visible={active == "设置"}>
-        <Setting />
-      </div>
-      <div class="page" class:visible={active == "关于"}>
+      </PageView>
+      <PageView visible={active == "设置"} bind:titlebar={titlebars["设置"]}>
+        <Setting bind:this={settingPage} active={active === "设置"} />
+      </PageView>
+      <PageView visible={active == "关于"} bind:titlebar={titlebars["关于"]}>
         <About />
-      </div>
+      </PageView>
     </div>
   </div>
 </main>
 
 <style>
-  .sidebar {
-    display: flex;
-    height: 100vh;
-  }
-
   .wrap {
     display: flex;
-    flex-direction: row;
     height: 100vh;
+    flex-direction: row;
     overflow: hidden;
   }
 
-  .visible {
-    opacity: 1 !important;
-    height: 100% !important;
-    transform: translateX(0) !important;
-  }
-
-  .page {
-    opacity: 0;
-    height: 0;
-    transform: translateX(100%);
-    overflow: hidden;
-    transition:
-      opacity 0.5s ease-in-out,
-      transform 0.3s ease-in-out;
+  .main-column {
     display: flex;
+    min-width: 0;
+    flex: 1;
     flex-direction: column;
   }
 
   .content {
-    width: 100%;
-    height: 100vh;
+    min-height: 0;
+    flex: 1;
     overflow: hidden;
   }
 </style>

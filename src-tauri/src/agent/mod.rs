@@ -31,9 +31,13 @@ use serde_json::{json, Value};
 use tauri::State as TauriState;
 
 use crate::{
-    config::LlmConfig, database::Database, recorder_manager::RecorderManager, state::State,
+    config::LlmConfig,
+    database::{account::AccountRow, Database},
+    recorder_manager::RecorderManager,
+    state::State,
     state_type,
 };
+use recorder::danmu::DanmuEntry;
 
 const PROMPT: &str = r#"
 你是 BiliBili ShadowReplay（BSR）的虚拟助手小轴。你喜欢橘子，并适度使用 emoji。
@@ -42,6 +46,8 @@ BSR 用 Recorder 表示监控的直播间，Archive 表示缓存的录播，Vide
 你可以用 bsr 工具读取和管理 BSR 数据。剪辑高光时，先读取 Archive、字幕和弹幕，再交叉验证字幕、弹幕密度和关键词；不要臆造时间点。所有时长尽量使用中文可读形式，结果优先以 Markdown 表格展示。
 
 只读工具会立即执行。删除、上传、修改配置、生成文件或启动外部操作等工具会返回 confirmation_required=true，此时你必须立即向用户清楚说明待执行的工具及参数，然后停止，不得重复调用该工具、继续调用其他工具或声称操作已完成。前端会让用户手动确认或拒绝；收到对应 tool result 后，再根据实际结果继续回复。每次只申请一个需要确认的操作。
+
+斗鱼录制和弹幕使用游客身份，BSR 不提供斗鱼账号登录入口；用户问怎么登录斗鱼账号时，应说明这一点，不要编造扫码或内置浏览器登录步骤。
 "#;
 
 pub async fn llm_prompt(
@@ -277,7 +283,6 @@ impl BsrTool {
                 | "encode_video_subtitle"
                 | "post_video_to_bilibili"
                 | "clip_range"
-                | "generic_ffmpeg_command"
                 | "open_clip"
                 | "list_folder"
                 | "generate_archive_subtitle"
@@ -334,6 +339,35 @@ impl BsrTool {
             .ok_or_else(|| BsrToolError(format!("Missing number argument: {name}")))
     }
 
+    fn account_result(accounts: Vec<AccountRow>) -> Value {
+        // Explicitly select display fields: neither authentication cookies nor
+        // CSRF tokens (including future credential fields) belong in tool output.
+        json!({"accounts": accounts.into_iter().map(|account| json!({
+            "platform": account.platform,
+            "uid": account.uid,
+            "name": account.name,
+            "avatar": account.avatar,
+            "created_at": account.created_at,
+        })).collect::<Vec<_>>()})
+    }
+
+    /// The archive named by `args`, with danmaku times in milliseconds from
+    /// the start of the recording like the ranges `clip_range` takes.
+    async fn archive_danmus(&self, args: &Value) -> Result<Vec<DanmuEntry>, BsrToolError> {
+        use recorder::platforms::PlatformType;
+        use std::str::FromStr;
+        let platform = PlatformType::from_str(&Self::string_arg(args, "platform")?)
+            .map_err(|e| BsrToolError(e.to_string()))?;
+        self.recorder_manager
+            .archive_danmus(
+                platform,
+                &Self::string_arg(args, "room_id")?,
+                &Self::string_arg(args, "live_id")?,
+            )
+            .await
+            .map_err(|e| BsrToolError(e.to_string()))
+    }
+
     async fn execute(&self, input: BsrToolArgs) -> Result<Value, BsrToolError> {
         let args = &input.args;
         match input.action.as_str() {
@@ -343,10 +377,7 @@ impl BsrTool {
                     .get_accounts()
                     .await
                     .map_err(|e| BsrToolError(e.to_string()))?;
-                // Cookies must never be exposed to the LLM provider.
-                Ok(
-                    json!({ "accounts": accounts.into_iter().map(|mut account| { account.cookies = "********".into(); account }).collect::<Vec<_>>() }),
-                )
+                Ok(Self::account_result(accounts))
             }
             "get_recorder_list" => Ok(serde_json::to_value(
                 self.recorder_manager.get_recorder_list().await,
@@ -441,21 +472,15 @@ impl BsrTool {
                 Ok(json!({ "subtitle": text }))
             }
             "get_danmu_record" => {
-                use recorder::platforms::PlatformType;
-                use std::str::FromStr;
-                let platform = PlatformType::from_str(&Self::string_arg(args, "platform")?)
-                    .map_err(|e| BsrToolError(e.to_string()))?;
-                let rows = self
-                    .recorder_manager
-                    .load_danmus(
-                        platform,
-                        &Self::string_arg(args, "room_id")?,
-                        &Self::string_arg(args, "live_id")?,
-                    )
-                    .await
-                    .map_err(|e| BsrToolError(e.to_string()))?;
+                let start = args.get("start").and_then(Value::as_f64).unwrap_or(0.0);
+                let end = args.get("end").and_then(Value::as_f64);
+                let rows = self.archive_danmus(args).await?;
                 let records = rows
                     .into_iter()
+                    .filter(|row| {
+                        let seconds = row.ts as f64 / 1000.0;
+                        seconds >= start && end.is_none_or(|end| seconds < end)
+                    })
                     .map(|row| {
                         let mut record = json!({
                             "ts": row.ts as f64 / 1000.0,
@@ -471,45 +496,18 @@ impl BsrTool {
                 Ok(json!({ "danmu_record": records }))
             }
             "analyze_danmu_highlights" => {
-                use recorder::platforms::PlatformType;
-                use std::str::FromStr;
-                let platform = PlatformType::from_str(&Self::string_arg(args, "platform")?)
-                    .map_err(|e| BsrToolError(e.to_string()))?;
                 let window = Self::f64_arg(args, "time_window")?;
-                if window <= 0.0 {
+                if !window.is_finite() || window <= 0.0 {
                     return Err(BsrToolError("time_window must be positive".into()));
                 }
                 let minimum = Self::i64_arg(args, "min_density")?;
                 let minimum = usize::try_from(minimum).map_err(|_| {
                     BsrToolError("min_density must be a non-negative integer".into())
                 })?;
-                let rows = self
-                    .recorder_manager
-                    .load_danmus(
-                        platform,
-                        &Self::string_arg(args, "room_id")?,
-                        &Self::string_arg(args, "live_id")?,
-                    )
-                    .await
-                    .map_err(|e| BsrToolError(e.to_string()))?;
-                let max_ts = rows.iter().map(|row| row.ts).max().unwrap_or(0) as f64 / 1000.0;
-                let highlights = (0..(max_ts / window).ceil() as usize).filter_map(|index| {
-                    let start = index as f64 * window;
-                    let end = ((index + 1) as f64 * window).min(max_ts);
-                    let comments = rows.iter().filter(|row| (row.ts as f64 / 1000.0) >= start && (row.ts as f64 / 1000.0) < end).collect::<Vec<_>>();
-                    (comments.len() >= minimum).then(|| json!({
-                        "start_time": start, "end_time": end, "comment_count": comments.len(),
-                        "density": comments.len() as f64 / window,
-                        "sample_comments": comments.iter().take(5).map(|row| row.content.clone()).collect::<Vec<_>>()
-                    }))
-                }).collect::<Vec<_>>();
-                Ok(json!({ "highlights": highlights }))
+                let rows = self.archive_danmus(args).await?;
+                Ok(json!({ "highlights": danmu_highlights(&rows, window, minimum) }))
             }
             "search_danmu_keywords" => {
-                use recorder::platforms::PlatformType;
-                use std::str::FromStr;
-                let platform = PlatformType::from_str(&Self::string_arg(args, "platform")?)
-                    .map_err(|e| BsrToolError(e.to_string()))?;
                 let keywords = args
                     .get("keywords")
                     .and_then(Value::as_array)
@@ -518,15 +516,7 @@ impl BsrTool {
                     .filter_map(Value::as_str)
                     .collect::<Vec<_>>();
                 let context = Self::f64_arg(args, "context_seconds")?;
-                let rows = self
-                    .recorder_manager
-                    .load_danmus(
-                        platform,
-                        &Self::string_arg(args, "room_id")?,
-                        &Self::string_arg(args, "live_id")?,
-                    )
-                    .await
-                    .map_err(|e| BsrToolError(e.to_string()))?;
+                let rows = self.archive_danmus(args).await?;
                 let matches = rows.iter().flat_map(|row| keywords.iter().filter(move |keyword| row.content.contains(**keyword)).take(1).map(move |keyword| {
                     let timestamp = row.ts as f64 / 1000.0;
                     json!({ "timestamp": timestamp, "content": row.content, "keyword": keyword, "context_start": (timestamp - context).max(0.0), "context_end": timestamp + context })
@@ -536,34 +526,35 @@ impl BsrTool {
             other => Err(BsrToolError(format!("Unknown BSR action: {other}"))),
         }
     }
-}
 
-impl Tool for BsrTool {
-    const NAME: &'static str = "bsr";
-    type Error = BsrToolError;
-    type Args = BsrToolArgs;
-    type Output = Value;
-
-    fn description(&self) -> String {
-        "Read, analyse and manage BSR. Read-only actions execute immediately. Actions that change state, generate files, access local files through the browser, or start external operations return a confirmation request that the user must approve in the UI.".into()
-    }
-
-    fn parameters(&self) -> Value {
+    fn action_definitions() -> Vec<Value> {
         let platform = || json!({ "type": "string", "enum": ["bilibili", "douyin", "douyu"] });
         let string = || json!({ "type": "string" });
         let integer = || json!({ "type": "integer" });
         let number = || json!({ "type": "number" });
         let boolean = || json!({ "type": "boolean" });
+        let render_settings = || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "codec": { "type": "string", "enum": ["hevc", "h264"] },
+                    "priority": { "type": "string", "enum": ["speed", "quality"] },
+                    "bitrate_kbps": { "type": "integer", "minimum": 500, "maximum": 100000 },
+                    "resolution": { "type": "string", "enum": ["original", "4k", "2k", "1080p"], "default": "original", "description": "Original preserves source dimensions; presets follow the source orientation." }
+                },
+                "additionalProperties": false
+            })
+        };
         let transition = || {
             json!({
                 "type": "string",
                 "enum": ["none", "fade", "dissolve", "wipeleft", "wiperight", "slideup", "slidedown"]
             })
         };
-        let actions = vec![
+        vec![
             Self::action_schema(
                 "get_accounts",
-                "Get configured accounts with cookies redacted.",
+                "Get configured account display information without cookies or CSRF tokens.",
                 json!({}),
                 &[],
             ),
@@ -683,8 +674,8 @@ impl Tool for BsrTool {
             ),
             Self::action_schema(
                 "encode_video_subtitle",
-                "Burn subtitles into a video after user confirmation.",
-                json!({ "id": integer(), "srt_style": string() }),
+                "Queue a subtitle burn-in job after user confirmation. Returns a pending task immediately; use get_background_tasks to check completion.",
+                json!({ "id": integer(), "srt_style": string(), "render_settings": render_settings() }),
                 &["id", "srt_style"],
             ),
             Self::action_schema(
@@ -695,13 +686,13 @@ impl Tool for BsrTool {
             ),
             Self::action_schema(
                 "get_danmu_record",
-                "Load danmu for an archive. Each ts value is seconds from the archive start.",
-                json!({ "platform": platform(), "room_id": string(), "live_id": string() }),
+                "Load danmu for an archive. Each ts value is seconds from the start of the recording, the time base of clip_range ranges. Optionally only those from start (inclusive) to end (exclusive), in the same seconds.",
+                json!({ "platform": platform(), "room_id": string(), "live_id": string(), "start": number(), "end": number() }),
                 &["platform", "room_id", "live_id"],
             ),
             Self::action_schema(
                 "clip_range",
-                "Create a video from one or more archive ranges after user confirmation.",
+                "Create a material video from one or more archive ranges after user confirmation. Danmaku is kept alongside the material unless danmu is true, which burns it into the video and keeps no separate danmaku.",
                 json!({
                     "reason": string(),
                     "clip_range_params": {
@@ -709,7 +700,7 @@ impl Tool for BsrTool {
                         "properties": {
                             "room_id": string(), "live_id": string(),
                             "ranges": { "type": "array", "items": { "type": "object", "properties": { "start": number(), "end": number() }, "required": ["start", "end"], "additionalProperties": false } },
-                            "danmu": boolean(), "local_offset": number(), "title": string(), "note": string(), "cover": string(), "platform": platform(), "fix_encoding": boolean(), "transition": transition()
+                            "danmu": boolean(), "local_offset": number(), "title": string(), "note": string(), "cover": string(), "platform": platform(), "fix_encoding": boolean(), "transition": transition(), "render_settings": render_settings()
                         },
                         "required": ["room_id", "live_id", "ranges", "danmu", "local_offset", "title", "note", "cover", "platform", "fix_encoding"],
                         "additionalProperties": false
@@ -728,12 +719,6 @@ impl Tool for BsrTool {
                 "List recent archives from all rooms.",
                 json!({ "offset": integer(), "limit": integer() }),
                 &["offset", "limit"],
-            ),
-            Self::action_schema(
-                "generic_ffmpeg_command",
-                "Run ffmpeg arguments after user confirmation.",
-                json!({ "args": { "type": "array", "items": string() } }),
-                &["args"],
             ),
             Self::action_schema(
                 "open_clip",
@@ -773,7 +758,7 @@ impl Tool for BsrTool {
             ),
             Self::action_schema(
                 "analyze_danmu_highlights",
-                "Find high-engagement time windows from danmu density.",
+                "Find high-engagement time windows from danmu density. Times are seconds from the start of the recording, the time base of clip_range ranges.",
                 json!({ "platform": platform(), "room_id": string(), "live_id": string(), "time_window": number(), "min_density": integer() }),
                 &[
                     "platform",
@@ -785,7 +770,7 @@ impl Tool for BsrTool {
             ),
             Self::action_schema(
                 "search_danmu_keywords",
-                "Find keyword matches and timestamps in danmu.",
+                "Find keyword matches and timestamps in danmu. Times are seconds from the start of the recording, the time base of clip_range ranges.",
                 json!({ "platform": platform(), "room_id": string(), "live_id": string(), "keywords": { "type": "array", "items": string() }, "context_seconds": number() }),
                 &[
                     "platform",
@@ -798,7 +783,7 @@ impl Tool for BsrTool {
             Self::action_schema(
                 "merge_videos",
                 "Merge videos after user confirmation.",
-                json!({ "video_ids": { "type": "array", "items": integer() }, "output_title": string(), "output_note": string(), "transition": transition() }),
+                json!({ "video_ids": { "type": "array", "items": integer() }, "output_title": string(), "output_note": string(), "transition": transition(), "render_settings": render_settings() }),
                 &["video_ids", "output_title", "output_note"],
             ),
             Self::action_schema(
@@ -813,11 +798,75 @@ impl Tool for BsrTool {
                 json!({ "platform": platform(), "room_id": string(), "live_id": string() }),
                 &["platform", "room_id", "live_id"],
             ),
-        ];
-        json!({
-            "type": "object",
-            "oneOf": actions
+        ]
+    }
+}
+
+/// Windows of `window` seconds from the start of the recording holding at
+/// least `minimum` (and at least one) of `rows`, in order, with up to five of
+/// their messages.
+fn danmu_highlights(rows: &[DanmuEntry], window: f64, minimum: usize) -> Vec<Value> {
+    let mut windows: std::collections::BTreeMap<u64, Vec<&DanmuEntry>> = Default::default();
+    for row in rows {
+        let index = (row.ts.max(0) as f64 / 1000.0 / window).floor() as u64;
+        windows.entry(index).or_default().push(row);
+    }
+    windows
+        .into_iter()
+        .filter(|(_, comments)| comments.len() >= minimum)
+        .map(|(index, comments)| {
+            let start = index as f64 * window;
+            json!({
+                "start_time": start,
+                "end_time": start + window,
+                "comment_count": comments.len(),
+                "density": comments.len() as f64 / window,
+                "sample_comments": comments.iter().take(5).map(|row| row.content.clone()).collect::<Vec<_>>()
+            })
         })
+        .collect()
+}
+
+/// Reuse the same BSR action schemas for the local MCP server.
+/// The MCP catalog filters actions to those its executor supports.
+pub(crate) fn bsr_tool_definitions() -> Vec<Value> {
+    BsrTool::action_definitions()
+}
+
+/// Run the shared data-reading implementation without entering Rig's agent
+/// loop. Mutating operations remain behind the built-in assistant's existing
+/// confirmation boundary and are implemented separately by MCP.
+pub(crate) async fn execute_bsr_read_tool(
+    state: &State,
+    action: &str,
+    args: Value,
+) -> Result<Value, String> {
+    let tool = BsrTool {
+        db: state.db.clone(),
+        recorder_manager: state.recorder_manager.clone(),
+        calls: Arc::new(Mutex::new(Vec::new())),
+    };
+    let input = BsrToolArgs {
+        action: action.to_string(),
+        args,
+    }
+    .normalize()
+    .map_err(|error| error.to_string())?;
+    tool.execute(input).await.map_err(|error| error.to_string())
+}
+
+impl Tool for BsrTool {
+    const NAME: &'static str = "bsr";
+    type Error = BsrToolError;
+    type Args = BsrToolArgs;
+    type Output = Value;
+
+    fn description(&self) -> String {
+        "Read, analyse and manage BSR. Read-only actions execute immediately. Actions that change state, generate files, access local files through the browser, or start external operations return a confirmation request that the user must approve in the UI.".into()
+    }
+
+    fn parameters(&self) -> Value {
+        json!({ "type": "object", "oneOf": Self::action_definitions() })
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
@@ -1111,6 +1160,88 @@ pub async fn agent_chat(
 mod tests {
     use super::*;
     use rig_core::message::{DocumentSourceKind, ImageMediaType};
+
+    #[test]
+    fn media_tools_use_structured_actions_instead_of_arbitrary_commands() {
+        let definitions = BsrTool::action_definitions();
+        let definition = |action: &str| {
+            definitions
+                .iter()
+                .find(|schema| schema["properties"]["action"]["const"] == action)
+        };
+        assert!(definition("generic_ffmpeg_command").is_none());
+        assert!(!BsrTool::requires_confirmation("generic_ffmpeg_command"));
+        for (action, argument) in [
+            ("clip_range", "clip_range_params"),
+            ("extract_video_frames", "video_id"),
+            ("merge_videos", "video_ids"),
+            ("extract_video_audio", "video_id"),
+            ("encode_video_subtitle", "id"),
+        ] {
+            let schema = definition(action).unwrap_or_else(|| panic!("missing {action}"));
+            let args = &schema["properties"]["args"];
+            assert_eq!(args["additionalProperties"], false);
+            assert!(args["properties"][argument].is_object(), "{action}");
+            assert!(BsrTool::requires_confirmation(action), "{action}");
+        }
+    }
+
+    fn danmu(ts: i64, content: &str) -> DanmuEntry {
+        DanmuEntry {
+            ts,
+            event_type: "danmu".into(),
+            content: content.into(),
+            emoji_content: None,
+            user_name: None,
+            price: None,
+            sc_duration: None,
+        }
+    }
+
+    #[test]
+    fn danmu_highlights_group_recording_times_into_windows() {
+        let rows = [
+            danmu(1_000, "a"),
+            danmu(29_999, "b"),
+            danmu(30_000, "c"),
+            danmu(95_000, "d"),
+            danmu(96_000, "e"),
+        ];
+        let highlights = danmu_highlights(&rows, 30.0, 2);
+        assert_eq!(highlights.len(), 2);
+        assert_eq!(highlights[0]["start_time"], 0.0);
+        assert_eq!(highlights[0]["end_time"], 30.0);
+        assert_eq!(highlights[0]["comment_count"], 2);
+        assert_eq!(highlights[0]["sample_comments"], json!(["a", "b"]));
+        assert_eq!(highlights[1]["start_time"], 90.0);
+        assert_eq!(highlights[1]["comment_count"], 2);
+        // Empty windows are never reported, even without a minimum.
+        assert_eq!(danmu_highlights(&rows, 30.0, 0).len(), 3);
+        assert!(danmu_highlights(&[], 30.0, 0).is_empty());
+    }
+
+    #[test]
+    fn account_tool_results_omit_all_credentials() {
+        let result = BsrTool::account_result(vec![AccountRow {
+            platform: "bilibili".into(),
+            uid: "123".into(),
+            name: "Streamer".into(),
+            avatar: "avatar.png".into(),
+            created_at: "2026-10-13".into(),
+            cookies: "secret-cookie".into(),
+            csrf: "secret-csrf".into(),
+        }]);
+        let account = result["accounts"][0].as_object().unwrap();
+        assert_eq!(account.len(), 5);
+        assert_eq!(account["uid"], "123");
+        assert_eq!(account["name"], "Streamer");
+        assert_eq!(account["platform"], "bilibili");
+        assert_eq!(account["avatar"], "avatar.png");
+        assert_eq!(account["created_at"], "2026-10-13");
+        assert!(!account.contains_key("cookies"));
+        assert!(!account.contains_key("csrf"));
+        assert!(!result.to_string().contains("secret-"));
+    }
 
     fn tool_message(content: Value) -> AgentMessage {
         AgentMessage {

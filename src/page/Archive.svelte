@@ -1,6 +1,11 @@
 <script lang="ts">
   import { invoke, get_static_url } from "../lib/invoker";
-  import type { RecordItem, RecordSummaryStatus } from "../lib/db";
+  import type {
+    RecordItem,
+    RecordSummary,
+    RecordSummaryStatus,
+    SummaryHighlight,
+  } from "../lib/db";
   import { onMount } from "svelte";
   import {
     Play,
@@ -18,6 +23,9 @@
     History,
     Sparkles,
     Loader2,
+    Scissors,
+    CheckCircle2,
+    AlertCircle,
   } from "lucide-svelte";
   import BilibiliIcon from "../lib/components/BilibiliIcon.svelte";
   import DouyinIcon from "../lib/components/DouyinIcon.svelte";
@@ -30,7 +38,8 @@
   import { SvelteSet } from "svelte/reactivity";
   import GenerateWholeClipModal from "../lib/components/GenerateWholeClipModal.svelte";
   import ArchiveSummaryModal from "../lib/components/ArchiveSummaryModal.svelte";
-  import type { RecorderInfo, RecorderList } from "src/lib/interface";
+  import { clipRange, generateEventId } from "../lib/interface";
+  import type { LlmConfig, RecorderInfo, RecorderList } from "../lib/interface";
 
   let archives: RecordItem[] = [];
   let filteredArchives: RecordItem[] = $state([]);
@@ -55,6 +64,16 @@
   let showSummaryModal = $state(false);
   let summaryArchive: RecordItem | null = $state(null);
   let summaryStatuses: Record<string, RecordSummaryStatus> = $state({});
+
+  // LLM 一键切片相关状态
+  type LlmClipPhase = "summary" | "clipping" | "done" | "failed";
+  interface LlmClipState {
+    phase: LlmClipPhase;
+    message: string;
+    current: number;
+    total: number;
+  }
+  let llmClipStates: Record<string, LlmClipState> = $state({});
 
   // 分页相关状态
   let currentPage = $state(1);
@@ -221,6 +240,222 @@
       ...summaryStatuses,
       [summaryStatusKey(status)]: status,
     };
+  }
+
+  function getLlmClipState(archive: RecordItem) {
+    return llmClipStates[summaryStatusKey(archive)];
+  }
+
+  function isLlmClipRunning(archive: RecordItem) {
+    const state = getLlmClipState(archive);
+    return state?.phase === "summary" || state?.phase === "clipping";
+  }
+
+  function llmClipButtonTitle(archive: RecordItem) {
+    const state = getLlmClipState(archive);
+    return state?.message || "一键生成 LLM 切片（带弹幕）";
+  }
+
+  function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function parseSummaryHighlights(
+    value: string | null | undefined,
+  ): SummaryHighlight[] {
+    if (!value) return [];
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function llmSummaryStageText(stage: string) {
+    switch (stage) {
+      case "extracting_audio":
+        return "正在提取完整音频…";
+      case "transcribing":
+        return "正在生成字幕…";
+      case "summarizing":
+        return "正在总结直播内容…";
+      default:
+        return "正在生成 Summary…";
+    }
+  }
+
+  /**
+   * 一键生成 LLM 切片：
+   * 1. 复用 Summary 链路，没有可用 Summary 时先自动生成；
+   * 2. 读取 Summary 中的高光时间段；
+   * 3. 逐个调用 clip_range 生成带弹幕的独立切片。
+   */
+  async function generateLlmClips(archive: RecordItem) {
+    if (isLlmClipRunning(archive)) return;
+    const key = summaryStatusKey(archive);
+    const setState = (state: LlmClipState) => {
+      llmClipStates = { ...llmClipStates, [key]: state };
+    };
+
+    setState({ phase: "summary", message: "正在检查 LLM 配置…", current: 0, total: 0 });
+
+    try {
+      const llmConfig = await invoke<LlmConfig>("get_llm_config");
+      if (!(llmConfig.model || "").trim()) {
+        throw new Error("请先在设置中配置 Summary 使用的 LLM 模型");
+      }
+      if (llmConfig.provider === "openai" && !(llmConfig.api_key || "").trim()) {
+        throw new Error("请先在设置中配置 LLM API Key");
+      }
+
+      let summary = await invoke<RecordSummary | null>(
+        "get_archive_summary",
+        {
+          platform: archive.platform,
+          roomId: archive.room_id,
+          liveId: archive.live_id,
+        },
+      );
+
+      // 没有可复用的 Summary 时，复用原来的 Summary 链路重新生成
+      if (!summary || summary.status !== "success") {
+        setState({
+          phase: "summary",
+          message: "正在生成 Summary…",
+          current: 0,
+          total: 0,
+        });
+        await invoke("generate_archive_summary", {
+          platform: archive.platform,
+          roomId: archive.room_id,
+          liveId: archive.live_id,
+          force: false,
+        });
+        updateSummaryStatus({
+          platform: archive.platform,
+          room_id: archive.room_id,
+          live_id: archive.live_id,
+          status: "processing",
+          stage: "extracting_audio",
+        });
+
+        let loaded = false;
+        for (let attempt = 0; attempt < 3600; attempt++) {
+          await delay(2000);
+          summary = await invoke<RecordSummary | null>(
+            "get_archive_summary",
+            {
+              platform: archive.platform,
+              roomId: archive.room_id,
+              liveId: archive.live_id,
+            },
+          );
+          if (!summary) continue;
+          updateSummaryStatus({
+            platform: archive.platform,
+            room_id: archive.room_id,
+            live_id: archive.live_id,
+            status: summary.status,
+            stage: summary.stage,
+          });
+          if (summary.status === "success") {
+            loaded = true;
+            break;
+          }
+          if (summary.status === "failed") {
+            throw new Error(summary.error_message || "Summary 生成失败");
+          }
+          setState({
+            phase: "summary",
+            message: llmSummaryStageText(summary.stage),
+            current: 0,
+            total: 0,
+          });
+        }
+        if (!loaded) {
+          throw new Error("Summary 生成超时");
+        }
+      }
+
+      const highlights = parseSummaryHighlights(
+        summary.highlights_json,
+      ).filter((highlight) => highlight.end_seconds > highlight.start_seconds);
+      if (highlights.length === 0) {
+        setState({
+          phase: "done",
+          message: "Summary 中没有可用的高光时间段",
+          current: 0,
+          total: 0,
+        });
+        return;
+      }
+
+      const localOffset =
+        parseInt(
+          localStorage.getItem(`local_offset:${archive.live_id}`) || "0",
+          10,
+        ) || 0;
+      let succeeded = 0;
+      const failures: string[] = [];
+
+      for (let index = 0; index < highlights.length; index++) {
+        const highlight = highlights[index];
+        setState({
+          phase: "clipping",
+          message: `正在生成 ${index + 1}/${highlights.length}：${highlight.title}`,
+          current: index,
+          total: highlights.length,
+        });
+        try {
+          await clipRange(generateEventId(), {
+            title: archive.title,
+            note: highlight.title,
+            cover: "",
+            platform: archive.platform,
+            room_id: archive.room_id,
+            live_id: archive.live_id,
+            ranges: [
+              { start: highlight.start_seconds, end: highlight.end_seconds },
+            ],
+            danmu: true,
+            local_offset: localOffset,
+            fix_encoding: false,
+          });
+          succeeded++;
+        } catch (error) {
+          failures.push(`${highlight.title}：${String(error)}`);
+        }
+      }
+
+      if (succeeded === 0) {
+        setState({
+          phase: "failed",
+          message: `全部生成失败（共 ${highlights.length} 个）：${failures.join("；")}`,
+          current: 0,
+          total: highlights.length,
+        });
+        alert(`LLM 切片生成失败：\n${failures.join("\n")}`);
+      } else {
+        setState({
+          phase: "done",
+          message: `已生成 ${succeeded}/${highlights.length} 个切片${
+            failures.length > 0
+              ? `，${failures.length} 个失败：${failures.join("；")}`
+              : ""
+          }`,
+          current: succeeded,
+          total: highlights.length,
+        });
+        if (failures.length > 0) {
+          alert(`部分切片生成失败：\n${failures.join("\n")}`);
+        }
+      }
+    } catch (error) {
+      const message = String(error);
+      setState({ phase: "failed", message, current: 0, total: 0 });
+      alert(`LLM 切片生成失败：${message}`);
+    }
   }
 
   /**
@@ -982,6 +1217,22 @@
                         onclick={() => openWholeClipModal(archive)}
                       >
                         <FileVideo class="w-4 h-4 text-blue-500" />
+                      </button>
+                      <button
+                        class="p-1.5 rounded-lg hover:bg-violet-500/10 transition-colors disabled:cursor-not-allowed"
+                        title={llmClipButtonTitle(archive)}
+                        onclick={() => generateLlmClips(archive)}
+                        disabled={isLlmClipRunning(archive)}
+                      >
+                        {#if isLlmClipRunning(archive)}
+                          <Loader2 class="w-4 h-4 text-violet-500 animate-spin" />
+                        {:else if getLlmClipState(archive)?.phase === "done"}
+                          <CheckCircle2 class="w-4 h-4 text-green-500" />
+                        {:else if getLlmClipState(archive)?.phase === "failed"}
+                          <AlertCircle class="w-4 h-4 text-red-500" />
+                        {:else}
+                          <Scissors class="w-4 h-4 text-violet-500" />
+                        {/if}
                       </button>
                       <button
                         class="p-1.5 rounded-lg transition-colors {summaryButtonClass(archive)}"

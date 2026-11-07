@@ -86,7 +86,7 @@ pub fn show_in_folder(path: String) {
 
 #[derive(serde::Serialize)]
 pub struct DiskInfo {
-    disk: String,
+    pub disk: String,
     total: u64,
     pub free: u64,
 }

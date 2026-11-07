@@ -40,3 +40,6 @@ docs/.vitepress/dist
 *.debug.map
 
 .cargo
+
+# local dev script
+start-dev-cuda.ps1

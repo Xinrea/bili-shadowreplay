@@ -437,6 +437,11 @@ fn strings(values: &[&str]) -> Vec<String> {
 // thread count. Use the same bit-exact bicubic path in native and CLI graphs.
 const ORACLE_SCALE: &str = "scale=64:48:flags=bicubic+accurate_rnd+bitexact";
 
+// x264's AVX-512 paths can emit different packets in native and CLI encodes even
+// with identical pixels, timestamps, and one thread. Keep strict packet checks
+// portable by using CPU-independent encoding on both sides of this test only.
+const ORACLE_X264_PARAMS: &str = "cpu-independent=1";
+
 fn synthetic(input: &Path) {
     cli(
         &strings(&[
@@ -554,6 +559,7 @@ async fn native_software_encode_and_output_seek_match_cli_profiles_and_frames() 
             options: [
                 ("preset".into(), "medium".into()),
                 ("crf".into(), "20".into()),
+                ("x264-params".into(), ORACLE_X264_PARAMS.into()),
             ]
             .into_iter()
             .collect(),
@@ -587,6 +593,8 @@ async fn native_software_encode_and_output_seek_match_cli_profiles_and_frames() 
             ORACLE_SCALE,
             "-c:v",
             "libx264",
+            "-x264-params",
+            ORACLE_X264_PARAMS,
             "-threads:v",
             "1",
             "-crf",

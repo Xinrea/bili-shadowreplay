@@ -600,8 +600,47 @@ async fn native_software_encode_and_output_seek_match_cli_profiles_and_frames() 
             "-avoid_negative_ts",
             "make_zero",
         ]));
+        let diagnostics =
+            std::env::var_os("BSR_ENCODING_DIAGNOSTICS").map(std::path::PathBuf::from);
+        if let Some(directory) = &diagnostics {
+            fs::create_dir_all(directory).unwrap();
+            fs::write(directory.join("native-input.yuv"), []).unwrap();
+        }
         execute_media_plan(request, None).await.unwrap();
         cli(&args, &oracle);
+        if let Some(directory) = &diagnostics {
+            fs::copy(&input, directory.join("source.mp4")).unwrap();
+            fs::copy(&output, directory.join("native.mp4")).unwrap();
+            fs::copy(&oracle, directory.join("oracle.mp4")).unwrap();
+            fs::write(
+                directory.join("case.txt"),
+                format!("input {input_start:?}, output {start:?}\n{args:?}\n"),
+            )
+            .unwrap();
+            let mut raw_args = args.clone();
+            raw_args.extend(strings(&[
+                "-c:v",
+                "rawvideo",
+                "-pix_fmt",
+                "yuv420p",
+                "-fps_mode",
+                "passthrough",
+                "-an",
+                "-f",
+                "rawvideo",
+            ]));
+            cli(&raw_args, &directory.join("oracle-input.yuv"));
+            let native_raw = fs::read(directory.join("native-input.yuv")).unwrap();
+            let cli_raw = fs::read(directory.join("oracle-input.yuv")).unwrap();
+            let differences = native_raw
+                .iter()
+                .zip(&cli_raw)
+                .enumerate()
+                .filter(|(_, (a, b))| a != b)
+                .take(20)
+                .collect::<Vec<_>>();
+            eprintln!("DIAGNOSTIC input={input_start:?} output={start:?} raw_equal={} native_bytes={} cli_bytes={} differences={differences:?}", native_raw == cli_raw, native_raw.len(), cli_raw.len());
+        }
         assert_movie(
             &snapshot(&output),
             &snapshot(&oracle),

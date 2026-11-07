@@ -1,290 +1,41 @@
-name: Release
+name: Encoding oracle diagnosis
 on:
   workflow_dispatch:
-    inputs:
-      platforms:
-        description: Platforms to build (partial builds require merging updater metadata separately)
-        type: choice
-        default: all
-        options:
-          - all
-          - macos
-          - macos-intel
-          - macos-apple-silicon
-  push:
-    tags:
-      - "v*"
+permissions:
+  contents: read
 jobs:
-  prepare-matrix:
-    runs-on: ubuntu-latest
-    permissions: {}
-    outputs:
-      matrix: ${{ steps.matrix.outputs.matrix }}
-    steps:
-      - id: matrix
-        env:
-          BUILD_PLATFORMS: ${{ inputs.platforms || 'all' }}
-        run: |
-          node <<'NODE'
-          const fs = require('node:fs');
-          // CUDA 13.1 supports VS 2019-2022; windows-latest uses VS 2026.
-          const matrix = [
-            { platform: 'macos-15-intel', args: '--target x86_64-apple-darwin', target: 'x86_64-apple-darwin', 'updater-target': 'darwin-x86_64' },
-            { platform: 'macos-15', args: '--target aarch64-apple-darwin', target: 'aarch64-apple-darwin', 'updater-target': 'darwin-aarch64' },
-            { platform: 'ubuntu-24.04', args: '', target: '', 'updater-target': 'linux-x86_64' },
-            { platform: 'windows-2022', args: '--features cuda', features: 'cuda', target: '', 'updater-target': 'windows-x86_64-cuda' },
-            { platform: 'windows-latest', args: '', features: 'cpu', target: '', 'updater-target': 'windows-x86_64-cpu' },
-          ];
-          const selection = process.env.BUILD_PLATFORMS;
-          if (!['all', 'macos', 'macos-intel', 'macos-apple-silicon'].includes(selection)) throw new Error(`Unknown platform selection: ${selection}`);
-          const selected = matrix.filter(entry => selection === 'all'
-            || (selection === 'macos' && entry.platform.startsWith('macos-'))
-            || (selection === 'macos-intel' && entry['updater-target'] === 'darwin-x86_64')
-            || (selection === 'macos-apple-silicon' && entry['updater-target'] === 'darwin-aarch64'));
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify(selected)}\n`);
-          NODE
-
-  publish-tauri:
-    needs: prepare-matrix
-    outputs:
-      prerelease: ${{ steps.release_info.outputs.prerelease }}
-    permissions:
-      contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}
-
-    runs-on: ${{ matrix.platform }}
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CC: clang
+      CXX: clang++
     steps:
       - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-ffmpeg
         with:
-          submodules: recursive
-
-      - name: install dependencies (ubuntu only)
-        if: runner.os == 'Linux'
-        uses: ./.github/actions/apt-install
-        with:
-          packages: >-
-            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-            libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libavfilter-dev
-            clang libclang-dev ninja-build python3 pkg-config
-            libicu-dev libharfbuzz-dev libfreetype-dev libfontconfig1-dev
-            libpng-dev zlib1g-dev libexpat1-dev libjpeg-dev
-
-      - name: Install FFmpeg development libraries (macOS only)
-        if: runner.os == 'macOS'
-        uses: ./.github/actions/setup-macos-ffmpeg
-
-      - name: Configure source Skia with system libraries (Linux only)
-        if: runner.os == 'Linux'
-        run: |
-          # These flags are presence-based: do not set empty/false values on macOS or Windows.
-          # System FreeType supports COLRv1; versioned ICU avoids V8 symbol collisions.
-          echo "FORCE_SKIA_BUILD=1" >> "$GITHUB_ENV"
-          echo "SKIA_USE_SYSTEM_LIBRARIES=1" >> "$GITHUB_ENV"
-          echo "CC=clang" >> "$GITHUB_ENV"
-          echo "CXX=clang++" >> "$GITHUB_ENV"
-
-      - name: setup node
-        uses: actions/setup-node@v6
-        with:
-          node-version: lts/*
-          cache: "yarn" # Set this to npm, yarn or pnpm.
-
-      - name: Validate release tag and version
-        id: release_info
-        run: node scripts/updater-manifest.mjs release-info
-
-      - name: install Rust stable
-        uses: dtolnay/rust-toolchain@stable # Set this to dtolnay/rust-toolchain@nightly
-        with:
-          # Those targets are only used on macos runners so it's in an `if` to slightly speed up windows and linux builds.
-          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-          # llvm-objcopy patches the Windows Skia archive below.
-          components: ${{ runner.os == 'Windows' && 'llvm-tools' || '' }}
-
-      - name: Prepare Vulkan Skia without V8 ICU/STL symbol clashes (Windows only)
-        if: runner.os == 'Windows'
-        # Windows exports use Vulkan in both CPU and CUDA app variants.
-        # The helper defaults to Vulkan and sets SKIA_BINARIES_URL.
-        run: node scripts/prepare-windows-skia.mjs "${{ runner.temp }}/skia-binaries"
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+          packages: libclang-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
-          # Native libraries outside Cargo's profile directories are pruned
-          # before saving this cache; the next step restores them when needed.
-          key: ${{ matrix.target || matrix.features || 'native' }}-sherpa-prebuilt
-
-      - name: Repair sherpa-onnx prebuilt libraries after cache restore
-        shell: bash
+          key: linux-system-skia-ffmpeg9-v1
+          save-if: false
+      - name: Reproduce and retain the failing case
         env:
-          RUST_TARGET: ${{ matrix.target }}
+          BSR_ENCODING_DIAGNOSTICS: ${{ runner.temp }}/encoding-oracle
         run: |
-          library=libsherpa-onnx-c-api.a
-          if [ "$RUNNER_OS" = Windows ]; then library=sherpa-onnx-c-api.lib; fi
-          if ! find src-tauri/target/sherpa-onnx-prebuilt -type f -name "$library" -size +0c 2>/dev/null | grep -q .; then
-            rm -rf src-tauri/target/sherpa-onnx-prebuilt
-            target_args=()
-            if [ -n "$RUST_TARGET" ]; then target_args+=(--target "$RUST_TARGET"); fi
-            cargo clean -p sherpa-onnx-sys --manifest-path src-tauri/Cargo.toml "${target_args[@]}"
-          fi
-
-      - name: Install CUDA toolkit (Windows CUDA only)
-        if: matrix.features == 'cuda'
-        uses: Jimver/cuda-toolkit@v0.2.24
-
-      - name: Configure CUDA CMake generator (Windows CUDA only)
-        if: matrix.features == 'cuda'
-        shell: pwsh
-        run: |
-          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
-            choco install ninja -y --no-progress
-          }
-
-          $cudaBin = Join-Path $env:CUDA_PATH "bin"
-          $nvcc = Join-Path $cudaBin "nvcc.exe"
-          if (-not (Test-Path $nvcc)) {
-            throw "nvcc.exe not found at $nvcc"
-          }
-
-          $env:PATH = "$cudaBin;$env:PATH"
-          $cudaBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          "CMAKE_GENERATOR=Ninja" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "CUDACXX=$nvcc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-          ninja --version
-          & $nvcc --version
-
-      - name: Setup native FFmpeg SDK
-        if: runner.os == 'Windows'
-        working-directory: ./
-        shell: pwsh
-        # Keep shared libraries/headers for native linking; no CLI executables are bundled.
-        # This script is located in the root of the repository.
-        run: |
-          # rust-cache prunes non-Cargo headers beneath target. Re-extract the
-          # verified SDK archive instead of trusting a restored partial tree.
-          $sdkCache = "src-tauri/target/ffmpeg-sdk"
-          if (Test-Path $sdkCache) { Remove-Item -LiteralPath $sdkCache -Recurse -Force }
-          ./ffmpeg_setup.ps1
-
-      - name: install frontend dependencies
-        # If you don't have `beforeBuildCommand` configured you may want to build your frontend here too.
-        run: yarn install # change this to npm or pnpm depending on which one you use.
-
-      - name: Validate updater signing key
-        shell: bash
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-        run: |
-          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-            echo "::error::Set the TAURI_SIGNING_PRIVATE_KEY repository secret before publishing signed updates. See docs/development/updater.md."
-            exit 1
-          fi
-
-      - name: Copy CUDA DLLs (Windows CUDA only)
-        if: matrix.features == 'cuda'
-        shell: pwsh
-        run: |
-          $cudaPath = "$env:CUDA_PATH\bin"
-          $targetPath = "src-tauri/windows-runtime"
-          New-Item -ItemType Directory -Force -Path $targetPath
-          Copy-Item "$cudaPath\cudart64*.dll" -Destination $targetPath
-          Copy-Item "$cudaPath\cublas64*.dll" -Destination $targetPath
-          Copy-Item "$cudaPath\cublasLt64*.dll" -Destination $targetPath
-
-      - name: Get previous tag
-        id: get_previous_tag
-        env:
-          CURRENT_TAG: ${{ steps.release_info.outputs.tag }}
-        run: |
-          # The checkout is shallow and has no tags, so fetch just the tags.
-          git fetch --force --tags --depth=1 origin
-          # Prerelease suffixes sort before their release (v2.1.0-beta.1 < v2.1.0).
-          TAGS=$(git -c versionsort.suffix=- tag --list 'v*' --sort=-v:refname)
-          # Take the tag sorted right below the current one. Manual runs may build
-          # a version that isn't tagged yet, so fall back to the newest other tag.
-          PREVIOUS_TAG=$(echo "$TAGS" | awk -v cur="$CURRENT_TAG" 'found { print; exit } $0 == cur { found = 1 }')
-          [ -n "$PREVIOUS_TAG" ] || PREVIOUS_TAG=$(echo "$TAGS" | grep -vFx "$CURRENT_TAG" | head -1)
-          echo "previous_tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
-          echo "current_tag=$CURRENT_TAG" >> $GITHUB_OUTPUT
-        shell: bash
-
-      - name: Check macOS native runtime bundling
-        if: runner.os == 'macOS'
-        run: node --test scripts/ffmpeg-bundle.test.mjs
-
-      - uses: tauri-apps/tauri-action@1ddc7b49b13c3038297360482fcb3e058764d7c9 # v0.6.2
-        id: tauri
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUST_TARGET: ${{ matrix.target }}
-          CMAKE_OSX_DEPLOYMENT_TARGET: "13.3"
-          CMAKE_CUDA_ARCHITECTURES: "75"
-          WHISPER_BACKEND: ${{ matrix.features }}
-          # Sentry DSN baked into the binary at build time (option_env! in main.rs).
-          # When unset, Sentry is disabled in the build instead of using a default.
-          SENTRY_ENDPOINT: ${{ secrets.SENTRY_ENDPOINT }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          mkdir -p "$BSR_ENCODING_DIAGNOSTICS"
+          lscpu > "$BSR_ENCODING_DIAGNOSTICS/cpu.txt"
+          ffmpeg -version > "$BSR_ENCODING_DIAGNOSTICS/ffmpeg.txt"
+          for iteration in $(seq 1 100); do
+            echo "Iteration $iteration"
+            cargo test --manifest-path src-tauri/Cargo.toml -p ffmpeg_utils --lib native_software_encode_and_output_seek_match_cli_profiles_and_frames -- --nocapture --test-threads=1 > "$BSR_ENCODING_DIAGNOSTICS/test.log" 2>&1 || { cat "$BSR_ENCODING_DIAGNOSTICS/test.log"; exit 1; }
+          done
+          cat "$BSR_ENCODING_DIAGNOSTICS/test.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          tagName: ${{ steps.release_info.outputs.tag }}
-          releaseName: "BiliBili ShadowReplay v__VERSION__"
-          releaseBody: "> [!NOTE]\n> 如果你是第一次下载安装，请参考 [安装准备](https://bsr.xinrea.cn/getting-started/installation/desktop.html) 选择合适的版本。\n> macOS 桌面版最低支持 macOS 15.8.1，Intel 和 Apple Silicon 版本均适用。\n> Linux 桌面版最低支持 Ubuntu 24.04；Ubuntu 22.04 不再受支持，AppImage 同样需要兼容的系统运行库。\n> Changelog: https://github.com/Xinrea/bili-shadowreplay/compare/${{ steps.get_previous_tag.outputs.previous_tag }}...${{ steps.get_previous_tag.outputs.current_tag }}"
-          releaseDraft: true
-          prerelease: ${{ steps.release_info.outputs.prerelease }}
-          # Merge once after all builds to avoid CPU/CUDA collisions and upload races.
-          includeUpdaterJson: false
-          args: ${{ matrix.args }} ${{ matrix.features == 'cuda' && '--config src-tauri/tauri.windows.cuda.conf.json' || '' }}
-
-      - name: Verify macOS application signature
-        if: runner.os == 'macOS'
-        env:
-          RUST_TARGET: ${{ matrix.target }}
-        run: |
-          node scripts/bundle-macos-ffmpeg.mjs --verify "src-tauri/target/$RUST_TARGET/release/bundle/macos/bili-shadowreplay.app"
-          codesign --verify --deep --strict --verbose=2 \
-            "src-tauri/target/$RUST_TARGET/release/bundle/macos/bili-shadowreplay.app"
-
-      - name: Create platform updater manifest
-        env:
-          UPDATER_ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
-          UPDATER_VERSION: ${{ steps.tauri.outputs.appVersion }}
-          UPDATER_TARGET: ${{ matrix.updater-target }}
-        run: node scripts/updater-manifest.mjs create updater-${{ matrix.updater-target }}.json
-
-      - name: Collect updater manifests
-        uses: actions/upload-artifact@v4
-        with:
-          name: updater-${{ matrix.updater-target }}
-          path: updater-${{ matrix.updater-target }}.json
-          if-no-files-found: error
-
-  publish-updater:
-    needs: publish-tauri
-    # A partial rebuild must not replace the complete updater manifest.
-    if: needs.publish-tauri.outputs.prerelease == 'false' && (inputs.platforms == '' || inputs.platforms == 'all')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: lts/*
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: updater-*
-          path: updater-manifests
-          merge-multiple: true
-      - name: Merge and upload complete updater manifest
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          node scripts/updater-manifest.mjs merge latest.json updater-manifests/*.json
-          VERSION=$(node -p "JSON.parse(require('fs').readFileSync('latest.json', 'utf8')).version")
-          gh release upload "v$VERSION" latest.json --clobber
+          name: encoding-oracle-diagnostics
+          path: ${{ runner.temp }}/encoding-oracle

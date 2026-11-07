@@ -386,6 +386,24 @@ impl VideoEncoderStage {
         frame: &mut frame::Video,
         packets: &mut EncodedPacketSink<'_>,
     ) -> Result<(), String> {
+        #[cfg(test)]
+        if let Ok(directory) = std::env::var("BSR_ENCODING_DIAGNOSTICS") {
+            use std::io::Write;
+            assert_eq!(frame.format(), ffmpeg::format::Pixel::YUV420P);
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(std::path::Path::new(&directory).join("native-input.yuv"))
+                .unwrap();
+            for plane in 0..3 {
+                let divisor = if plane == 0 { 1 } else { 2 };
+                let width = frame.width() as usize / divisor;
+                let height = frame.height() as usize / divisor;
+                for row in frame.data(plane).chunks(frame.stride(plane)).take(height) {
+                    file.write_all(&row[..width]).unwrap();
+                }
+            }
+        }
         unsafe {
             (*frame.as_mut_ptr()).pict_type = ffi::AVPictureType::AV_PICTURE_TYPE_NONE;
             (*frame.as_mut_ptr()).quality =

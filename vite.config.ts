@@ -37,6 +37,11 @@ export default defineConfig(async ({ mode }) => {
     server: {
       port: 8054,
       strictPort: true,
+      // Don't watch the Rust build output: cargo churns thousands of files there
+      // and on Windows crashes the fs watcher (errno -4094, UNKNOWN), killing `tauri dev`.
+      watch: {
+        ignored: ["**/src-tauri/target/**"],
+      },
     },
     // to make use of `TAURI_DEBUG` and other env variables
     // https://tauri.studio/v1/api/config#buildconfig.beforedevcommand

@@ -4,7 +4,6 @@
 //! Every status poll resolves that stable identifier to the currently live
 //! video and obtains an HLS manifest from YouTube's player response.
 
-use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
@@ -61,7 +60,7 @@ impl YoutubeRecorder {
     pub fn new(
         room_id: &str,
         account: &Account,
-        cache_dir: PathBuf,
+        storage: impl Into<recording_storage::RecordingStore>,
         event_channel: impl Into<crate::events::RecorderEventSender>,
         update_interval: Arc<AtomicU64>,
         enabled: bool,
@@ -72,7 +71,7 @@ impl YoutubeRecorder {
             PlatformType::Youtube,
             &room_id,
             account,
-            cache_dir,
+            storage,
             event_channel,
             update_interval,
             enabled,

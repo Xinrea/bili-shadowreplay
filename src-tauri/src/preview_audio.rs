@@ -6,8 +6,8 @@
 //! step. A chunk is [`CHUNK_SECONDS`] of a file under the output directory, on
 //! a fixed grid from its start, as 48 kHz stereo 16-bit FLAC, holding exactly
 //! the samples a decode of the whole file has there, so chunks join sample for
-//! sample. Each is cut once and kept in `<cache>/preview_audio/`, for a file
-//! as long as it is unchanged.
+//! sample. Each is cut once and kept in `<session temp>/preview_audio/`, for a
+//! file as long as it is unchanged and this application session lasts.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -51,7 +51,7 @@ pub struct ChunkQuery {
 
 /// The directory of a file's chunks, named after it as it is now: a file
 /// replaced under the same name gets new ones.
-fn chunk_dir(cache: &Path, file: &str, metadata: &std::fs::Metadata) -> PathBuf {
+fn chunk_dir(temp_root: &Path, file: &str, metadata: &std::fs::Metadata) -> PathBuf {
     let modified = metadata
         .modified()
         .ok()
@@ -69,7 +69,7 @@ fn chunk_dir(cache: &Path, file: &str, metadata: &std::fs::Metadata) -> PathBuf 
         .take(10)
         .map(|byte| format!("{byte:02x}"))
         .collect();
-    cache.join(CACHE_DIR).join(key)
+    temp_root.join(CACHE_DIR).join(key)
 }
 
 /// The timing of the sound of `source`, whose chunks go in `dir`, probed once.
@@ -92,7 +92,7 @@ async fn timing(source: &Path, dir: &Path) -> Result<Option<AudioTiming>, String
 /// the file is not there or has no sound.
 pub async fn chunk_path(
     output: &Path,
-    cache: &Path,
+    temp_root: &Path,
     file: &str,
     index: u32,
 ) -> Result<Option<PathBuf>, String> {
@@ -106,7 +106,7 @@ pub async fn chunk_path(
     if !metadata.is_file() {
         return Ok(None);
     }
-    let dir = chunk_dir(cache, file, &metadata);
+    let dir = chunk_dir(temp_root, file, &metadata);
     let path = dir.join(format!("{index}.flac"));
     if tokio::fs::try_exists(&path).await.unwrap_or(false) {
         return Ok(Some(path));
@@ -134,7 +134,7 @@ pub async fn chunk_path(
     )
     .await?;
     store_chunk(part, &path)?;
-    prune_now_and_then(cache);
+    prune_now_and_then(temp_root);
     Ok(Some(path))
 }
 
@@ -152,7 +152,7 @@ fn store_chunk(part: tempfile::TempPath, path: &Path) -> Result<(), String> {
 
 /// Now and then, in the background, remove the chunks of files not cut
 /// again for [`KEEP_FOR`].
-fn prune_now_and_then(cache: &Path) {
+fn prune_now_and_then(temp_root: &Path) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |time| time.as_secs());
@@ -164,7 +164,7 @@ fn prune_now_and_then(cache: &Path) {
     {
         return;
     }
-    let root = cache.join(CACHE_DIR);
+    let root = temp_root.join(CACHE_DIR);
     tokio::spawn(async move {
         let Ok(mut entries) = tokio::fs::read_dir(&root).await else {
             return;
@@ -185,8 +185,8 @@ fn prune_now_and_then(cache: &Path) {
 }
 
 /// The response to `GET /preview_audio?file=…&chunk=…`.
-pub async fn respond(output: &Path, cache: &Path, query: ChunkQuery) -> Response {
-    match chunk_path(output, cache, &query.file, query.chunk).await {
+pub async fn respond(output: &Path, temp_root: &Path, query: ChunkQuery) -> Response {
+    match chunk_path(output, temp_root, &query.file, query.chunk).await {
         Ok(Some(path)) => match tokio::fs::read(&path).await {
             Ok(bytes) => (
                 [
@@ -289,6 +289,17 @@ mod tests {
             std::fs::read_dir(first.parent().unwrap()).unwrap().count(),
             3
         );
+        // Session caches are disposable: removing them does not remove the
+        // output source, and the next preview request regenerates its chunk.
+        std::fs::remove_dir_all(&cache).unwrap();
+        assert_eq!(
+            chunk_path(&output, &cache, "声音 样本.wav", 0)
+                .await
+                .unwrap(),
+            Some(first.clone())
+        );
+        assert_eq!(std::fs::read(&first).unwrap(), data);
+        assert!(source.is_file());
         // A changed source gets fresh timing and chunks under a new key.
         write_pcm(&source, 48_017);
         let changed = chunk_path(&output, &cache, "声音 样本.wav", 0)

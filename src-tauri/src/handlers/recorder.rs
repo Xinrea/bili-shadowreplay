@@ -78,6 +78,7 @@ pub async fn add_recorder(
     platform: String,
     mut room_id: String,
     mut extra: String,
+    storage_backend_id: Option<String>,
 ) -> Result<RecorderRow, String> {
     let platform = PlatformType::from_str(&platform).map_err(|e| e.to_string())?;
     if platform == PlatformType::Rtmp {
@@ -172,13 +173,25 @@ pub async fn add_recorder(
     match account {
         Ok(account) => match state
             .recorder_manager
-            .add_recorder(&account, platform, &room_id, &extra, true)
+            .add_recorder_with_selection(
+                &account,
+                platform,
+                &room_id,
+                &extra,
+                false,
+                Some(storage_backend_id.clone()),
+            )
             .await
         {
             Ok(resolved_extra) => {
                 let room = match state
                     .db
-                    .add_recorder(platform, &room_id, &resolved_extra)
+                    .add_recorder_with_storage(
+                        platform,
+                        &room_id,
+                        &resolved_extra,
+                        storage_backend_id.as_deref(),
+                    )
                     .await
                 {
                     Ok(room) => room,
@@ -190,6 +203,12 @@ pub async fn add_recorder(
                         return Err(error.to_string());
                     }
                 };
+                // Start only after the preference is durable. The writer resolves
+                // it per recording, including the first RTMP connection.
+                state
+                    .recorder_manager
+                    .set_enable(platform, &room_id, true)
+                    .await;
                 state
                     .db
                     .new_message("添加直播间", &format!("添加了新直播间 {room_id}"))
@@ -214,6 +233,25 @@ pub async fn add_recorder(
             Err(format!("添加失败: {e}"))
         }
     }
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn set_recorder_storage(
+    state: state_type!(),
+    platform: String,
+    room_id: String,
+    storage_backend_id: Option<String>,
+) -> Result<RecorderRow, String> {
+    #[cfg(feature = "headless")]
+    if state.readonly {
+        return Err("只读模式不能修改录制存储设置".into());
+    }
+    let platform = PlatformType::from_str(&platform)?;
+    state
+        .recorder_manager
+        .set_recorder_storage(platform, &room_id, storage_backend_id)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]

@@ -2,9 +2,8 @@ use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 
+use recording_storage::RecordingStorage;
 use serde::{Deserialize, Serialize};
-use tokio::fs::{self, OpenOptions};
-use tokio::io::AsyncWriteExt;
 
 use crate::danmu::DanmuEntry;
 
@@ -32,28 +31,36 @@ impl AdTimeRange {
 /// The file is JSON Lines so a process interruption cannot discard earlier
 /// ranges. Readers keep the latest record for each DATERANGE ID and start time.
 pub async fn append_skipped_ad_range(work_dir: &Path, range: &AdTimeRange) -> io::Result<()> {
+    append_skipped_ad_range_to_storage(&RecordingStorage::local(work_dir), range).await
+}
+
+pub async fn append_skipped_ad_range_to_storage(
+    storage: &RecordingStorage,
+    range: &AdTimeRange,
+) -> io::Result<()> {
     if !range.is_valid() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "ad time range must have a positive duration",
         ));
     }
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(work_dir.join(SKIPPED_AD_RANGES_FILE_NAME))
-        .await?;
-    let json = serde_json::to_vec(range)
+    let mut json = serde_json::to_vec(range)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    file.write_all(&json).await?;
-    file.write_all(b"\n").await?;
-    file.flush().await
+    json.push(b'\n');
+    let log = storage.open_log(SKIPPED_AD_RANGES_FILE_NAME).await?;
+    log.append(&json).await?;
+    log.flush().await
 }
 
 /// Load the latest persisted interval for each ad DATERANGE ID and start time.
 pub async fn load_skipped_ad_ranges(work_dir: &Path) -> io::Result<Vec<AdTimeRange>> {
-    let path = work_dir.join(SKIPPED_AD_RANGES_FILE_NAME);
-    let contents = match fs::read(path).await {
+    load_skipped_ad_ranges_from_storage(&RecordingStorage::local(work_dir)).await
+}
+
+pub async fn load_skipped_ad_ranges_from_storage(
+    storage: &RecordingStorage,
+) -> io::Result<Vec<AdTimeRange>> {
+    let contents = match storage.read_log(SKIPPED_AD_RANGES_FILE_NAME).await {
         Ok(contents) => contents,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error),
@@ -145,6 +152,71 @@ mod tests {
     use super::*;
 
     const TIMELINE_START_MS: i64 = 1_700_000_000_000;
+
+    #[tokio::test]
+    async fn storage_resumes_ranges_and_ignores_invalid_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = RecordingStorage::local(dir.path());
+        assert!(load_skipped_ad_ranges_from_storage(&storage)
+            .await
+            .unwrap()
+            .is_empty());
+        storage
+            .write(
+                SKIPPED_AD_RANGES_FILE_NAME,
+                b"invalid\n{\"id\":\"invalid\",\"start_ms\":10,\"end_ms\":10}\n",
+            )
+            .await
+            .unwrap();
+        let first = range(100, 200);
+        append_skipped_ad_range_to_storage(&storage, &first)
+            .await
+            .unwrap();
+        let updated = AdTimeRange {
+            end_ms: 300,
+            ..first
+        };
+        // The path wrapper and storage API share the same sidecar.
+        append_skipped_ad_range(dir.path(), &updated).await.unwrap();
+        let earlier = range(0, 10);
+        append_skipped_ad_range_to_storage(&storage, &earlier)
+            .await
+            .unwrap();
+        assert_eq!(
+            load_skipped_ad_ranges_from_storage(&storage).await.unwrap(),
+            vec![earlier, updated]
+        );
+        let bytes = storage.read(SKIPPED_AD_RANGES_FILE_NAME).await.unwrap();
+        assert_eq!(bytes.iter().filter(|&&byte| byte == b'\n').count(), 5);
+        assert_eq!(bytes.last(), Some(&b'\n'));
+    }
+
+    #[tokio::test]
+    async fn storage_reports_invalid_ranges_and_io_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = RecordingStorage::local(dir.path());
+        let error = append_skipped_ad_range_to_storage(&storage, &range(10, 10))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(
+            storage
+                .read(SKIPPED_AD_RANGES_FILE_NAME)
+                .await
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        std::fs::create_dir(dir.path().join(SKIPPED_AD_RANGES_FILE_NAME)).unwrap();
+        assert!(load_skipped_ad_ranges_from_storage(&storage).await.is_err());
+        assert!(append_skipped_ad_range_to_storage(&storage, &range(10, 20))
+            .await
+            .is_err());
+        assert!(load_skipped_ad_ranges(dir.path()).await.is_err());
+        assert!(append_skipped_ad_range(dir.path(), &range(10, 20))
+            .await
+            .is_err());
+    }
 
     fn danmu(ts: i64, content: &str) -> DanmuEntry {
         DanmuEntry {

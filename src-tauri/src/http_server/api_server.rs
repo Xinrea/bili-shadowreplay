@@ -1,11 +1,8 @@
-use std::{
-    fmt::{self, Display},
-    path::PathBuf,
-};
+use std::fmt::{self, Display};
 
 use crate::{
     agent::{agent_chat, AgentRequest, AgentResponse},
-    config::{Config, LlmConfig},
+    config::{Config, LlmConfig, StorageConfig},
     constants::API_PORT,
     database::{
         audio::AudioRow,
@@ -27,7 +24,7 @@ use crate::{
         },
         config::{
             get_config, get_llm_config, get_mcp_server_status, get_static_port, list_llm_models,
-            request_settings, update_auto_generate, update_clip_name_format,
+            request_settings, set_storage_config, update_auto_generate, update_clip_name_format,
             update_danmu_ass_options, update_llm_config, update_mcp_server, update_notify,
             update_openai_api_endpoint, update_openai_api_key, update_powerlive_hotwords,
             update_powerlive_sentence_max_length, update_status_check_interval,
@@ -48,7 +45,7 @@ use crate::{
             get_archive_subtitle, get_archives, get_archives_by_parent_id, get_danmu_record,
             get_recent_record, get_recorder_list, get_recorder_status, get_room_info,
             get_today_record_count, get_total_length, remove_recorder, send_danmaku, set_enable,
-            ExportDanmuOptions,
+            set_recorder_storage, ExportDanmuOptions,
         },
         sticker::{add_cover_sticker, delete_cover_sticker, get_cover_stickers, CoverSticker},
         subtitle_fonts::{get_subtitle_font_families, SubtitleFontFamily},
@@ -676,14 +673,121 @@ struct AddRecorderRequest {
     platform: String,
     room_id: String,
     extra: String,
+    #[serde(default)]
+    storage_backend_id: Option<String>,
 }
 
 async fn handler_add_recorder(
     state: axum::extract::State<State>,
     Json(param): Json<AddRecorderRequest>,
 ) -> Result<Json<ApiResponse<RecorderRow>>, ApiError> {
-    let recorder = add_recorder(state.0, param.platform, param.room_id, param.extra).await?;
+    let recorder = add_recorder(
+        state.0,
+        param.platform,
+        param.room_id,
+        param.extra,
+        param.storage_backend_id,
+    )
+    .await?;
     Ok(Json(ApiResponse::success(recorder)))
+}
+
+#[derive(Deserialize)]
+struct StorageConfigRequest {
+    storage: StorageConfig,
+    expected: StorageConfig,
+}
+
+#[cfg(test)]
+mod storage_config_request_tests {
+    use super::*;
+
+    #[test]
+    fn replacements_require_a_non_null_configuration_snapshot() {
+        let storage = serde_json::json!({
+            "default_backend": "default",
+            "backends": {"default": {"type": "local", "root": "./cache"}}
+        });
+        assert!(serde_json::from_value::<StorageConfigRequest>(
+            serde_json::json!({"storage": storage})
+        )
+        .is_err());
+        assert!(serde_json::from_value::<StorageConfigRequest>(
+            serde_json::json!({"storage": storage, "expected": null})
+        )
+        .is_err());
+        let request: StorageConfigRequest =
+            serde_json::from_value(serde_json::json!({"storage": storage, "expected": storage}))
+                .unwrap();
+        assert_eq!(request.storage, request.expected);
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StorageTransferRequest {
+    source_backend_id: String,
+    target_backend_id: String,
+}
+
+async fn handler_preview_storage_transfer(
+    state: axum::extract::State<State>,
+    Json(param): Json<StorageTransferRequest>,
+) -> Result<Json<ApiResponse<crate::archive_storage::StorageTransferPreview>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        crate::handlers::storage_transfer::preview_storage_transfer(
+            state.0,
+            param.source_backend_id,
+            param.target_backend_id,
+        )
+        .await?,
+    )))
+}
+
+async fn handler_start_storage_transfer(
+    state: axum::extract::State<State>,
+    Json(param): Json<StorageTransferRequest>,
+) -> Result<Json<ApiResponse<TaskRow>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        crate::handlers::storage_transfer::start_storage_transfer(
+            state.0,
+            param.source_backend_id,
+            param.target_backend_id,
+        )
+        .await?,
+    )))
+}
+
+async fn handler_set_storage_config(
+    state: axum::extract::State<State>,
+    Json(param): Json<StorageConfigRequest>,
+) -> Result<Json<ApiResponse<StorageConfig>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        set_storage_config(state.0, param.storage, param.expected).await?,
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecorderStorageRequest {
+    platform: String,
+    room_id: String,
+    storage_backend_id: Option<String>,
+}
+
+async fn handler_set_recorder_storage(
+    state: axum::extract::State<State>,
+    Json(param): Json<RecorderStorageRequest>,
+) -> Result<Json<ApiResponse<RecorderRow>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        set_recorder_storage(
+            state.0,
+            param.platform,
+            param.room_id,
+            param.storage_backend_id,
+        )
+        .await?,
+    )))
 }
 
 #[derive(Deserialize)]
@@ -1993,67 +2097,14 @@ struct UploadAndImportResponse {
 
 // 多文件上传处理器
 async fn handler_upload_files(
-    mut multipart: Multipart,
+    state: axum::extract::State<State>,
+    multipart: Multipart,
 ) -> Result<Json<ApiResponse<UploadFilesResponse>>, ApiError> {
-    let mut uploaded_files = Vec::new();
-    let upload_dir = std::env::temp_dir().join("bsr_uploads");
-
-    // 确保上传目录存在
-    if !upload_dir.exists() {
-        std::fs::create_dir_all(&upload_dir).map_err(|e| format!("创建上传目录失败: {}", e))?;
+    if state.readonly {
+        return Err(ApiError("Server is in readonly mode".to_string()));
     }
-
-    while let Some(mut field) = multipart.next_field().await.map_err(|e| e.to_string())? {
-        if let Some(file_name) = field.file_name() {
-            let file_name = file_name.to_string();
-
-            // 检查文件格式是否为支持的视频格式
-            let extension = std::path::Path::new(&file_name)
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-
-            // 使用与后端相同的格式验证逻辑
-            let supported_extensions = ["mp4", "mkv", "avi", "mov", "wmv", "flv", "m4v", "webm"];
-            if !supported_extensions.iter().any(|&ext| ext == extension) {
-                return Err(ApiError(format!(
-                    "不支持的文件格式: {}。支持的格式: {}",
-                    extension,
-                    supported_extensions.join(", ")
-                )));
-            }
-
-            // 生成唯一的文件名
-            let timestamp = chrono::Utc::now().timestamp();
-            let sanitized_name = sanitize_filename_advanced(&file_name, None);
-            let unique_name = format!("{}_{}", timestamp, sanitized_name);
-            let file_path = upload_dir.join(&unique_name);
-
-            // 流式保存文件，避免大文件内存占用
-            let mut file = tokio::fs::File::create(&file_path)
-                .await
-                .map_err(|e| format!("创建文件失败: {}", e))?;
-
-            let mut total_size = 0u64;
-            while let Some(chunk) = field.chunk().await.map_err(|e| e.to_string())? {
-                tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
-                    .await
-                    .map_err(|e| format!("写入文件失败: {}", e))?;
-                total_size += chunk.len() as u64;
-            }
-
-            tokio::io::AsyncWriteExt::flush(&mut file)
-                .await
-                .map_err(|e| format!("刷新文件缓冲区失败: {}", e))?;
-
-            uploaded_files.push(UploadedFileInfo {
-                file_path: file_path.to_string_lossy().to_string(),
-                original_name: file_name,
-                size: total_size,
-            });
-        }
-    }
+    let batch = receive_batch_upload(&state.temp_storage, multipart, None).await?;
+    let (uploaded_files, _) = batch.retain()?;
 
     Ok(Json(ApiResponse::success(UploadFilesResponse {
         uploaded_files,
@@ -2063,88 +2114,16 @@ async fn handler_upload_files(
 // 批量上传并直接导入的处理器
 async fn handler_upload_and_import_files(
     state: axum::extract::State<State>,
-    mut multipart: Multipart,
+    multipart: Multipart,
 ) -> Result<Json<ApiResponse<UploadAndImportResponse>>, ApiError> {
-    let mut uploaded_files = Vec::new();
-    let mut room_id = "".to_string();
-    let upload_dir = std::env::temp_dir().join("bsr_uploads");
-
-    // 确保上传目录存在
-    if !upload_dir.exists() {
-        std::fs::create_dir_all(&upload_dir).map_err(|e| format!("创建上传目录失败: {}", e))?;
+    if state.readonly {
+        return Err(ApiError("Server is in readonly mode".to_string()));
     }
-
-    // 处理multipart表单数据
-    while let Some(mut field) = multipart.next_field().await.map_err(|e| e.to_string())? {
-        if let Some(name) = field.name() {
-            match name {
-                "room_id" => {
-                    // 读取房间ID
-                    room_id = field.text().await.map_err(|e| e.to_string())?;
-                }
-                "files" => {
-                    // 处理文件上传
-                    if let Some(file_name) = field.file_name() {
-                        let file_name = file_name.to_string();
-
-                        // 检查文件格式
-                        let extension = std::path::Path::new(&file_name)
-                            .extension()
-                            .and_then(|ext| ext.to_str())
-                            .unwrap_or("")
-                            .to_lowercase();
-
-                        let supported_extensions =
-                            ["mp4", "mkv", "avi", "mov", "wmv", "flv", "m4v", "webm"];
-                        if !supported_extensions.iter().any(|&ext| ext == extension) {
-                            return Err(ApiError(format!(
-                                "不支持的文件格式: {}。支持的格式: {}",
-                                extension,
-                                supported_extensions.join(", ")
-                            )));
-                        }
-
-                        // 生成唯一的文件名
-                        let timestamp = chrono::Utc::now().timestamp();
-                        let sanitized_name = sanitize_filename_advanced(&file_name, None);
-                        let unique_name = format!("{}_{}", timestamp, sanitized_name);
-                        let file_path = upload_dir.join(&unique_name);
-
-                        // 流式保存文件，避免大文件内存占用
-                        let mut file = tokio::fs::File::create(&file_path)
-                            .await
-                            .map_err(|e| format!("创建文件失败: {}", e))?;
-
-                        let mut total_size = 0u64;
-                        while let Some(chunk) = field.chunk().await.map_err(|e| e.to_string())? {
-                            tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
-                                .await
-                                .map_err(|e| format!("写入文件失败: {}", e))?;
-                            total_size += chunk.len() as u64;
-                        }
-
-                        tokio::io::AsyncWriteExt::flush(&mut file)
-                            .await
-                            .map_err(|e| format!("刷新文件缓冲区失败: {}", e))?;
-
-                        uploaded_files.push(UploadedFileInfo {
-                            file_path: file_path.to_string_lossy().to_string(),
-                            original_name: file_name,
-                            size: total_size,
-                        });
-                    }
-                }
-                _ => {
-                    // 忽略其他字段
-                    let _ = field.bytes().await;
-                }
-            }
-        }
-    }
-
-    if uploaded_files.is_empty() {
+    let batch = receive_batch_upload(&state.temp_storage, multipart, Some("files")).await?;
+    if batch.files.is_empty() {
         return Err(ApiError("没有上传任何文件".to_string()));
     }
+    let (uploaded_files, room_id) = batch.retain()?;
 
     // 生成批量导入的事件ID
     let event_id = format!("upload_import_{}", chrono::Utc::now().timestamp());
@@ -2167,6 +2146,245 @@ async fn handler_upload_and_import_files(
         event_id,
         uploaded_files,
     })))
+}
+
+/// A complete request remains guarded until the handler accepts it. Dropping
+/// this value or cancelling reception removes every file, not just the last one.
+struct PendingBatchUpload {
+    directory: tempfile::TempDir,
+    session: crate::temp_storage::TempStorage,
+    files: Vec<UploadedFileInfo>,
+    room_id: String,
+}
+
+impl PendingBatchUpload {
+    /// Publish the complete batch atomically; returned paths belong to the
+    /// session and remain usable by imports after the HTTP request has ended.
+    fn retain(mut self) -> Result<(Vec<UploadedFileInfo>, String), ApiError> {
+        if !self.files.is_empty() {
+            let destination = self
+                .session
+                .root()
+                .join("uploads")
+                .join(uuid::Uuid::new_v4().to_string());
+            for file in &mut self.files {
+                // During reception file_path contains only the generated name.
+                file.file_path = destination
+                    .join(&file.file_path)
+                    .to_string_lossy()
+                    .into_owned();
+            }
+            std::fs::rename(self.directory.path(), destination)
+                .map_err(|e| format!("保存上传文件失败: {e}"))?;
+            // No await after publishing: cancellation cannot leave a partly
+            // accepted batch. The guard's old hidden path no longer exists.
+        }
+        Ok((self.files, self.room_id))
+    }
+}
+
+/// `file_field` preserves the endpoints' existing field selection: standalone
+/// uploads accept any file field, while upload-and-import accepts only `files`.
+async fn receive_batch_upload(
+    session: &crate::temp_storage::TempStorage,
+    mut multipart: Multipart,
+    file_field: Option<&str>,
+) -> Result<PendingBatchUpload, ApiError> {
+    let uploads = session.root().join("uploads");
+    tokio::fs::create_dir_all(&uploads)
+        .await
+        .map_err(|e| format!("创建上传目录失败: {e}"))?;
+    let directory = tempfile::Builder::new()
+        .prefix(".upload-batch-")
+        .tempdir_in(&uploads)
+        .map_err(|e| format!("创建上传目录失败: {e}"))?;
+    let mut batch = PendingBatchUpload {
+        directory,
+        session: session.clone(),
+        files: Vec::new(),
+        room_id: String::new(),
+    };
+    while let Some(mut field) = multipart.next_field().await.map_err(|e| e.to_string())? {
+        if file_field.is_some() && field.name() == Some("room_id") {
+            batch.room_id = field.text().await.map_err(|e| e.to_string())?;
+            continue;
+        }
+        if file_field.is_some_and(|expected| field.name() != Some(expected)) {
+            continue;
+        }
+        let Some(original_name) = field.file_name().map(str::to_owned) else {
+            continue;
+        };
+        let extension = std::path::Path::new(&original_name)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let supported_extensions = ["mp4", "mkv", "avi", "mov", "wmv", "flv", "m4v", "webm"];
+        if !supported_extensions.contains(&extension.as_str()) {
+            return Err(ApiError(format!(
+                "不支持的文件格式: {}。支持的格式: {}",
+                extension,
+                supported_extensions.join(", ")
+            )));
+        }
+        let name = format!(
+            "{}_{}",
+            uuid::Uuid::new_v4(),
+            sanitize_filename_advanced(&original_name, None)
+        );
+        let mut file = tokio::fs::File::create_new(batch.directory.path().join(&name))
+            .await
+            .map_err(|e| format!("创建文件失败: {e}"))?;
+        let mut size = 0u64;
+        while let Some(chunk) = field.chunk().await.map_err(|e| e.to_string())? {
+            tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+                .await
+                .map_err(|e| format!("写入文件失败: {e}"))?;
+            size += chunk.len() as u64;
+        }
+        tokio::io::AsyncWriteExt::flush(&mut file)
+            .await
+            .map_err(|e| format!("刷新文件缓冲区失败: {e}"))?;
+        batch.files.push(UploadedFileInfo {
+            file_path: name,
+            original_name,
+            size,
+        });
+    }
+    Ok(batch)
+}
+
+#[cfg(test)]
+mod batch_upload_tests {
+    use super::*;
+    use crate::temp_storage::TempStorage;
+    use axum::{body::Body, extract::FromRequest, http::Request};
+
+    async fn multipart(body: Body) -> Multipart {
+        Multipart::from_request(
+            Request::builder()
+                .header("content-type", "multipart/form-data; boundary=batch")
+                .body(body)
+                .unwrap(),
+            &(),
+        )
+        .await
+        .unwrap()
+    }
+
+    fn file(name: &str, content: &str) -> String {
+        format!(
+            "--batch\r\nContent-Disposition: form-data; name=\"files\"; filename=\"{name}\"\r\n\r\n{content}\r\n"
+        )
+    }
+
+    fn assert_no_uploads(session: &TempStorage) {
+        assert_eq!(
+            std::fs::read_dir(session.root().join("uploads"))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_batches_keep_unique_files_until_session_cleanup() {
+        for file_field in [None, Some("files")] {
+            let session = TempStorage::new().unwrap();
+            let body = format!(
+                "{}{}--batch\r\nContent-Disposition: form-data; name=\"room_id\"\r\n\r\n42\r\n--batch--\r\n",
+                file("../video.mp4", "first"),
+                file("../video.mp4", "second"),
+            );
+            let batch =
+                receive_batch_upload(&session, multipart(Body::from(body)).await, file_field)
+                    .await
+                    .unwrap();
+            let (files, room) = batch.retain().unwrap();
+            assert_eq!(room, if file_field.is_some() { "42" } else { "" });
+            assert_eq!(files.len(), 2);
+            assert_ne!(files[0].file_path, files[1].file_path);
+            for (file, expected) in files.iter().zip(["first", "second"]) {
+                assert!(std::path::Path::new(&file.file_path)
+                    .starts_with(session.root().join("uploads")));
+                assert_eq!(std::fs::read_to_string(&file.file_path).unwrap(), expected);
+                assert_eq!(file.size, expected.len() as u64);
+                assert_eq!(file.original_name, "../video.mp4");
+                assert!(!file.file_path.contains(".upload-batch-"));
+            }
+            let lease = session.clone();
+            drop(session);
+            assert!(std::path::Path::new(&files[0].file_path).exists());
+            drop(lease);
+            assert!(!std::path::Path::new(&files[0].file_path).exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_batches_remove_completed_and_partial_files() {
+        for file_field in [None, Some("files")] {
+            for suffix in [
+                file("partial.mp4", "truncated"),
+                format!("{}--batch--\r\n", file("unsupported.txt", "invalid")),
+                "--batch\r\nContent-Disposition: form-data; name=\"room_id\"\r\n\r\ntruncated"
+                    .to_string(),
+            ] {
+                let session = TempStorage::new().unwrap();
+                let body = format!("{}{suffix}", file("complete.mp4", "video"));
+                assert!(receive_batch_upload(
+                    &session,
+                    multipart(Body::from(body)).await,
+                    file_field
+                )
+                .await
+                .is_err());
+                assert_no_uploads(&session);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_an_unaccepted_batch_removes_its_files() {
+        let session = TempStorage::new().unwrap();
+        let body = format!("{}--batch--\r\n", file("video.mp4", "video"));
+        let batch = receive_batch_upload(&session, multipart(Body::from(body)).await, None)
+            .await
+            .unwrap();
+        assert!(batch.directory.path().is_dir());
+        drop(batch);
+        assert_no_uploads(&session);
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_batch_request_removes_all_staged_files() {
+        let session = TempStorage::new().unwrap();
+        let reading = std::sync::Arc::new(tokio::sync::Notify::new());
+        let signal = reading.clone();
+        let mut prefix = Some(format!(
+            "{}{}",
+            file("complete.mp4", "video"),
+            file("partial.mp4", "partial")
+        ));
+        let body = Body::from_stream(futures::stream::poll_fn(move |_| {
+            if let Some(prefix) = prefix.take() {
+                std::task::Poll::Ready(Some(Ok::<_, std::io::Error>(prefix)))
+            } else {
+                signal.notify_one();
+                std::task::Poll::Pending
+            }
+        }));
+        let request = multipart(body).await;
+        let lease = session.clone();
+        let task =
+            tokio::spawn(async move { receive_batch_upload(&lease, request, Some("files")).await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), reading.notified())
+            .await
+            .unwrap();
+        task.abort();
+        assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+        assert_no_uploads(&session);
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2330,55 +2548,50 @@ struct FileUploadResponse {
 
 async fn handler_upload_file(
     state: axum::extract::State<State>,
-    mut multipart: Multipart,
+    multipart: Multipart,
 ) -> Result<Json<ApiResponse<FileUploadResponse>>, ApiError> {
     if state.readonly {
         return Err(ApiError("Server is in readonly mode".to_string()));
     }
 
+    receive_upload(&state.temp_storage, multipart)
+        .await
+        .map(|upload| Json(ApiResponse::success(upload)))
+}
+
+/// Keep the partial file guarded until the entire multipart request succeeds.
+/// A completed file belongs to the session, not the request: imports and queued
+/// submissions may use its absolute filePath much later.
+async fn receive_upload(
+    temp_storage: &crate::temp_storage::TempStorage,
+    mut multipart: Multipart,
+) -> Result<FileUploadResponse, ApiError> {
     let mut file_name = String::new();
-    let mut uploaded_file_path: Option<PathBuf> = None;
+    let mut staged_file: Option<tempfile::TempPath> = None;
     let mut file_size = 0u64;
-    let mut _room_id = 0i64;
 
     while let Some(mut field) = multipart.next_field().await.map_err(|e| e.to_string())? {
         let name = field.name().unwrap_or("").to_string();
 
         match name.as_str() {
             "file" => {
-                file_name = field.file_name().unwrap_or("unknown").to_string();
-
-                // 创建上传目录
-                // Copy the path out so no config guard is held while streaming the upload.
-                let cache = state.config.read().await.cache.clone();
-                let upload_dir = std::path::Path::new(&cache).join("uploads");
-                if !upload_dir.exists() {
-                    std::fs::create_dir_all(&upload_dir).map_err(|e| e.to_string())?;
+                if staged_file.is_some() {
+                    return Err(ApiError("Only one file can be uploaded".to_string()));
                 }
-
-                // 生成唯一文件名避免冲突
-                let timestamp = chrono::Utc::now().timestamp();
-                let extension = std::path::Path::new(&file_name)
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .unwrap_or("");
-                let base_name = std::path::Path::new(&file_name)
-                    .file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .unwrap_or("upload");
-
-                let unique_filename = if extension.is_empty() {
-                    format!("{}_{}", base_name, timestamp)
-                } else {
-                    format!("{}_{}.{}", base_name, timestamp, extension)
-                };
-
-                let file_path = upload_dir.join(&unique_filename);
-
-                // 流式保存文件，避免大文件内存占用
-                let mut file = tokio::fs::File::create(&file_path)
+                let original = sanitize_filename::sanitize(field.file_name().unwrap_or("upload"));
+                file_name = format!("{}_{}", uuid::Uuid::new_v4(), original);
+                let upload_dir = temp_storage.root().join("uploads");
+                tokio::fs::create_dir_all(&upload_dir)
                     .await
+                    .map_err(|e| e.to_string())?;
+                // Hidden partials cannot be fetched through /cache.
+                let partial = tempfile::Builder::new()
+                    .prefix(".upload-")
+                    .tempfile_in(&upload_dir)
                     .map_err(|e| format!("创建文件失败: {}", e))?;
+                let (file, guard) = partial.into_parts();
+                staged_file = Some(guard);
+                let mut file = tokio::fs::File::from_std(file);
 
                 while let Some(chunk) = field.chunk().await.map_err(|e| e.to_string())? {
                     tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
@@ -2390,34 +2603,111 @@ async fn handler_upload_file(
                 tokio::io::AsyncWriteExt::flush(&mut file)
                     .await
                     .map_err(|e| format!("刷新文件缓冲区失败: {}", e))?;
-
-                uploaded_file_path = Some(file_path);
-                file_name = unique_filename;
             }
             "roomId" => {
-                let room_id_str = field.text().await.map_err(|e| e.to_string())?;
-                _room_id = room_id_str.parse().unwrap_or(0);
+                let _ = field.text().await.map_err(|e| e.to_string())?;
             }
             _ => {}
         }
     }
 
-    if file_name.is_empty() {
-        return Err(ApiError("No file uploaded".to_string()));
-    }
-
-    let Some(file_path) = uploaded_file_path else {
+    let Some(staged_file) = staged_file else {
         return Err(ApiError("No file uploaded".to_string()));
     };
+    let file_path = temp_storage.root().join("uploads").join(&file_name);
+    staged_file
+        .persist_noclobber(&file_path)
+        .map_err(|e| format!("保存上传文件失败: {e}"))?;
     let file_path_str = file_path.to_string_lossy().to_string();
 
     log::info!("File uploaded: {} ({} bytes)", file_path_str, file_size);
 
-    Ok(Json(ApiResponse::success(FileUploadResponse {
+    Ok(FileUploadResponse {
         file_path: file_path_str,
         file_name,
         file_size,
-    })))
+    })
+}
+
+#[cfg(test)]
+mod session_upload_tests {
+    use super::*;
+    use crate::temp_storage::TempStorage;
+    use axum::{body::Body, extract::FromRequest, http::Request};
+
+    async fn multipart(body: String) -> Multipart {
+        Multipart::from_request(
+            Request::builder()
+                .header(
+                    "content-type",
+                    "multipart/form-data; boundary=test-boundary",
+                )
+                .body(Body::from(body))
+                .unwrap(),
+            &(),
+        )
+        .await
+        .unwrap()
+    }
+
+    fn file_field(name: &str, content: &str) -> String {
+        format!(
+            "--test-boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\nContent-Type: application/octet-stream\r\n\r\n{content}\r\n"
+        )
+    }
+
+    #[tokio::test]
+    async fn completed_upload_survives_request_until_last_session_owner_drops() {
+        let session = TempStorage::new().unwrap();
+        let body = format!(
+            "{}--test-boundary--\r\n",
+            file_field("../video.mp4", "video")
+        );
+        let upload = receive_upload(&session, multipart(body.clone()).await)
+            .await
+            .unwrap();
+        let other = receive_upload(&session, multipart(body).await)
+            .await
+            .unwrap();
+        assert_ne!(upload.file_path, other.file_path);
+        assert_eq!(upload.file_size, 5);
+        assert_eq!(std::fs::read_to_string(&upload.file_path).unwrap(), "video");
+        assert_eq!(
+            std::path::Path::new(&upload.file_path).parent().unwrap(),
+            session.root().join("uploads")
+        );
+        assert!(!upload.file_name.contains(['/', '\\']));
+        let json = serde_json::to_value(&upload).unwrap();
+        assert!(json.get("filePath").is_some());
+        assert!(json.get("fileName").is_some());
+        assert!(json.get("fileSize").is_some());
+        let lease = session.clone();
+        drop(session);
+        assert!(std::path::Path::new(&upload.file_path).is_file());
+        drop(lease);
+        assert!(!std::path::Path::new(&upload.file_path).exists());
+    }
+
+    #[tokio::test]
+    async fn malformed_or_multiple_file_requests_remove_all_partial_artifacts() {
+        for body in [
+            file_field("partial.mp4", "truncated"),
+            format!(
+                "{}--test-boundary\r\nContent-Disposition: form-data; name=\"roomId\"\r\n\r\ntruncated",
+                file_field("complete.mp4", "video")
+            ),
+            format!(
+                "{}{}--test-boundary--\r\n",
+                file_field("first.mp4", "video"),
+                file_field("second.mp4", "other")
+            ),
+        ] {
+            let session = TempStorage::new().unwrap();
+            assert!(receive_upload(&session, multipart(body).await).await.is_err());
+            let uploads = session.root().join("uploads");
+            assert!(!uploads.exists() || std::fs::read_dir(uploads).unwrap().count() == 0);
+        }
+    }
 }
 
 async fn handler_hls(
@@ -2499,15 +2789,9 @@ pub async fn start_api_server(state: State) {
     // In headless/Docker mode, serve cache and output from the same port (3000) so they are
     // reachable when only one port is exposed. These routes must be registered before "/".
     //
-    // Take a single read lock on config and clone the relevant fields to avoid
-    // redundant locking. The lock is scoped to this block so it is released
-    // before we move `state` into the router below.
-    let (output_path, cache_path) = {
-        let config = state.config.read().await;
-        (config.output.clone(), config.cache.clone())
-    };
-
-    let (preview_output, preview_cache) = (output_path.clone(), cache_path.clone());
+    let output_path = state.config.read().await.output.clone();
+    let preview_output = output_path.clone();
+    let preview_temp = state.temp_storage.clone();
     let mut app = Router::new()
         .route(
             "/preview_audio",
@@ -2515,7 +2799,7 @@ pub async fn start_api_server(state: State) {
                 move |Query(query): Query<crate::preview_audio::ChunkQuery>| async move {
                     crate::preview_audio::respond(
                         std::path::Path::new(&preview_output),
-                        std::path::Path::new(&preview_cache),
+                        preview_temp.root(),
                         query,
                     )
                     .await
@@ -2523,10 +2807,20 @@ pub async fn start_api_server(state: State) {
             ),
         )
         .nest_service("/output", ServeDir::new(output_path))
-        .nest_service("/cache", ServeDir::new(cache_path))
+        .nest_service(
+            "/cache",
+            crate::recording_assets::cache_router(
+                state.recorder_manager.clone(),
+                state.temp_storage.clone(),
+            ),
+        )
         // Serve static files from dist directory
         .nest_service("/", ServeDir::new("./dist"))
         // Account commands
+        .route(
+            "/api/preview_storage_transfer",
+            post(handler_preview_storage_transfer),
+        )
         .route("/api/get_accounts", post(handler_get_accounts))
         .route("/api/get_account_count", post(handler_get_account_count));
 
@@ -2534,6 +2828,15 @@ pub async fn start_api_server(state: State) {
     if !state.readonly {
         app = app
             .route("/api/update_mcp_server", post(handler_update_mcp_server))
+            .route("/api/set_storage_config", post(handler_set_storage_config))
+            .route(
+                "/api/start_storage_transfer",
+                post(handler_start_storage_transfer),
+            )
+            .route(
+                "/api/set_recorder_storage",
+                post(handler_set_recorder_storage),
+            )
             // Sends the operator's logs, so viewers of a readonly server cannot.
             .route("/api/submit_feedback", post(handler_submit_feedback))
             .route("/api/get_qr", post(handler_get_qr))

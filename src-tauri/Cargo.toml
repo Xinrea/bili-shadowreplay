@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/danmu_stream", "crates/ffmpeg_utils", "crates/native-overlay", "crates/recorder", "crates/whisper-cpp-rs"]
+members = ["crates/danmu_stream", "crates/ffmpeg_utils", "crates/native-overlay", "crates/recorder", "crates/recording_storage", "crates/whisper-cpp-rs"]
 resolver = "2"
 
 [workspace.lints.clippy]
@@ -28,6 +28,7 @@ danmu_stream = { path = "crates/danmu_stream" }
 ffmpeg_utils = { path = "crates/ffmpeg_utils" }
 native-overlay = { path = "crates/native-overlay" }
 recorder = { path = "crates/recorder" }
+recording_storage = { workspace = true }
 serde_json = "1.0"
 sha2 = "0.10"
 reqwest = { workspace = true}
@@ -73,6 +74,7 @@ rig-core = { version = "0.40.0", default-features = false, features = ["derive",
 [dev-dependencies]
 # Dependency crates do not inherit cfg(test); opt in only for application tests.
 ffmpeg_utils = { path = "crates/ffmpeg_utils", features = ["cli-test-oracles"] }
+tokio = { version = "1.27.0", features = ["test-util"] }
 
 [target.'cfg(windows)'.dependencies]
 # The normal Windows application includes GPU composition. Runtime probes
@@ -204,6 +206,7 @@ optional = true
 [workspace.dependencies]
 # Crates shared by the app and the workspace members. Declared once here so a
 # single version is resolved and compiled instead of one copy per crate.
+recording_storage = { path = "crates/recording_storage" }
 reqwest = { version = "0.12", features = ["json", "multipart", "gzip"] }
 uuid = { version = "1.4", features = ["v4"] }
 base64 = "0.22"

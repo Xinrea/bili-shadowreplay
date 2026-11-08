@@ -1,10 +1,8 @@
 use chrono::{TimeZone, Utc};
 use core::fmt;
-use std::{fmt::Display, path::Path};
-use tokio::{
-    fs::OpenOptions,
-    io::{AsyncBufReadExt, BufReader},
-};
+use recording_storage::RecordingStorage;
+use std::{fmt::Display, io};
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 const ENTRY_FILE_NAME: &str = "entries.log";
 
@@ -101,46 +99,43 @@ pub struct EntryStore {
 
 impl EntryStore {
     pub async fn new(work_dir: &str) -> Self {
-        // if work_dir is not exists, create it
-        if !Path::new(work_dir).exists() {
-            if let Err(e) = std::fs::create_dir_all(work_dir) {
-                log::error!("Failed to create work dir {work_dir}: {e}");
+        let storage = RecordingStorage::local(work_dir);
+        if let Err(e) = storage.prepare().await {
+            log::error!("Failed to create work dir {work_dir}: {e}");
+        }
+        match Self::from_storage(&storage).await {
+            Ok(entry_store) => entry_store,
+            Err(e) => {
+                log::error!("Failed to open entry file: {e}");
+                Self::empty()
             }
         }
+    }
 
-        let mut entry_store = Self {
+    fn empty() -> Self {
+        Self {
             header: None,
             entries: vec![],
             total_duration: 0.0,
             total_size: 0,
             last_sequence: 0,
-        };
-
-        entry_store.load(work_dir).await;
-
-        entry_store
+        }
     }
 
-    async fn load(&mut self, work_dir: &str) {
-        let file = OpenOptions::new()
-            .create(false)
-            .read(true)
-            .open(format!("{work_dir}/{ENTRY_FILE_NAME}"))
-            .await; // The `file` variable from the previous line now holds `Result<tokio::fs::File, tokio::io::Error>`
-        let file_handle = match file {
-            Ok(f) => f,
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    log::info!(
-                        "Entry file not found at {work_dir}/{ENTRY_FILE_NAME}, starting fresh."
-                    );
-                } else {
-                    log::error!("Failed to open entry file: {e}");
-                }
-                return; // Exit the load function if file cannot be opened
+    pub async fn from_storage(storage: &RecordingStorage) -> io::Result<Self> {
+        let mut entry_store = Self::empty();
+        let contents = match storage.read_log(ENTRY_FILE_NAME).await {
+            Ok(contents) => contents,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                log::info!("Entry file {ENTRY_FILE_NAME} not found, starting fresh.");
+                return Ok(entry_store);
             }
+            Err(e) => return Err(e),
         };
-        let mut lines = BufReader::new(file_handle).lines();
+        // Storage exposes whole-object reads; retain the legacy line parser for
+        // recordings migrated from entries.log, including CRLF and invalid rows.
+        let mut lines = BufReader::new(contents.as_slice()).lines();
+        // A malformed UTF-8 tail must not discard the readable legacy prefix.
         while let Ok(Some(line)) = lines.next_line().await {
             let entry = match TsEntry::from(line.as_str()) {
                 Ok(entry) => entry,
@@ -150,17 +145,18 @@ impl EntryStore {
                 }
             };
 
-            self.last_sequence = std::cmp::max(self.last_sequence, entry.sequence);
+            entry_store.last_sequence = std::cmp::max(entry_store.last_sequence, entry.sequence);
 
             if entry.is_header {
-                self.header = Some(entry.clone());
+                entry_store.header = Some(entry.clone());
             } else {
-                self.entries.push(entry.clone());
+                entry_store.entries.push(entry.clone());
             }
 
-            self.total_duration += entry.length;
-            self.total_size += entry.size;
+            entry_store.total_duration += entry.length;
+            entry_store.total_size += entry.size;
         }
+        Ok(entry_store)
     }
 
     pub fn len(&self) -> usize {
@@ -262,6 +258,80 @@ impl Range {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn storage_loads_legacy_entries_and_skips_invalid_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = RecordingStorage::local(dir.path());
+        let contents = b"init.mp4|0|0|512|1700000000|true\r\n\
+                         broken row\n\
+                         bad.ts|bad|5|100|1700000000|false\n\
+                         first.ts|42|5|100|1700000000|false\r\n\
+                         last.ts|41|6|200|1700000005000|false";
+        storage.write(ENTRY_FILE_NAME, contents).await.unwrap();
+        let entries = EntryStore::from_storage(&storage).await.unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.last_sequence, 42);
+        assert_eq!(entries.total_duration(), 11.0);
+        assert_eq!(entries.total_size(), 812);
+        assert_eq!(entries.header.as_ref().unwrap().url, "init.mp4");
+        assert_eq!(entries.entries[1].ts_seconds(), 1_700_000_005);
+        let manifest = entries.manifest(true, false, None);
+        assert!(manifest.contains("#EXT-X-MAP:URI=\"init.mp4\""));
+        assert!(manifest.contains("#EXT-X-DISCONTINUITY"));
+        let wrapped = EntryStore::new(dir.path().to_str().unwrap()).await;
+        assert_eq!(wrapped.manifest(true, false, None), manifest);
+        assert_eq!(storage.read(ENTRY_FILE_NAME).await.unwrap(), contents);
+    }
+
+    #[tokio::test]
+    async fn interrupted_utf8_tail_preserves_legacy_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = RecordingStorage::local(dir.path());
+        storage
+            .write(ENTRY_FILE_NAME, b"first.ts|42|5|100|1700000000|false\n\xe4")
+            .await
+            .unwrap();
+        let entries = EntryStore::from_storage(&storage).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries.last_sequence, 42);
+        assert_eq!(entries.total_size(), 100);
+        let wrapped = EntryStore::new(dir.path().to_str().unwrap()).await;
+        assert_eq!(wrapped.len(), 1);
+        assert_eq!(wrapped.last_sequence, 42);
+    }
+
+    #[tokio::test]
+    async fn missing_entries_start_empty_and_wrapper_prepares_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new-recording");
+        let entries = EntryStore::new(path.to_str().unwrap()).await;
+        assert!(entries.is_empty());
+        assert!(path.is_dir());
+        let storage = RecordingStorage::local(&path);
+        assert!(EntryStore::from_storage(&storage).await.unwrap().is_empty());
+        assert_eq!(
+            storage.read(ENTRY_FILE_NAME).await.unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+    }
+
+    #[tokio::test]
+    async fn storage_surfaces_read_failures_and_wrapper_falls_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = RecordingStorage::local(dir.path());
+        std::fs::create_dir(dir.path().join(ENTRY_FILE_NAME)).unwrap();
+        assert!(EntryStore::from_storage(&storage).await.is_err());
+        assert!(EntryStore::new(dir.path().to_str().unwrap())
+            .await
+            .is_empty());
+        let file_as_directory = dir.path().join("not-a-directory");
+        std::fs::write(&file_as_directory, b"unchanged").unwrap();
+        assert!(EntryStore::new(file_as_directory.to_str().unwrap())
+            .await
+            .is_empty());
+        assert_eq!(std::fs::read(file_as_directory).unwrap(), b"unchanged");
+    }
 
     #[test]
     fn test_ts_entry_from_valid() {

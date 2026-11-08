@@ -228,8 +228,8 @@ impl Connection {
     async fn start(&mut self) -> io::Result<()> {
         let recorder = &self.recorder;
         let live_id = crate::new_recording_id();
-        let work_dir = recorder.work_dir(&live_id).await.full_path();
-        tokio::fs::create_dir_all(&work_dir).await?;
+        let storage = recorder.recording_storage(&live_id).await?;
+        storage.prepare().await?;
         let bridge = TcpListener::bind("127.0.0.1:0").await?;
         let source = format!("tcp://{}", bridge.local_addr()?);
         *recorder.live_id.write().await = live_id.clone();
@@ -244,11 +244,11 @@ impl Connection {
             .map_err(protocol_error)?;
         self.live_started = true;
         recorder.is_recording.store(true, Ordering::Release);
+        let mut info = recorder.info().await;
+        info.storage_id = storage.identity().map(str::to_owned);
         recorder
             .event_channel
-            .send(RecorderEvent::RecordStart {
-                recorder: recorder.info().await,
-            })
+            .send(RecorderEvent::RecordStart { recorder: info })
             .await
             .map_err(protocol_error)?;
         self.record_started = true;
@@ -257,7 +257,7 @@ impl Connection {
             source,
             None,
             Vec::new(),
-            work_dir.clone(),
+            storage.clone(),
             enabled.clone(),
             recorder.event_channel.clone(),
             live_id,
@@ -268,20 +268,26 @@ impl Connection {
             enabled,
             worker: Some(tokio::spawn(async move {
                 let result = flv.start().await;
-                // Push sources have no remote cover. Extract one from a local
-                // completed segment before publishing the finished archive.
-                let first_segment = work_dir.join("0.ts");
-                if first_segment.exists() {
-                    if let Err(error) = ffmpeg_utils::write_jpeg(
-                        &first_segment,
-                        0.0,
-                        Some(2),
-                        &work_dir.join("cover.jpg"),
-                    )
-                    .await
-                    {
-                        log::debug!("RTMP cover unavailable: {error}");
+                // Push sources have no remote cover. Decode a completed backend
+                // object and store the resulting JPEG through the same backend.
+                // All cover work is best-effort, including storage lookups:
+                // a thumbnail error must never replace the recording result.
+                let cover_result: Result<(), RecorderError> = async {
+                    if storage.exists("0.ts").await? {
+                        let jpeg = ffmpeg_utils::extract_jpeg_from_bytes(
+                            storage.read("0.ts").await?,
+                            0.0,
+                            Some(2),
+                        )
+                        .await
+                        .map_err(RecorderError::FfmpegError)?;
+                        storage.write("cover.jpg", &jpeg).await?;
                     }
+                    Ok(())
+                }
+                .await;
+                if let Err(error) = cover_result {
+                    log::debug!("RTMP cover unavailable: {error}");
                 }
                 result
             })),

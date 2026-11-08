@@ -207,6 +207,7 @@ mod tests {
             webhook_poster.clone(),
         ));
         State {
+            temp_storage: crate::temp_storage::TempStorage::new().unwrap(),
             mcp_server: Arc::new(McpServer::default()),
             db,
             config,

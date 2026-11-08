@@ -1,7 +1,7 @@
 use std::{
     ffi::{CStr, CString},
     fs::File,
-    io::{self, Read, Seek, SeekFrom},
+    io::{self, Cursor, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     ptr,
     sync::{
@@ -84,6 +84,22 @@ pub async fn extract_video_metadata(file_path: &Path) -> Result<VideoMetadata, S
     probe_media(file_path).await.map(|probe| probe.metadata)
 }
 
+/// Probe owned recording bytes (TS, MP4/MOV, FLV or Matroska/WebM).
+/// Playlists and external media references are not allowed.
+pub async fn extract_video_metadata_from_bytes(data: Vec<u8>) -> Result<VideoMetadata, String> {
+    extract_video_metadata_from_parts(data, Vec::new()).await
+}
+
+/// Probe `[init][media]` through one seekable AVIO without concatenating buffers.
+pub async fn extract_video_metadata_from_parts(
+    init: Vec<u8>,
+    media: Vec<u8>,
+) -> Result<VideoMetadata, String> {
+    run_probe(ProbeSource::Bytes { init, media })
+        .await
+        .map(|probe| probe.metadata)
+}
+
 /// Probe an fMP4 media segment together with its `#EXT-X-MAP` initialization.
 /// A seekable AVIO joins the two files without copying them or writing a
 /// temporary sibling, so concurrent probes cannot overwrite each other's input.
@@ -102,6 +118,7 @@ pub async fn extract_video_metadata_with_init(
 enum ProbeSource {
     File(PathBuf),
     Fragment { init: PathBuf, media: PathBuf },
+    Bytes { init: Vec<u8>, media: Vec<u8> },
 }
 
 struct CancelOnDrop(Arc<AtomicBool>);
@@ -165,6 +182,19 @@ pub(crate) fn open_input(
     open_source(ProbeSource::File(file_path.to_path_buf()), cancelled)
 }
 
+pub(crate) fn open_bytes(
+    data: Vec<u8>,
+    cancelled: Arc<AtomicBool>,
+) -> Result<format::context::Input, String> {
+    open_source(
+        ProbeSource::Bytes {
+            init: data,
+            media: Vec::new(),
+        },
+        cancelled,
+    )
+}
+
 fn open_source(
     source: ProbeSource,
     cancelled: Arc<AtomicBool>,
@@ -173,6 +203,7 @@ fn open_source(
     if cancelled.load(Ordering::Acquire) {
         return Err("媒体探测已取消".into());
     }
+    let bounded_bytes = matches!(&source, ProbeSource::Bytes { .. });
     let (filename, mut io) = match source {
         ProbeSource::File(path) => {
             let filename = CString::new(path_str(&path)?)
@@ -180,9 +211,20 @@ fn open_source(
             (Some(filename), None)
         }
         ProbeSource::Fragment { init, media } => {
-            let reader = JoinedFiles::open(&init, &media, cancelled.clone())?;
+            let reader = JoinedReader::open(&init, &media, cancelled.clone())?;
             let io = format::context::StreamIo::from_read_seek(reader)
                 .map_err(|error| format!("创建 fMP4 AVIO 失败: {error}"))?;
+            (None, Some(io))
+        }
+        ProbeSource::Bytes { init, media } => {
+            let lengths = [init.len() as u64, media.len() as u64];
+            let reader = JoinedReader::new(
+                [Cursor::new(init), Cursor::new(media)],
+                lengths,
+                cancelled.clone(),
+            )?;
+            let io = format::context::StreamIo::from_read_seek(reader)
+                .map_err(|error| format!("创建媒体 AVIO 失败: {error}"))?;
             (None, Some(io))
         }
     };
@@ -193,18 +235,28 @@ fn open_source(
     if opening.0.is_null() {
         return Err("分配媒体探测上下文失败".into());
     }
+    let mut options = ffmpeg::Dictionary::new();
+    if bounded_bytes {
+        // No manifest demuxers, and no protocols even for external references
+        // embedded in an otherwise supported container. Custom AVIO itself
+        // needs no protocol. Leave file callers' historical behavior unchanged.
+        options.set("format_whitelist", "mpegts,mov,matroska,webm,flv");
+        options.set("protocol_whitelist", "");
+    }
     unsafe {
         (*opening.0).interrupt_callback = interrupt.interrupt;
         if let Some(io) = io.as_mut() {
             (*opening.0).pb = io.as_mut_ptr();
             (*opening.0).flags |= ffi::AVFMT_FLAG_CUSTOM_IO;
         }
+        let mut raw_options = options.disown();
         let result = ffi::avformat_open_input(
             &mut opening.0,
             filename.as_ref().map_or(ptr::null(), |name| name.as_ptr()),
             ptr::null(),
-            ptr::null_mut(),
+            &mut raw_options,
         );
+        let _options = ffmpeg::Dictionary::own(raw_options);
         if result < 0 {
             return Err(format!("打开媒体失败: {}", ffmpeg::Error::from(result)));
         }
@@ -346,14 +398,14 @@ fn describe(input: &format::context::Input) -> Result<MediaProbe, String> {
 
 /// The virtual input is `[init bytes][media bytes]`. Reads stay bounded to the
 /// caller's AVIO buffer; Seek supports size discovery and arbitrary revisits.
-struct JoinedFiles {
-    files: [File; 2],
+struct JoinedReader<R> {
+    parts: [R; 2],
     lengths: [u64; 2],
     position: u64,
     cancelled: Arc<AtomicBool>,
 }
 
-impl JoinedFiles {
+impl JoinedReader<File> {
     fn open(init: &Path, media: &Path, cancelled: Arc<AtomicBool>) -> Result<Self, String> {
         let init = File::open(init).map_err(|error| format!("读取 fMP4 init 失败: {error}"))?;
         let media = File::open(media).map_err(|error| format!("读取 fMP4 media 失败: {error}"))?;
@@ -361,12 +413,18 @@ impl JoinedFiles {
             init.metadata().map_err(|error| error.to_string())?.len(),
             media.metadata().map_err(|error| error.to_string())?.len(),
         ];
+        Self::new([init, media], lengths, cancelled)
+    }
+}
+
+impl<R> JoinedReader<R> {
+    fn new(parts: [R; 2], lengths: [u64; 2], cancelled: Arc<AtomicBool>) -> Result<Self, String> {
         lengths[0]
             .checked_add(lengths[1])
             .filter(|length| *length <= i64::MAX as u64)
             .ok_or("fMP4 输入过大")?;
         Ok(Self {
-            files: [init, media],
+            parts,
             lengths,
             position: 0,
             cancelled,
@@ -384,7 +442,7 @@ impl JoinedFiles {
     }
 }
 
-impl Read for JoinedFiles {
+impl<R: Read + Seek> Read for JoinedReader<R> {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
         self.check_cancelled()?;
         let total = self.lengths[0] + self.lengths[1];
@@ -395,8 +453,8 @@ impl Read for JoinedFiles {
             let offset = self.position - if index == 1 { self.lengths[0] } else { 0 };
             let count =
                 (self.lengths[index] - offset).min((output.len() - written) as u64) as usize;
-            self.files[index].seek(SeekFrom::Start(offset))?;
-            let read = self.files[index].read(&mut output[written..written + count])?;
+            self.parts[index].seek(SeekFrom::Start(offset))?;
+            let read = self.parts[index].read(&mut output[written..written + count])?;
             if read == 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
@@ -410,7 +468,7 @@ impl Read for JoinedFiles {
     }
 }
 
-impl Seek for JoinedFiles {
+impl<R> Seek for JoinedReader<R> {
     fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
         self.check_cancelled()?;
         let position = match from {
@@ -645,6 +703,144 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn byte_metadata_matches_native_file_probes() {
+        for name in [
+            "probe-h264.ts",
+            "probe-h264-resized.ts",
+            "probe-h264-no-parameters.ts",
+            "probe-mpeg2.ts",
+        ] {
+            let path = segment_fixture(name);
+            let expected = extract_video_metadata(&path).await.unwrap();
+            let actual = extract_video_metadata_from_bytes(std::fs::read(path).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(actual, expected, "{name}");
+        }
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/video_frame/fixtures/seek.mp4");
+        assert_eq!(
+            extract_video_metadata_from_bytes(std::fs::read(&path).unwrap())
+                .await
+                .unwrap(),
+            extract_video_metadata(&path).await.unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn byte_metadata_parts_match_native_fmp4_file_probes() {
+        let init = fixture("init.m4s");
+        let media = fixture("segment.m4s");
+        let expected = extract_video_metadata_with_init(&init, &media)
+            .await
+            .unwrap();
+        let actual = extract_video_metadata_from_parts(
+            std::fs::read(&init).unwrap(),
+            std::fs::read(&media).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(
+            extract_video_metadata_from_bytes(std::fs::read(&init).unwrap())
+                .await
+                .unwrap(),
+            extract_video_metadata(&init).await.unwrap()
+        );
+        assert!(
+            extract_video_metadata_from_bytes(std::fs::read(media).unwrap())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn byte_metadata_rejects_empty_and_malformed_inputs() {
+        for data in [Vec::new(), b"not media".to_vec()] {
+            assert!(extract_video_metadata_from_bytes(data.clone())
+                .await
+                .is_err());
+            assert!(extract_video_metadata_from_parts(data.clone(), Vec::new())
+                .await
+                .is_err());
+            assert!(extract_video_metadata_from_parts(Vec::new(), data)
+                .await
+                .is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn byte_metadata_rejects_manifests_without_opening_nested_inputs() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}/segment.ts", listener.local_addr().unwrap());
+        let local = segment_fixture("probe-h264.ts");
+        for target in [url, local.to_str().unwrap().to_owned()] {
+            for manifest in [
+                format!("#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\n{target}\n#EXT-X-ENDLIST\n"),
+                format!("ffconcat version 1.0\nfile '{target}'\n"),
+            ] {
+                let concat = manifest.starts_with("ffconcat");
+                let error = extract_video_metadata_from_bytes(manifest.into_bytes())
+                    .await
+                    .unwrap_err();
+                // Some FFmpeg versions reject extensionless HLS while probing,
+                // before even checking the whitelist.
+                if concat {
+                    assert!(error.contains("not on whitelist"), "{error}");
+                }
+            }
+        }
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn byte_metadata_io_handles_empty_parts_seeks_and_cancellation() {
+        for parts in [
+            [b"abc".to_vec(), b"def".to_vec()],
+            [Vec::new(), b"abcdef".to_vec()],
+            [b"abcdef".to_vec(), Vec::new()],
+        ] {
+            let token = Arc::new(AtomicBool::new(false));
+            let lengths = parts.each_ref().map(|part| part.len() as u64);
+            let mut input =
+                JoinedReader::new(parts.map(Cursor::new), lengths, token.clone()).unwrap();
+            let mut bytes = [0; 4];
+            input.read_exact(&mut bytes).unwrap();
+            assert_eq!(&bytes, b"abcd");
+            assert_eq!(input.seek(SeekFrom::End(-4)).unwrap(), 2);
+            input.read_exact(&mut bytes).unwrap();
+            assert_eq!(&bytes, b"cdef");
+            assert_eq!(input.read(&mut bytes).unwrap(), 0);
+            assert!(input.seek(SeekFrom::Current(-7)).is_err());
+            assert_eq!(input.seek(SeekFrom::Start(10)).unwrap(), 10);
+            assert_eq!(input.read(&mut bytes).unwrap(), 0);
+            token.store(true, Ordering::Release);
+            assert!(input.read(&mut bytes).is_err());
+            assert!(input.seek(SeekFrom::Start(0)).is_err());
+        }
+        assert!(open_bytes(Vec::new(), Arc::new(AtomicBool::new(true))).is_err());
+    }
+
+    #[test]
+    fn byte_metadata_disables_all_protocols_on_the_native_context() {
+        let input = open_bytes(
+            std::fs::read(segment_fixture("probe-h264.ts")).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        // The empty allowlist is intentional, not a missing option (null).
+        // This also blocks external references inside allowed containers.
+        unsafe {
+            let whitelist = (*input.as_ptr()).protocol_whitelist;
+            assert!(!whitelist.is_null());
+            assert_eq!(CStr::from_ptr(whitelist).to_bytes(), b"");
+        }
+    }
+
+    #[tokio::test]
     async fn cancelling_a_stalled_http_probe_closes_its_native_connection() {
         use std::time::Duration;
         use tokio::{
@@ -713,7 +909,7 @@ mod tests {
         std::fs::write(&init, b"abcd").unwrap();
         std::fs::write(&media, b"efghi").unwrap();
         let token = Arc::new(AtomicBool::new(false));
-        let mut input = JoinedFiles::open(&init, &media, token.clone()).unwrap();
+        let mut input = JoinedReader::open(&init, &media, token.clone()).unwrap();
         let mut bytes = [0; 6];
         input.read_exact(&mut bytes).unwrap();
         assert_eq!(&bytes, b"abcdef");

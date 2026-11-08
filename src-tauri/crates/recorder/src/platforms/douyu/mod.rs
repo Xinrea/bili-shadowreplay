@@ -3,7 +3,6 @@ use tokio::sync::broadcast;
 pub mod api;
 pub mod response;
 
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -61,7 +60,7 @@ impl DouyuRecorder {
     pub fn new(
         room_id: &str,
         account: &Account,
-        cache_dir: PathBuf,
+        storage: impl Into<recording_storage::RecordingStore>,
         channel: impl Into<crate::events::RecorderEventSender>,
         update_interval: Arc<AtomicU64>,
         enabled: bool,
@@ -70,7 +69,7 @@ impl DouyuRecorder {
             PlatformType::Douyu,
             room_id,
             account,
-            cache_dir,
+            storage,
             channel,
             update_interval,
             enabled,

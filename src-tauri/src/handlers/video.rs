@@ -954,6 +954,12 @@ pub(crate) async fn upload_video_file(
 pub async fn cancel(state: state_type!(), event_id: String) -> Result<(), String> {
     log::info!("Cancel task: {event_id}");
     let task_before_cancel = state.db.get_task(&event_id).await.ok();
+    if task_before_cancel
+        .as_ref()
+        .is_some_and(|task| task.task_type == "storage_transfer")
+    {
+        return Err("存储转移不支持取消；失败后请使用相同来源和目标重试".into());
+    }
     let cancel_result = state
         .task_manager
         .cancel_task_if(&event_id, async {
@@ -2240,6 +2246,7 @@ mod queued_subtitle_tests {
         ));
         State {
             mcp_server: Arc::new(McpServer::default()),
+            temp_storage: crate::temp_storage::TempStorage::new().unwrap(),
             db,
             config,
             webhook_poster,

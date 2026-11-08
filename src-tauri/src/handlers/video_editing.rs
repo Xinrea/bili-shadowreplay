@@ -428,21 +428,45 @@ pub async fn get_archive_metadata(
         .await
         .map_err(|e| format!("Failed to get archive: {}", e))?;
 
-    // Get file path and metadata
-    let cache_dir = PathBuf::from(&state.config.read().await.cache);
-    let file_path = cache_dir
-        .join(&platform)
-        .join(&room_id)
-        .join(&live_id)
-        .join("output.mp4");
-
-    let (file_size, video_metadata) = if file_path.exists() {
-        let size = tokio::fs::metadata(&file_path)
+    if archive.platform != platform {
+        return Err("Archive platform does not match the request".into());
+    }
+    let storage = state
+        .recorder_manager
+        .recording_storage(PlatformType::from_str(&platform)?, &room_id, &live_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    // Metadata is consumed as structured agent/MCP output, not a native input path.
+    // Return a stable logical asset URL, never a path into a temporary lease.
+    let mut asset_url = url::Url::parse("http://localhost").map_err(|e| e.to_string())?;
+    asset_url
+        .path_segments_mut()
+        .map_err(|_| "Invalid asset URL")?
+        .extend(["cache", &platform, &room_id, &live_id, "output.mp4"]);
+    let file_path = asset_url.path().to_string();
+    let (file_size, video_metadata) = if storage
+        .exists("output.mp4")
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        let size = storage
+            .size("output.mp4")
             .await
-            .map(|m| m.len())
-            .unwrap_or(0);
-
-        let metadata = get_video_metadata_internal(&file_path).await.ok();
+            .map_err(|e| e.to_string())?;
+        let workspace = storage
+            .materialize(&["output.mp4".to_string()])
+            .await
+            .map_err(|e| e.to_string())?;
+        let path = workspace.path("output.mp4").map_err(|e| e.to_string())?;
+        // Keep materialized inputs alive even if the command is cancelled while
+        // libavformat's blocking probe is still exiting.
+        let metadata = tokio::spawn(async move {
+            let metadata = get_video_metadata_internal(&path).await.ok();
+            drop(workspace);
+            metadata
+        })
+        .await
+        .map_err(|e| format!("Archive metadata task failed: {e}"))?;
         (size, metadata)
     } else {
         (0, None)
@@ -453,7 +477,7 @@ pub async fn get_archive_metadata(
         "room_id": archive.room_id,
         "platform": platform,
         "title": archive.title,
-        "file_path": file_path.to_string_lossy(),
+        "file_path": file_path,
         "file_size": file_size,
         "created_at": archive.created_at,
         "video_metadata": video_metadata,

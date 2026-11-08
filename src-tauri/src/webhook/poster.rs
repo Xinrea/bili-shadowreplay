@@ -306,6 +306,7 @@ mod tests {
                 live_id: "".to_string(),
                 recording: false,
                 enabled: false,
+                storage_id: None,
             }),
             timestamp: 0,
         };

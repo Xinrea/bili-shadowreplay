@@ -1,11 +1,10 @@
-use std::path::PathBuf;
+use std::{io, path::Path};
 
 use danmu_stream::LiveEvent;
+use recording_storage::{AppendLog, RecordingStorage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::AsyncWriteExt;
 use tokio::{
-    fs::{File, OpenOptions},
     io::{AsyncBufReadExt, BufReader},
     sync::RwLock,
 };
@@ -38,28 +37,60 @@ impl DanmuEntry {
 
 pub struct DanmuStorage {
     cache: RwLock<Vec<LiveEvent>>,
-    file: RwLock<File>,
+    log: AppendLog,
 }
 
 impl DanmuStorage {
-    pub async fn new(file_path: &PathBuf) -> Option<DanmuStorage> {
-        let file = match OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(file_path)
-            .await
-        {
-            Ok(file) => file,
-            Err(e) => {
-                log::error!("Open danmu file failed: {e}");
-                return None;
-            }
+    /// Open a local event sidecar. Asset names must be UTF-8; parent directory
+    /// paths may contain non-UTF-8 components.
+    pub async fn new(file_path: &Path) -> Option<DanmuStorage> {
+        let Some(key) = file_path.file_name().and_then(|name| name.to_str()) else {
+            log::error!("Open danmu file failed: invalid file name");
+            return None;
         };
-        let reader = BufReader::new(file);
+        let parent = file_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let storage = RecordingStorage::local(parent);
+        Self::from_storage(&storage, key)
+            .await
+            .map_err(|e| log::error!("Open danmu file failed: {e}"))
+            .ok()
+    }
+
+    /// Resume a JSONL event log, also accepting legacy `timestamp:content` lines.
+    pub async fn from_storage(storage: &RecordingStorage, key: &str) -> io::Result<Self> {
+        // Read before opening for append: only a missing log starts empty.
+        let contents = match storage.read_log(key).await {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(error),
+        };
+        let preload_cache = Self::parse_events(&contents).await;
+        let log = storage.open_log(key).await?;
+        Ok(DanmuStorage {
+            cache: RwLock::new(preload_cache),
+            log,
+        })
+    }
+
+    /// Read preview entries with absolute timestamps, without opening/creating a
+    /// writable log. Missing logs and backend failures are returned to the caller.
+    pub async fn read_entries(
+        storage: &RecordingStorage,
+        key: &str,
+    ) -> io::Result<Vec<DanmuEntry>> {
+        let contents = storage.read_log(key).await?;
+        Ok(Self::entries(&Self::parse_events(&contents).await, 0))
+    }
+
+    async fn parse_events(contents: &[u8]) -> Vec<LiveEvent> {
+        let reader = BufReader::new(contents);
         let mut lines = reader.lines();
         let mut preload_cache: Vec<LiveEvent> = Vec::new();
+        // Preserve the readable prefix of an interrupted legacy log, including
+        // one whose final UTF-8 character was only partially written.
         while let Ok(Some(line)) = lines.next_line().await {
             if let Ok(event) = serde_json::from_str::<LiveEvent>(&line) {
                 preload_cache.push(event);
@@ -80,23 +111,8 @@ impl DanmuStorage {
                 });
             }
         }
-        // lines.next_line() consumes the reader, so the file is closed when lines is dropped
-        drop(lines);
 
-        let file = OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(file_path)
-            .await
-            .map_err(|e| {
-                log::error!("Failed to open danmu file for append: {}", e);
-                e
-            })
-            .ok()?;
-        Some(DanmuStorage {
-            cache: RwLock::new(preload_cache),
-            file: RwLock::new(file),
-        })
+        preload_cache
     }
 
     pub async fn add_event(&self, event: LiveEvent) -> Result<(), std::io::Error> {
@@ -107,7 +123,7 @@ impl DanmuStorage {
             ));
         };
         line.push('\n');
-        self.file.write().await.write_all(line.as_bytes()).await?;
+        self.log.append(line.as_bytes()).await?;
         self.cache.write().await.push(event);
         Ok(())
     }
@@ -129,10 +145,11 @@ impl DanmuStorage {
     /// All preview-relevant event types are returned; consumers that only want
     /// danmaku (e.g. ASS export) filter on `event_type`.
     pub async fn get_entries(&self, live_start_ts: i64) -> Vec<DanmuEntry> {
-        let mut danmus: Vec<DanmuEntry> = self
-            .cache
-            .read()
-            .await
+        Self::entries(&self.cache.read().await, live_start_ts)
+    }
+
+    fn entries(events: &[LiveEvent], live_start_ts: i64) -> Vec<DanmuEntry> {
+        let mut danmus: Vec<DanmuEntry> = events
             .iter()
             .filter(|event| PREVIEW_EVENT_TYPES.contains(&event.event_type.as_str()))
             .filter_map(|event| {
@@ -184,6 +201,169 @@ impl DanmuStorage {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn read_entries_never_creates_or_opens_a_writable_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = RecordingStorage::local(dir.path());
+        assert_eq!(
+            DanmuStorage::read_entries(&storage, "events.jsonl")
+                .await
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound,
+        );
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+        storage.write("danmu.txt", b"100:legacy\n").await.unwrap();
+        let entries = DanmuStorage::read_entries(&storage, "danmu.txt")
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].ts, 100);
+        assert_eq!(entries[0].content, "legacy");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert_eq!(storage.read("danmu.txt").await.unwrap(), b"100:legacy\n");
+    }
+
+    #[tokio::test]
+    async fn storage_resumes_jsonl_and_appends_complete_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = RecordingStorage::local(dir.path());
+        let danmu = DanmuStorage::from_storage(&storage, "events.jsonl")
+            .await
+            .unwrap();
+        assert!(danmu.get_entries(0).await.is_empty());
+        danmu.add_line(100, "hello\nwith a newline").await.unwrap();
+        drop(danmu);
+
+        let danmu = DanmuStorage::from_storage(&storage, "events.jsonl")
+            .await
+            .unwrap();
+        danmu.add_line(200, "resumed").await.unwrap();
+        assert_eq!(danmu.get_entries(0).await.len(), 2);
+        drop(danmu);
+
+        let bytes = storage.read("events.jsonl").await.unwrap();
+        assert_eq!(bytes.iter().filter(|&&byte| byte == b'\n').count(), 2);
+        assert_eq!(bytes.last(), Some(&b'\n'));
+        let events: Vec<LiveEvent> = std::str::from_utf8(&bytes)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(events[0].data["content"], "hello\nwith a newline");
+        assert_eq!(events[1].ts, 200);
+        let entries = DanmuStorage::new(&dir.path().join("events.jsonl"))
+            .await
+            .unwrap()
+            .get_entries(0)
+            .await;
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn legacy_danmu_wrapper_accepts_crlf_colons_and_skips_invalid_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("danmu.txt");
+        let storage = RecordingStorage::local(dir.path());
+        storage
+            .write(
+                "danmu.txt",
+                b"100:first:message\r\ninvalid\nbad:time\n200:last\n",
+            )
+            .await
+            .unwrap();
+        let danmu = DanmuStorage::new(&path).await.unwrap();
+        let entries = danmu.get_entries(0).await;
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].content, "first:message");
+        assert_eq!(entries[0].ts, 100);
+        assert_eq!(entries[1].content, "last");
+        // New records remain JSONL even when reading a legacy archive.
+        danmu.add_line(300, "new event").await.unwrap();
+        drop(danmu);
+        let reloaded = DanmuStorage::from_storage(&storage, "danmu.txt")
+            .await
+            .unwrap();
+        assert_eq!(reloaded.get_entries(0).await.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn storage_reports_read_and_key_errors_without_replacing_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = RecordingStorage::local(dir.path());
+        std::fs::create_dir(dir.path().join("events.jsonl")).unwrap();
+        assert!(DanmuStorage::from_storage(&storage, "events.jsonl")
+            .await
+            .is_err());
+        assert!(DanmuStorage::new(&dir.path().join("events.jsonl"))
+            .await
+            .is_none());
+        assert!(DanmuStorage::from_storage(&storage, "../outside.jsonl")
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn interrupted_utf8_tail_preserves_preloaded_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = RecordingStorage::local(dir.path());
+        let bytes = b"100:complete\n200:interrupted \xe4";
+        storage.write("events.jsonl", bytes).await.unwrap();
+        let danmu = DanmuStorage::from_storage(&storage, "events.jsonl")
+            .await
+            .unwrap();
+        let entries = danmu.get_entries(0).await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].content, "complete");
+        let wrapped = DanmuStorage::new(&dir.path().join("events.jsonl"))
+            .await
+            .unwrap();
+        assert_eq!(wrapped.get_entries(0).await.len(), 1);
+        assert_eq!(storage.read("events.jsonl").await.unwrap(), bytes);
+    }
+
+    #[tokio::test]
+    async fn missing_parent_is_an_open_error_not_an_empty_storage() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("missing-parent");
+        let storage = RecordingStorage::local(&parent);
+        assert!(DanmuStorage::from_storage(&storage, "events.jsonl")
+            .await
+            .is_err());
+        assert!(DanmuStorage::new(&parent.join("events.jsonl"))
+            .await
+            .is_none());
+        assert!(!parent.exists());
+    }
+
+    // Linux permits arbitrary non-NUL path bytes; macOS filesystems may reject
+    // their creation with EILSEQ before the compatibility wrapper is exercised.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn path_wrapper_supports_non_utf8_parent_directories() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir
+            .path()
+            .join(std::ffi::OsString::from_vec(b"recording-\xff".to_vec()));
+        std::fs::create_dir(&parent).unwrap();
+        let path = parent.join("events.jsonl");
+        let danmu = DanmuStorage::new(&path).await.unwrap();
+        danmu.add_line(100, "hello").await.unwrap();
+        drop(danmu);
+        assert_eq!(
+            DanmuStorage::new(&path)
+                .await
+                .unwrap()
+                .get_entries(0)
+                .await
+                .len(),
+            1
+        );
+    }
 
     fn write_lines(path: &PathBuf, lines: &[String]) {
         use std::io::Write;

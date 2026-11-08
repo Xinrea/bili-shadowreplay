@@ -21,6 +21,9 @@ use crate::{
     path_str,
 };
 
+mod objects;
+pub use objects::HlsObjectStore;
+
 #[derive(Debug, Clone, Default)]
 pub struct HlsRecordingOptions {
     pub user_agent: Option<String>,
@@ -44,8 +47,7 @@ pub async fn record_to_hls(
     run_media(move |cancelled| {
         record_sync(
             &source,
-            &playlist,
-            &segment_pattern,
+            Destination::Files(&playlist, &segment_pattern),
             options,
             enabled,
             cancelled,
@@ -54,10 +56,39 @@ pub async fn record_to_hls(
     .await
 }
 
+/// Record directly to `playlist.m3u8` and numbered `.ts` objects, without local
+/// output files. The store runs only on the native blocking worker. An existing
+/// event playlist is read from the same store to resume numbering.
+///
+/// Disabling `enabled` finishes the pending segment; dropping the future cancels
+/// backend I/O and discards unpublished data. See [`HlsObjectStore`] for limits.
+pub async fn record_to_hls_objects(
+    source: &str,
+    store: Arc<dyn HlsObjectStore>,
+    options: HlsRecordingOptions,
+    enabled: Arc<AtomicBool>,
+) -> Result<(), String> {
+    let source = source.to_owned();
+    run_media(move |cancelled| {
+        record_sync(
+            &source,
+            Destination::Objects(store),
+            options,
+            enabled,
+            cancelled,
+        )
+    })
+    .await
+}
+
+enum Destination<'a> {
+    Files(&'a Path, &'a Path),
+    Objects(Arc<dyn HlsObjectStore>),
+}
+
 fn record_sync(
     source: &str,
-    playlist: &Path,
-    segment_pattern: &Path,
+    destination: Destination<'_>,
     options: HlsRecordingOptions,
     enabled: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
@@ -104,7 +135,16 @@ fn record_sync(
     };
     let chosen = [select_video(&input), crate::audio::audio_stream(&input)];
     let origin = unsafe { (*input.as_ptr()).start_time };
-    let mut output = NativeOutput::new(playlist, "hls", cancelled.clone())?;
+    let (playlist, segment_pattern, store) = match destination {
+        Destination::Files(playlist, pattern) => (playlist, path_str(pattern)?, None),
+        Destination::Objects(store) => (
+            Path::new(objects::PLAYLIST_URL),
+            objects::SEGMENT_URL,
+            Some(store),
+        ),
+    };
+    let native = NativeOutput::new(playlist, "hls", cancelled.clone())?;
+    let mut output = objects::RecordingOutput::new(native, store, cancelled.clone());
     // fftools' default mux delay gives MPEG-TS the same initial PCR/PTS margin.
     unsafe { (*output.output.as_mut_ptr()).max_delay = 700_000 };
     output.output.set_metadata(input.metadata().to_owned());
@@ -160,11 +200,8 @@ fn record_sync(
     mux_options.set("hls_list_size", "0");
     mux_options.set("hls_playlist_type", "event");
     mux_options.set("hls_flags", "append_list+omit_endlist");
-    mux_options.set("hls_segment_filename", path_str(segment_pattern)?);
-    output
-        .output
-        .write_header_with(mux_options)
-        .map_err(|error| format!("写入 HLS 文件头失败: {error}"))?;
+    mux_options.set("hls_segment_filename", segment_pattern);
+    output.write_header(mux_options)?;
     let mux_flags = unsafe { (*output.output.format().as_ptr()).flags };
     let read_result = loop {
         if cancelled.load(Ordering::Acquire) {
@@ -231,19 +268,14 @@ fn record_sync(
             }
         }
         route.last_dts = packet.dts();
-        packet
-            .write_interleaved(&mut output.output)
-            .map_err(|error| format!("写入录制分片失败: {error}"))?;
+        output.write_packet(&packet)?;
     };
     if cancelled.load(Ordering::Acquire) {
         return Err("录制已取消".into());
     }
     // A read failure leaves the local muxer writable. Publish its pending tail
     // before reporting that failure so a reconnect can append without reusing it.
-    let trailer_result = output
-        .output
-        .write_trailer()
-        .map_err(|error| format!("结束 HLS 录制失败: {error}"));
+    let trailer_result = output.write_trailer();
     let close_result = output.close();
     read_result?;
     trailer_result?;

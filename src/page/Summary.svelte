@@ -5,6 +5,8 @@
   import { get_static_url, invoke } from "../lib/invoker";
   import type { RecorderList, DiskInfo } from "../lib/interface";
   import type { RecordItem } from "../lib/db";
+  import { archiveFilesAvailable, archiveStorageReason } from "../lib/recording-storage";
+  import ArchiveStorageBadge from "../lib/components/ArchiveStorageBadge.svelte";
   import { onMount } from "svelte";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
   import { scale } from "svelte/transition";
@@ -64,23 +66,27 @@
     // get today record count
     today_record_count = await get_today_record_count();
 
-    // check for new records
+    // Refresh the visible window, not just the newest ID: backend removal changes
+    // availability on existing rows without creating a new recording.
     if (recent_records.length > 0) {
-      const latestRecords = (await invoke("get_recent_record", {
+      const visibleCount = recent_records.length;
+      const refreshed = await invoke<RecordItem[]>("get_recent_record", {
         roomId: "",
         offset: 0,
-        limit: 1,
-      })) as RecordItem[];
-
-      if (
-        latestRecords.length > 0 &&
-        (!recent_records[0] ||
-          latestRecords[0].live_id !== recent_records[0].live_id)
-      ) {
-        hasNewRecords = true;
-      }
+        // A new recording can displace an old row even after pagination ended.
+        limit: visibleCount + 1,
+      });
+      hasMore = refreshed.length > visibleCount;
+      recent_records = await Promise.all(refreshed.slice(0, visibleCount).map(async (record) => ({
+        ...record,
+        cover: archiveFilesAvailable(record)
+          ? await get_static_url("cache", `${record.platform}/${record.room_id}/${record.live_id}/cover.jpg`)
+          : "",
+      })));
+      offset = recent_records.length;
     } else {
-      // Initial load
+      // Initial load, or new recordings after the previous list became empty.
+      hasMore = true;
       await loadMoreRecords();
     }
   }
@@ -96,6 +102,7 @@
     })) as RecordItem[];
 
     for (const record of newRecords) {
+      if (!archiveFilesAvailable(record)) { record.cover = ""; continue; }
       record.cover = await get_static_url(
         "cache",
         `${record.platform}/${record.room_id}/${record.live_id}/cover.jpg`,
@@ -187,6 +194,7 @@
   }
 
   async function deleteRecord(record: RecordItem) {
+    if (!archiveFilesAvailable(record)) return;
     try {
       await invoke("delete_archive", {
         platform: record.platform,
@@ -380,7 +388,7 @@
             class="ui-card flex items-center justify-between gap-3 p-3 transition-colors hover:border-line-strong"
           >
             <div class="flex min-w-0 items-center gap-3">
-              {#if record.cover}
+              {#if record.cover && archiveFilesAvailable(record)}
                 <img
                   src={record.cover}
                   class="h-[72px] w-32 shrink-0 rounded-[8px] border border-line object-cover"
@@ -402,13 +410,15 @@
                 <p class="mt-1 text-[11px] text-fg-muted">
                   {record.platform} • {record.room_id} • {format_date(
                     record.created_at,
-                  )} • {formatSize(record.size)}
+                  )} • <ArchiveStorageBadge archive={record} showLabel={false} /> • {formatSize(record.size)}
                 </p>
               </div>
             </div>
             <div class="flex shrink-0 items-center gap-1">
               <button
                 class="ui-btn ui-btn-ghost ui-btn-icon"
+                disabled={!archiveFilesAvailable(record)}
+                title={archiveFilesAvailable(record) ? "预览录播" : archiveStorageReason(record)}
                 onclick={() => {
                   invoke("open_live", {
                     platform: record.platform,
@@ -422,6 +432,8 @@
               <div class="relative dropdown-container">
                 <button
                   class="ui-btn ui-btn-ghost ui-btn-icon"
+                  disabled={!archiveFilesAvailable(record)}
+                  title={archiveFilesAvailable(record) ? "删除录播及文件" : archiveStorageReason(record)}
                   onclick={(event) => {
                     event.stopPropagation();
                     toggleDropdown(record.live_id);

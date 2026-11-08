@@ -5,6 +5,7 @@
 //! their own files, so migration must not move everything it finds. These
 //! helpers build a list of entries BSR itself created and leave the rest alone.
 
+#[cfg(test)]
 use recorder::platforms::PlatformType;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -37,6 +38,7 @@ pub enum MigrateOutcome {
 ///
 /// The cache layout is `<cache>/<platform>/<room_id>/<live_id>/...`, so only
 /// top-level directories named after a known platform belong to BSR.
+#[cfg(test)]
 pub fn plan_cache_migration(src_root: &Path, dst_root: &Path) -> MigrationPlan {
     let platforms: HashSet<&str> = PlatformType::ALL.iter().map(|p| p.as_str()).collect();
     let mut plan = MigrationPlan::default();

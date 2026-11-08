@@ -632,7 +632,7 @@ async fn save_editor_timeline(
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn delete_project(state: state_type!(), id: i64) -> Result<(), String> {
     state.db.delete_project(id).await?;
-    let cache = PathBuf::from(&state.config.read().await.cache);
+    let cache = state.temp_storage.root().to_path_buf();
     for directory in [
         output_dir(&state).await.join(project_dir(id)),
         cache.join(web_export_dir(id)),
@@ -1311,7 +1311,7 @@ pub async fn export_project(
         Some(path) => (mp4_path(PathBuf::from(path)), None),
         None => {
             let relative = format!("{}/export.mp4", web_export_dir(id));
-            let cache = PathBuf::from(&state.config.read().await.cache);
+            let cache = state.temp_storage.root().to_path_buf();
             (cache.join(&relative), Some(relative))
         }
     };
@@ -1390,7 +1390,7 @@ async fn queue_export(
         .as_deref()
         .map(ass_primary_font_name)
         .transpose()?;
-    let cache = PathBuf::from(&state.config.read().await.cache);
+    let cache = state.temp_storage.root().to_path_buf();
     let segment_cache = project.map(|id| cache.join(segment_cache_dir(id)));
     // The export beside its target, and its segments in the project's cache,
     // or else beside the target too. Every project is encoded.

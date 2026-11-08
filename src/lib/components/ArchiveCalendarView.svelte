@@ -14,6 +14,8 @@
   import { formatBitrate, formatSize } from "../size-format";
   import { formatTimecode } from "../time-format";
   import ArchiveCover from "./ArchiveCover.svelte";
+  import ArchiveStorageBadge from "./ArchiveStorageBadge.svelte";
+  import { archiveFilesAvailable } from "../recording-storage";
 
   let {
     archives, rooms = [], compact = false, selectedArchives, recordingKeys,
@@ -191,18 +193,18 @@
         {#each layout.events as event (event.key)}
           {@const key = archiveKey(event.archive)}
           {@const recording = recordingKeys.has(key)}
-          <button type="button" class="calendar-event" class:is-open={selectedKey === key} class:is-selected={selectedArchives.has(event.archive.live_id)} class:is-recording={recording}
+          <button type="button" class="calendar-event" class:is-open={selectedKey === key} class:is-selected={selectedArchives.has(event.archive.live_id)} class:is-recording={recording} class:is-unavailable={!archiveFilesAvailable(event.archive)}
             style={`top:${laneLayout.offsets[event.lane]}px;height:${eventHeight(event)}px;left:${event.hitLeft}px;width:${event.hitWidth}px`}
-            aria-label={`录播事件：${event.archive.title || "未命名录播"}，${new Date(event.start).toLocaleString()}，时长 ${formatTimecode(event.archive.length, 0)}${recording ? "，录制中" : ""}`}
+            aria-label={`录播事件：${event.archive.title || "未命名录播"}，${new Date(event.start).toLocaleString()}，时长 ${formatTimecode(event.archive.length, 0)}${recording ? "，录制中" : ""}${archiveFilesAvailable(event.archive) ? "" : "，存储不可用，仅记录"}`}
             aria-haspopup="dialog" aria-expanded={selectedKey === key} data-archive-key={key} data-recording={recording} data-lane={event.lane}
             title={`${event.archive.title || "未命名录播"}\n${event.timingKnown ? `${new Date(event.start).toLocaleString()} — ${new Date(event.end).toLocaleString()}` : `创建于 ${new Date(event.start).toLocaleString()}，录制时间范围未知`}`}
             onclick={(click) => openEvent(event, click.currentTarget)}>
             <span class="event-block" class:padded={event.width >= 40} style={`left:${event.left - event.hitLeft}px;width:${event.width}px`}>
               {#if event.width >= 40}
                 <span class="event-body" class:side-cover={event.width >= 176}>
-                  <ArchiveCover src={event.archive.cover} class={event.width >= 176 ? "h-[45px] w-20 shrink-0 rounded-[3px]" : "h-8 w-full shrink-0 rounded-[3px]"} />
+                  <ArchiveCover src={archiveFilesAvailable(event.archive) ? event.archive.cover : ""} class={event.width >= 176 ? "h-[45px] w-20 shrink-0 rounded-[3px]" : "h-8 w-full shrink-0 rounded-[3px]"} />
                   <span class="min-w-0 flex-1">
-                    <span class="event-title">{event.continuesBefore ? "← " : ""}{event.archive.title || "未命名录播"}{event.continuesAfter ? " →" : ""}</span>
+                    <span class="event-title">{archiveFilesAvailable(event.archive) ? "" : "⚠ 仅记录 · "}{event.continuesBefore ? "← " : ""}{event.archive.title || "未命名录播"}{event.continuesAfter ? " →" : ""}</span>
                     {#if event.width >= 176}<span class="mt-0.5 block truncate text-[10px] leading-3 tabular-nums opacity-80">{eventTime(event)}</span>{/if}
                   </span>
                 </span>
@@ -215,7 +217,7 @@
     </div>
   </div>
   <div class="flex shrink-0 flex-wrap items-center justify-between gap-1 border-t border-line px-3 py-2 text-[11px] text-fg-muted">
-    <span>拖动浏览时间，点击事件查看详情与操作</span>
+    <span>拖动浏览时间，点击事件查看详情与操作；虚线表示存储不可用、仅保留记录</span>
     {#if layout.undated}<button class="text-accent-fg hover:underline" onclick={onshowlist}>{layout.undated} 条录播缺少时间，切换列表查看</button>{/if}
   </div>
 </div>
@@ -223,10 +225,11 @@
 {#if selectedArchive && selectedEvent}
   <div use:placeMenu use:trapFocus={{ active: pageVisible() }} role="dialog" aria-modal="false" aria-labelledby={`${id}-event-title`} tabindex="-1" bind:this={popover} class="calendar-menu custom-scrollbar-light">
     <div class="relative -mx-3 -mt-3 mb-3">
-      <ArchiveCover src={selectedArchive.cover} alt={`直播封面：${selectedArchive.title || "未命名录播"}`} class="aspect-video w-full rounded-t-[9px]" loading="eager" />
+      <ArchiveCover src={archiveFilesAvailable(selectedArchive) ? selectedArchive.cover : ""} alt={`直播封面：${selectedArchive.title || "未命名录播"}`} class="aspect-video w-full rounded-t-[9px]" loading="eager" />
       <button class="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur-sm hover:bg-black/70" aria-label="关闭录播操作" onclick={closeMenu}><X class="h-3.5 w-3.5" /></button>
     </div>
     <h3 id={`${id}-event-title`} class="select-text break-words text-[13px] font-medium text-fg">{selectedArchive.title || "未命名录播"}</h3>
+    <ArchiveStorageBadge archive={selectedArchive} />
     <div class="mt-1 flex items-center gap-2 text-[11px] text-fg-muted"><span>{platformLabel(selectedArchive.platform)} · {roomNames.get(`${selectedArchive.platform}:${selectedArchive.room_id}`) || selectedArchive.room_id}</span>{#if recordingKeys.has(archiveKey(selectedArchive))}<span class="ui-badge ui-badge-danger">录制中</span>{/if}</div>
     <dl class="my-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px] tabular-nums">
       <dt class="text-fg-muted">{selectedEvent.timingKnown ? "开始" : "创建"}</dt><dd class="select-text text-fg-secondary">{new Date(selectedEvent.start).toLocaleString()}</dd>
@@ -262,6 +265,7 @@
   .calendar-event.is-selected .event-block { outline: 1px solid rgb(var(--c-accent)); }
   .calendar-event.is-recording .event-block { background: rgb(var(--c-danger-soft)); box-shadow: inset 3px 0 0 rgb(var(--c-danger)); color: rgb(var(--c-danger-fg)); }
   .calendar-event.is-recording.is-open .event-block { outline-color: rgb(var(--c-danger)); }
+  .calendar-event.is-unavailable .event-block { border: 1px dashed currentColor; background: rgb(var(--c-control)); color: rgb(var(--c-fg-muted)); box-shadow: none; }
   .event-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; font-size: 11px; font-weight: 500; line-height: 15px; }
   .calendar-menu { position: absolute; z-index: 1100; overflow: auto; border: 1px solid rgb(var(--c-line-strong)); border-radius: 10px; background: rgb(var(--c-surface)); padding: 12px; color: rgb(var(--c-fg)); box-shadow: 0 8px 32px rgb(0 0 0 / .16); }
   @media (prefers-reduced-motion: reduce) { .event-block { transition: none; } }

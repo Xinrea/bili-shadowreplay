@@ -15,6 +15,7 @@
   import ArchiveCover from "./ArchiveCover.svelte";
   import RoomCheckTimeline from "./RoomCheckTimeline.svelte";
   import RtmpIngestSettings from "./RtmpIngestSettings.svelte";
+  import RecorderStorageSettings from "./RecorderStorageSettings.svelte";
 
   interface Props { room: RecorderInfo; onclose: () => void; }
   let { room, onclose }: Props = $props();
@@ -221,6 +222,10 @@
           {/if}
         </section>
       </div>
+
+      {#if status}
+        <RecorderStorageSettings {status} onchanged={() => statusRefresh.run()} disabled={!!statusError || refreshing} />
+      {/if}
 
       {#if isRtmp}
         <section class="mt-4 space-y-2.5 border-t border-line pt-3" aria-labelledby="room-rtmp-title">

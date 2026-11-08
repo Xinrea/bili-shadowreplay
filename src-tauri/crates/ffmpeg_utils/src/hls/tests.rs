@@ -2,6 +2,9 @@ use super::*;
 
 use std::{fs, path::PathBuf, process::Command, time::Instant};
 
+#[path = "object_tests.rs"]
+mod objects;
+
 fn fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src/hls/fixtures/live.flv")
 }

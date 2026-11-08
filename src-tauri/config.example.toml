@@ -1,4 +1,3 @@
-cache = "./cache"
 output = "./output"
 live_start_notify = true
 live_end_notify = true
@@ -22,3 +21,22 @@ model = ""
 [auto_generate]
 enabled = false
 encode_danmu = false
+
+# One-time bootstrap only. After the first successful database import these
+# settings are DB-owned and omitted from saved TOML; use recording storage
+# settings/API to change them. Each new recording chooses the current default
+# unless its recorder has an explicit preference. Resumes keep their binding.
+[storage]
+default_backend = "default"
+
+# Preserve the old cache root on upgrade. Legacy archives are pinned during
+# import; changing defaults never redirects them. Removal retains archive rows
+# but disables file operations. Removed IDs stay reserved; use a new ID.
+[storage.backends.default]
+type = "local"
+root = "./cache"
+
+# [storage.backends.archive]
+# type = "local"
+# root = "/mnt/recordings"
+# S3 is not implemented. Custom adapters must register their IDs in app code.

@@ -8,9 +8,13 @@ use std::sync::Arc;
 
 use crate::{danmu2ass::Danmu2AssOptions, recorder_manager::ClipRangeParams};
 
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Serialize, Clone)]
 pub struct Config {
-    pub cache: String,
+    /// DB-hydrated DTO; TOML is only a one-time bootstrap source.
+    pub storage: StorageConfig,
+    /// Runtime hydration marker; storage is serialized only as pre-import staging.
+    #[serde(skip)]
+    pub(crate) storage_db_initialized: bool,
     pub output: String,
     pub live_start_notify: bool,
     pub live_end_notify: bool,
@@ -62,6 +66,144 @@ pub struct Config {
 }
 
 pub const DEFAULT_MCP_PORT: u16 = 18763;
+
+pub const DEFAULT_RECORDING_STORAGE_ID: &str = "default";
+
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct StorageConfig {
+    pub default_backend: String,
+    #[serde(default)]
+    pub backends: HashMap<String, RecordingBackendConfig>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct RecordingBackendConfig {
+    /// Kept as a string so unknown adapters fail explicitly during resolution.
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub root: String,
+}
+
+impl StorageConfig {
+    pub fn local(root: String) -> Self {
+        Self {
+            default_backend: DEFAULT_RECORDING_STORAGE_ID.to_owned(),
+            backends: HashMap::from([(
+                DEFAULT_RECORDING_STORAGE_ID.to_owned(),
+                RecordingBackendConfig {
+                    kind: "local".to_owned(),
+                    root,
+                },
+            )]),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Config {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // A remote derive decodes the canonical fields without recursively
+        // invoking this compatibility boundary. Both TOML and JSON use it.
+        #[derive(Deserialize)]
+        #[serde(remote = "Config")]
+        struct Canonical {
+            storage: StorageConfig,
+            #[serde(skip)]
+            storage_db_initialized: bool,
+            output: String,
+            live_start_notify: bool,
+            live_end_notify: bool,
+            clip_notify: bool,
+            post_notify: bool,
+            #[serde(default = "default_auto_subtitle")]
+            auto_subtitle: bool,
+            #[serde(default = "default_subtitle_generator_type")]
+            subtitle_generator_type: String,
+            #[serde(default = "default_whisper_model")]
+            whisper_model: String,
+            #[serde(default = "default_whisper_prompt")]
+            whisper_prompt: String,
+            #[serde(default)]
+            powerlive_hotwords: Vec<String>,
+            #[serde(default)]
+            powerlive_room_hotwords: HashMap<String, HashMap<String, Vec<String>>>,
+            #[serde(default = "default_powerlive_sentence_max_length")]
+            powerlive_sentence_max_length: u32,
+            #[serde(default = "default_openai_api_endpoint")]
+            openai_api_endpoint: String,
+            #[serde(default = "default_openai_api_key")]
+            openai_api_key: String,
+            #[serde(default = "default_clip_name_format")]
+            clip_name_format: String,
+            #[serde(default = "default_auto_generate_config")]
+            auto_generate: AutoGenerateConfig,
+            #[serde(default = "default_status_check_interval")]
+            status_check_interval: u64,
+            #[serde(skip)]
+            config_path: String,
+            #[serde(default = "default_whisper_language")]
+            whisper_language: String,
+            #[serde(default = "default_webhook_url")]
+            webhook_url: String,
+            #[serde(default = "default_danmu_ass_options")]
+            danmu_ass_options: Danmu2AssOptions,
+            #[serde(skip)]
+            update_interval: Arc<AtomicU64>,
+            #[serde(default = "default_llm_config")]
+            llm: LlmConfig,
+            #[serde(default)]
+            mcp_enabled: bool,
+            #[serde(default = "default_mcp_port")]
+            mcp_port: u16,
+        }
+        let mut value = serde_json::Value::deserialize(deserializer)?;
+        let values = value
+            .as_object_mut()
+            .ok_or_else(|| serde::de::Error::custom("configuration must be an object"))?;
+        let cache: Option<String> = values
+            .remove("cache")
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(serde::de::Error::custom)?;
+        let mut storage: StorageConfig = match values.remove("storage") {
+            Some(storage) => serde_json::from_value(storage).map_err(serde::de::Error::custom)?,
+            None => StorageConfig {
+                default_backend: DEFAULT_RECORDING_STORAGE_ID.to_owned(),
+                backends: HashMap::new(),
+            },
+        };
+        // The released configuration had a single cache directory. Preserve
+        // that root when bootstrapping the database-owned storage configuration.
+        if let Some(root) = cache {
+            let definition = RecordingBackendConfig {
+                kind: "local".into(),
+                root,
+            };
+            if storage
+                .backends
+                .get(DEFAULT_RECORDING_STORAGE_ID)
+                .is_some_and(|old| old != &definition)
+            {
+                return Err(serde::de::Error::custom(
+                    "legacy cache conflicts with storage.backends.default",
+                ));
+            }
+            storage
+                .backends
+                .insert(DEFAULT_RECORDING_STORAGE_ID.to_owned(), definition);
+        }
+        if storage.default_backend.trim().is_empty() {
+            return Err(serde::de::Error::custom(
+                "storage.default_backend must not be empty",
+            ));
+        }
+        values.insert(
+            "storage".into(),
+            serde_json::to_value(storage).map_err(serde::de::Error::custom)?,
+        );
+        Canonical::deserialize(value).map_err(serde::de::Error::custom)
+    }
+}
 
 fn default_mcp_port() -> u16 {
     DEFAULT_MCP_PORT
@@ -218,19 +360,40 @@ impl Config {
 
     pub fn load(
         config_path: &PathBuf,
-        default_cache: &Path,
+        default_recordings: &Path,
         default_output: &Path,
     ) -> Result<Self, String> {
         let config_path_str = config_path
             .to_str()
             .ok_or_else(|| format!("Config path is not valid UTF-8: {}", config_path.display()))?
             .to_string();
-        if let Ok(content) = std::fs::read_to_string(config_path) {
-            if let Ok(mut config) = toml::from_str::<Config>(&content) {
-                config.config_path = config_path_str;
-                config.update_interval = Arc::new(AtomicU64::new(config.status_check_interval));
-                return Ok(config);
+        let content = match std::fs::read_to_string(config_path) {
+            Ok(content) => Some(content),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("Failed to read config {config_path_str}: {error}")),
+        };
+        if let Some(content) = content {
+            // Never replace an invalid storage selection with a fresh default
+            // config: that could silently redirect future recordings.
+            let original = toml::from_str::<toml::Value>(&content)
+                .map_err(|error| format!("Invalid config {config_path_str}: {error}"))?;
+            let migrate_storage = original.get("cache").is_some();
+            let has_storage = original.get("storage").is_some() || migrate_storage;
+            let mut config: Config = original
+                .try_into()
+                .map_err(|error| format!("Invalid config {config_path_str}: {error}"))?;
+            if !has_storage {
+                config.storage =
+                    StorageConfig::local(default_recordings.to_string_lossy().into_owned());
             }
+            config.config_path = config_path_str;
+            config.update_interval = Arc::new(AtomicU64::new(config.status_check_interval));
+            if migrate_storage {
+                // Persist the released cache directory as a backend definition
+                // until the database import commits.
+                config.try_save()?;
+            }
+            return Ok(config);
         }
 
         if let Some(dir_path) = PathBuf::from(config_path).parent() {
@@ -240,7 +403,8 @@ impl Config {
         }
 
         let config = Config {
-            cache: default_cache.to_string_lossy().into_owned(),
+            storage: StorageConfig::local(default_recordings.to_string_lossy().into_owned()),
+            storage_db_initialized: false,
             output: default_output.to_string_lossy().into_owned(),
             live_start_notify: true,
             live_end_notify: true,
@@ -268,7 +432,7 @@ impl Config {
             mcp_port: default_mcp_port(),
         };
 
-        config.save();
+        config.try_save()?;
 
         Ok(config)
     }
@@ -290,8 +454,16 @@ impl Config {
             &Path,
         ) -> Result<std::fs::File, tempfile::PersistError>,
     ) -> Result<(), String> {
-        let content = toml::to_string(self)
-            .map_err(|error| format!("Failed to serialize config: {error}"))?;
+        let content = if self.storage_db_initialized {
+            let mut value = toml::Value::try_from(self)
+                .map_err(|error| format!("Failed to serialize config: {error}"))?;
+            value.as_table_mut().unwrap().remove("storage");
+            toml::to_string(&value)
+        } else {
+            // Preserve the existing serialization order for pre-import configs.
+            toml::to_string(self)
+        }
+        .map_err(|error| format!("Failed to serialize config: {error}"))?;
         // Follow existing symlinks and replace the file only after a complete
         // write, so a failed settings change cannot truncate the old config.
         let path = std::fs::canonicalize(&self.config_path)
@@ -318,12 +490,6 @@ impl Config {
             }
             Err(error) => Err(failure(error.error)),
         }
-    }
-
-    #[allow(dead_code)]
-    pub fn set_cache_path(&mut self, path: &str) {
-        self.cache = path.to_string();
-        self.save();
     }
 
     #[allow(dead_code)]
@@ -394,6 +560,107 @@ impl Config {
         self.update_interval
             .store(interval, atomic::Ordering::Relaxed);
         self.save();
+    }
+}
+
+#[cfg(test)]
+mod recording_storage_tests {
+    use super::*;
+
+    #[test]
+    fn bootstrap_storage_configuration_round_trips() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let mut config = Config::load(&path, directory.path(), directory.path()).unwrap();
+        assert_eq!(config.storage.default_backend, "default");
+        config.storage.backends.insert(
+            "archive".into(),
+            RecordingBackendConfig {
+                kind: "local".into(),
+                root: "/mnt/archive".into(),
+            },
+        );
+        config.storage.default_backend = "archive".into();
+        config.try_save().unwrap();
+        let reloaded = Config::load(&path, directory.path(), directory.path()).unwrap();
+        assert_eq!(reloaded.storage, config.storage);
+        let json = serde_json::to_value(&reloaded).unwrap();
+        assert!(json.get("cache").is_none());
+        assert!(json.get("recording_storage").is_none());
+    }
+
+    #[test]
+    fn released_cache_root_survives_toml_and_json_round_trips() {
+        let canonical: Config = toml::from_str(include_str!("../config.example.toml")).unwrap();
+        let mut legacy = serde_json::to_value(canonical).unwrap();
+        legacy.as_object_mut().unwrap().remove("storage");
+        legacy["cache"] = serde_json::json!("../existing recordings/./");
+        let migrated: Config = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(
+            migrated.storage.backends["default"].root,
+            "../existing recordings/./"
+        );
+        assert_eq!(migrated.storage.backends.len(), 1);
+        let legacy_toml = toml::to_string(&legacy).unwrap();
+        let from_toml: Config = toml::from_str(&legacy_toml).unwrap();
+        assert_eq!(from_toml.storage, migrated.storage);
+        let serialized = toml::to_string(&migrated).unwrap();
+        assert!(!serialized.contains("cache ="));
+        assert!(!serialized.contains("[recording_storage"));
+        let staged: Config = toml::from_str(&serialized).unwrap();
+        assert_eq!(staged.storage, migrated.storage);
+    }
+
+    #[test]
+    fn conflicting_cache_root_is_rejected_but_bootstrap_selector_wins() {
+        let canonical: Config = toml::from_str(include_str!("../config.example.toml")).unwrap();
+        let mut mixed = serde_json::to_value(canonical).unwrap();
+        mixed["cache"] = serde_json::json!("/different-root");
+        assert!(serde_json::from_value::<Config>(mixed.clone()).is_err());
+        mixed["cache"] = serde_json::json!("./cache");
+        mixed["storage"]["default_backend"] = serde_json::json!("archive");
+        mixed["storage"]["backends"]["archive"] =
+            serde_json::json!({"type": "local", "root": "/archive"});
+        let config: Config = serde_json::from_value(mixed).unwrap();
+        assert_eq!(config.storage.default_backend, "archive");
+        assert_eq!(config.storage.backends["default"].root, "./cache");
+        assert_eq!(config.storage.backends["archive"].root, "/archive");
+    }
+
+    #[test]
+    fn loading_legacy_cache_persists_the_canonical_backend_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let mut value: toml::Value =
+            toml::from_str(include_str!("../config.example.toml")).unwrap();
+        value.as_table_mut().unwrap().remove("storage");
+        value.as_table_mut().unwrap().insert(
+            "cache".into(),
+            toml::Value::String("/existing/recordings".into()),
+        );
+        std::fs::write(&path, toml::to_string(&value).unwrap()).unwrap();
+        let config = Config::load(&path, directory.path(), directory.path()).unwrap();
+        assert_eq!(
+            config.storage.backends["default"].root,
+            "/existing/recordings"
+        );
+        let saved = std::fs::read_to_string(&path).unwrap();
+        let canonical: toml::Value = toml::from_str(&saved).unwrap();
+        assert!(canonical.get("cache").is_none());
+        assert!(canonical.get("recording_storage").is_none());
+        Config::load(&path, directory.path(), directory.path()).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+    }
+
+    #[test]
+    fn invalid_storage_config_is_not_replaced_with_defaults() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let invalid = include_str!("../config.example.toml")
+            .replace("default_backend = \"default\"", "default_backend = 42");
+        std::fs::write(&path, &invalid).unwrap();
+        assert!(Config::load(&path, directory.path(), directory.path()).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
     }
 }
 
@@ -650,6 +917,30 @@ mod mcp_config_tests {
                 previous_metadata.permissions().mode()
             );
         }
+    }
+
+    #[test]
+    fn busy_replace_omits_db_owned_storage_but_keeps_the_config_dto() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let mut config = Config::load(&path, directory.path(), directory.path()).unwrap();
+        config.storage_db_initialized = true;
+        config.mcp_enabled = true;
+        config
+            .try_save_with(|pending, _| {
+                Err(tempfile::PersistError {
+                    error: io::Error::from(io::ErrorKind::ResourceBusy),
+                    file: pending,
+                })
+            })
+            .unwrap();
+        let saved: toml::Value = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(saved.get("storage").is_none());
+        assert_eq!(saved["mcp_enabled"].as_bool(), Some(true));
+        assert!(serde_json::to_value(&config)
+            .unwrap()
+            .get("storage")
+            .is_some());
     }
 
     #[test]

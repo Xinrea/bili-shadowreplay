@@ -14,7 +14,7 @@ use std::{
 
 use ffmpeg_next::{self as ffmpeg, codec, ffi, filter, format, frame, Packet};
 
-use crate::metadata::{open_input, run_media};
+use crate::metadata::{open_bytes, open_input, run_media};
 
 /// Extract the first frame at or after an input-relative timestamp. `None`
 /// retains MJPEG's default rate control; `Some(2)` is the former `-q:v 2`.
@@ -27,6 +27,22 @@ pub async fn extract_jpeg(
     validate_quality(quality)?;
     let input = input.to_path_buf();
     run_media(move |cancelled| extract_sync(&input, timestamp, quality, cancelled)).await
+}
+
+/// Extract a JPEG from owned recording bytes, without opening local files.
+/// Supports TS, MP4/MOV, FLV and Matroska/WebM, not playlists or external references.
+pub async fn extract_jpeg_from_bytes(
+    data: Vec<u8>,
+    timestamp: f64,
+    quality: Option<u32>,
+) -> Result<Vec<u8>, String> {
+    let timestamp = parse_timestamp(timestamp)?;
+    validate_quality(quality)?;
+    run_media(move |cancelled| {
+        let input = open_bytes(data, cancelled.clone())?;
+        extract_input(input, timestamp, quality, cancelled)
+    })
+    .await
 }
 
 /// Save a JPEG only after extraction and all writes have succeeded. The worker
@@ -168,7 +184,16 @@ fn extract_sync(
     quality: Option<u32>,
     cancelled: Arc<AtomicBool>,
 ) -> Result<Vec<u8>, String> {
-    let mut input = open_input(path, cancelled.clone())?;
+    let input = open_input(path, cancelled.clone())?;
+    extract_input(input, start, quality, cancelled)
+}
+
+fn extract_input(
+    mut input: format::context::Input,
+    start: i64,
+    quality: Option<u32>,
+    cancelled: Arc<AtomicBool>,
+) -> Result<Vec<u8>, String> {
     let index = video_stream(&input).ok_or("媒体没有可提取的视频流")?;
     let origin = unsafe { (*input.as_ptr()).start_time };
     let target = start

@@ -83,6 +83,7 @@ mod tests {
     #[test]
     fn test_new_webhook_event() {
         let payload = Payload::Room(RecorderInfo {
+            storage_id: None,
             room_info: recorder::RoomInfo::default(),
             user_info: recorder::UserInfo::default(),
             platform_live_id: "plid".to_string(),
@@ -99,6 +100,7 @@ mod tests {
     #[test]
     fn test_webhook_event_unique_ids() {
         let payload1 = Payload::Room(RecorderInfo {
+            storage_id: None,
             room_info: recorder::RoomInfo::default(),
             user_info: recorder::UserInfo::default(),
             platform_live_id: "".to_string(),
@@ -107,6 +109,7 @@ mod tests {
             enabled: false,
         });
         let payload2 = Payload::Room(RecorderInfo {
+            storage_id: None,
             room_info: recorder::RoomInfo::default(),
             user_info: recorder::UserInfo::default(),
             platform_live_id: "".to_string(),
@@ -122,6 +125,7 @@ mod tests {
     #[test]
     fn test_webhook_event_serialization() {
         let payload = Payload::Room(RecorderInfo {
+            storage_id: None,
             room_info: recorder::RoomInfo::default(),
             user_info: recorder::UserInfo::default(),
             platform_live_id: "".to_string(),
@@ -146,6 +150,7 @@ mod tests {
             ..RtmpConfig::default()
         };
         let stored = RecorderRow {
+            storage_backend_id: None,
             room_id: "rtmp-obs".into(),
             created_at: "2026-11-02T00:00:00Z".into(),
             platform: "rtmp".into(),
@@ -179,6 +184,7 @@ mod tests {
         let event = new_webhook_event(
             RECORDER_ADDED,
             Payload::Recorder(RecorderRow {
+                storage_backend_id: None,
                 room_id: "rtmp-obs".into(),
                 created_at: String::new(),
                 platform: "rtmp".into(),
@@ -193,6 +199,7 @@ mod tests {
     #[test]
     fn ordinary_recorder_notifications_preserve_platform_metadata() {
         let row = RecorderRow {
+            storage_backend_id: None,
             room_id: "room".into(),
             created_at: String::new(),
             platform: "douyin".into(),

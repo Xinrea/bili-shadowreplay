@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
+import { recordingStorage } from "./recording-storage-fixture.mjs";
 
 const read = (path) => readFile(new URL(`../../${path}`, import.meta.url), "utf8");
 const source = await read("src/lib/components/DeleteConfirmActions.svelte");
@@ -174,6 +175,7 @@ test("archive batch survives list refreshes and retries only unfinished deletion
   let fail = true;
   const refresh = deferred();
   const context = vm.createContext({
+    ...recordingStorage,
     selectedArchives: new Set(records.map((record) => record.live_id)),
     archives: records,
     showDeleteConfirm: true,
@@ -207,6 +209,7 @@ test("archive batch uses its initial targets even if a refresh replaces the enti
   const records = ["one", "two", "three"].map((live_id) => ({ live_id, room_id: "room", platform: "bilibili" }));
   const calls = [];
   const context = vm.createContext({
+    ...recordingStorage,
     selectedArchives: new Set(records.map((record) => record.live_id)),
     archives: records,
     showDeleteConfirm: true,

@@ -5,7 +5,6 @@ pub mod profile;
 pub mod response;
 pub mod stream_info;
 
-use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::{atomic, Arc};
 
@@ -20,7 +19,7 @@ use crate::core::{Codec, Format, HlsStream};
 use crate::errors::RecorderError;
 use crate::platforms::bilibili::api::{BiliStream, Protocol, Qn, UserInfoCache};
 use crate::platforms::common::{
-    download_file, DanmuConfig, DanmuSpawn, PlatformApi, RoomPoll, StreamPull,
+    download_asset, DanmuConfig, DanmuSpawn, PlatformApi, RoomPoll, StreamPull,
 };
 use crate::platforms::PlatformType;
 use crate::traits::RecorderTrait;
@@ -44,7 +43,7 @@ impl BiliRecorder {
     pub fn new(
         room_id: &str,
         account: &Account,
-        cache_dir: PathBuf,
+        storage: impl Into<recording_storage::RecordingStore>,
         event_channel: impl Into<crate::events::RecorderEventSender>,
         update_interval: Arc<AtomicU64>,
         enabled: bool,
@@ -54,7 +53,7 @@ impl BiliRecorder {
             PlatformType::BiliBili,
             room_id,
             account,
-            cache_dir,
+            storage,
             event_channel,
             update_interval,
             enabled,
@@ -135,13 +134,20 @@ impl PlatformApi for BiliRecorder {
     }
 
     async fn on_live_start(&self) {
-        // Cache the room cover, the recording attempt copies it per session.
-        let room_cover_path = Path::new(PlatformType::BiliBili.as_str())
-            .join(&self.room_id)
-            .join("cover.jpg");
-        let full_room_cover_path = self.cache_dir.join(&room_cover_path);
+        // Maintain the legacy room-cover endpoint separately from archive assets.
+        let room_storage = match self
+            .storage
+            .resolve_room(PlatformType::BiliBili.as_str(), &self.room_id)
+            .await
+        {
+            Ok(storage) => storage,
+            Err(error) => {
+                self.log_error(&format!("Open room cover storage failed: {error}"));
+                return;
+            }
+        };
         let room_cover_url = self.room_info.read().await.room_cover.clone();
-        let _ = download_file(&self.client, &room_cover_url, &full_room_cover_path).await;
+        let _ = download_asset(&self.client, &room_cover_url, &room_storage, "cover.jpg").await;
     }
 
     async fn poll_stream(&self) -> bool {
@@ -237,17 +243,26 @@ impl PlatformApi for BiliRecorder {
         *self.extra.live_stream.write().await = None;
     }
 
-    async fn prepare_cover(&self, work_dir: &crate::CachePath) -> Result<(), RecorderError> {
-        let cover_path = work_dir.with_filename("cover.jpg");
-        let room_cover_path = self
-            .cache_dir
-            .join(PlatformType::BiliBili.as_str())
-            .join(&self.room_id)
-            .join("cover.jpg");
-
-        tokio::fs::copy(room_cover_path, &cover_path.full_path())
-            .await
-            .map_err(RecorderError::IoError)?;
+    async fn prepare_cover(
+        &self,
+        storage: &recording_storage::RecordingStorage,
+    ) -> Result<(), RecorderError> {
+        if storage.exists("cover.jpg").await? {
+            return Ok(());
+        }
+        // Download into the archive's resolved backend. The room preference can
+        // differ on resume, so its cache must not be required by this archive.
+        let url = self.room_info.read().await.room_cover.clone();
+        if !url.is_empty() {
+            download_asset(&self.client, &url, storage, "cover.jpg").await?;
+            return Ok(());
+        }
+        let room_storage = self
+            .storage
+            .resolve_room(PlatformType::BiliBili.as_str(), &self.room_id)
+            .await?;
+        let bytes = room_storage.read("cover.jpg").await?;
+        storage.write("cover.jpg", &bytes).await?;
 
         Ok(())
     }
@@ -315,6 +330,41 @@ mod tests {
         (recorder, rx)
     }
 
+    #[tokio::test]
+    async fn injected_store_preserves_cover_layout_and_required_cover_errors() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = recording_storage::RecordingStore::local(directory.path());
+        let (tx, _rx) = broadcast::channel(10);
+        let recorder = BiliRecorder::new(
+            "123",
+            &Account::default(),
+            store.clone(),
+            tx,
+            Arc::new(AtomicU64::new(30)),
+            true,
+            Arc::new(UnusedUserInfoCache),
+        )
+        .unwrap();
+        let recording = recorder.recording_storage("live").await.unwrap();
+        assert_eq!(
+            recording.workspace().root(),
+            recorder.work_dir("live").await.full_path()
+        );
+        assert!(matches!(
+            recorder.prepare_cover(&recording).await,
+            Err(RecorderError::IoError(error)) if error.kind() == std::io::ErrorKind::NotFound
+        ));
+
+        store
+            .scope("bilibili/123")
+            .unwrap()
+            .write("cover.jpg", b"room cover")
+            .await
+            .unwrap();
+        recorder.prepare_cover(&recording).await.unwrap();
+        assert_eq!(recording.read("cover.jpg").await.unwrap(), b"room cover");
+    }
+
     async fn expired_pull_fixture(format: Format) -> BiliRecorder {
         let (recorder, _) = recording_fixture().await;
         *recorder.extra.live_stream.write().await = Some(BiliStream::new(
@@ -379,11 +429,11 @@ mod tests {
     #[tokio::test]
     async fn recording_reset_preserves_session_and_expiry_resume_state() {
         let (recorder, _) = recording_fixture().await;
-        tokio::fs::create_dir_all(&recorder.cache_dir)
+        tokio::fs::create_dir_all(recorder.storage.local_root())
             .await
             .unwrap();
         *recorder.danmu_storage.write().await =
-            DanmuStorage::new(&recorder.cache_dir.join("events.jsonl")).await;
+            DanmuStorage::new(&recorder.storage.local_root().join("events.jsonl")).await;
         assert!(recorder.danmu_storage.read().await.is_some());
 
         recorder.reset_recording().await;
@@ -399,7 +449,7 @@ mod tests {
             Some("segment-1")
         );
         assert!(recorder.should_continue.load(Ordering::Relaxed));
-        tokio::fs::remove_dir_all(&recorder.cache_dir)
+        tokio::fs::remove_dir_all(recorder.storage.local_root())
             .await
             .unwrap();
     }

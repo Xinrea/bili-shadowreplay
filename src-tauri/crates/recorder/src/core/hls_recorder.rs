@@ -1,7 +1,6 @@
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 #[cfg(test)]
 use tokio::sync::broadcast;
 
@@ -9,18 +8,21 @@ use chrono::Utc;
 use m3u8_rs::{
     DateRange, Map, MediaPlaylist, MediaSegment, Playlist, QuotedOrUnquoted, VariantStream,
 };
+use recording_storage::RecordingStorage;
 use reqwest::header::HeaderMap;
 use std::time::Duration;
-use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::core::playlist::{playlist_content_preview, HlsPlaylist};
 use crate::core::{Codec, Format};
 use crate::errors::RecorderError;
-use crate::timeline::{append_skipped_ad_range, load_skipped_ad_ranges, AdTimeRange};
+use crate::timeline::{
+    append_skipped_ad_range_to_storage, load_skipped_ad_ranges_from_storage, AdTimeRange,
+};
 use crate::{core::HlsStream, events::RecorderEvent};
-use ffmpeg_utils::{extract_video_metadata, extract_video_metadata_with_init, VideoMetadata};
+use ffmpeg_utils::{
+    extract_video_metadata_from_bytes, extract_video_metadata_from_parts, VideoMetadata,
+};
 
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(20);
 const UPDATE_INTERVAL: Duration = Duration::from_secs(1);
@@ -43,7 +45,7 @@ pub enum HlsVariantSelection {
 ///
 /// This recorder fetches, caches and serves TS entries, currently supporting `StreamType::FMP4, StreamType::TS`.
 ///
-/// Segments will be downloaded to work_dir, and `playlist.m3u8` will be generated in work_dir.
+/// Segments and `playlist.m3u8` are persisted through the recording storage.
 #[derive(Clone)]
 pub struct HlsRecorder {
     room_id: String,
@@ -56,14 +58,14 @@ pub struct HlsRecorder {
     variant_selection: HlsVariantSelection,
     client: reqwest::Client,
     event_channel: crate::events::RecorderEventSender,
-    work_dir: PathBuf,
+    storage: RecordingStorage,
     playlist: Arc<Mutex<HlsPlaylist>>,
     headers: HeaderMap,
 
     enabled: Arc<AtomicBool>,
 
     sequence: Arc<AtomicU64>,
-    sequence_file: Arc<RwLock<File>>,
+    sequence_write: Arc<Mutex<()>>,
     updated_at: Arc<AtomicI64>,
 
     pre_metadata: Arc<RwLock<Option<VideoMetadata>>>,
@@ -75,17 +77,15 @@ pub struct HlsRecorder {
     skipped_ad_ranges: Arc<Mutex<Vec<AdTimeRange>>>,
 }
 
-/// Local copy of an HLS fMP4 initialization section.
+/// Stored copy of an HLS fMP4 initialization section.
 struct Fmp4Init {
     /// Absolute source URL, used to reuse the same init across playlist reloads.
     source_url: String,
-    path: PathBuf,
     local_uri: String,
 }
 
 struct DownloadedSegment {
     segment: MediaSegment,
-    path: PathBuf,
     size: u64,
     /// Bytes newly fetched for an `#EXT-X-MAP` that changed on this segment.
     init_size: u64,
@@ -279,23 +279,42 @@ fn media_extension<'a>(uri: &'a str, fallback: &'a str) -> &'a str {
         .unwrap_or(fallback)
 }
 
-/// Recover the last written `#EXT-X-MAP` from an on-disk playlist so a resumed
+/// Recover the last written `#EXT-X-MAP` from a stored playlist so a resumed
 /// recorder can keep probing fMP4 media segments.
-fn restore_fmp4_init(work_dir: &Path, playlist: &HlsPlaylist) -> Option<Fmp4Init> {
-    let local_uri = playlist
+async fn restore_fmp4_init(
+    storage: &RecordingStorage,
+    playlist: &HlsPlaylist,
+) -> std::io::Result<Option<Fmp4Init>> {
+    let Some(local_uri) = playlist
         .playlist
         .segments
         .iter()
         .rev()
-        .find_map(|segment| segment.map.as_ref().map(|map| map.uri.clone()))?;
-    let path = work_dir.join(&local_uri);
-    path.exists().then(|| Fmp4Init {
+        .find_map(|segment| segment.map.as_ref().map(|map| map.uri.clone()))
+    else {
+        return Ok(None);
+    };
+    Ok(storage.exists(&local_uri).await?.then(|| Fmp4Init {
         // Unknown after resume; the next playlist MAP triggers a fresh download
         // keyed by its absolute source URL.
         source_url: String::new(),
-        path,
         local_uri,
-    })
+    }))
+}
+
+/// Probe stored bytes without requiring a local media replica.
+async fn probe_stored_segment(
+    storage: &RecordingStorage,
+    segment_uri: &str,
+    init_uri: Option<&str>,
+) -> Result<VideoMetadata, RecorderError> {
+    let media = storage.read(segment_uri).await?;
+    let metadata = if let Some(init_uri) = init_uri {
+        extract_video_metadata_from_parts(storage.read(init_uri).await?, media).await
+    } else {
+        extract_video_metadata_from_bytes(media).await
+    };
+    metadata.map_err(RecorderError::FfmpegError)
 }
 
 impl HlsRecorder {
@@ -305,7 +324,7 @@ impl HlsRecorder {
         client: reqwest::Client,
         cookies: Option<String>,
         event_channel: impl Into<crate::events::RecorderEventSender>,
-        work_dir: PathBuf,
+        work_dir: impl Into<RecordingStorage>,
         enabled: Arc<AtomicBool>,
     ) -> Result<Self, RecorderError> {
         Self::new_with_variant_selection(
@@ -328,15 +347,12 @@ impl HlsRecorder {
         client: reqwest::Client,
         cookies: Option<String>,
         event_channel: impl Into<crate::events::RecorderEventSender>,
-        work_dir: PathBuf,
+        work_dir: impl Into<RecordingStorage>,
         enabled: Arc<AtomicBool>,
         variant_selection: HlsVariantSelection,
     ) -> Result<Self, RecorderError> {
-        // try to create work_dir
-        if !work_dir.exists() {
-            std::fs::create_dir_all(&work_dir)?;
-        }
-        let playlist_path = work_dir.join(PLAYLIST_FILE_NAME);
+        let storage = work_dir.into();
+        storage.prepare().await?;
 
         // set user agent
         let user_agent =
@@ -352,46 +368,22 @@ impl HlsRecorder {
             headers.insert("cookie", crate::utils::header_value("cookie", &cookies)?);
         }
 
-        let sequence_path = work_dir.join(".sequence");
-        let mut sequence_file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(&sequence_path)
-            .await
-            .map_err(RecorderError::IoError)?;
-
-        let mut sequence_buf = String::new();
-        sequence_file
-            .read_to_string(&mut sequence_buf)
-            .await
-            .map_err(RecorderError::IoError)?;
+        let sequence_bytes = match storage.read(".sequence").await {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(error.into()),
+        };
+        let sequence_buf = String::from_utf8(sequence_bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
         let trimmed = sequence_buf.trim();
         let sequence = trimmed.parse::<u64>().unwrap_or(0);
 
         // If the file is newly created / empty, normalize it to "0"
         if trimmed.is_empty() {
-            sequence_file
-                .set_len(0)
-                .await
-                .map_err(RecorderError::IoError)?;
-            sequence_file
-                .seek(SeekFrom::Start(0))
-                .await
-                .map_err(RecorderError::IoError)?;
-            sequence_file
-                .write_all(b"0")
-                .await
-                .map_err(RecorderError::IoError)?;
-            let _ = sequence_file.flush().await;
-            sequence_file
-                .seek(SeekFrom::Start(0))
-                .await
-                .map_err(RecorderError::IoError)?;
+            persist_sequence(&storage, 0).await?;
         }
 
-        let skipped_ad_ranges = match load_skipped_ad_ranges(&work_dir).await {
+        let skipped_ad_ranges = match load_skipped_ad_ranges_from_storage(&storage).await {
             Ok(ranges) => ranges,
             Err(error) => {
                 log::warn!("Failed to load skipped Twitch ad ranges: {error}");
@@ -399,12 +391,12 @@ impl HlsRecorder {
             }
         };
 
-        let mut playlist = HlsPlaylist::new(playlist_path).await?;
+        let mut playlist = HlsPlaylist::from_storage(storage.clone(), PLAYLIST_FILE_NAME).await?;
         playlist.reopen().await?;
         // fMP4 media segments are not self-describing. When resuming the same
         // archive, reuse the last `#EXT-X-MAP` so later segments can still be
         // probed before the source re-announces the init URI.
-        let fmp4_init = restore_fmp4_init(&work_dir, &playlist);
+        let fmp4_init = restore_fmp4_init(&storage, &playlist).await?;
         // A resumed archive must retain the media shape of its last playable
         // segment; otherwise the first ad segment after a restart could become
         // the new baseline and cause the actual stream to be skipped.
@@ -413,14 +405,18 @@ impl HlsRecorder {
             .await
             .map(|segment| segment.uri.clone());
         let pre_metadata = if let Some(last_segment_uri) = last_segment_uri {
-            let path = work_dir.join(last_segment_uri);
-            let metadata = if let Some(init) = fmp4_init.as_ref() {
-                extract_video_metadata_with_init(&init.path, &path).await
-            } else {
-                extract_video_metadata(&path).await
-            };
+            let metadata = probe_stored_segment(
+                &storage,
+                &last_segment_uri,
+                fmp4_init.as_ref().map(|init| init.local_uri.as_str()),
+            )
+            .await;
             match metadata {
                 Ok(metadata) if !metadata.seems_corrupted() => Some(metadata),
+                // A backend outage must not reset the archive's media baseline.
+                // Native probe failure can still describe an incomplete legacy
+                // segment, but inability to fetch its bytes is a storage error.
+                Err(RecorderError::IoError(error)) => return Err(error.into()),
                 _ => None,
             }
         } else {
@@ -435,7 +431,7 @@ impl HlsRecorder {
             variant_selection,
             client,
             event_channel: event_channel.into(),
-            work_dir,
+            storage,
             playlist: Arc::new(Mutex::new(playlist)),
             headers,
             enabled,
@@ -445,7 +441,7 @@ impl HlsRecorder {
             fmp4_init: Arc::new(RwLock::new(fmp4_init)),
             ad_ranges: Arc::new(Mutex::new(Vec::new())),
             skipped_ad_ranges: Arc::new(Mutex::new(skipped_ad_ranges)),
-            sequence_file: Arc::new(RwLock::new(sequence_file)),
+            sequence_write: Arc::new(Mutex::new(())),
         })
     }
 
@@ -530,7 +526,8 @@ impl HlsRecorder {
             if skipped_ranges.iter().any(|skipped| {
                 skipped.id == range.id && skipped.start_ms == range.start_ms && skipped != &range
             }) {
-                append_skipped_ad_range(&self.work_dir, &range).await?;
+                self.storage.prepare().await?;
+                append_skipped_ad_range_to_storage(&self.storage, &range).await?;
                 upsert_ad_range(&mut skipped_ranges, &range);
             }
         }
@@ -544,7 +541,9 @@ impl HlsRecorder {
             .find(|skipped| skipped.id == range.id && skipped.start_ms == range.start_ms)
             .is_none_or(|skipped| skipped != range);
         if changed {
-            append_skipped_ad_range(&self.work_dir, range).await?;
+            // Prepare the selected backend, not a persistent local workspace.
+            self.storage.prepare().await?;
+            append_skipped_ad_range_to_storage(&self.storage, range).await?;
             upsert_ad_range(&mut skipped_ranges, range);
         }
         Ok(())
@@ -731,12 +730,8 @@ impl HlsRecorder {
         }
     }
 
-    async fn skip_segment(&self, segment_path: &Path, sequence: u64) -> Result<(), RecorderError> {
-        match tokio::fs::remove_file(segment_path).await {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(RecorderError::IoError(error)),
-        }
+    async fn skip_segment(&self, key: &str, sequence: u64) -> Result<(), RecorderError> {
+        self.storage.remove(key).await?;
         self.update_sequence(sequence).await?;
         self.updated_at
             .store(Utc::now().timestamp_millis(), Ordering::Relaxed);
@@ -782,13 +777,18 @@ impl HlsRecorder {
             &segment.uri,
             self.segment_fallback_extension().await,
         );
-        let path = self.work_dir.join(&local_uri);
-        let size = download(&self.client, &source_url, &path, DOWNLOAD_RETRY).await?;
+        let size = download(
+            &self.client,
+            &source_url,
+            &self.storage,
+            &local_uri,
+            DOWNLOAD_RETRY,
+        )
+        .await?;
 
         segment.uri = local_uri;
         Ok(DownloadedSegment {
             segment,
-            path,
             size,
             init_size,
         })
@@ -891,8 +891,14 @@ impl HlsRecorder {
         }
 
         let local_uri = local_init_filename(&source_map.uri);
-        let path = self.work_dir.join(&local_uri);
-        let init_size = download(&self.client, &source_url, &path, DOWNLOAD_RETRY).await?;
+        let init_size = download(
+            &self.client,
+            &source_url,
+            &self.storage,
+            &local_uri,
+            DOWNLOAD_RETRY,
+        )
+        .await?;
         log::info!(
             "[{}] Cached fMP4 init segment as {local_uri} ({} bytes)",
             self.room_id,
@@ -901,7 +907,6 @@ impl HlsRecorder {
 
         *self.fmp4_init.write().await = Some(Fmp4Init {
             source_url,
-            path,
             local_uri: local_uri.clone(),
         });
 
@@ -918,15 +923,15 @@ impl HlsRecorder {
     /// Probe a downloaded segment, prepending the current fMP4 init when needed.
     async fn probe_segment_metadata(
         &self,
-        segment_path: &Path,
+        segment_uri: &str,
     ) -> Result<VideoMetadata, RecorderError> {
         let init = self.fmp4_init.read().await;
-        let metadata = if let Some(init) = init.as_ref() {
-            extract_video_metadata_with_init(&init.path, segment_path).await
-        } else {
-            extract_video_metadata(segment_path).await
-        };
-        metadata.map_err(RecorderError::FfmpegError)
+        probe_stored_segment(
+            &self.storage,
+            segment_uri,
+            init.as_ref().map(|init| init.local_uri.as_str()),
+        )
+        .await
     }
 
     /// Length used for archive accounting.
@@ -962,12 +967,12 @@ impl HlsRecorder {
             if let Some(range) = ad_range_for_segment(segment, ad_ranges) {
                 self.persist_skipped_ad_range(&range).await?;
             }
-            let path = self.work_dir.join(local_segment_filename(
+            let key = local_segment_filename(
                 sequence,
                 &segment.uri,
                 self.segment_fallback_extension().await,
-            ));
-            self.skip_segment(&path, sequence).await?;
+            );
+            self.skip_segment(&key, sequence).await?;
             return Ok(None);
         }
 
@@ -1026,7 +1031,6 @@ impl HlsRecorder {
                     return Err(error);
                 }
             };
-            let segment_path = downloaded.path;
             let size = downloaded.size + downloaded.init_size;
             let mut segment = downloaded.segment;
             if segment.program_date_time.is_none() {
@@ -1036,7 +1040,7 @@ impl HlsRecorder {
             let using_fmp4 = self.fmp4_init.read().await.is_some();
 
             // check if the stream is changed
-            let segment_metadata = self.probe_segment_metadata(&segment_path).await?;
+            let segment_metadata = self.probe_segment_metadata(&segment.uri).await?;
             let duration_secs =
                 Self::segment_duration_secs(&segment, &segment_metadata, using_fmp4);
 
@@ -1047,39 +1051,34 @@ impl HlsRecorder {
                     // ignore this segment
                     log::error!(
                         "Segment is corrupted and has no previous segment, ignore: {}",
-                        segment_path.display()
+                        segment.uri
                     );
                     continue;
                 }
 
                 let Some(last_segment) = playlist.last_segment().await else {
-                    log::error!(
-                        "Playlist has no last segment, ignore: {}",
-                        segment_path.display()
-                    );
+                    log::error!("Playlist has no last segment, ignore: {}", segment.uri);
                     continue;
                 };
                 let last_segment_uri = last_segment.uri.clone();
-                let last_segment_path = segment_path.with_file_name(last_segment_uri);
-                // append segment data behind last segment data
-                let mut last_segment_file = OpenOptions::new()
-                    .append(true)
-                    .open(&last_segment_path)
-                    .await?;
                 log::debug!(
                     "Appending segment data behind last segment: {}",
-                    last_segment_path.display()
+                    last_segment_uri
                 );
-                let mut segment_file = File::open(&segment_path).await?;
-                let mut buffer = Vec::new();
-                segment_file.read_to_end(&mut buffer).await?;
-                last_segment_file.write_all(&buffer).await?;
-                let _ = tokio::fs::remove_file(&segment_path).await;
+                self.storage
+                    .append_media(&last_segment_uri, &segment.uri)
+                    .await?;
                 playlist.append_last_segment(segment.clone()).await?;
 
                 duration_delta += duration_secs;
                 size_delta += size;
                 self.update_sequence(segment_sequence).await?;
+                // This is garbage collection, not part of publishing the repair.
+                // A transient delete failure must not make the next attempt
+                // append the same fragment again.
+                if let Err(error) = self.storage.remove(&segment.uri).await {
+                    log::warn!("Failed to remove repaired segment {}: {error}", segment.uri);
+                }
                 self.updated_at
                     .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
                 updated = true;
@@ -1143,8 +1142,8 @@ impl HlsRecorder {
     }
 
     async fn update_sequence(&self, sequence: u64) -> Result<(), RecorderError> {
-        let mut file = self.sequence_file.write().await;
-        persist_sequence(&mut file, sequence).await?;
+        let _guard = self.sequence_write.lock().await;
+        persist_sequence(&self.storage, sequence).await?;
         self.sequence.store(sequence, Ordering::Relaxed);
         Ok(())
     }
@@ -1200,22 +1199,19 @@ fn resolve_variant_url(master_url: &str, variant_uri: &str) -> Result<String, Re
         })
 }
 
-async fn persist_sequence(file: &mut File, sequence: u64) -> std::io::Result<()> {
-    file.set_len(0).await?;
-    file.seek(SeekFrom::Start(0)).await?;
-    file.write_all(sequence.to_string().as_bytes()).await?;
-    file.flush().await
+async fn persist_sequence(storage: &RecordingStorage, sequence: u64) -> std::io::Result<()> {
+    storage
+        .write(".sequence", sequence.to_string().as_bytes())
+        .await
 }
 
-/// Download url content into fpath
+/// Download and persist a complete media object before probing it.
 async fn download_inner(
     client: &reqwest::Client,
     url: &str,
-    path: &Path,
+    storage: &RecordingStorage,
+    key: &str,
 ) -> Result<u64, RecorderError> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
     let response = client.get(url).send().await?;
     if !response.status().is_success() {
         let status = response.status();
@@ -1224,20 +1220,19 @@ async fn download_inner(
     }
     let bytes = response.bytes().await?;
     let size = bytes.len() as u64;
-    let mut file = tokio::fs::File::create(&path).await?;
-    let mut content = std::io::Cursor::new(bytes.clone());
-    tokio::io::copy(&mut content, &mut file).await?;
+    storage.write(key, &bytes).await?;
     Ok(size)
 }
 
 async fn download(
     client: &reqwest::Client,
     url: &str,
-    path: &Path,
+    storage: &RecordingStorage,
+    key: &str,
     retry: u32,
 ) -> Result<u64, RecorderError> {
     for i in 0..retry {
-        let result = download_inner(client, url, path).await;
+        let result = download_inner(client, url, storage, key).await;
         if let Ok(size) = result {
             return Ok(size);
         }
@@ -1322,13 +1317,111 @@ pub async fn construct_stream_from_variant(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::AtomicUsize;
 
     use crate::core::{Codec, Format};
+    use recording_storage::{LocalWorkspace, ObjectMetadata, StorageBackend};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
     use super::*;
+
+    #[derive(Default)]
+    struct MemoryBackend {
+        objects: Mutex<HashMap<String, Vec<u8>>>,
+        fail_media_read: AtomicBool,
+        fail_remove: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl StorageBackend for MemoryBackend {
+        async fn read_range(
+            &self,
+            key: &str,
+            range: std::ops::Range<u64>,
+        ) -> std::io::Result<Vec<u8>> {
+            if range.start > range.end {
+                return Err(std::io::ErrorKind::InvalidInput.into());
+            }
+            let bytes = self.read(key).await?;
+            let start = range.start.min(bytes.len() as u64) as usize;
+            let end = range.end.min(bytes.len() as u64) as usize;
+            Ok(bytes[start..end].to_vec())
+        }
+
+        async fn list(
+            &self,
+            prefix: &str,
+            cursor: Option<&str>,
+            limit: usize,
+        ) -> std::io::Result<recording_storage::ObjectPage> {
+            let mut keys = self
+                .objects
+                .lock()
+                .await
+                .keys()
+                .filter(|key| {
+                    prefix.is_empty()
+                        || key.as_str() == prefix
+                        || key.starts_with(&format!("{prefix}/"))
+                })
+                .filter(|key| cursor.is_none_or(|cursor| key.as_str() > cursor))
+                .cloned()
+                .collect::<Vec<_>>();
+            keys.sort();
+            let more = keys.len() > limit;
+            keys.truncate(limit);
+            let next_cursor = more.then(|| keys.last().cloned()).flatten();
+            Ok(recording_storage::ObjectPage { keys, next_cursor })
+        }
+
+        async fn read(&self, key: &str) -> std::io::Result<Vec<u8>> {
+            if self.fail_media_read.load(Ordering::Relaxed) && key.ends_with(".ts") {
+                return Err(std::io::ErrorKind::PermissionDenied.into());
+            }
+            self.objects
+                .lock()
+                .await
+                .get(key)
+                .cloned()
+                .ok_or_else(|| std::io::ErrorKind::NotFound.into())
+        }
+
+        async fn read_bounded(&self, key: &str, max_bytes: usize) -> std::io::Result<Vec<u8>> {
+            if self.fail_media_read.load(Ordering::Relaxed) && key.ends_with(".ts") {
+                return Err(std::io::ErrorKind::PermissionDenied.into());
+            }
+            let objects = self.objects.lock().await;
+            let bytes = objects.get(key).ok_or(std::io::ErrorKind::NotFound)?;
+            if bytes.len() > max_bytes {
+                return Err(std::io::ErrorKind::InvalidData.into());
+            }
+            Ok(bytes.clone())
+        }
+
+        async fn write(&self, key: &str, bytes: &[u8]) -> std::io::Result<()> {
+            self.objects
+                .lock()
+                .await
+                .insert(key.to_owned(), bytes.to_vec());
+            Ok(())
+        }
+
+        async fn remove(&self, key: &str) -> std::io::Result<()> {
+            if self.fail_remove.load(Ordering::Relaxed) {
+                return Err(std::io::ErrorKind::PermissionDenied.into());
+            }
+            self.objects.lock().await.remove(key);
+            Ok(())
+        }
+
+        async fn stat(&self, key: &str) -> std::io::Result<ObjectMetadata> {
+            Ok(ObjectMetadata {
+                size: self.read(key).await?.len() as u64,
+            })
+        }
+    }
 
     #[tokio::test]
     async fn test_construct_stream_from_variant() {
@@ -1419,10 +1512,13 @@ mod tests {
             .unwrap();
         assert_eq!(downloaded.segment.uri, "segment-42.ts");
         assert_eq!(
-            downloaded.path.file_name().unwrap().to_str().unwrap(),
-            "segment-42.ts"
+            recorder
+                .storage
+                .read(&downloaded.segment.uri)
+                .await
+                .unwrap(),
+            body
         );
-        assert_eq!(tokio::fs::read(&downloaded.path).await.unwrap(), body);
 
         recorder
             .playlist
@@ -1488,6 +1584,16 @@ mod tests {
         broadcast::Receiver<RecorderEvent>,
     ) {
         let directory = tempfile::tempdir().unwrap();
+        let (recorder, receiver) =
+            native_probe_recorder_in_storage(server, RecordingStorage::local(directory.path()))
+                .await;
+        (recorder, directory, receiver)
+    }
+
+    async fn native_probe_recorder_in_storage(
+        server: &MockServer,
+        storage: RecordingStorage,
+    ) -> (HlsRecorder, broadcast::Receiver<RecorderEvent>) {
         let (events, receiver) = broadcast::channel(4);
         let stream = Arc::new(HlsStream::new(
             "probe-live".to_string(),
@@ -1504,12 +1610,196 @@ mod tests {
             reqwest::Client::new(),
             None,
             events,
-            directory.path().to_path_buf(),
+            storage,
             Arc::new(AtomicBool::new(true)),
         )
         .await
         .unwrap();
-        (recorder, directory, receiver)
+        (recorder, receiver)
+    }
+
+    #[tokio::test]
+    async fn in_memory_fmp4_download_probe_and_resume_need_no_workspace() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/video");
+        let init = fs::read(fixtures.join("init.m4s")).unwrap();
+        let media = fs::read(fixtures.join("segment.m4s")).unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/master.m3u8"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "#EXTM3U\n#EXT-X-TARGETDURATION:3\n#EXT-X-MEDIA-SEQUENCE:1\n\
+                 #EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:1.25,\nfirst.m4s\n",
+            ))
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/init.mp4"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(init.clone()))
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/first.m4s"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(media.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("absent-workspace");
+        let storage = RecordingStorage::with_backend(
+            Arc::new(MemoryBackend::default()),
+            LocalWorkspace::new(&workspace),
+        );
+        let (recorder, mut events) =
+            native_probe_recorder_in_storage(&server, storage.clone()).await;
+        assert!(!workspace.exists());
+
+        recorder.update_entries().await.unwrap();
+        let metadata = recorder.pre_metadata.read().await.clone().unwrap();
+        assert_eq!((metadata.width, metadata.height), (1920, 1080));
+        assert_eq!(metadata.video_codec, "h264");
+        let archive = recorder.playlist.lock().await.playlist.clone();
+        assert_eq!(archive.segments.len(), 1);
+        assert_eq!(archive.segments[0].duration, 1.25);
+        let init_uri = &archive.segments[0].map.as_ref().unwrap().uri;
+        assert_eq!(storage.read(init_uri).await.unwrap(), init);
+        assert_eq!(storage.read(&archive.segments[0].uri).await.unwrap(), media);
+        assert_eq!(storage.read(".sequence").await.unwrap(), b"1");
+        let playlist = String::from_utf8(storage.read(PLAYLIST_FILE_NAME).await.unwrap()).unwrap();
+        assert!(playlist.contains(init_uri));
+        assert!(playlist.contains("segment-1.m4s"));
+        match events.try_recv().unwrap() {
+            RecorderEvent::RecordUpdate { duration_secs, .. } => assert_eq!(duration_secs, 1.25),
+            event => panic!("unexpected event: {event:?}"),
+        }
+        drop(recorder);
+        assert!(!workspace.exists());
+
+        let (resumed, _) = native_probe_recorder_in_storage(&server, storage).await;
+        assert_eq!(resumed.pre_metadata.read().await.as_ref(), Some(&metadata));
+        assert_eq!(
+            resumed.fmp4_init.read().await.as_ref().unwrap().local_uri,
+            *init_uri
+        );
+        assert_eq!(resumed.sequence.load(Ordering::Relaxed), 1);
+        // Re-querying the source must not download or append recorded media again.
+        resumed.update_entries().await.unwrap();
+        assert_eq!(resumed.playlist.lock().await.playlist.segments.len(), 1);
+        assert!(!workspace.exists());
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn in_memory_ts_repair_and_resume_need_no_workspace() {
+        check_in_memory_ts_repair(false).await;
+    }
+
+    #[tokio::test]
+    async fn failed_fragment_cleanup_does_not_repeat_a_committed_ts_repair() {
+        check_in_memory_ts_repair(true).await;
+    }
+
+    async fn check_in_memory_ts_repair(fail_remove: bool) {
+        let valid = probe_fixture("probe-h264.ts");
+        let incomplete = probe_fixture("probe-h264-no-parameters.ts");
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/master.m3u8"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:1\n\
+                 #EXTINF:0.4,\nfirst.ts\n#EXTINF:0.4,\nsecond.ts\n",
+            ))
+            .expect(2)
+            .mount(&server)
+            .await;
+        for (name, bytes) in [
+            ("/first.ts", valid.clone()),
+            ("/second.ts", incomplete.clone()),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(name))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(bytes))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("absent-workspace");
+        let storage = RecordingStorage::with_backend(
+            Arc::new(MemoryBackend {
+                fail_remove: AtomicBool::new(fail_remove),
+                ..MemoryBackend::default()
+            }),
+            LocalWorkspace::new(&workspace),
+        );
+        let (recorder, _) = native_probe_recorder_in_storage(&server, storage.clone()).await;
+        recorder.update_entries().await.unwrap();
+        let archive = recorder.playlist.lock().await.playlist.clone();
+        assert_eq!(archive.segments.len(), 1);
+        assert!((archive.segments[0].duration - 0.8).abs() < 1e-6);
+        assert_eq!(
+            storage.read(&archive.segments[0].uri).await.unwrap(),
+            [valid, incomplete].concat()
+        );
+        assert_eq!(storage.exists("segment-2.ts").await.unwrap(), fail_remove);
+        assert_eq!(storage.read(".sequence").await.unwrap(), b"2");
+        drop(recorder);
+
+        let (resumed, _) = native_probe_recorder_in_storage(&server, storage).await;
+        let metadata = resumed.pre_metadata.read().await.clone().unwrap();
+        assert_eq!((metadata.width, metadata.height), (64, 48));
+        assert_eq!(metadata.video_codec, "h264");
+        assert_eq!(resumed.sequence.load(Ordering::Relaxed), 2);
+        resumed.update_entries().await.unwrap();
+        assert_eq!(resumed.playlist.lock().await.playlist.segments.len(), 1);
+        assert!(!workspace.exists());
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn resume_propagates_backend_media_read_failure() {
+        let server = MockServer::start().await;
+        let directory = tempfile::tempdir().unwrap();
+        let backend = Arc::new(MemoryBackend::default());
+        let storage = RecordingStorage::with_backend(
+            backend.clone(),
+            LocalWorkspace::new(directory.path().join("absent")),
+        );
+        let (recorder, _) = native_probe_recorder_in_storage(&server, storage.clone()).await;
+        storage
+            .write("segment-1.ts", &probe_fixture("probe-h264.ts"))
+            .await
+            .unwrap();
+        recorder
+            .playlist
+            .lock()
+            .await
+            .add_segment(MediaSegment {
+                uri: "segment-1.ts".into(),
+                duration: 0.4,
+                ..MediaSegment::default()
+            })
+            .await
+            .unwrap();
+        persist_sequence(&storage, 1).await.unwrap();
+        backend.fail_media_read.store(true, Ordering::Relaxed);
+        let (events, _) = broadcast::channel(4);
+        let resumed = HlsRecorder::new(
+            "probe-room".into(),
+            recorder.stream.clone(),
+            reqwest::Client::new(),
+            None,
+            events,
+            storage,
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await;
+        assert!(matches!(
+            resumed,
+            Err(RecorderError::IoError(error))
+                if error.kind() == std::io::ErrorKind::PermissionDenied
+        ));
     }
 
     #[tokio::test]
@@ -1729,9 +2019,15 @@ mod tests {
                 .unwrap();
             recorder.update_sequence(sequence).await.unwrap();
         }
-        tokio::fs::read_to_string(recorder.work_dir.join(PLAYLIST_FILE_NAME))
-            .await
-            .unwrap()
+        tokio::fs::read_to_string(
+            recorder
+                .storage
+                .workspace()
+                .path(PLAYLIST_FILE_NAME)
+                .unwrap(),
+        )
+        .await
+        .unwrap()
     }
 
     /// Assert that only the 1080p program survived the ad filter.
@@ -1865,7 +2161,14 @@ mod tests {
                 downloaded.segment.map.is_some(),
                 "first retained program segment must re-emit the init carried by the skipped ad"
             );
-            assert_eq!(tokio::fs::read(&downloaded.path).await.unwrap(), media_body);
+            assert_eq!(
+                recorder
+                    .storage
+                    .read(&downloaded.segment.uri)
+                    .await
+                    .unwrap(),
+                media_body
+            );
             recorder
                 .playlist
                 .lock()
@@ -1960,7 +2263,9 @@ mod tests {
             "2"
         );
         assert_eq!(
-            load_skipped_ad_ranges(&work_dir).await.unwrap(),
+            load_skipped_ad_ranges_from_storage(&recorder.storage)
+                .await
+                .unwrap(),
             vec![ranges[0].clone()]
         );
 
@@ -2018,7 +2323,7 @@ mod tests {
             .await
             .unwrap();
 
-        recorder.skip_segment(&segment_path, 101).await.unwrap();
+        recorder.skip_segment("segment_101.ts", 101).await.unwrap();
 
         assert!(!segment_path.exists());
         assert_eq!(recorder.sequence.load(Ordering::Relaxed), 101);
@@ -2532,7 +2837,14 @@ high-100.ts
             tokio::fs::read(work_dir.join(&local_map)).await.unwrap(),
             init_body
         );
-        assert_eq!(tokio::fs::read(&downloaded.path).await.unwrap(), media_body);
+        assert_eq!(
+            recorder
+                .storage
+                .read(&downloaded.segment.uri)
+                .await
+                .unwrap(),
+            media_body
+        );
         assert_eq!(
             recorder
                 .fmp4_init
@@ -2631,7 +2943,14 @@ high-100.ts
             tokio::fs::read(work_dir.join(&local_map)).await.unwrap(),
             init_body
         );
-        assert_eq!(tokio::fs::read(&downloaded.path).await.unwrap(), media_body);
+        assert_eq!(
+            recorder
+                .storage
+                .read(&downloaded.segment.uri)
+                .await
+                .unwrap(),
+            media_body
+        );
 
         server.verify().await;
         tokio::fs::remove_dir_all(work_dir).await.unwrap();
@@ -2682,18 +3001,33 @@ high-100.ts
 
     #[tokio::test]
     async fn persist_sequence_returns_write_errors() {
-        let path = std::env::temp_dir().join(format!(
-            "bili-shadowreplay-{}.sequence",
-            uuid::Uuid::new_v4()
-        ));
-        fs::write(&path, "0").unwrap();
-
-        let read_only_file = fs::File::open(&path).unwrap();
-        let mut read_only_file = File::from_std(read_only_file);
-        let result = persist_sequence(&mut read_only_file, 1).await;
-
+        let dir = tempfile::tempdir().unwrap();
+        // A directory cannot be replaced by an object on any supported platform.
+        fs::create_dir(dir.path().join(".sequence")).unwrap();
+        let storage = RecordingStorage::local(dir.path());
+        let result = persist_sequence(&storage, 1).await;
         assert!(result.is_err());
-        drop(read_only_file);
-        fs::remove_file(path).unwrap();
+        assert!(dir.path().join(".sequence").is_dir());
+    }
+
+    #[tokio::test]
+    async fn persist_sequence_replaces_longer_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = RecordingStorage::local(dir.path());
+        persist_sequence(&storage, 123456).await.unwrap();
+        persist_sequence(&storage, 7).await.unwrap();
+        assert_eq!(storage.read(".sequence").await.unwrap(), b"7");
+    }
+
+    #[tokio::test]
+    async fn failed_checkpoint_does_not_advance_in_memory_sequence() {
+        let server = MockServer::start().await;
+        let (recorder, work_dir) = twitch_recorder(&server, "checkpoint-failure").await;
+        recorder.storage.remove(".sequence").await.unwrap();
+        fs::create_dir(work_dir.join(".sequence")).unwrap();
+        let before = recorder.sequence.load(Ordering::Relaxed);
+        assert!(recorder.update_sequence(before + 1).await.is_err());
+        assert_eq!(recorder.sequence.load(Ordering::Relaxed), before);
+        fs::remove_dir_all(work_dir).unwrap();
     }
 }

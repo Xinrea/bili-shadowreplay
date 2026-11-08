@@ -17,6 +17,8 @@ pub struct StaticServer {
 
 pub async fn start_static_server(
     config: Arc<RwLock<Config>>,
+    manager: Arc<crate::recorder_manager::RecorderManager>,
+    temp_storage: crate::temp_storage::TempStorage,
 ) -> Result<StaticServer, Box<dyn std::error::Error>> {
     let bind_addr = SocketAddr::from(([0, 0, 0, 0], 0));
     log::info!("Starting static server binding to {}", bind_addr);
@@ -39,23 +41,26 @@ pub async fn start_static_server(
     let port = listener.local_addr()?.port();
 
     let output_path = config.read().await.output.clone();
-    let cache_path = config.read().await.cache.clone();
 
     let handle = tokio::spawn(async move {
         let cors = CorsLayer::new()
             .allow_origin(Any)
             .allow_methods(Any)
             .allow_headers(Any);
-        let (output, cache) = (output_path.clone(), cache_path.clone());
+        let output = output_path.clone();
+        let preview_temp = temp_storage.clone();
         let router = Router::new()
             .route(
                 "/preview_audio",
                 get(move |Query(query): Query<ChunkQuery>| async move {
-                    preview_audio::respond(Path::new(&output), Path::new(&cache), query).await
+                    preview_audio::respond(Path::new(&output), preview_temp.root(), query).await
                 }),
             )
             .nest_service("/output", ServeDir::new(output_path))
-            .nest_service("/cache", ServeDir::new(cache_path))
+            .nest_service(
+                "/cache",
+                crate::recording_assets::cache_router(manager, temp_storage),
+            )
             .layer(cors);
 
         if let Err(e) = axum::serve(listener, router).await {

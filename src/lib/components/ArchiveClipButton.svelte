@@ -2,6 +2,7 @@
   import { onDestroy, onMount } from "svelte";
   import { Scissors } from "lucide-svelte";
   import type { RecordItem } from "../db";
+  import { archiveFilesAvailable } from "../recording-storage";
   import {
     generateEventId,
     generateMaterials,
@@ -53,7 +54,7 @@
   let merged = $derived(mergeRanges && activeRanges.length > 1);
 
   function openConfirm() {
-    if (!archive || disabled) return;
+    if (!archiveFilesAvailable(archive) || disabled) return;
     clipNote = initialNote;
     showConfirm = true;
   }
@@ -85,7 +86,7 @@
   }
 
   async function generateClip() {
-    if (!archive || activeRanges.length === 0) return;
+    if (!archive || !archiveFilesAvailable(archive) || disabled || activeRanges.length === 0) return;
     showConfirm = false;
     const merge = merged;
     const shouldReencode = embedDanmu || reencode;
@@ -152,7 +153,7 @@
 <button
   type="button"
   onclick={openConfirm}
-  disabled={disabled || !archive}
+  disabled={disabled || !archiveFilesAvailable(archive)}
   class={variant === "compact"
     ? "ui-btn ui-btn-sm bg-surface text-accent-fg"
     : "ui-btn ui-btn-primary"}
@@ -364,7 +365,7 @@
         <button
           type="button"
           onclick={generateClip}
-          disabled={activeRanges.length === 0}
+          disabled={disabled || !archiveFilesAvailable(archive) || activeRanges.length === 0}
           class="ui-btn ui-btn-primary"
         >
           确认生成

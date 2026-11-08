@@ -92,6 +92,8 @@ export function taskTypeName(taskType: string) {
       return "生成完整录播";
     case "generate_archive_summary":
       return "录播总结";
+    case "storage_transfer":
+      return "录播存储转移";
     default:
       return taskType;
   }
@@ -104,6 +106,9 @@ export function describeTask(task: Pick<TaskRow, "metadata">) {
     metadata = JSON.parse(task.metadata);
   } catch {
     return "";
+  }
+  if (typeof metadata?.source_backend_id === "string" && typeof metadata?.target_backend_id === "string") {
+    return `${metadata.source_backend_id} → ${metadata.target_backend_id}`;
   }
   const params = metadata?.params;
   if (Array.isArray(params?.ranges)) {

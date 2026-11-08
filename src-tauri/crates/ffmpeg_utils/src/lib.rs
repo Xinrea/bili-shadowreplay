@@ -38,7 +38,7 @@ pub use capabilities::{
 pub use command::path_str;
 #[cfg(any(test, feature = "cli-test-oracles"))]
 pub use command::{ffmpeg_command, ffmpeg_path, ffprobe_command, ffprobe_path};
-pub use hls::{record_to_hls, HlsRecordingOptions};
+pub use hls::{record_to_hls, record_to_hls_objects, HlsObjectStore, HlsRecordingOptions};
 pub use image::normalize_image_to_png;
 pub use media::{
     execute_media_plan, execute_with_sources, parse_frame_rate, probe_video_encoder,
@@ -52,7 +52,7 @@ pub use media::{
     VideoFrameProcessor, VideoFrameProcessorFactory, VideoRational,
 };
 pub use metadata::{
-    extract_video_metadata, extract_video_metadata_with_init, probe_media, AudioStreamMetadata,
-    MediaProbe, VideoMetadata,
+    extract_video_metadata, extract_video_metadata_from_bytes, extract_video_metadata_from_parts,
+    extract_video_metadata_with_init, probe_media, AudioStreamMetadata, MediaProbe, VideoMetadata,
 };
-pub use video_frame::{extract_jpeg, write_jpeg};
+pub use video_frame::{extract_jpeg, extract_jpeg_from_bytes, write_jpeg};

@@ -19,6 +19,11 @@ export interface RecordItem {
   size: number;
   created_at: string;
   cover: string;
+  /** The backend pinned to this recording, not the recorder's next-recording preference. */
+  storage_backend_id?: string;
+  /** Configuration availability only, not a filesystem/remote health check. */
+  storage_available?: boolean;
+  storage_unavailable_reason?: string | null;
   /** Retained segment coverage in Unix milliseconds; older servers may omit it. */
   recording_started_at?: number | null;
   recording_ended_at?: number | null;

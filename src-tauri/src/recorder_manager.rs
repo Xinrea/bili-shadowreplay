@@ -889,7 +889,7 @@ impl RecorderManager {
         }
 
         // remove from db
-        let recorder = self.db.remove_recorder(room_id).await?;
+        let recorder = self.db.remove_recorder(platform.as_str(), room_id).await?;
 
         // add to to_remove
         log::debug!("Add to to_remove: {recorder_id}");

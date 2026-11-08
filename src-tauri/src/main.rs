@@ -626,6 +626,31 @@ fn get_migrations() -> Vec<Migration> {
             sql: "ALTER TABLE uploads ADD COLUMN render_settings_json TEXT NOT NULL DEFAULT '{}';",
             kind: MigrationKind::Up,
         },
+        // Room numbers are not unique across platforms. A room_id-only primary
+        // key made adding Douyu 6 replace Bilibili 6, and removing either room
+        // deleted every platform's archive index for that number.
+        Migration {
+            version: 26,
+            description: "recorders_primary_key_platform_room",
+            sql: r"
+                CREATE TABLE recorders_platform_room (
+                    room_id TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    created_at TEXT,
+                    auto_start INTEGER NOT NULL DEFAULT 1,
+                    extra TEXT,
+                    PRIMARY KEY (platform, room_id)
+                );
+                INSERT INTO recorders_platform_room (
+                    room_id, platform, created_at, auto_start, extra
+                )
+                SELECT room_id, platform, created_at, auto_start, extra
+                FROM recorders;
+                DROP TABLE recorders;
+                ALTER TABLE recorders_platform_room RENAME TO recorders;
+            ",
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

@@ -484,7 +484,7 @@
     <!-- Room Grid -->
     <div class="grid grid-cols-3 gap-4">
       <!-- Active Room Card -->
-      {#each filteredRecorders as room (room.room_info.room_id)}
+      {#each filteredRecorders as room (`${room.room_info.platform}:${room.room_info.room_id}`)}
         <div class="ui-card p-3 transition-colors hover:border-line-strong">
           <div class="relative">
             <img

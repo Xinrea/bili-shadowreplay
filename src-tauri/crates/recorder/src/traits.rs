@@ -24,6 +24,11 @@ pub trait RecorderBasicTrait {
     fn set_preview_sink(&self, sink: crate::events::PreviewEventSink);
     fn emit_preview_event(&self, event: RecorderEvent);
     fn cache_dir(&self) -> PathBuf;
+    /// Storage injection point. The default preserves external implementations
+    /// that still supply only a local cache directory.
+    fn storage(&self) -> recording_storage::RecordingStore {
+        recording_storage::RecordingStore::local(self.cache_dir())
+    }
     fn quit(&self) -> Arc<atomic::AtomicBool>;
     fn enabled(&self) -> Arc<atomic::AtomicBool>;
     fn is_recording(&self) -> Arc<atomic::AtomicBool>;
@@ -58,6 +63,10 @@ pub trait RecorderTrait: RecorderBasicTrait {
             record_task.abort();
             let _ = record_task.await;
         }
+        // Backend log commits may intentionally outlive their cancelled caller.
+        // Do not let archive deletion race those outstanding appends.
+        self.storage().flush_logs().await;
+        *self.danmu_storage().write().await = None;
     }
     async fn should_record(&self) -> bool {
         if self.quit().load(atomic::Ordering::Relaxed) {
@@ -67,6 +76,17 @@ pub trait RecorderTrait: RecorderBasicTrait {
         self.enabled().load(atomic::Ordering::Relaxed)
     }
 
+    /// Open the asset namespace without leaking a local path into orchestration.
+    async fn recording_storage(
+        &self,
+        live_id: &str,
+    ) -> std::io::Result<recording_storage::RecordingStorage> {
+        self.storage()
+            .resolve_recording(self.platform().as_str(), &self.room_id(), live_id)
+            .await
+    }
+
+    /// Legacy local-path view for application consumers not yet migrated.
     async fn work_dir(&self, live_id: &str) -> CachePath {
         CachePath::new(self.cache_dir(), self.platform(), &self.room_id(), live_id)
     }
@@ -79,6 +99,7 @@ pub trait RecorderTrait: RecorderBasicTrait {
             live_id: self.live_id().read().await.clone(),
             recording: is_recording,
             enabled: self.enabled().load(atomic::Ordering::Relaxed),
+            storage_id: self.storage().identity().map(str::to_owned),
             room_info: RoomInfo {
                 platform: self.platform().as_str().to_string(),
                 room_id: self.room_id().to_string(),

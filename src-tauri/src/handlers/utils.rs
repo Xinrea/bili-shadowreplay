@@ -109,17 +109,25 @@ pub struct DiskInfo {
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_disk_info(state: state_type!()) -> Result<DiskInfo, ()> {
-    let cache = state.config.read().await.cache.clone();
-    // if cache is relative path, convert it to absolute path
-    let mut cache = PathBuf::from(&cache);
-    if cache.is_relative() {
-        // get current working directory
+    // Recording capacity belongs to the selected persistence backend, not the
+    // OS temp filesystem. Remote/unknown backends have no local disk capacity.
+    let mut root = {
+        let config = state.config.read().await;
+        let backend = config
+            .storage
+            .backends
+            .get(&config.storage.default_backend)
+            .filter(|backend| backend.kind == "local" && !backend.root.is_empty())
+            .ok_or(())?;
+        PathBuf::from(&backend.root)
+    };
+    if root.is_relative() {
         let cwd = std::env::current_dir()
             .map_err(|e| log::error!("Failed to get current directory: {e}"))?;
-        cache = cwd.join(cache);
+        root = cwd.join(root);
     }
 
-    get_disk_info_inner(cache).await
+    get_disk_info_inner(root).await
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]

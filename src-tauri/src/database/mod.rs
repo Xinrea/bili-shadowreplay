@@ -14,6 +14,8 @@ pub mod message;
 pub mod project;
 pub mod record;
 pub mod recorder;
+pub mod storage;
+pub mod storage_transfer;
 pub mod summary;
 pub mod task;
 pub mod upload;
@@ -23,6 +25,7 @@ pub struct Database {
     pool: SqlitePool,
     credentials: credentials::CredentialCipher,
     events: EventBus,
+    storage_initialized: tokio::sync::OnceCell<()>,
 }
 
 #[derive(Error, Debug)]
@@ -39,6 +42,14 @@ pub enum DatabaseError {
     Credentials(#[from] std::io::Error),
     #[error("Database contains encrypted accounts; enable the credential-encryption feature")]
     EncryptionRequired,
+    #[error("Recording is already bound to a different storage ID")]
+    StorageBindingConflict,
+    #[error("Recording was deleted and cannot be resumed")]
+    RecordingDeleted,
+    #[error("Storage ID {0} is reserved (removed or assigned to another backend); use a new ID")]
+    StorageBackendConflict(String),
+    #[error("Invalid storage configuration: {0}")]
+    InvalidStorageConfig(String),
     #[error("DB error: {0}")]
     DB(#[from] sqlx::Error),
     #[error("SQL is incorret: {sql}")]
@@ -72,6 +83,7 @@ impl Database {
             pool,
             credentials,
             events,
+            storage_initialized: tokio::sync::OnceCell::new(),
         }
     }
 }

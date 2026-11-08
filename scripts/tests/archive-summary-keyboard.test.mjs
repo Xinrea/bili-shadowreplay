@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
+import { recordingStorage } from "./recording-storage-fixture.mjs";
 
 const source = await readFile(new URL("../../src/lib/components/ArchiveSummaryModal.svelte", import.meta.url), "utf8");
 const script = source.match(/<script lang="ts">([\s\S]*?)<\/script>/)[1];
@@ -21,6 +22,7 @@ async function fixture() {
     $props: () => ({ showModal: true }),
   });
   const dependencies = {
+    "../recording-storage": recordingStorage,
     svelte: { onDestroy() {} },
     "../page-visibility": { pageVisibility: () => () => visible },
     "../invoker": { invoke() { throw new Error("Unexpected API request"); } },

@@ -2,6 +2,7 @@ use std::fmt;
 pub mod flv_recorder;
 pub mod hls_recorder;
 pub mod playlist;
+mod storage_io;
 pub mod stream_info;
 
 pub use stream_info::{

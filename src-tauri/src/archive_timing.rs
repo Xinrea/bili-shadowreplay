@@ -1,9 +1,9 @@
 use chrono::DateTime;
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-    time::SystemTime,
-};
+use recording_storage::RecordingStorage;
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+#[cfg(test)]
+use std::path::Path;
 use tokio::sync::Mutex;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,18 +95,21 @@ fn entries_timing(bytes: &[u8]) -> Option<ArchiveTiming> {
     timing
 }
 
-struct CachedTiming {
-    size: u64,
-    modified: Option<SystemTime>,
-    timing: Option<ArchiveTiming>,
-}
+/// Cache parsed content rather than local paths/mtime. Identical content has
+/// identical timing even across backends, and equal-size rewrites invalidate it.
+type TimingCacheEntries = HashMap<(&'static str, [u8; 32]), Option<ArchiveTiming>>;
 
-/// Historical playlists are parsed once; an active recording invalidates by file metadata.
 #[derive(Default)]
-pub struct ArchiveTimingCache(Mutex<HashMap<PathBuf, CachedTiming>>);
+pub struct ArchiveTimingCache(Mutex<TimingCacheEntries>);
 
 impl ArchiveTimingCache {
+    #[cfg(test)]
     pub async fn get(&self, directory: &Path) -> Option<ArchiveTiming> {
+        self.get_from_storage(&RecordingStorage::local(directory))
+            .await
+    }
+
+    pub async fn get_from_storage(&self, storage: &RecordingStorage) -> Option<ArchiveTiming> {
         for (name, parse) in [
             (
                 "playlist.m3u8",
@@ -114,35 +117,27 @@ impl ArchiveTimingCache {
             ),
             ("entries.log", entries_timing),
         ] {
-            let path = directory.join(name);
-            let Ok(metadata) = tokio::fs::metadata(&path).await else {
-                self.0.lock().await.remove(&path);
-                continue;
+            let bytes = match storage.read(name).await {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    log::warn!("Failed to read archive timing asset {name}: {error}");
+                    return None;
+                }
             };
-            let size = metadata.len();
-            let modified = metadata.modified().ok();
-            let cached = self
-                .0
-                .lock()
-                .await
-                .get(&path)
-                .filter(|cached| cached.size == size && cached.modified == modified)
-                .map(|cached| cached.timing);
+            let key = (name, Sha256::digest(&bytes).into());
+            let cached = self.0.lock().await.get(&key).copied();
             let timing = match cached {
                 Some(timing) => timing,
                 None => {
-                    let Ok(bytes) = tokio::fs::read(&path).await else {
-                        continue;
-                    };
                     let timing = parse(&bytes);
-                    self.0.lock().await.insert(
-                        path,
-                        CachedTiming {
-                            size,
-                            modified,
-                            timing,
-                        },
-                    );
+                    let mut cache = self.0.lock().await;
+                    // Live manifests create a new digest every few seconds.
+                    // Bound this derived cache rather than retaining all history.
+                    if cache.len() >= 512 {
+                        cache.clear();
+                    }
+                    cache.insert(key, timing);
                     timing
                 }
             };

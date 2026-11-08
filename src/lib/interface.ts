@@ -39,6 +39,17 @@ export interface RecorderInfo {
   live_id: string;
   recording: boolean;
   enabled: boolean;
+  /** Resolved backend used by this recorder. */
+  storage_id?: string;
+}
+
+export interface RecorderRow {
+  platform: string;
+  room_id: string;
+  created_at: string;
+  auto_start: boolean;
+  extra: string;
+  storage_backend_id: string | null;
 }
 
 export interface RoomCheckSample {
@@ -49,6 +60,8 @@ export interface RoomCheckSample {
 
 export interface RecorderStatus {
   recorder: RecorderInfo;
+  /** Configured override; null means inherit the application default. */
+  storage_backend_id: string | null;
   active: boolean;
   check: {
     checked_at: number | null;
@@ -312,7 +325,7 @@ export interface ExportStarted {
   task: { id: string };
   /** The file being written. */
   path: string;
-  /** Where the web client downloads it, relative to the cache directory. */
+  /** Session-temporary download path beneath the compatible /cache URL. */
   download: string | null;
 }
 
@@ -434,8 +447,13 @@ export function default_profile(): Profile {
   };
 }
 
+export interface StorageConfig {
+  default_backend: string;
+  backends: Record<string, { type: string; root: string }>;
+}
+
 export interface Config {
-  cache: string;
+  storage: StorageConfig;
   output: string;
   primary_uid: number;
   live_start_notify: boolean;

@@ -2,12 +2,15 @@
   import { invoke, get_static_url } from "../invoker";
   import { formatSize } from "../size-format";
   import type { RecordItem } from "../db";
+  import { archiveFilesAvailable } from "../recording-storage";
+  import ArchiveStorageBadge from "./ArchiveStorageBadge.svelte";
   import { fade, scale } from "svelte/transition";
   import { X, FileVideo, Info } from "lucide-svelte";
   import { untrack } from "svelte";
   import { clickOutside } from "../actions/clickOutside";
   import { trapFocus } from "../focus-trap";
   import { pageVisibility } from "../page-visibility";
+  import { createStateRefresh, watchStateChanges } from "../state-refresh";
   import { defaultRenderSettings } from "../project-timeline";
   import RenderSettingsFields from "./RenderSettingsFields.svelte";
 
@@ -35,9 +38,10 @@
   let loadSeq = 0;
 
 
-  async function loadWholeClipArchives(roomId: string, parentId: string) {
+  async function loadWholeClipArchives(roomId: string, parentId: string, preserveSelection = false) {
     const seq = ++loadSeq;
     isLoading = true;
+    generationError = "";
     try {
       // 获取与当前archive具有相同parent_id的所有archives
       let sameParentArchives = (await invoke("get_archives_by_parent_id", {
@@ -50,6 +54,7 @@
       // 处理封面
       for (const archive of sameParentArchives) {
         if (seq !== loadSeq) return;
+        if (!archiveFilesAvailable(archive)) { archive.cover = ""; continue; }
         archive.cover = await get_static_url(
           "cache",
           `${archive.platform}/${archive.room_id}/${archive.live_id}/cover.jpg`
@@ -66,12 +71,20 @@
       });
 
       wholeClipArchives = sameParentArchives;
-      selectedLiveIds = sameParentArchives.map((item) => item.live_id);
-      outputName = buildDefaultOutputName();
+      const availableIds = sameParentArchives.filter(archiveFilesAvailable).map((item) => item.live_id);
+      if (preserveSelection && selectedLiveIds.some((id) => !availableIds.includes(id))) {
+        generationError = "部分已选片段的存储不可用或记录已不存在，已取消选择。请确认剩余片段后再合成。";
+      }
+      selectedLiveIds = preserveSelection
+        ? selectedLiveIds.filter((id) => availableIds.includes(id))
+        : availableIds;
+      if (!preserveSelection) outputName = buildDefaultOutputName();
     } catch (error) {
       console.error("Failed to load whole clip archives:", error);
       if (seq === loadSeq) {
         wholeClipArchives = [];
+        selectedLiveIds = [];
+        generationError = `片段加载失败：${String(error)}`;
       }
     } finally {
       if (seq === loadSeq) {
@@ -82,6 +95,11 @@
 
   async function generateWholeClip() {
     if (!archive || isLoading || isSubmitting || selectedLiveIds.length === 0) return;
+    if (!archiveFilesAvailable(archive) || selectedLiveIds.some((id) =>
+      !archiveFilesAvailable(wholeClipArchives.find((item) => item.live_id === id)))) {
+      generationError = "选中项包含存储不可用或已不存在的片段，请重新加载并选择可用片段。";
+      return;
+    }
     isSubmitting = true;
     generationError = "";
     try {
@@ -133,7 +151,7 @@
   }
 
   function selectAll() {
-    selectedLiveIds = [...wholeClipArchives.map((item) => item.live_id)];
+    selectedLiveIds = wholeClipArchives.filter(archiveFilesAvailable).map((item) => item.live_id);
   }
 
   function clearSelection() {
@@ -142,6 +160,7 @@
 
   function toggleArchiveSelection(liveId: string, checked: boolean) {
     if (checked) {
+      if (!archiveFilesAvailable(wholeClipArchives.find((item) => item.live_id === liveId))) return;
       if (!selectedLiveIds.includes(liveId)) {
         selectedLiveIds = [...selectedLiveIds, liveId];
       }
@@ -190,17 +209,21 @@
     event.stopPropagation();
     closeModal();
   }
-  // 当modal显示且有archive时，加载相关片段。
-  // 用 untrack 包住加载，避免 isLoading 等内部状态把 $effect 重新触发成死循环。
+  // The group can span backends. Keep each row's availability current even when
+  // only a sibling's backend is removed, without resetting the user's ordering.
+  const groupKey = $derived(showModal && archive ? `${archive.platform}:${roomId}:${archive.parent_id}` : "");
   $effect(() => {
-    if (!showModal || !archive) {
-      return;
-    }
-    const parentId = archive.parent_id;
-    const currentRoomId = roomId;
-    untrack(() => {
-      void loadWholeClipArchives(currentRoomId, parentId);
-    });
+    if (!groupKey) return;
+    const [currentRoomId, parentId] = untrack(() => [roomId, archive!.parent_id]);
+    untrack(() => { isLoading = true; wholeClipArchives = []; selectedLiveIds = []; });
+    let initial = true;
+    const refresh = createStateRefresh(() => {
+      const preserveSelection = !initial;
+      initial = false;
+      return loadWholeClipArchives(currentRoomId, parentId, preserveSelection);
+    }, 1000);
+    const stop = watchStateChanges(refresh, ["records-changed"]);
+    return () => { ++loadSeq; stop(); };
   });
   let selectedArchives = $derived(selectedLiveIds
     .map((id) => wholeClipArchives.find((item) => item.live_id === id))
@@ -270,7 +293,7 @@
             {:else}
               <div class="flex flex-wrap items-center justify-between gap-2 pb-3">
                 <div class="text-[12px] text-fg-muted">
-                  默认全选，按勾选顺序合成
+                  默认选择所有可用片段，按勾选顺序合成；存储不可用的片段保留显示，但不能选择
                 </div>
                 <div class="flex items-center space-x-3 text-[12px]">
                   <button
@@ -319,6 +342,7 @@
                       type="checkbox"
                       class="ui-checkbox shrink-0"
                       aria-label={`选择片段 ${index + 1}`}
+                      disabled={!archiveFilesAvailable(archiveItem)}
                       checked={selectedLiveIds.includes(archiveItem.live_id)}
                       onchange={(event) =>
                         handleSelectionChange(event, archiveItem.live_id)}
@@ -350,6 +374,7 @@
                         <div class="truncate text-[12px] font-medium text-fg" title={archiveItem.title}>
                           {archiveItem.title}
                         </div>
+                        <ArchiveStorageBadge archive={archiveItem} />
                         <div class="mt-1 text-[11px] tabular-nums text-fg-muted">
                           开始时间 {formatTimestamp(archiveItem.created_at)}
                         </div>
@@ -442,7 +467,7 @@
         </button>
         <button
           class="ui-btn ui-btn-primary"
-          disabled={isLoading || isSubmitting || selectedArchives.length === 0}
+          disabled={isLoading || isSubmitting || !archiveFilesAvailable(archive) || selectedArchives.length === 0 || selectedArchives.some((item) => !archiveFilesAvailable(item))}
           onclick={generateWholeClip}
         >
           {isSubmitting ? "正在提交…" : "开始合成"}

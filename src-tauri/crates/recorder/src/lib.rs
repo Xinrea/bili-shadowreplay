@@ -11,6 +11,7 @@ pub mod utils;
 use crate::danmu::DanmuStorage;
 use crate::events::RecorderEvent;
 use crate::{account::Account, platforms::PlatformType};
+pub use recording_storage;
 
 use chrono::Utc;
 use std::{
@@ -47,6 +48,11 @@ pub struct RecorderInfo {
     pub live_id: String,
     pub recording: bool,
     pub enabled: bool,
+    /// Backend captured for RecordStart after resolving this recording attempt.
+    /// Other snapshots may omit it; archive bindings, not recorder identity,
+    /// are authoritative for playback and resumed recording.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_id: Option<String>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
@@ -139,8 +145,8 @@ where
     /// The event channel for the recorder
     event_channel: crate::events::RecorderEventSender,
     preview_sink: Arc<std::sync::RwLock<Option<events::PreviewEventSink>>>,
-    /// The cache directory for the recorder
-    cache_dir: PathBuf,
+    /// Shared storage service; recording attempts open their own asset namespace.
+    storage: recording_storage::RecordingStore,
     /// Whether the recorder is quitting
     quit: Arc<atomic::AtomicBool>,
     /// Whether the recorder is enabled
@@ -188,7 +194,7 @@ impl<T: Send + Sync> Recorder<T> {
         platform: PlatformType,
         room_id: &str,
         account: &Account,
-        cache_dir: PathBuf,
+        storage: impl Into<recording_storage::RecordingStore>,
         event_channel: impl Into<crate::events::RecorderEventSender>,
         update_interval: Arc<atomic::AtomicU64>,
         enabled: bool,
@@ -201,7 +207,7 @@ impl<T: Send + Sync> Recorder<T> {
             client: reqwest::Client::new(),
             event_channel: event_channel.into(),
             preview_sink: Arc::new(std::sync::RwLock::new(None)),
-            cache_dir,
+            storage: storage.into(),
             quit: Arc::new(atomic::AtomicBool::new(false)),
             enabled: Arc::new(atomic::AtomicBool::new(enabled)),
             is_recording: Arc::new(atomic::AtomicBool::new(false)),
@@ -259,7 +265,11 @@ impl<T: Send + Sync> traits::RecorderBasicTrait for Recorder<T> {
     }
 
     fn cache_dir(&self) -> PathBuf {
-        self.cache_dir.clone()
+        self.storage.local_root().to_path_buf()
+    }
+
+    fn storage(&self) -> recording_storage::RecordingStore {
+        self.storage.clone()
     }
 
     fn quit(&self) -> Arc<atomic::AtomicBool> {

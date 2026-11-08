@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
+import { recordingStorage } from "./recording-storage-fixture.mjs";
 
 function deferred() {
   let resolve, reject;
@@ -30,6 +31,7 @@ async function fixture({ variant = "primary" } = {}) {
     alert: (message) => alerts.push(message),
   });
   const dependencies = {
+    "../recording-storage": recordingStorage,
     svelte: { onMount() {}, onDestroy() {} },
     "lucide-svelte": { Scissors() {} },
     "../project-timeline": {

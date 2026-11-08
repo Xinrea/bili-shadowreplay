@@ -179,6 +179,7 @@ mod tests {
             live_id: id.into(),
             recording: true,
             enabled: true,
+            storage_id: None,
         }
     }
 

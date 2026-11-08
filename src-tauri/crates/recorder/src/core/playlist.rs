@@ -1,4 +1,5 @@
 use m3u8_rs::{MediaPlaylist, MediaPlaylistType, MediaSegment};
+use recording_storage::RecordingStorage;
 use std::path::PathBuf;
 
 use crate::errors::RecorderError;
@@ -6,6 +7,8 @@ use crate::errors::RecorderError;
 pub struct HlsPlaylist {
     pub playlist: MediaPlaylist,
     pub file_path: PathBuf,
+    storage: RecordingStorage,
+    key: String,
 }
 
 /// Archives retain every recorded segment. Advertising a sliding LIVE window
@@ -27,24 +30,43 @@ pub fn normalize_archive_playlist(playlist: &mut MediaPlaylist) {
 
 impl HlsPlaylist {
     pub async fn new(file_path: PathBuf) -> Result<Self, RecorderError> {
-        let mut playlist = if file_path.exists() {
-            let bytes = tokio::fs::read(&file_path)
-                .await
-                .map_err(RecorderError::IoError)?;
-            let (_, playlist) = m3u8_rs::parse_media_playlist(&bytes).map_err(|_| {
-                RecorderError::M3u8ParseFailed {
-                    content: playlist_content_preview(&bytes),
-                }
+        let key = file_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "invalid playlist filename",
+                )
             })?;
+        let root = file_path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        Self::from_storage(RecordingStorage::local(root), key).await
+    }
 
-            playlist
-        } else {
-            MediaPlaylist::default()
+    pub async fn from_storage(storage: RecordingStorage, key: &str) -> Result<Self, RecorderError> {
+        let file_path = storage.workspace().path(key)?;
+        let mut playlist = match storage.read(key).await {
+            Ok(bytes) => {
+                let (_, playlist) = m3u8_rs::parse_media_playlist(&bytes).map_err(|_| {
+                    RecorderError::M3u8ParseFailed {
+                        content: playlist_content_preview(&bytes),
+                    }
+                })?;
+
+                playlist
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => MediaPlaylist::default(),
+            Err(error) => return Err(RecorderError::IoError(error)),
         };
         normalize_archive_playlist(&mut playlist);
         Ok(Self {
             playlist,
             file_path,
+            storage,
+            key: key.to_owned(),
         })
     }
 
@@ -56,44 +78,49 @@ impl HlsPlaylist {
         &mut self,
         segment: MediaSegment,
     ) -> Result<(), RecorderError> {
-        let Some(last) = self.playlist.segments.last_mut() else {
+        let mut next = self.playlist.clone();
+        let Some(last) = next.segments.last_mut() else {
             self.add_segment(segment).await?;
             return Ok(());
         };
 
         let new_duration = last.duration + segment.duration;
         last.duration = new_duration;
-        self.playlist.target_duration = self
-            .playlist
-            .target_duration
-            .max(new_duration.ceil() as u64);
-        self.flush().await?;
-
-        Ok(())
+        next.target_duration = next.target_duration.max(new_duration.ceil() as u64);
+        self.replace(next).await
     }
 
     pub async fn add_segment(&mut self, segment: MediaSegment) -> Result<(), RecorderError> {
-        self.playlist.target_duration = self
-            .playlist
-            .target_duration
-            .max(segment.duration.ceil() as u64);
-        self.playlist.segments.push(segment);
-        self.flush().await?;
-        Ok(())
+        let mut next = self.playlist.clone();
+        next.target_duration = next.target_duration.max(segment.duration.ceil() as u64);
+        next.segments.push(segment);
+        self.replace(next).await
     }
 
     pub async fn flush(&self) -> Result<(), RecorderError> {
+        self.persist(&self.playlist).await
+    }
+
+    async fn replace(&mut self, next: MediaPlaylist) -> Result<(), RecorderError> {
+        // A failed publication must not advance the in-memory manifest either.
+        self.persist(&next).await?;
+        self.playlist = next;
+        Ok(())
+    }
+
+    async fn persist(&self, playlist: &MediaPlaylist) -> Result<(), RecorderError> {
         // Create an in-memory buffer to serialize the playlist into.
         // `Vec<u8>` implements `std::io::Write`, which `m3u8_rs::MediaPlaylist::write_to` expects.
         let mut buffer = Vec::new();
 
         // Serialize the playlist into the buffer.
-        self.playlist
+        playlist
             .write_to(&mut buffer)
             .map_err(RecorderError::IoError)?;
 
-        // Write the buffer to the file
-        tokio::fs::write(&self.file_path, buffer)
+        // Publish a complete playlist; readers never observe a truncated rewrite.
+        self.storage
+            .write(&self.key, &buffer)
             .await
             .map_err(RecorderError::IoError)?;
 
@@ -101,20 +128,21 @@ impl HlsPlaylist {
     }
 
     pub async fn close(&mut self) -> Result<(), RecorderError> {
-        self.playlist.end_list = true;
-        self.playlist.playlist_type = Some(MediaPlaylistType::Vod);
-        self.flush().await?;
-        Ok(())
+        let mut next = self.playlist.clone();
+        next.end_list = true;
+        next.playlist_type = Some(MediaPlaylistType::Vod);
+        self.replace(next).await
     }
 
     /// Reopen a previously closed playlist when a live recording resumes in
     /// the same archive directory after a temporary source timeout.
     pub(crate) async fn reopen(&mut self) -> Result<(), RecorderError> {
-        self.playlist.end_list = false;
-        self.playlist.playlist_type = Some(MediaPlaylistType::Event);
+        let mut next = self.playlist.clone();
+        next.end_list = false;
+        next.playlist_type = Some(MediaPlaylistType::Event);
         // Persist normalized headers even for a legacy playlist that was never
         // closed, so a newly opened preview immediately sees EVENT semantics.
-        self.flush().await
+        self.replace(next).await
     }
 
     pub async fn is_empty(&self) -> bool {
@@ -136,6 +164,84 @@ pub(super) fn playlist_content_preview(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use recording_storage::StorageBackend;
+
+    struct RejectWrites(recording_storage::LocalBackend);
+
+    #[async_trait::async_trait]
+    impl StorageBackend for RejectWrites {
+        async fn read_range(
+            &self,
+            key: &str,
+            range: std::ops::Range<u64>,
+        ) -> std::io::Result<Vec<u8>> {
+            self.0.read_range(key, range).await
+        }
+        async fn list(
+            &self,
+            prefix: &str,
+            cursor: Option<&str>,
+            limit: usize,
+        ) -> std::io::Result<recording_storage::ObjectPage> {
+            self.0.list(prefix, cursor, limit).await
+        }
+        async fn read(&self, key: &str) -> std::io::Result<Vec<u8>> {
+            self.0.read(key).await
+        }
+
+        async fn read_bounded(&self, key: &str, max_bytes: usize) -> std::io::Result<Vec<u8>> {
+            self.0.read_bounded(key, max_bytes).await
+        }
+
+        async fn write(&self, _: &str, _: &[u8]) -> std::io::Result<()> {
+            Err(std::io::ErrorKind::PermissionDenied.into())
+        }
+
+        async fn remove(&self, key: &str) -> std::io::Result<()> {
+            self.0.remove(key).await
+        }
+
+        async fn stat(&self, key: &str) -> std::io::Result<recording_storage::ObjectMetadata> {
+            self.0.stat(key).await
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_publication_keeps_persisted_and_in_memory_playlist() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = RecordingStorage::local(dir.path());
+        let mut original = HlsPlaylist::from_storage(local.clone(), "playlist.m3u8")
+            .await
+            .unwrap();
+        original
+            .add_segment(MediaSegment {
+                uri: "0.ts".into(),
+                duration: 4.0,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let before = local.read("playlist.m3u8").await.unwrap();
+        let storage = RecordingStorage::with_backend(
+            std::sync::Arc::new(RejectWrites(recording_storage::LocalBackend::new(
+                dir.path(),
+            ))),
+            recording_storage::LocalWorkspace::new(dir.path()),
+        );
+        let mut playlist = HlsPlaylist::from_storage(storage, "playlist.m3u8")
+            .await
+            .unwrap();
+        let segment = MediaSegment {
+            uri: "1.ts".into(),
+            duration: 6.0,
+            ..Default::default()
+        };
+        assert!(playlist.add_segment(segment.clone()).await.is_err());
+        assert!(playlist.append_last_segment(segment).await.is_err());
+        assert!(playlist.close().await.is_err());
+        assert_eq!(playlist.playlist, original.playlist);
+        assert_eq!(local.read("playlist.m3u8").await.unwrap(), before);
+    }
 
     #[tokio::test]
     async fn new_returns_parse_error_for_corrupt_playlist() {

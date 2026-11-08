@@ -1,4 +1,4 @@
-use crate::config::{Config, LlmConfig};
+use crate::config::{Config, LlmConfig, StorageConfig};
 #[cfg(feature = "headless")]
 use crate::constants::API_PORT;
 use crate::danmu2ass::Danmu2AssOptions;
@@ -11,7 +11,17 @@ use tauri::State as TauriState;
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_config(state: state_type!()) -> Result<Config, ()> {
-    Ok(state.config.read().await.clone())
+    let storage = state
+        .recorder_manager
+        .archive_storage()
+        .configuration()
+        .await
+        .map_err(|error| {
+            log::error!("Failed to read recording storage configuration: {error}");
+        })?;
+    let mut config = state.config.read().await.clone();
+    config.storage = storage;
+    Ok(config)
 }
 
 /// Show the settings in the main window, scrolled to the option `target`.
@@ -156,60 +166,304 @@ pub async fn get_static_port(_state: state_type!()) -> Result<u16, ()> {
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-#[allow(dead_code)]
-pub async fn set_cache_path(state: state_type!(), cache_path: String) -> Result<(), String> {
-    let old_cache_path = state.config.read().await.cache.clone();
-    log::info!("Try to set cache path: {old_cache_path} -> {cache_path}");
-    if old_cache_path == cache_path {
-        return Ok(());
+pub async fn set_storage_config(
+    state: state_type!(),
+    storage: StorageConfig,
+    expected: StorageConfig,
+) -> Result<StorageConfig, String> {
+    #[cfg(feature = "headless")]
+    if state.readonly {
+        return Err("只读模式不能修改录制存储设置".into());
     }
-
-    let old_cache_path_obj = std::path::Path::new(&old_cache_path);
-    let new_cache_path_obj = std::path::Path::new(&cache_path);
-    // check if new cache path is under old cache path
-    if new_cache_path_obj.starts_with(old_cache_path_obj) {
-        log::error!("New cache path is under old cache path: {old_cache_path} -> {cache_path}");
-        return Err("New cache path cannot be under old cache path".to_string());
-    }
-
-    state.recorder_manager.set_migrating(true);
-    // stop and clear all recorders
-    state.recorder_manager.stop_all().await;
-    // first switch to new cache
-    state.config.write().await.set_cache_path(&cache_path);
-    log::info!("Cache path changed: {cache_path}");
-    // Copy old cache to new cache
-    log::info!("Start copy old cache to new cache");
     state
-        .db
-        .new_message(
-            "缓存目录切换",
-            "缓存正在迁移中，根据数据量情况可能花费较长时间，在此期间流预览功能不可用",
+        .recorder_manager
+        .archive_storage()
+        .replace_configuration_if_current(storage, &expected)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(all(test, feature = "headless"))]
+mod storage_settings_tests {
+    use super::*;
+    use crate::config::RecordingBackendConfig;
+    use crate::database::{credentials::CredentialCipher, Database};
+    use crate::events::EventBus;
+    use crate::recorder_manager::RecorderManager;
+    use crate::task::TaskManager;
+    use crate::webhook::poster::{WebhookConfig, WebhookPoster};
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    async fn fixture(directory: &std::path::Path) -> State {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for migration in crate::get_migrations() {
+            sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
+        }
+        let events = EventBus::new();
+        let db = Arc::new(Database::new(
+            pool,
+            CredentialCipher::new(&[0; 32]).unwrap(),
+            events.clone(),
+        ));
+        let config = Arc::new(RwLock::new(
+            Config::load(
+                &directory.join("config.toml"),
+                &directory.join("recordings"),
+                &directory.join("output"),
+            )
+            .unwrap(),
+        ));
+        let task_manager = Arc::new(TaskManager::new());
+        let webhook_poster = WebhookPoster::new(WebhookConfig::default()).unwrap();
+        let recorder_manager = Arc::new(RecorderManager::new(
+            events.clone(),
+            db.clone(),
+            config.clone(),
+            task_manager.clone(),
+            directory.to_path_buf(),
+            webhook_poster.clone(),
+        ));
+        State {
+            mcp_server: Arc::new(crate::mcp::McpServer::default()),
+            temp_storage: crate::temp_storage::TempStorage::new().unwrap(),
+            db,
+            config,
+            webhook_poster,
+            recorder_manager,
+            task_manager,
+            events,
+            resource_dir: directory.to_path_buf(),
+            readonly: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn storage_transfer_readonly_and_cancellation_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = fixture(directory.path()).await;
+        let mut readonly = state.clone();
+        readonly.readonly = true;
+        assert!(crate::handlers::storage_transfer::start_storage_transfer(
+            readonly,
+            "default".into(),
+            "archive".into()
         )
-        .await?;
+        .await
+        .is_err());
+        assert!(state.db.get_tasks().await.unwrap().is_empty());
+        let task = crate::handlers::storage_transfer::start_storage_transfer(
+            state.clone(),
+            "default".into(),
+            "archive".into(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(task.task_type, "storage_transfer");
+        let metadata: serde_json::Value = serde_json::from_str(&task.metadata).unwrap();
+        assert_eq!(metadata["source_backend_id"], "default");
+        assert!(
+            crate::handlers::video::cancel(state.clone(), task.id.clone())
+                .await
+                .is_err()
+        );
+        assert_eq!(state.db.get_task(&task.id).await.unwrap().status, "pending");
+        assert!(crate::handlers::storage_transfer::start_storage_transfer(
+            state.clone(),
+            "default".into(),
+            "archive".into()
+        )
+        .await
+        .is_err());
+    }
 
-    // Only migrate BSR-owned folders: the new directory may already hold the
-    // user's own files, which must be left untouched.
-    let plan =
-        crate::handlers::migrate::plan_cache_migration(old_cache_path_obj, new_cache_path_obj);
-    let migrate_result = crate::handlers::migrate::run_plan(&plan, new_cache_path_obj);
-
-    state.recorder_manager.set_migrating(false);
-
-    match migrate_result {
-        Ok(moved) => {
-            log::info!("Cache migration done: {moved} entries moved");
-            state.db.new_message("缓存目录切换", "缓存切换完成").await?;
-            Ok(())
-        }
-        Err(e) => {
-            log::error!("Cache migration failed: {e}");
+    #[tokio::test]
+    async fn storage_settings_save_without_redirecting_old_archives_or_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = fixture(directory.path()).await;
+        let old = state
+            .recorder_manager
+            .recording_storage(recorder::platforms::PlatformType::BiliBili, "room", "old")
+            .await
+            .unwrap();
+        old.write("playlist.m3u8", b"old archive").await.unwrap();
+        let output = state.config.read().await.output.clone();
+        let mut storage = state.config.read().await.storage.clone();
+        storage.backends.insert(
+            "archive".into(),
+            RecordingBackendConfig {
+                kind: "local".into(),
+                root: directory
+                    .path()
+                    .join("archive")
+                    .to_string_lossy()
+                    .into_owned(),
+            },
+        );
+        storage.default_backend = "archive".into();
+        assert_eq!(
+            set_storage_config(
+                state.clone(),
+                storage.clone(),
+                get_config(state.clone()).await.unwrap().storage
+            )
+            .await
+            .unwrap(),
+            storage
+        );
+        let reloaded = Config::load(
+            &directory.path().join("config.toml"),
+            directory.path(),
+            directory.path(),
+        )
+        .unwrap();
+        assert_ne!(reloaded.storage, storage);
+        assert_eq!(get_config(state.clone()).await.unwrap().storage, storage);
+        assert_eq!(reloaded.output, output);
+        assert_eq!(
             state
-                .db
-                .new_message("缓存目录切换", &format!("缓存迁移失败：{e}"))
-                .await?;
-            Err(e.to_string())
-        }
+                .recorder_manager
+                .recording_storage(recorder::platforms::PlatformType::BiliBili, "room", "old",)
+                .await
+                .unwrap()
+                .read("playlist.m3u8")
+                .await
+                .unwrap(),
+            b"old archive"
+        );
+        let selected = state
+            .recorder_manager
+            .archive_storage()
+            .selected_store(None)
+            .await
+            .unwrap();
+        assert_eq!(selected.identity(), Some("archive"));
+    }
+
+    #[tokio::test]
+    async fn readonly_invalid_and_failed_saves_leave_storage_unchanged() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = fixture(directory.path()).await;
+        let initial = state.config.read().await.storage.clone();
+        let mut invalid = initial.clone();
+        invalid.backends.get_mut("default").unwrap().root = "another-root".into();
+        assert!(set_storage_config(state.clone(), invalid, initial.clone())
+            .await
+            .is_err());
+        let mut readonly = state.clone();
+        readonly.readonly = true;
+        assert!(
+            set_storage_config(readonly, initial.clone(), initial.clone())
+                .await
+                .is_err()
+        );
+        let mut proposed = initial.clone();
+        proposed.backends.insert(
+            "new".into(),
+            RecordingBackendConfig {
+                kind: "local".into(),
+                root: directory.path().join("new").to_string_lossy().into_owned(),
+            },
+        );
+        state.config.write().await.config_path = directory.path().to_string_lossy().into_owned();
+        // Unrelated TOML write failures do not block DB-owned storage changes.
+        set_storage_config(
+            state.clone(),
+            proposed.clone(),
+            get_config(state.clone()).await.unwrap().storage,
+        )
+        .await
+        .unwrap();
+        assert_eq!(state.db.storage_config().await.unwrap(), proposed);
+    }
+
+    #[tokio::test]
+    async fn stale_storage_snapshot_cannot_overwrite_newer_settings() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = fixture(directory.path()).await;
+        let original = get_config(state.clone()).await.unwrap().storage;
+        let mut changed = original.clone();
+        changed.backends.insert(
+            "second".into(),
+            RecordingBackendConfig {
+                kind: "local".into(),
+                root: directory
+                    .path()
+                    .join("second")
+                    .to_string_lossy()
+                    .into_owned(),
+            },
+        );
+        set_storage_config(state.clone(), changed.clone(), original.clone())
+            .await
+            .unwrap();
+        let error = set_storage_config(state.clone(), original.clone(), original)
+            .await
+            .unwrap_err();
+        assert!(error.contains("configuration changed"));
+        assert_eq!(get_config(state).await.unwrap().storage, changed);
+    }
+
+    #[tokio::test]
+    async fn recorder_choice_is_persisted_on_the_row_and_can_return_to_inheritance() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = fixture(directory.path()).await;
+        let mut storage = state.config.read().await.storage.clone();
+        storage.backends.insert(
+            "archive".into(),
+            RecordingBackendConfig {
+                kind: "local".into(),
+                root: directory
+                    .path()
+                    .join("archive")
+                    .to_string_lossy()
+                    .into_owned(),
+            },
+        );
+        set_storage_config(
+            state.clone(),
+            storage,
+            get_config(state.clone()).await.unwrap().storage,
+        )
+        .await
+        .unwrap();
+        state
+            .db
+            .add_recorder(recorder::platforms::PlatformType::BiliBili, "room", "")
+            .await
+            .unwrap();
+        let row = crate::handlers::recorder::set_recorder_storage(
+            state.clone(),
+            "bilibili".into(),
+            "room".into(),
+            Some("archive".into()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(row.storage_backend_id.as_deref(), Some("archive"));
+        assert_eq!(
+            state
+                .recorder_manager
+                .archive_storage()
+                .recorder_store("bilibili", "room")
+                .await
+                .unwrap()
+                .identity(),
+            Some("archive")
+        );
+        let row = crate::handlers::recorder::set_recorder_storage(
+            state.clone(),
+            "bilibili".into(),
+            "room".into(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(row.storage_backend_id.is_none());
     }
 }
 

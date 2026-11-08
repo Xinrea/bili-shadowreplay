@@ -2,10 +2,9 @@
   import { createStateRefresh, watchStateChanges } from "../lib/state-refresh";
   import { liveRoomUrl } from "../lib/platform";
   import { invoke, open, onOpenUrl, get } from "../lib/invoker";
-  import { message } from "@tauri-apps/plugin-dialog";
   import { fade, scale } from "svelte/transition";
   import { Dropdown, DropdownItem } from "flowbite-svelte";
-  import type { RecorderList, RecorderInfo } from "../lib/interface";
+  import type { Config, RecorderList, RecorderInfo, RecorderRow, StorageConfig } from "../lib/interface";
   import {
     Ellipsis,
     Play,
@@ -32,6 +31,8 @@
   import DeleteConfirmActions from "../lib/components/DeleteConfirmActions.svelte";
   import RoomStatusModal from "../lib/components/RoomStatusModal.svelte";
   import RoomArchiveModal from "../lib/components/RoomArchiveModal.svelte";
+  import StorageBackendSelect from "../lib/components/StorageBackendSelect.svelte";
+  import { storageBackend } from "../lib/recording-storage";
   import { onMount } from "svelte";
   import { registerCommands } from "../lib/stores/commands";
 
@@ -203,6 +204,36 @@
   let addRoom = $state("");
   let selectedPlatform = $state("bilibili");
   let creatingRoom = $state(false);
+  let addStorage: StorageConfig | null = $state(null);
+  let addStorageId = $state<string | null>(null);
+  let storageLoading = $state(false);
+  let storageError = $state("");
+  let addError = $state("");
+  let storageLoadRequest = 0;
+
+  async function loadAddStorage() {
+    const request = ++storageLoadRequest;
+    const isCurrent = () => request === storageLoadRequest && addModal;
+    storageLoading = true;
+    storageError = "";
+    try {
+      const config = await invoke<Config>("get_config");
+      if (isCurrent()) addStorage = config.storage;
+    } catch (error) {
+      if (isCurrent()) storageError = `录制存储加载失败：${String(error)}`;
+    } finally {
+      if (isCurrent()) storageLoading = false;
+    }
+  }
+
+  $effect(() => {
+    if (!addModal) return;
+    addStorage = null;
+    addStorageId = null;
+    addError = "";
+    void loadAddStorage();
+    return () => { ++storageLoadRequest; };
+  });
 
   let archiveRoom: RecorderInfo | null = $state(null);
   const currentArchiveRoom = $derived(archiveRoom && (summary.recorders.find((room) =>
@@ -221,6 +252,7 @@
 
     // 添加直播间弹窗
     if (addModal) {
+      if (creatingRoom) return;
       const addModalEl = document.querySelector(".add-modal");
       if (addModalEl) {
         if (addModalEl.contains(clickedElement)) {
@@ -300,7 +332,13 @@
   }
 
   function addNewRecorder(room_id: string, platform: string) {
-    if (creatingRoom) return;
+    if (creatingRoom || storageLoading || !addStorage || storageError) return;
+    addError = "";
+    const storageId = addStorageId === null ? addStorage.default_backend : addStorageId;
+    if (storageBackend(addStorage, storageId)?.type !== "local") {
+      addError = "请选择已配置的本地录制存储。不会自动改用其他存储。";
+      return;
+    }
     const room_input = room_id.trim();
     const douyu_room_id =
       platform === "douyu"
@@ -372,17 +410,18 @@
     }
 
     creatingRoom = true;
-    invoke<{ room_id: string }>("add_recorder", {
+    invoke<RecorderRow>("add_recorder", {
       roomId: platform === "rtmp" ? "" : room_id,
       platform: platform,
       extra: platform === "rtmp" ? JSON.stringify({ name: room_input }) : "",
+      storageBackendId: addStorageId,
     })
       .then(() => {
         addModal = false;
         addRoom = "";
       })
-      .catch(async (e) => {
-        await message(e);
+      .catch((e) => {
+        addError = `添加直播间失败：${String(e)}`;
       })
       .finally(() => { creatingRoom = false; });
   }
@@ -484,7 +523,7 @@
     <!-- Room Grid -->
     <div class="grid grid-cols-3 gap-4">
       <!-- Active Room Card -->
-      {#each filteredRecorders as room (room.room_info.room_id)}
+      {#each filteredRecorders as room (`${room.room_info.platform}:${room.room_info.room_id}`)}
         <div class="ui-card p-3 transition-colors hover:border-line-strong">
           <div class="relative">
             <img
@@ -739,11 +778,26 @@
         {#if selectedPlatform === "rtmp"}
           <p class="text-[12px] text-fg-muted">端口和推流密钥自动生成，创建后可在房间菜单的「状态」中查看。</p>
         {/if}
+        <div class="space-y-1.5">
+          <label for="add-room-storage" class="ui-label block">后续录制的存储偏好</label>
+          {#if storageLoading}
+            <p class="ui-hint" role="status">正在加载录制存储…</p>
+          {:else if addStorage}
+            <StorageBackendSelect storage={addStorage} id="add-room-storage" bind:value={addStorageId} disabled={creatingRoom} />
+            <p class="ui-hint">为后续新录制跟随应用默认或指定存储；已有录播仍绑定各自原存储。</p>
+          {/if}
+          {#if storageError}
+            <p class="text-[12px] text-danger-fg whitespace-pre-wrap" role="alert">{storageError}</p>
+            <button class="ui-btn ui-btn-sm" disabled={storageLoading} onclick={() => loadAddStorage()}>重试</button>
+          {/if}
+        </div>
+        {#if addError}<p class="text-[12px] text-danger-fg whitespace-pre-wrap" role="alert">{addError}</p>{/if}
       </div>
 
       <div class="ui-modal-footer">
         <button
           class="ui-btn"
+          disabled={creatingRoom}
           onclick={() => {
             addModal = false;
           }}
@@ -752,7 +806,7 @@
         </button>
         <button
           class="ui-btn ui-btn-primary"
-          disabled={creatingRoom || !addRoom.trim()}
+          disabled={creatingRoom || storageLoading || !addStorage || !!storageError || !addRoom.trim()}
           onclick={() => {
             addNewRecorder(addRoom, selectedPlatform);
           }}

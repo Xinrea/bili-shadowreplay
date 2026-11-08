@@ -1,7 +1,6 @@
 pub mod api;
 pub mod response;
 
-use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::{atomic, Arc};
 
@@ -27,7 +26,7 @@ impl TikTokRecorder {
     pub fn new(
         room_id: &str,
         account: &Account,
-        cache_dir: PathBuf,
+        storage: impl Into<recording_storage::RecordingStore>,
         event_channel: impl Into<crate::events::RecorderEventSender>,
         update_interval: Arc<AtomicU64>,
         enabled: bool,
@@ -36,7 +35,7 @@ impl TikTokRecorder {
             PlatformType::TikTok,
             room_id,
             account,
-            cache_dir,
+            storage,
             event_channel,
             update_interval,
             enabled,

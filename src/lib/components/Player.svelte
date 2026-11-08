@@ -3,7 +3,7 @@
 </script>
 
 <script lang="ts">
-  import { onDestroy } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { invoke, TAURI_ENV, ENDPOINT, listen, log } from "../invoker";
   import type { AccountInfo } from "../db";
   import type {
@@ -40,6 +40,8 @@
   const DANMU_STATISTIC_GAP = 5;
   let destroyed = false;
   let initialized = false;
+  let shaka_ui: any;
+  const intervals: ReturnType<typeof setInterval>[] = [];
   let stopDanmu: (() => void) | undefined;
   let cancelDanmuBatch: (() => void) | undefined;
   let floatingOverlay: { clear(): void; destroy(): void } | undefined;
@@ -66,10 +68,14 @@
     danmuStyle.stop();
     destroyed = true;
     danmuSubscription.abort();
-    document.removeEventListener("shaka-ui-loaded", init);
+    intervals.forEach(clearInterval);
     stopDanmu?.();
     cancelDanmuBatch?.();
     floatingOverlay?.destroy();
+    // Overlay.destroy also destroys its player, including a pending attach/load.
+    void (shaka_ui ?? shaka_player)?.destroy().catch((error: unknown) => {
+      log.error("Player cleanup failed", error);
+    });
   });
 
   interface Props {
@@ -506,16 +512,15 @@ ${mediaPlaylistUrl}`;
     initialized = true;
     update_stream_list();
 
-    setInterval(async () => {
+    intervals.push(setInterval(async () => {
       await update_stream_list();
-    }, 5 * 1000);
+    }, 5 * 1000));
 
-    video = document.getElementById("video") as HTMLVideoElement;
     video.crossOrigin = "anonymous";
     video.disableRemotePlayback = true;
     video.setAttribute("x-webkit-airplay", "deny");
     video.setAttribute("webkit-playsinline", "true");
-    const ui = video["ui"];
+    const ui = shaka_ui;
     const controls = ui.getControls();
     const player = controls.getPlayer();
     shaka_player = player;
@@ -554,6 +559,7 @@ ${mediaPlaylistUrl}`;
       let direct_url = `${ENDPOINT ? ENDPOINT : window.location.origin}/hls/${platform}/${room_id}/${live_id}/playlist.m3u8`;
       if (!TAURI_ENV) {
         const { offset, is_fmp4 } = await load_metadata(direct_url);
+        if (destroyed) return;
         global_offset = offset;
         if (is_fmp4) {
           let master_url = createMasterPlaylist(direct_url);
@@ -572,6 +578,7 @@ ${mediaPlaylistUrl}`;
       // This runs if the asynchronous load is successful.
       console.log("The video has now been loaded!");
     } catch (error) {
+      if (destroyed) return;
       log.error("Error code", error.code, "object", error);
       if (error.code == 3000) {
         // reload
@@ -591,6 +598,7 @@ ${mediaPlaylistUrl}`;
       }
     }
 
+    if (destroyed) return;
     // init video volume from localStorage
     let localVolume = localStorage.getItem(`volume:${room_id}`);
     if (localVolume != undefined) {
@@ -702,7 +710,7 @@ ${mediaPlaylistUrl}`;
         drawFloatingEntry(v, { space: recordedSpace, now: videoClock, at: time / 1000 });
       }
     };
-    setInterval(feedStep, FEED_TICK_MS);
+    intervals.push(setInterval(feedStep, FEED_TICK_MS));
 
     if (isLive()) {
       if (platform == "bilibili") {
@@ -1116,9 +1124,9 @@ ${mediaPlaylistUrl}`;
     update_statistics();
 
     if (isLive()) {
-      setInterval(async () => {
+      intervals.push(setInterval(async () => {
         update_statistics();
-      }, 10 * 1000);
+      }, 10 * 1000));
     }
 
     statisticKeyInput.addEventListener("change", () => {
@@ -1493,6 +1501,7 @@ ${mediaPlaylistUrl}`;
     let lastStatsSignature = "";
 
     function updateSeekbar() {
+      if (destroyed) return;
       const total = get_total();
       const live = isLive();
       if (is_live !== live) {
@@ -1621,8 +1630,23 @@ ${mediaPlaylistUrl}`;
     requestAnimationFrame(updateSeekbar);
   }
 
-  // receive tauri emit
-  document.addEventListener("shaka-ui-loaded", init);
+  async function mountPlayer() {
+    try {
+      // Archive metadata can arrive after Shaka's one-time page scan. Own this
+      // instance explicitly instead of waiting for the global UI-loaded event.
+      shaka.polyfill.installAll();
+      shaka_player = new shaka.Player();
+      shaka_ui = new shaka.ui.Overlay(shaka_player, video.parentElement, video);
+      await shaka_player.attach(video);
+      if (!destroyed) await init();
+    } catch (error) {
+      if (destroyed) return;
+      log.error("Player initialization failed", error);
+      alert("播放器初始化失败，请尝试刷新页面\n" + String(error));
+    }
+  }
+
+  onMount(() => { void mountPlayer(); });
 
   // set body background color to black
   document.body.style.backgroundColor = "black";
@@ -1662,13 +1686,12 @@ ${mediaPlaylistUrl}`;
 <section id="wrap">
   <div
     class="youtube-theme"
-    data-shaka-player-container
     style="width: 100%; height: 100%;"
   >
     <!-- svelte-ignore a11y_media_has_caption -->
     <video
       autoplay
-      data-shaka-player
+      bind:this={video}
       id="video"
       disablepictureinpicture
       disableRemotePlayback

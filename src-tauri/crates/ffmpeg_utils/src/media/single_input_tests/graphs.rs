@@ -9,6 +9,7 @@ fn video_options() -> VideoEncodeOptions {
         options: [
             ("preset".into(), "medium".into()),
             ("crf".into(), "20".into()),
+            ("x264-params".into(), ORACLE_X264_PARAMS.into()),
         ]
         .into_iter()
         .collect(),
@@ -169,6 +170,8 @@ async fn native_decoded_concat_and_crossfade_match_cli_packets_and_timing() {
                     "[a]",
                     "-c:v",
                     "libx264",
+                    "-x264-params",
+                    ORACLE_X264_PARAMS,
                     "-preset",
                     "medium",
                     "-crf",
@@ -465,6 +468,8 @@ async fn all_audio_mapping_keeps_each_track_order_metadata_and_packets() {
                     "0:a?",
                     "-c:v",
                     "libx264",
+                    "-x264-params",
+                    ORACLE_X264_PARAMS,
                     "-preset",
                     "medium",
                     "-crf",
@@ -559,6 +564,8 @@ async fn global_graph_explicit_cfr_30_preserves_cli_duplicate_frames() {
             "[v]",
             "-c:v",
             "libx264",
+            "-x264-params",
+            ORACLE_X264_PARAMS,
             "-preset",
             "medium",
             "-crf",

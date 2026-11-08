@@ -303,7 +303,11 @@ pub async fn clip_range(
     if let Ok(disk_info) = get_disk_info_inner(output).await {
         // if free space is less than 1GB, return error
         if disk_info.free < 1024 * 1024 * 1024 {
-            return Err("Storage space is not enough, clip canceled".to_string());
+            let free_gb = disk_info.free as f64 / (1024.0 * 1024.0 * 1024.0);
+            return Err(format!(
+                "磁盘剩余空间不足（{} 剩余 {free_gb:.2} GB，切片至少需要 1 GB），已取消。请清理磁盘空间或在设置中更换输出目录后重试",
+                disk_info.disk
+            ));
         }
     }
 

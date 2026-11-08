@@ -1,0 +1,46 @@
+name: Setup sherpa-onnx archive
+description: Pre-download the sherpa-onnx prebuilt archive with retries and point SHERPA_ONNX_ARCHIVE_DIR at it.
+
+runs:
+  using: composite
+  steps:
+    # sherpa-onnx-sys' build script fetches the prebuilt archive with a single
+    # un-retried request, which failed with a GitHub Releases 502 and broke the
+    # Lint workflow (run 42472606211). Keep the archive outside `target/` so
+    # rust-cache's stripping of non-profile subdirectories cannot lose it, and
+    # let the build script copy the local copy instead of downloading.
+    - name: Resolve version and archive name
+      id: meta
+      shell: bash
+      run: |
+        version=$(grep -A1 '^name = "sherpa-onnx-sys"$' src-tauri/Cargo.lock | sed -n 's/^version = "\(.*\)"$/\1/p')
+        if [ -z "$version" ]; then
+          echo "sherpa-onnx-sys not found in src-tauri/Cargo.lock" >&2
+          exit 1
+        fi
+        # Name must match sherpa-onnx-sys build.rs's archive_name() for
+        # (Static, linux, x86_64), which is what these Linux jobs link.
+        archive="sherpa-onnx-v${version}-linux-x64-static-lib.tar.bz2"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+    - name: Cache archive
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/sherpa-onnx
+        key: sherpa-onnx-${{ steps.meta.outputs.version }}-linux-x64-static-lib
+
+    - name: Download archive
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        mkdir -p "$HOME/.cache/sherpa-onnx"
+        url="https://github.com/k2-fsa/sherpa-onnx/releases/download/v${{ steps.meta.outputs.version }}/${{ steps.meta.outputs.archive }}"
+        curl --fail --location --retry 10 --retry-all-errors --retry-delay 5 --connect-timeout 20 \
+          -o "$HOME/.cache/sherpa-onnx/${{ steps.meta.outputs.archive }}" "$url"
+        test -s "$HOME/.cache/sherpa-onnx/${{ steps.meta.outputs.archive }}"
+
+    - name: Export archive directory
+      shell: bash
+      run: echo "SHERPA_ONNX_ARCHIVE_DIR=$HOME/.cache/sherpa-onnx" >> "$GITHUB_ENV"

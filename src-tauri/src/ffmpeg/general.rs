@@ -35,8 +35,8 @@ fn escape_concat_path(path: &Path) -> String {
     #[cfg(target_os = "windows")]
     let path_str = {
         let s = path_str.as_ref();
-        if s.starts_with(r"\\?\") {
-            std::borrow::Cow::Borrowed(&s[4..])
+        if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            std::borrow::Cow::Borrowed(stripped)
         } else {
             path_str
         }

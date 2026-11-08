@@ -35,10 +35,6 @@
   const state = $derived(llmClipStates.get(key));
   const running = $derived(state?.phase === "summary" || state?.phase === "clipping");
 
-  function setState(next: LlmClipState) {
-    llmClipStates.set(key, next);
-  }
-
   function llmClipTitle() {
     if (running) return state?.message || "正在生成 LLM 切片…";
     if (state?.phase === "done") return state.message;
@@ -83,31 +79,37 @@
    */
   async function generateLlmClips() {
     if (running) return;
+    // 菜单动作（日历视图的 onaction 会关闭菜单并清空响应式 archive）触发后
+    // 组件随之卸载，先截留目标和状态键的快照，整个异步流程只使用快照。
+    const target = archive;
+    const stateKey = key;
+    const setState = (next: LlmClipState) => llmClipStates.set(stateKey, next);
     onaction?.();
-    setState({ phase: "summary", message: "正在检查 LLM 配置…" });
 
     try {
-      const llmConfig = await invoke<LlmConfig>("get_llm_config");
-      if (!(llmConfig.model || "").trim()) {
-        throw new Error("请先在设置中配置 Summary 使用的 LLM 模型");
-      }
-      if (llmConfig.provider === "openai" && !(llmConfig.api_key || "").trim()) {
-        throw new Error("请先在设置中配置 LLM API Key");
-      }
+      setState({ phase: "summary", message: "正在读取 Summary…" });
 
       let summary = await invoke<RecordSummary | null>("get_archive_summary", {
-        platform: archive.platform,
-        roomId: archive.room_id,
-        liveId: archive.live_id,
+        platform: target.platform,
+        roomId: target.room_id,
+        liveId: target.live_id,
       });
 
-      // 没有可复用的 Summary 时，走 Summary 链路重新生成并轮询结果
+      // 没有可复用的 Summary 时，先校验 LLM 配置，再走 Summary 链路重新生成并轮询结果
       if (!summary || summary.status !== "success") {
+        const llmConfig = await invoke<LlmConfig>("get_llm_config");
+        if (!(llmConfig.model || "").trim()) {
+          throw new Error("请先在设置中配置 Summary 使用的 LLM 模型");
+        }
+        if (llmConfig.provider === "openai" && !(llmConfig.api_key || "").trim()) {
+          throw new Error("请先在设置中配置 LLM API Key");
+        }
+
         setState({ phase: "summary", message: "正在生成 Summary…" });
         await invoke("generate_archive_summary", {
-          platform: archive.platform,
-          roomId: archive.room_id,
-          liveId: archive.live_id,
+          platform: target.platform,
+          roomId: target.room_id,
+          liveId: target.live_id,
           force: false,
         });
 
@@ -115,9 +117,9 @@
         for (let attempt = 0; attempt < 3600; attempt++) {
           await delay(2000);
           summary = await invoke<RecordSummary | null>("get_archive_summary", {
-            platform: archive.platform,
-            roomId: archive.room_id,
-            liveId: archive.live_id,
+            platform: target.platform,
+            roomId: target.room_id,
+            liveId: target.live_id,
           });
           if (!summary) continue;
           if (summary.status === "success") {
@@ -147,10 +149,11 @@
 
       const localOffset =
         parseInt(
-          localStorage.getItem(`local_offset:${archive.live_id}`) || "0",
+          localStorage.getItem(`local_offset:${target.live_id}`) || "0",
           10,
         ) || 0;
       let succeeded = 0;
+      let cancelled = 0;
       const failures: string[] = [];
 
       for (let index = 0; index < highlights.length; index++) {
@@ -161,12 +164,12 @@
         });
         const eventId = generateEventId();
         const params: ClipRangeParams = {
-          title: archive.title,
+          title: target.title,
           note: highlight.title,
           cover: "",
-          platform: archive.platform,
-          room_id: archive.room_id,
-          live_id: archive.live_id,
+          platform: target.platform,
+          room_id: target.room_id,
+          live_id: target.live_id,
           ranges: [
             { start: highlight.start_seconds, end: highlight.end_seconds },
           ],
@@ -189,7 +192,10 @@
           succeeded++;
         } catch (error) {
           const message = String(error);
-          if (!wasCancelled(eventId)) {
+          // 从任务中心取消，或任务页等其他入口取消（invoke 包装层会给后端错误加前缀）。
+          if (wasCancelled(eventId) || message.endsWith("任务已取消")) {
+            cancelled++;
+          } else {
             failures.push(`${highlight.title}：${message}`);
           }
         } finally {
@@ -197,19 +203,30 @@
         }
       }
 
-      if (succeeded === 0) {
+      if (succeeded === 0 && failures.length === 0) {
+        // 剩余任务均为用户主动取消，不算生成失败
+        setState({
+          phase: "done",
+          message: `已取消 ${cancelled}/${highlights.length} 个切片的生成`,
+        });
+      } else if (succeeded === 0) {
         setState({
           phase: "failed",
           message: `全部生成失败（共 ${highlights.length} 个）：${failures.join("；")}`,
         });
         alert(`LLM 切片生成失败：\n${failures.join("\n")}`);
       } else {
+        const extras: string[] = [];
+        if (failures.length > 0) {
+          extras.push(`${failures.length} 个失败：${failures.join("；")}`);
+        }
+        if (cancelled > 0) {
+          extras.push(`${cancelled} 个已取消`);
+        }
         setState({
           phase: "done",
           message: `已生成 ${succeeded}/${highlights.length} 个切片${
-            failures.length > 0
-              ? `，${failures.length} 个失败：${failures.join("；")}`
-              : ""
+            extras.length > 0 ? `，${extras.join("，")}` : ""
           }`,
         });
         if (failures.length > 0) {

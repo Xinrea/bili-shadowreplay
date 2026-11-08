@@ -2233,9 +2233,12 @@ async fn receive_batch_upload(
             uuid::Uuid::new_v4(),
             sanitize_filename_advanced(&original_name, None)
         );
-        let mut file = tokio::fs::File::create_new(batch.directory.path().join(&name))
-            .await
+        // Creating a directory entry must finish before cancellation can drop
+        // the batch guard. Tokio's blocking create task can otherwise outlive
+        // this future and race TempDir's cleanup. Keep payload writes async.
+        let file = std::fs::File::create_new(batch.directory.path().join(&name))
             .map_err(|e| format!("创建文件失败: {e}"))?;
+        let mut file = tokio::fs::File::from_std(file);
         let mut size = 0u64;
         while let Some(chunk) = field.chunk().await.map_err(|e| e.to_string())? {
             tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
@@ -2384,6 +2387,63 @@ mod batch_upload_tests {
         task.abort();
         assert!(matches!(task.await, Err(error) if error.is_cancelled()));
         assert_no_uploads(&session);
+    }
+
+    #[test]
+    fn file_creation_finishes_before_cancellation_can_run() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            for file_field in [None, Some("files")] {
+                let session = TempStorage::new().unwrap();
+                let (release, wait) = tokio::sync::oneshot::channel::<()>();
+                let mut wait = Some(wait);
+                let reading = std::sync::Arc::new(tokio::sync::Notify::new());
+                let signal = reading.clone();
+                let body = Body::from_stream(futures::stream::poll_fn(move |_| {
+                    if let Some(wait) = wait.take() {
+                        // Occupy the only blocking worker after upload-directory
+                        // setup but before the first file can be created.
+                        tokio::task::spawn_blocking(move || {
+                            let _ = wait.blocking_recv();
+                        });
+                        std::task::Poll::Ready(Some(Ok::<_, std::io::Error>(format!(
+                            "{}--batch--\r\n",
+                            file("video.mp4", "video")
+                        ))))
+                    } else {
+                        signal.notify_one();
+                        std::task::Poll::Pending
+                    }
+                }));
+                let request = multipart(body).await;
+                let lease = session.clone();
+                let task =
+                    tokio::spawn(
+                        async move { receive_batch_upload(&lease, request, file_field).await },
+                    );
+                tokio::time::timeout(std::time::Duration::from_secs(5), reading.notified())
+                    .await
+                    .unwrap();
+                let directory = std::fs::read_dir(session.root().join("uploads"))
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .unwrap()
+                    .path();
+                let staged_files = std::fs::read_dir(directory).unwrap().count();
+                task.abort();
+                assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+                drop(release);
+                // Drain queued filesystem work before checking for late files.
+                tokio::task::spawn_blocking(|| {}).await.unwrap();
+                assert_eq!(staged_files, 1, "file creation must not be detached");
+                assert_no_uploads(&session);
+            }
+        });
     }
 }
 

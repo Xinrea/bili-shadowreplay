@@ -27,6 +27,7 @@ dist-ssr
 
 src-tauri/*.exe
 src-tauri/windows-runtime/*.dll
+src-tauri/windows-runtime/*.bsr-old
 
 # test files
 src-tauri/tests/audio/*.srt

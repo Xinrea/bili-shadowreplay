@@ -9,14 +9,17 @@
   /** Shared across instances so list rows and calendar menus stay in sync. */
   const llmClipStates = new SvelteMap<string, LlmClipState>();
 
-  // 一键 LLM 切片流程完全由前端驱动：页面卸载后剩余切片不会生成，后台
-  // Summary 任务即使完成也无人消费。菜单触发后组件可能先于流程结束卸载
-  // （onaction 会关闭菜单），所以计数与监听放在模块级，与实例生命周期解耦。
+  /*
+  一键 LLM 切片流程完全由前端驱动：页面卸载后剩余切片不会生成，后台
+  Summary 任务即使完成也无人消费。菜单触发后组件可能先于流程结束卸载
+  （onaction 会关闭菜单），所以计数与监听放在模块级，与实例生命周期解耦。
+  */
   let activeLlmClipRuns = 0;
 
   function handleBeforeUnload(event: BeforeUnloadEvent) {
     if (activeLlmClipRuns === 0) return;
     const message = "LLM 切片流程尚未完成，离开页面后剩余切片将不会生成。";
+    //这个codex review指出的问题实际上问题不大 我按照方案A做了提示处理 这个“剩余切片将不会生成”的情况实际上只会在浏览器模式发生 桌面端不会发生这样的情况 功能正常
     event.preventDefault();
     event.returnValue = message;
     return message;
@@ -136,12 +139,29 @@
           }
 
           setState({ phase: "summary", message: "正在生成 Summary…" });
-          await invoke("generate_archive_summary", {
-            platform: target.platform,
-            roomId: target.room_id,
-            liveId: target.live_id,
-            force: false,
-          });
+          try {
+            await invoke("generate_archive_summary", {
+              platform: target.platform,
+              roomId: target.room_id,
+              liveId: target.live_id,
+              force: false,
+            });
+          } catch (error) {
+            // 读取与提交之间另一入口可能刚好完成了一次 Summary，重提交会被后端
+            // 以“该录播已经生成 Summary”拒绝。重读一次：已有可用结果或任务在跑
+            // 就交给下面的轮询复用，否则按原错误报失败。
+            const reread = await invoke<RecordSummary | null>(
+              "get_archive_summary",
+              {
+                platform: target.platform,
+                roomId: target.room_id,
+                liveId: target.live_id,
+              },
+            );
+            if (!reread || reread.status === "failed") {
+              throw error;
+            }
+          }
         }
 
         let loaded = false;

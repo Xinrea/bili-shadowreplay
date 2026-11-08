@@ -111,6 +111,9 @@ jobs:
         with:
           packages: libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf fonts-wqy-microhei libclang-dev ninja-build python3 libicu-dev libpng-dev libexpat1-dev libjpeg-dev
 
+      - name: Setup sherpa-onnx archive
+        uses: ./.github/actions/setup-sherpa-onnx
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -132,7 +135,8 @@ jobs:
       # It rebuilds on a partial cache hit, and also on an exact hit once a new
       # runner image reruns the cached build scripts, so check for the libs
       # rather than the cache result. Drop the whole directory and force the
-      # crate to rebuild so it fetches them again.
+      # crate to rebuild so it fetches them again; the re-extract comes from
+      # SHERPA_ONNX_ARCHIVE_DIR instead of the flaky download.
       - name: Repair sherpa-onnx prebuilt libs
         run: |
           if ! find src-tauri/target/sherpa-onnx-prebuilt -name 'libsherpa-onnx-c-api.a' 2>/dev/null | grep -q .; then

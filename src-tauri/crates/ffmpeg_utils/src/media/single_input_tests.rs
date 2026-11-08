@@ -439,7 +439,8 @@ const ORACLE_SCALE: &str = "scale=64:48:flags=bicubic+accurate_rnd+bitexact";
 
 // x264's AVX-512 paths can emit different packets in native and CLI encodes even
 // with identical pixels, timestamps, and one thread. Keep strict packet checks
-// portable by using CPU-independent encoding on both sides of this test only.
+// portable by using CPU-independent encoding on both sides of every oracle that
+// compares libx264 payload bytes.
 const ORACLE_X264_PARAMS: &str = "cpu-independent=1";
 
 fn synthetic(input: &Path) {
@@ -901,6 +902,7 @@ async fn native_default_ass_subtitles_match_cli_input_and_output_seek_boundaries
                     options: [
                         ("preset".into(), "medium".into()),
                         ("crf".into(), "20".into()),
+                        ("x264-params".into(), ORACLE_X264_PARAMS.into()),
                     ]
                     .into_iter()
                     .collect(),
@@ -932,6 +934,8 @@ async fn native_default_ass_subtitles_match_cli_input_and_output_seek_boundaries
             args.extend(strings(&[
                 "-c:v",
                 "libx264",
+                "-x264-params",
+                ORACLE_X264_PARAMS,
                 "-threads:v",
                 "1",
                 "-preset",
@@ -1050,6 +1054,7 @@ async fn native_rotation_matrix_copy_and_autorotate_match_cli() {
         options: [
             ("preset".into(), "medium".into()),
             ("crf".into(), "20".into()),
+            ("x264-params".into(), ORACLE_X264_PARAMS.into()),
         ]
         .into_iter()
         .collect(),
@@ -1066,6 +1071,8 @@ async fn native_rotation_matrix_copy_and_autorotate_match_cli() {
             "0.5",
             "-c:v",
             "libx264",
+            "-x264-params",
+            ORACLE_X264_PARAMS,
             "-threads:v",
             "1",
             "-preset",

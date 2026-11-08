@@ -646,6 +646,7 @@ pub(super) async fn call(state: &State, name: &str, args: Value) -> Result<Value
                 argument(&args, "platform")?,
                 argument(&args, "room_id")?,
                 argument(&args, "extra")?,
+                None,
             )
             .await?;
             Ok(json!({ "recorder": recorder }))

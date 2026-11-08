@@ -8,7 +8,6 @@
   import {
     Bell,
     HardDrive,
-    AlertTriangle,
     FileText,
     Captions,
     DiscAlbum,
@@ -29,6 +28,7 @@
   import PowerLiveSentenceLength from "../lib/components/PowerLiveSentenceLength.svelte";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
   import RenderSettingsFields from "../lib/components/RenderSettingsFields.svelte";
+  import RecordingStorageSettings from "../lib/components/RecordingStorageSettings.svelte";
   import { defaultRenderSettings, normalizeRenderSettings } from "../lib/project-timeline";
   import { registerCommands } from "../lib/stores/commands";
   import {
@@ -38,6 +38,7 @@
   } from "../lib/stores/theme";
 
   let { active = true }: { active?: boolean } = $props();
+  let showStorageSettings = $state(false);
 
   const themeOptions: { value: ThemePreference; label: string }[] = [
     { value: "system", label: "跟随系统" },
@@ -81,7 +82,7 @@
       title: "存储设置",
       icon: HardDrive,
       options: [
-        { id: "cache-path", title: "缓存路径", keywords: ["cache", "storage", "path"] },
+        { id: "recording-storage", title: "录制存储", keywords: ["recording", "storage", "backend", "default", "path", "录播", "默认"] },
         { id: "output-path", title: "素材保存路径", keywords: ["output", "material", "path"] },
         { id: "log-folder", title: "日志文件夹", keywords: ["log", "logs"] },
       ],
@@ -210,7 +211,7 @@
   );
 
   let setting_model: Config = $state({
-    cache: "",
+    storage: { default_backend: "", backends: {} },
     output: "",
     primary_uid: 0,
     live_start_notify: true,
@@ -251,7 +252,6 @@
     },
   });
 
-  let showModal = $state(false);
   let show_clip_name_help = $state(false);
   let endpoint = localStorage.getItem("endpoint") || "";
   let endpointValue = $state(endpoint);
@@ -429,10 +429,6 @@
     });
   }
 
-  async function handleCacheChange() {
-    showModal = true;
-  }
-
   async function handleOutputChange() {
     const new_folder = await browse_folder();
     if (new_folder) {
@@ -449,21 +445,6 @@
 
   async function handleLogFolder() {
     await invoke("open_log_folder");
-  }
-
-  async function confirmChange() {
-    showModal = false;
-    const new_folder = await browse_folder();
-    if (new_folder) {
-      try {
-        await invoke("set_cache_path", {
-          cachePath: new_folder,
-        });
-        setting_model.cache = new_folder;
-      } catch (e) {
-        alert(e);
-      }
-    }
   }
 
   async function update_subtitle_setting() {
@@ -946,29 +927,22 @@
             </div>
           </div>
           <!-- Storage Settings -->
-          {#if TAURI_ENV}
             <div class="space-y-3">
               <h2 class="flex items-center gap-2 text-[14px] font-semibold text-fg">
                 <HardDrive class="h-4 w-4 text-fg-muted" />
                 <span>存储设置</span>
               </h2>
               <div class="ui-card divide-y divide-line">
-                <!-- Cache Location -->
-                <div class="px-4 py-3" data-setting="cache-path">
+                <div class="px-4 py-3" data-setting="recording-storage">
                   <div class="flex items-center justify-between gap-6">
                     <div>
-                      <h3 class="ui-label">
-                        缓存路径
-                      </h3>
-                      <p class="ui-hint mt-0.5 break-all">
-                        {setting_model.cache}
-                      </p>
+                      <h3 class="ui-label">录制存储</h3>
+                      <p class="ui-hint mt-0.5">管理存储位置和新录播的默认存储</p>
                     </div>
-                    <button class="ui-btn" onclick={handleCacheChange}>
-                      变更
-                    </button>
+                    <button class="ui-btn shrink-0" onclick={() => showStorageSettings = true}>管理</button>
                   </div>
                 </div>
+                {#if TAURI_ENV}
                 <div class="px-4 py-3" data-setting="output-path">
                   <div class="flex items-center justify-between gap-6">
                     <div>
@@ -1002,9 +976,9 @@
                     </button>
                   </div>
                 </div>
+                {/if}
               </div>
             </div>
-          {/if}
 
           <!-- Notification Settings -->
           <div class="space-y-3">
@@ -1723,43 +1697,8 @@
   </div>
 </div>
 
-<!-- Modal -->
-{#if showModal}
-  <div class="ui-modal-backdrop">
-    <div class="ui-modal w-full max-w-md">
-      <div class="ui-modal-header">
-        <h3 class="flex items-center gap-2">
-          <AlertTriangle class="h-4 w-4 shrink-0 text-warning" />
-          确认变更
-        </h3>
-      </div>
-      <div class="ui-modal-body space-y-2 text-[13px] leading-relaxed text-fg-secondary">
-        <p>
-          根据文件大小，可能需要耗时较长时间，迁移期间直播间会暂时移除，迁移完成后直播间会自动恢复。
-        </p>
-        <p class="font-semibold text-fg">
-          迁移期间请不要关闭程序，且不要在迁移期间再次更改目录！
-        </p>
-        <p>
-          确认要进行变更吗？
-        </p>
-      </div>
-      <div class="ui-modal-footer">
-        <button
-          class="ui-btn ui-btn-ghost"
-          onclick={() => (showModal = false)}
-        >
-          取消
-        </button>
-        <button
-          class="ui-btn ui-btn-primary"
-          onclick={confirmChange}
-        >
-          确认
-        </button>
-      </div>
-    </div>
-  </div>
+{#if showStorageSettings}
+  <RecordingStorageSettings onclose={() => showStorageSettings = false} />
 {/if}
 
 <style>

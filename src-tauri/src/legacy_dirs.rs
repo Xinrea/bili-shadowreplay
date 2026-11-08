@@ -97,11 +97,18 @@ fn relocated(path: &str, legacy: &AppDirs, current: &AppDirs) -> Option<String> 
 /// where they have moved, saving it if any has.
 pub fn relocate_config(config: &mut Config, legacy: &AppDirs, current: &AppDirs) {
     let mut changed = false;
-    for path in [
-        &mut config.cache,
-        &mut config.output,
-        &mut config.whisper_model,
-    ] {
+    // Only the legacy default recording backend followed the old cache path.
+    // Session temp and unrelated/custom recording backends must never migrate.
+    if let Some(backend) = config.storage.backends.get_mut("default") {
+        if backend.kind == "local" {
+            if let Some(moved) = relocated(&backend.root, legacy, current) {
+                log::info!("Recording storage root {} moved to {moved}", backend.root);
+                backend.root = moved;
+                changed = true;
+            }
+        }
+    }
+    for path in [&mut config.output, &mut config.whisper_model] {
         if let Some(moved) = relocated(path, legacy, current) {
             log::info!("Config path {path} moved to {moved}");
             *path = moved;

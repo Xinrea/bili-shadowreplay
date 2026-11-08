@@ -4,12 +4,9 @@ mod config;
 mod session;
 pub use config::{normalize_room_id, RtmpConfig};
 
-use std::{
-    path::PathBuf,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
 };
 
 use async_trait::async_trait;
@@ -38,7 +35,7 @@ impl RtmpRecorder {
     pub async fn new(
         room_id: &str,
         mut config: RtmpConfig,
-        cache_dir: PathBuf,
+        storage: impl Into<recording_storage::RecordingStore>,
         event_channel: impl Into<crate::events::RecorderEventSender>,
         enabled: bool,
     ) -> Result<Self, RecorderError> {
@@ -63,7 +60,7 @@ impl RtmpRecorder {
             PlatformType::Rtmp,
             &room_id,
             &Account::default(),
-            cache_dir,
+            storage,
             event_channel,
             Arc::new(AtomicU64::new(0)),
             enabled,

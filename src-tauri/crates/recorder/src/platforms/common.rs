@@ -5,7 +5,6 @@
 //! session setup live here once, and each platform only describes how to talk
 //! to its API and how to pull its stream.
 
-use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,7 +22,8 @@ use crate::danmu::DanmuStorage;
 use crate::errors::RecorderError;
 use crate::events::RecorderEvent;
 use crate::traits::RecorderTrait;
-use crate::{CachePath, RoomInfo, UserInfo};
+use crate::{RoomInfo, UserInfo};
+use recording_storage::RecordingStorage;
 
 /// Room metadata from one platform poll.
 pub struct RoomPoll {
@@ -160,22 +160,16 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
     /// Clear the cached stream (per-platform `extra` state).
     async fn clear_stream(&self);
 
-    /// Prepare the cover image in `work_dir`.
+    /// Prepare the cover image in the recording's asset namespace.
     ///
     /// Returning an error aborts the recording attempt, which only makes
     /// sense when the cover is required; the default is deliberately
     /// best-effort — download the current room cover and swallow failures —
     /// so overrides that treat the cover as mandatory return their errors
     /// themselves.
-    async fn prepare_cover(&self, work_dir: &CachePath) -> Result<(), RecorderError> {
+    async fn prepare_cover(&self, storage: &RecordingStorage) -> Result<(), RecorderError> {
         let room_info = self.room_info().read().await.clone();
-        let cover_path = work_dir.with_filename("cover.jpg");
-        let _ = download_file(
-            self.client(),
-            &room_info.room_cover,
-            &cover_path.full_path(),
-        )
-        .await;
+        let _ = download_asset(self.client(), &room_info.room_cover, storage, "cover.jpg").await;
         Ok(())
     }
 
@@ -320,7 +314,6 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
     /// Reset the state a recording attempt owns; session state that the live
     /// may still continue (`platform_live_id`, resume info) is kept.
     async fn reset_recording(&self) {
-        self.is_recording().store(false, Ordering::Relaxed);
         self.clear_stream().await;
         self.last_update()
             .store(Utc::now().timestamp(), Ordering::Relaxed);
@@ -331,7 +324,12 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
         {
             self.abort_danmu_task().await;
         }
-        *self.danmu_storage().write().await = None;
+        // Keep long-lived danmu producers out while draining the current log.
+        let danmu_storage = self.danmu_storage();
+        let mut storage = danmu_storage.write().await;
+        self.storage().flush_logs().await;
+        *storage = None;
+        self.is_recording().store(false, Ordering::Relaxed);
         *self.live_id().write().await = String::new();
     }
 
@@ -391,15 +389,21 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
         // Fail before any setup when there is no stream to record.
         let pull = self.open_pull(live_id).await?;
 
-        let work_dir = self.work_dir(live_id).await;
+        let storage = self.recording_storage(live_id).await?;
         log::info!("[{platform}][{room_id}] New record started: {live_id}");
-        let _ = tokio::fs::create_dir_all(work_dir.full_path()).await;
+        storage.prepare().await?;
 
-        self.prepare_cover(&work_dir).await?;
+        self.prepare_cover(&storage).await?;
 
         // Setup danmu store
-        let danmu_path = work_dir.with_filename("events.jsonl");
-        *self.danmu_storage().write().await = DanmuStorage::new(&danmu_path.full_path()).await;
+        *self.danmu_storage().write().await =
+            match DanmuStorage::from_storage(&storage, "events.jsonl").await {
+                Ok(storage) => Some(storage),
+                Err(error) => {
+                    log::error!("Open danmu storage failed: {error}");
+                    None
+                }
+            };
 
         if self
             .danmu_config()
@@ -412,11 +416,11 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
         self.is_recording().store(true, Ordering::Relaxed);
 
         // Send record start event
+        let mut info = self.info().await;
+        info.storage_id = storage.identity().map(str::to_owned);
         let _ = self
             .event_channel()
-            .send(RecorderEvent::RecordStart {
-                recorder: self.info().await,
-            })
+            .send(RecorderEvent::RecordStart { recorder: info })
             .await;
 
         match pull {
@@ -431,7 +435,7 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                     self.client().clone(),
                     cookies,
                     self.event_channel().clone(),
-                    work_dir.full_path(),
+                    storage,
                     self.enabled().clone(),
                     variant_selection,
                 )
@@ -449,7 +453,7 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                     url,
                     user_agent,
                     http_headers,
-                    work_dir.full_path(),
+                    storage,
                     self.enabled().clone(),
                     self.event_channel().clone(),
                     live_id.to_string(),
@@ -661,27 +665,21 @@ pub(crate) fn status_poll_delay(interval_secs: u64) -> Duration {
     }
 }
 
-/// Download `url` to `path`. An empty url is a no-op, matching the platform
+/// Download `url` as a storage asset. An empty url is a no-op, matching the platform
 /// APIs whose cover fields are optional.
-pub(crate) async fn download_file(
+pub(crate) async fn download_asset(
     client: &reqwest::Client,
     url: &str,
-    path: &Path,
+    storage: &RecordingStorage,
+    key: &str,
 ) -> Result<(), RecorderError> {
     if url.is_empty() {
         return Ok(());
     }
 
-    if let Some(parent) = path.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent).map_err(RecorderError::IoError)?;
-        }
-    }
-
     let response = client.get(url).send().await?;
     let bytes = response.bytes().await?;
-    let mut file = tokio::fs::File::create(path).await?;
-    tokio::io::AsyncWriteExt::write_all(&mut file, &bytes).await?;
+    storage.write(key, &bytes).await?;
     Ok(())
 }
 
@@ -727,6 +725,52 @@ mod tests {
             Err(RecorderError::NoStreamAvailable)
         }
         async fn clear_stream(&self) {}
+    }
+
+    #[tokio::test]
+    async fn cover_download_uses_the_recording_namespace() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/cover.jpg"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"cover bytes"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let directory = tempfile::tempdir().unwrap();
+        let store = recording_storage::RecordingStore::local(directory.path());
+        let recording = store.recording("twitch", "room", "live").unwrap();
+        download_asset(
+            &reqwest::Client::new(),
+            &format!("{}/cover.jpg", server.uri()),
+            &recording,
+            "cover.jpg",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(recording.read("cover.jpg").await.unwrap(), b"cover bytes");
+        assert_eq!(
+            tokio::fs::read(directory.path().join("twitch/room/live/cover.jpg"))
+                .await
+                .unwrap(),
+            b"cover bytes"
+        );
+        let other = store.recording("twitch", "other", "live").unwrap();
+        assert!(!other.exists("cover.jpg").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn empty_cover_url_does_not_create_an_asset() {
+        let directory = tempfile::tempdir().unwrap();
+        let recording = RecordingStorage::local(directory.path().join("unused"));
+        download_asset(&reqwest::Client::new(), "", &recording, "cover.jpg")
+            .await
+            .unwrap();
+        assert!(!recording.exists("cover.jpg").await.unwrap());
+        assert!(!directory.path().join("unused").exists());
     }
 
     #[tokio::test]

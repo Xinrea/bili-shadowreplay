@@ -6,6 +6,8 @@
     List, Loader2, Play, Sparkles, Trash2,
   } from "lucide-svelte";
   import { archiveKey, sortArchives, type ArchiveSortField, type ArchiveSortOrder } from "../archives";
+  import { archiveFilesAvailable, archiveStorageReason } from "../recording-storage";
+  import ArchiveStorageBadge from "./ArchiveStorageBadge.svelte";
   import type { RecordItem, RecordSummaryStatus } from "../db";
   import type { RecorderInfo } from "../interface";
   import { trapFocus } from "../focus-trap";
@@ -78,10 +80,22 @@
     filteredArchives.every((archive) => selectedArchives.has(archive.live_id)));
   const pagePartlySelected = $derived(!pageSelected &&
     filteredArchives.some((archive) => selectedArchives.has(archive.live_id)));
+  const selectedUnavailable = $derived(archives.some((archive) =>
+    selectedArchives.has(archive.live_id) && !archiveFilesAvailable(archive)));
   const recordingKeys = $derived(new Set(rooms.filter((room) => room.recording).map((room) =>
     archiveKey({ platform: room.room_info.platform, room_id: room.room_info.room_id, live_id: room.live_id }))));
 
   $effect(() => { dialogOpen = showDeleteConfirm || showWholeClipModal || showSummaryModal || calendarMenuOpen; });
+  // Keep open dialogs on the latest per-archive availability after storage edits.
+  $effect(() => {
+    if (summaryArchive) summaryArchive = archives.find((item) => archiveKey(item) === archiveKey(summaryArchive!)) ?? null;
+    if (wholeClipArchive) wholeClipArchive = archives.find((item) => archiveKey(item) === archiveKey(wholeClipArchive!)) ?? null;
+    if (archiveToDelete) {
+      archiveToDelete = archives.find((item) => archiveKey(item) === archiveKey(archiveToDelete!)) ?? null;
+      // A vanished single target must not turn its confirmation into a batch delete.
+      if (!archiveToDelete) showDeleteConfirm = false;
+    }
+  });
   $effect(() => { if (currentPage > totalPages) currentPage = totalPages; });
   $effect(() => {
     if (deleting) return;
@@ -131,6 +145,7 @@
   }
 
   async function deleteArchive(archive: RecordItem) {
+    if (!archiveFilesAvailable(archive)) throw new Error(archiveStorageReason(archive));
     await invoke("delete_archive", { platform: archive.platform, roomId: archive.room_id, liveId: archive.live_id });
     selectedArchives.delete(archive.live_id);
     await onrefresh();
@@ -141,6 +156,8 @@
   async function deleteSelectedArchives() {
     // Keep the initial targets across event refreshes and retain unfinished IDs on failure.
     const targets = archives.filter((archive) => selectedArchives.has(archive.live_id));
+    const unavailable = targets.find((archive) => !archiveFilesAvailable(archive));
+    if (unavailable) throw new Error(archiveStorageReason(unavailable));
     for (const archive of targets) {
       await invoke("delete_archive", { platform: archive.platform, roomId: archive.room_id, liveId: archive.live_id });
       selectedArchives.delete(archive.live_id);
@@ -152,6 +169,10 @@
 
   async function playArchive(archive: RecordItem) {
     actionError = "";
+    if (!archiveFilesAvailable(archive)) {
+      actionError = archiveStorageReason(archive);
+      return;
+    }
     try {
       await invoke("open_live", { platform: archive.platform, roomId: archive.room_id, liveId: archive.live_id });
     } catch (error) {
@@ -189,21 +210,23 @@
 <svelte:window onkeydown={handleDeleteKeydown} />
 
 {#snippet deleteSelectedButton()}
-  <button class="ui-btn ui-btn-danger" onclick={() => { archiveToDelete = null; showDeleteConfirm = true; }}>
+  <button class="ui-btn ui-btn-danger" disabled={selectedUnavailable} title={selectedUnavailable ? "选中项包含存储不可用的录播，无法删除文件；请先取消选择这些记录" : "删除选中的录播及文件"} onclick={() => { archiveToDelete = null; showDeleteConfirm = true; }}>
     <Trash2 class="h-3.5 w-3.5" />删除选中
   </button>
+  {#if selectedUnavailable}<span class="text-[11px] text-danger-fg">选中项含存储不可用的录播，文件操作已禁用</span>{/if}
 {/snippet}
 
 {#snippet archiveActions(archive: RecordItem, menu: boolean, onaction: () => void)}
   {@const summaryStatus = summaryStatuses[archiveKey(archive)]?.status}
+  {@const filesAvailable = archiveFilesAvailable(archive)}
   <!-- Dismissing the event menu clears its reactive archive argument. Capture it first. -->
-  <div class={menu ? "grid gap-0.5" : "flex items-center gap-0.5"}>
-    <button class={`${menu ? "ui-menu-item w-full" : "archive-action"} hover:bg-accent-soft text-accent-fg`} title="预览录播" aria-label={`预览录播：${archive.title}`} disabled={archive.length <= 0} onclick={() => { const target = archive; onaction(); void playArchive(target); }}><Play class="h-4 w-4" />{#if menu}<span>预览录播</span>{/if}</button>
-    <button class={`${menu ? "ui-menu-item w-full" : "archive-action"} hover:bg-accent-soft text-accent-fg`} title="生成完整切片" aria-label={`生成完整切片：${archive.title}`} disabled={archive.length <= 0} onclick={() => { const target = archive; onaction(); wholeClipArchive = target; showWholeClipModal = true; }}><FileVideo class="h-4 w-4" />{#if menu}<span>生成完整切片</span>{/if}</button>
-    <button class={`${menu ? "ui-menu-item w-full" : "archive-action"} hover:bg-accent-soft`} class:text-success-fg={summaryStatus === "success"} class:text-danger-fg={summaryStatus === "failed"} class:text-accent-fg={summaryStatus !== "success" && summaryStatus !== "failed"} title={summaryButtonTitle(archive)} aria-label={`${summaryButtonTitle(archive)}：${archive.title}`} disabled={archive.length <= 0} onclick={() => { const target = archive; onaction(); summaryArchive = target; showSummaryModal = true; }}>
-      {#if summaryStatus === "processing"}<Loader2 class="h-4 w-4 animate-spin motion-reduce:animate-none" />{:else}<Sparkles class="h-4 w-4" />{/if}{#if menu}<span>{summaryButtonTitle(archive)}</span>{/if}
+  <div class={menu ? "grid gap-0.5" : "flex items-center gap-0.5"} title={filesAvailable ? undefined : archiveStorageReason(archive)}>
+    <button class={`${menu ? "ui-menu-item w-full" : "archive-action"} hover:bg-accent-soft text-accent-fg`} title="预览录播" aria-label={`预览录播：${archive.title}`} disabled={!filesAvailable || archive.length <= 0} onclick={() => { const target = archive; onaction(); void playArchive(target); }}><Play class="h-4 w-4" />{#if menu}<span>预览录播</span>{/if}</button>
+    <button class={`${menu ? "ui-menu-item w-full" : "archive-action"} hover:bg-accent-soft text-accent-fg`} title="生成完整切片" aria-label={`生成完整切片：${archive.title}`} disabled={!filesAvailable || archive.length <= 0} onclick={() => { const target = archive; onaction(); wholeClipArchive = target; showWholeClipModal = true; }}><FileVideo class="h-4 w-4" />{#if menu}<span>生成完整切片</span>{/if}</button>
+    <button class={`${menu ? "ui-menu-item w-full" : "archive-action"} hover:bg-accent-soft`} class:text-success-fg={summaryStatus === "success"} class:text-danger-fg={summaryStatus === "failed"} class:text-accent-fg={summaryStatus !== "success" && summaryStatus !== "failed"} title={filesAvailable ? summaryButtonTitle(archive) : "查看已保存的总结（仅数据库）"} aria-label={`${filesAvailable ? summaryButtonTitle(archive) : "查看已保存的总结"}：${archive.title}`} disabled={filesAvailable && archive.length <= 0} onclick={() => { const target = archive; onaction(); summaryArchive = target; showSummaryModal = true; }}>
+      {#if summaryStatus === "processing"}<Loader2 class="h-4 w-4 animate-spin motion-reduce:animate-none" />{:else}<Sparkles class="h-4 w-4" />{/if}{#if menu}<span>{filesAvailable ? summaryButtonTitle(archive) : "查看已保存的总结"}</span>{/if}
     </button>
-    <button class={`${menu ? "ui-menu-item w-full" : "archive-action"} text-danger-fg hover:bg-danger-soft`} title="删除记录" aria-label={`删除记录：${archive.title}`} onclick={() => { const target = archive; onaction(); archiveToDelete = target; showDeleteConfirm = true; }}><Trash2 class="h-4 w-4" />{#if menu}<span>删除录播</span>{/if}</button>
+    <button class={`${menu ? "ui-menu-item w-full" : "archive-action"} text-danger-fg hover:bg-danger-soft`} title="删除记录及文件" aria-label={`删除记录：${archive.title}`} disabled={!filesAvailable} onclick={() => { const target = archive; onaction(); archiveToDelete = target; showDeleteConfirm = true; }}><Trash2 class="h-4 w-4" />{#if menu}<span>删除录播</span>{/if}</button>
   </div>
 {/snippet}
 
@@ -285,6 +308,7 @@
                 {#if !compact}<th class="px-3 py-2 font-medium">直播间</th>{/if}
                 <th class="px-3 py-2 font-medium">标题</th>
                 <th class="px-3 py-2 font-medium">时长</th>
+                <th class="px-3 py-2 font-medium">存储</th>
                 <th class="px-3 py-2 font-medium">大小</th>
                 <th class="whitespace-nowrap px-3 py-2 font-medium">平均码率</th>
                 <th class="sticky right-0 z-10 bg-surface px-3 py-2 font-medium">操作</th>
@@ -308,12 +332,15 @@
                   {/if}
                   <td class="w-full max-w-[320px] px-3 py-2.5">
                     <div class="flex min-w-0 items-center gap-2.5">
-                      {#if archive.cover}<ArchiveCover src={archive.cover} class="h-8 w-12 shrink-0 rounded-[5px]" />{/if}
+                      {#if archive.cover && archiveFilesAvailable(archive)}<ArchiveCover src={archive.cover} class="h-8 w-12 shrink-0 rounded-[5px]" />{/if}
                       <span class="truncate" title={archive.title}>{archive.title || "未命名录播"}</span>
                       {#if recordingKeys.has(archiveKey(archive))}<span class="ui-badge ui-badge-danger">录制中</span>{/if}
                     </div>
                   </td>
                   <td class="whitespace-nowrap px-3 py-2.5 tabular-nums">{formatTimecode(archive.length, 0)}</td>
+                  <td class="min-w-[100px] max-w-[180px] px-3 py-2.5">
+                    <ArchiveStorageBadge {archive} showLabel={false} />
+                  </td>
                   <td class="whitespace-nowrap px-3 py-2.5 tabular-nums">{formatSize(archive.size)}</td>
                   <td class="whitespace-nowrap px-3 py-2.5 tabular-nums text-fg-muted">{formatBitrate(archive.size, archive.length)}</td>
                   <td class="sticky right-0 bg-surface px-3 py-2.5 group-hover:bg-control-hover">

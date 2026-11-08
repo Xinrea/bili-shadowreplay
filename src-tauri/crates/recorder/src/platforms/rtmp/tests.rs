@@ -21,6 +21,12 @@ const DEADLINE: Duration = Duration::from_secs(10);
 async fn recorder(
     directory: &std::path::Path,
 ) -> (RtmpRecorder, SocketAddr, broadcast::Receiver<RecorderEvent>) {
+    recorder_with_storage(directory.to_owned()).await
+}
+
+async fn recorder_with_storage(
+    storage: impl Into<recording_storage::RecordingStore>,
+) -> (RtmpRecorder, SocketAddr, broadcast::Receiver<RecorderEvent>) {
     let (tx, rx) = broadcast::channel(64);
     let recorder = RtmpRecorder::new(
         "obs",
@@ -28,7 +34,7 @@ async fn recorder(
             listen_addr: "127.0.0.1".parse().unwrap(),
             ..RtmpConfig::default()
         },
-        directory.to_owned(),
+        storage,
         tx,
         true,
     )
@@ -45,6 +51,45 @@ async fn recorder(
         .unwrap();
     recorder.run().await;
     (recorder, address, rx)
+}
+
+#[tokio::test]
+async fn push_media_and_cover_use_injected_backend_without_a_workspace() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = directory.path().join("must-not-be-created");
+    let store = recording_storage::RecordingStore::with_backend(
+        Arc::new(recording_storage::LocalBackend::new(
+            directory.path().join("objects"),
+        )),
+        &workspace,
+    );
+    let (recorder, address, mut events) = recorder_with_storage(store.clone()).await;
+    let mut publisher = Publisher::connect(address, "live", &recorder.extra.config.stream_key)
+        .await
+        .unwrap();
+    publisher.fixture().await;
+    drop(publisher);
+    let (live_id, duration, size) = ended(&mut events).await;
+    let storage = store
+        .recording("rtmp", &recorder.room_id, &live_id)
+        .unwrap();
+    let bytes = storage.read("playlist.m3u8").await.unwrap();
+    let (_, playlist) = m3u8_rs::parse_media_playlist(&bytes).unwrap();
+    assert!(playlist.end_list);
+    assert!(playlist.segments.len() >= 2);
+    assert!((duration - 6.0).abs() < 0.2, "{duration}");
+    let mut actual_size = 0;
+    for segment in playlist.segments {
+        actual_size += storage.size(&segment.uri).await.unwrap();
+    }
+    assert_eq!(size, actual_size);
+    assert!(storage
+        .read("cover.jpg")
+        .await
+        .unwrap()
+        .starts_with(&[0xff, 0xd8]));
+    assert!(!workspace.exists());
+    timeout(DEADLINE, recorder.stop()).await.unwrap();
 }
 
 struct Publisher {
@@ -497,7 +542,11 @@ async fn media_timeout_ends_a_publisher_with_keepalives_and_allows_reconnection(
     let actual_size: u64 = playlist
         .segments
         .iter()
-        .map(|segment| std::fs::metadata(work_dir.join(&segment.uri)).unwrap().len())
+        .map(|segment| {
+            std::fs::metadata(work_dir.join(&segment.uri))
+                .unwrap()
+                .len()
+        })
         .sum();
     assert_eq!(size, actual_size);
     let idle = recorder.info().await;

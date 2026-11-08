@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
+import { recordingStorage } from "./recording-storage-fixture.mjs";
 
 const source = await readFile(new URL("../../src/lib/components/GenerateWholeClipModal.svelte", import.meta.url), "utf8");
 const script = source.match(/<script lang="ts">([\s\S]*?)<\/script>/)[1];
@@ -35,6 +36,8 @@ async function fixture() {
     console: { error() {} },
   });
   const dependencies = {
+    "../recording-storage": recordingStorage,
+    "../state-refresh": { createStateRefresh() {}, watchStateChanges() {} },
     svelte: { untrack: (fn) => fn() },
     "../page-visibility": { pageVisibility: () => () => visible },
     "../project-timeline": { defaultRenderSettings: defaults },
@@ -59,6 +62,7 @@ async function fixture() {
     }, { context });
   });
   await module.evaluate();
+  await module.namespace.loadWholeClipArchives("room", "parent");
   return { handlers: module.namespace, requests, generated, setVisible: value => { visible = value; } };
 }
 
@@ -155,7 +159,7 @@ for (const danmu of [false, true]) {
     });
     assert.deepEqual(plain(request.args.selectedLiveIds), ["second", "first"]);
     assert.equal(request.args.encodeDanmu, danmu);
-    assert.equal(request.args.outputName, undefined);
+    assert.match(request.args.outputName, /^\[full\]/);
     // The queue submission may be slow; don't create duplicate whole recordings.
     await f.handlers.generateWholeClip();
     f.handlers.closeModal();
@@ -188,6 +192,7 @@ test("submission errors stay visible and allow retry without losing encoding set
 
 test("empty selection cannot generate a complete recording", async () => {
   const f = await fixture();
+  f.handlers.configure(defaults(), false, []);
   await f.handlers.generateWholeClip();
   assert.deepEqual(f.requests, []);
 });

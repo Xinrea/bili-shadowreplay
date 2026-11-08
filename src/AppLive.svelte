@@ -10,6 +10,10 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import Player from "./lib/components/Player.svelte";
   import type { AccountItem, RecordItem } from "./lib/db";
+  import { archiveFilesAvailable, archiveStorageReason } from "./lib/recording-storage";
+  import { createStateRefresh, watchStateChanges } from "./lib/state-refresh";
+  import ArchiveStorageBadge from "./lib/components/ArchiveStorageBadge.svelte";
+  import ArchiveSummaryModal from "./lib/components/ArchiveSummaryModal.svelte";
   import {
     Maximize,
     Minimize,
@@ -348,6 +352,26 @@
     }
   }
   let archive: RecordItem = $state(null);
+  let archiveError = $state("");
+  let showSavedSummary = $state(false);
+  let disposed = false;
+
+  async function refreshArchive() {
+    try {
+      const result = await invoke<RecordItem>("get_archive", { roomId: room_id, liveId: live_id });
+      if (disposed) return;
+      archive = result;
+      archiveError = "";
+      set_title(`[${room_id}]${archive.title}`);
+    } catch (error) {
+      if (!disposed) {
+        archive = null;
+        archiveError = `录播记录加载失败：${String(error)}`;
+      }
+    }
+  }
+
+  const archiveRefresh = createStateRefresh(refreshArchive);
 
   // load ranges from local storage
   let ranges: Range[] = $state(JSON.parse(
@@ -359,7 +383,6 @@
 
   let selected_video: PreviewVideo | null = $state(null);
 
-  let video: HTMLVideoElement;
   let current_time = $state(0);
   let player_duration = $state(0);
   let selected_range_index = $state(-1);
@@ -376,7 +399,8 @@
   let live_recorders = $state<RecorderInfo[]>([]);
 
   function pauseForRangeDrag() {
-    video?.pause();
+    // The player mounts only after archive availability has loaded.
+    (document.getElementById("video") as HTMLVideoElement | null)?.pause();
   }
 
   function seekDuringRangeDrag(seconds: number) {
@@ -384,15 +408,10 @@
     current_time = seconds;
   }
 
-  // Initialize video element when component is mounted
+  // Load DB metadata before mounting components that request recording files.
   onMount(() => {
-    video = document.getElementById("video") as HTMLVideoElement;
-    invoke("get_archive", { roomId: room_id, liveId: live_id }).then(
-      (a: RecordItem) => {
-        archive = a;
-        set_title(`[${room_id}]${archive.title}`);
-      }
-    );
+    const stop = watchStateChanges(archiveRefresh, ["records-changed"]);
+    let stopWindow = () => {};
     if (TAURI_ENV) {
       const window = getCurrentWindow();
       let disposed = false;
@@ -402,11 +421,12 @@
         else unlisten = stop;
       });
       void syncNativeFullscreen();
-      return () => {
+      stopWindow = () => {
         disposed = true;
         unlisten?.();
       };
     }
+    return () => { disposed = true; stop(); stopWindow(); };
   });
 
   function addRangeAtCurrentTime() {
@@ -483,7 +503,7 @@
 
   let player: PlayerHandle = $state();
   let rpanel_collapsed = $state(false);
-  let video_stage: HTMLDivElement;
+  let video_stage = $state<HTMLDivElement>();
   let is_fullscreen = $state(false);
 
   async function syncNativeFullscreen() {
@@ -658,6 +678,23 @@
       </button>
     {/snippet}
   </TitleBar>
+  {#if archiveError || !archive}
+    <div class="p-6 text-[13px] text-white" role="status">
+      <p>{archiveError || "正在加载录播记录…"}</p>
+      {#if archiveError}<button class="ui-btn mt-3" onclick={() => archiveRefresh.run()}>重试</button>{/if}
+    </div>
+  {:else if !archiveFilesAvailable(archive)}
+    <div class="space-y-3 bg-surface p-6 text-fg">
+      <h1 class="text-[15px] font-medium">{archive.title}</h1>
+      <ArchiveStorageBadge {archive} />
+      <p class="text-[13px]" role="status">{archiveStorageReason(archive)}</p>
+      <p class="text-[12px]">直播间：{archive.platform} · {archive.room_id} · {new Date(archive.created_at).toLocaleString()} · 录制时长 {archive.length} 秒</p>
+      <p class="text-[12px] text-fg-muted">预览、切片、生成字幕或总结、导出弹幕等文件操作已禁用。录播信息和已保存的总结仍可查看。</p>
+      <button class="ui-btn" onclick={() => showSavedSummary = true}>查看已保存的总结和字幕</button>
+      <button class="ui-btn" onclick={() => archiveRefresh.run()}>刷新存储状态</button>
+    </div>
+    <ArchiveSummaryModal bind:showModal={showSavedSummary} {archive} />
+  {:else}
   <div class="preview-workspace">
     <div class="preview-main">
       <div
@@ -777,6 +814,7 @@
       onGenerated={handleClipGenerated}
     />
   </div>
+  {/if}
 </main>
 
 <style>

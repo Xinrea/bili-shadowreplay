@@ -72,15 +72,19 @@ async fn static_file(state: &State, path: &Path) -> Option<StaticFile> {
     let roots = {
         let config = state.config.read().await;
         [
-            ("output", config.output.clone()),
-            ("cache", config.cache.clone()),
+            ("output", PathBuf::from(&config.output)),
+            ("cache", state.temp_storage.root().to_path_buf()),
         ]
     };
     roots.into_iter().find_map(|(base, root)| {
         let relative = path.strip_prefix(root).ok()?;
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        if base == "cache" && !crate::temp_storage::public_namespace(relative.split('/').next()?) {
+            return None;
+        }
         Some(StaticFile {
             base,
-            path: relative.to_string_lossy().replace('\\', "/"),
+            path: relative,
         })
     })
 }

@@ -10,6 +10,7 @@ pub mod native_overlay_preview;
 pub mod project;
 pub mod recorder;
 pub mod sticker;
+pub mod storage_transfer;
 pub mod subtitle_fonts;
 pub mod summary;
 pub mod task;

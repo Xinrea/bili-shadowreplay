@@ -16,6 +16,10 @@ pub struct RecordRow {
     pub size: i64,
     pub created_at: String,
     pub cover: Option<String>,
+    pub storage_backend_id: String,
+    /// Configuration availability, not a filesystem or remote health probe.
+    pub storage_available: bool,
+    pub storage_unavailable_reason: Option<String>,
 }
 
 // CREATE TABLE records (live_id INTEGER PRIMARY KEY, room_id TEXT, title TEXT, length INTEGER, size INTEGER, created_at TEXT);
@@ -26,8 +30,9 @@ impl Database {
         offset: i64,
         limit: i64,
     ) -> Result<Vec<RecordRow>, DatabaseError> {
+        self.ensure_storage_schema().await?;
         Ok(sqlx::query_as::<_, RecordRow>(
-            "SELECT * FROM records WHERE room_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+            "SELECT * FROM recording_records WHERE room_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
         )
         .bind(room_id)
         .bind(limit)
@@ -41,8 +46,9 @@ impl Database {
         room_id: &str,
         live_id: &str,
     ) -> Result<RecordRow, DatabaseError> {
+        self.ensure_storage_schema().await?;
         Ok(sqlx::query_as::<_, RecordRow>(
-            "SELECT * FROM records WHERE room_id = $1 and live_id = $2",
+            "SELECT * FROM recording_records WHERE room_id = $1 and live_id = $2",
         )
         .bind(room_id)
         .bind(live_id)
@@ -57,8 +63,9 @@ impl Database {
         offset: i64,
         limit: i64,
     ) -> Result<Vec<RecordRow>, DatabaseError> {
+        self.ensure_storage_schema().await?;
         Ok(sqlx::query_as::<_, RecordRow>(
-            "SELECT * FROM records WHERE platform = $1 AND room_id = $2 \
+            "SELECT * FROM recording_records WHERE platform = $1 AND room_id = $2 \
              ORDER BY created_at DESC, live_id DESC LIMIT $3 OFFSET $4",
         )
         .bind(platform)
@@ -74,8 +81,9 @@ impl Database {
         room_id: &str,
         parent_id: &str,
     ) -> Result<Vec<RecordRow>, DatabaseError> {
+        self.ensure_storage_schema().await?;
         Ok(sqlx::query_as::<_, RecordRow>(
-            "SELECT * FROM records WHERE room_id = $1 and parent_id = $2",
+            "SELECT * FROM recording_records WHERE room_id = $1 and parent_id = $2",
         )
         .bind(room_id)
         .bind(parent_id)
@@ -102,6 +110,9 @@ impl Database {
             size: 0,
             created_at: Utc::now().to_rfc3339().to_string(),
             cover,
+            storage_backend_id: String::new(),
+            storage_available: false,
+            storage_unavailable_reason: None,
         };
         if let Err(e) = sqlx::query("INSERT INTO records (live_id, room_id, title, length, size, cover, created_at, platform, parent_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)").bind(record.live_id.clone())
             .bind(&record.room_id).bind(&record.title).bind(0).bind(0).bind(&record.cover).bind(&record.created_at).bind(platform.as_str().to_string()).bind(parent_id).execute(&self.pool).await {
@@ -112,14 +123,16 @@ impl Database {
                 return Err(e.into());
             }
         self.notify_change(DataChange::Records);
-        Ok(record)
+        self.get_record(room_id, live_id).await
     }
 
     pub async fn remove_record(&self, live_id: &str) -> Result<RecordRow, DatabaseError> {
-        let to_delete = sqlx::query_as::<_, RecordRow>("SELECT * FROM records WHERE live_id = $1")
-            .bind(live_id)
-            .fetch_one(&self.pool)
-            .await?;
+        self.ensure_storage_schema().await?;
+        let to_delete =
+            sqlx::query_as::<_, RecordRow>("SELECT * FROM recording_records WHERE live_id = $1")
+                .bind(live_id)
+                .fetch_one(&self.pool)
+                .await?;
         sqlx::query(
             "DELETE FROM record_summaries WHERE platform = $1 AND room_id = $2 AND live_id = $3",
         )
@@ -202,9 +215,10 @@ impl Database {
         offset: i64,
         limit: i64,
     ) -> Result<Vec<RecordRow>, DatabaseError> {
+        self.ensure_storage_schema().await?;
         if room_id.is_empty() {
             Ok(sqlx::query_as::<_, RecordRow>(
-                "SELECT * FROM records ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+                "SELECT * FROM recording_records ORDER BY created_at DESC LIMIT $1 OFFSET $2",
             )
             .bind(limit)
             .bind(offset)
@@ -212,7 +226,7 @@ impl Database {
             .await?)
         } else {
             Ok(sqlx::query_as::<_, RecordRow>(
-                "SELECT * FROM records WHERE room_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+                "SELECT * FROM recording_records WHERE room_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
             )
             .bind(room_id)
             .bind(limit)

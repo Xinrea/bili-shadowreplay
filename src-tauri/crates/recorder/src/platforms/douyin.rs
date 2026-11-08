@@ -4,7 +4,6 @@ pub mod api;
 mod response;
 pub mod stream_info;
 
-use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
@@ -80,7 +79,7 @@ impl DouyinRecorder {
         room_id: &str,
         sec_user_id: &str,
         account: &Account,
-        cache_dir: PathBuf,
+        storage: impl Into<recording_storage::RecordingStore>,
         channel: impl Into<crate::events::RecorderEventSender>,
         update_interval: Arc<AtomicU64>,
         enabled: bool,
@@ -89,7 +88,7 @@ impl DouyinRecorder {
             PlatformType::Douyin,
             room_id,
             account,
-            cache_dir,
+            storage,
             channel,
             update_interval,
             enabled,

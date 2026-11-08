@@ -1,3 +1,4 @@
+use crate::archive_storage::ArchiveStorage;
 use crate::archive_timing::ArchiveTimingCache;
 use crate::config::Config;
 use crate::database::record::RecordRow;
@@ -7,7 +8,6 @@ use crate::database::{Database, DatabaseError};
 use crate::events::{DataChange, EventBus};
 use crate::ffmpeg::{clip_timeline_anchors, transcode, Range};
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
-use crate::safe_path::join_relative;
 use crate::subtitle_generator::{item_to_srt, powerlive::PowerLiveOptions, SubtitleGeneratorType};
 use crate::task::{Task, TaskManager, TaskPriority};
 use crate::webhook::events::{self, Payload};
@@ -30,23 +30,21 @@ use recorder::platforms::tiktok::TikTokRecorder;
 use recorder::platforms::twitch::TwitchRecorder;
 use recorder::platforms::youtube::YoutubeRecorder;
 use recorder::platforms::PlatformType;
-use recorder::timeline::{align_danmus_to_recording, load_skipped_ad_ranges};
+use recorder::timeline::{align_danmus_to_recording, load_skipped_ad_ranges_from_storage};
 use recorder::traits::RecorderTrait;
 use recorder::RoomInfo;
 use recorder::UserInfo;
-use recorder::{CachePath, RecorderInfo, RoomCheckStatus};
+use recorder::{RecorderInfo, RoomCheckStatus};
+use recording_storage::{LocalAssets, RecordingStorage};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 #[cfg(feature = "gui")]
 use tauri_plugin_notification::NotificationExt;
 use thiserror::Error;
-use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::RwLock;
 
 #[cfg(not(feature = "headless"))]
@@ -65,6 +63,9 @@ pub struct RecorderStatus {
     pub check: RoomCheckStatus,
     pub check_interval_secs: u64,
     pub current_record: Option<RecordRow>,
+    /// Preference for the next recording; None inherits the DB default.
+    /// `current_record.storage_backend_id` identifies an existing archive.
+    pub storage_backend_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -205,6 +206,8 @@ pub struct RelatedPlaylist {
     pub live_id: String,
     pub title: String,
     pub path: PathBuf,
+    // Native consumers borrow paths; retain the owned copies until they finish.
+    _assets: LocalAssets,
 }
 
 /// Runs once a material the recorder manager made is saved, with the id of the
@@ -224,10 +227,10 @@ pub struct RecorderManager {
     recorders: Arc<RwLock<HashMap<String, Arc<dyn RecorderTrait + Send + Sync>>>>,
     to_remove: Arc<RwLock<HashSet<String>>>,
     event_tx: RecorderEventSender,
-    is_migrating: Arc<AtomicBool>,
     webhook_poster: WebhookPoster,
     material_hook: Arc<std::sync::OnceLock<MaterialHook>>,
     archive_timing: Arc<ArchiveTimingCache>,
+    archive_storage: Arc<ArchiveStorage>,
 }
 
 #[derive(Error, Debug)]
@@ -301,12 +304,6 @@ async fn live_end_parent_id(
         .then_some(parent_id))
 }
 
-/// Map an HLS request path (`platform/room_id/live_id/...`) to a file in
-/// `cache_dir`, never outside it: see [`join_relative`].
-fn resolve_hls_path(cache_dir: &Path, path: &str) -> Option<PathBuf> {
-    join_relative(cache_dir, &path.replace("%7C", "|"))
-}
-
 impl RecorderManager {
     pub fn new(
         #[cfg(not(feature = "headless"))] app_handle: AppHandle,
@@ -318,6 +315,7 @@ impl RecorderManager {
         webhook_poster: WebhookPoster,
     ) -> RecorderManager {
         let (event_tx, event_rx) = recorder_event_channel(512);
+        let archive_storage = Arc::new(ArchiveStorage::new(db.clone(), config.clone()));
         let manager = RecorderManager {
             #[cfg(not(feature = "headless"))]
             app_handle,
@@ -329,10 +327,10 @@ impl RecorderManager {
             recorders: Arc::new(RwLock::new(HashMap::new())),
             to_remove: Arc::new(RwLock::new(HashSet::new())),
             event_tx,
-            is_migrating: Arc::new(AtomicBool::new(false)),
             webhook_poster,
             material_hook: Arc::new(std::sync::OnceLock::new()),
             archive_timing: Arc::new(ArchiveTimingCache::default()),
+            archive_storage,
         };
 
         // Start event listener
@@ -347,6 +345,32 @@ impl RecorderManager {
         });
 
         manager
+    }
+
+    pub(crate) fn archive_storage(&self) -> &Arc<ArchiveStorage> {
+        &self.archive_storage
+    }
+
+    pub(crate) async fn recording_storage(
+        &self,
+        platform: PlatformType,
+        room: &str,
+        live: &str,
+    ) -> Result<RecordingStorage, RecorderManagerError> {
+        Ok(self
+            .archive_storage
+            .recording(platform.as_str(), room, live)
+            .await?)
+    }
+
+    pub(crate) async fn materialize_recording(
+        &self,
+        platform: PlatformType,
+        room: &str,
+        live: &str,
+    ) -> Result<LocalAssets, RecorderManagerError> {
+        let storage = self.recording_storage(platform, room, live).await?;
+        crate::recording_materialization::materialize(&storage, &[]).await
     }
 
     pub fn get_event_sender(&self) -> RecorderEventSender {
@@ -423,6 +447,20 @@ impl RecorderManager {
                     };
                     let room_id = recorder.room_info.room_id.clone();
                     log::info!("Record start: {recorder:?}");
+                    if let Err(error) = self
+                        .archive_storage
+                        .confirm_recording_start(
+                            platform.as_str(),
+                            &room_id,
+                            &recorder.live_id,
+                            recorder.storage_id.as_deref(),
+                        )
+                        .await
+                    {
+                        log::error!("Failed to bind recording storage: {error}");
+                        self.discard_unpersisted_recorder(platform, &room_id).await;
+                        continue;
+                    }
                     if let Err(e) = self
                         .db
                         .add_record(
@@ -436,6 +474,8 @@ impl RecorderManager {
                         .await
                     {
                         log::error!("Failed to add record entry into db: {e}");
+                        self.discard_unpersisted_recorder(platform, &room_id).await;
+                        continue;
                     }
                     let event =
                         events::new_webhook_event(events::RECORD_STARTED, Payload::Room(recorder));
@@ -477,18 +517,18 @@ impl RecorderManager {
                         }
                     };
                     if record.size == 0 {
-                        let _ = self.db.remove_record(&live_id).await;
-                        // remove record folder
-                        let cache_folder = Path::new(self.config.read().await.cache.as_str())
-                            .join(
-                                PlatformType::from_str(&recorder.room_info.platform)
-                                    .unwrap_or(PlatformType::BiliBili)
-                                    .as_str(),
-                            )
-                            .join(room_id)
-                            .join(live_id);
-                        let _ = tokio::fs::remove_dir_all(&cache_folder).await;
-                        log::info!("Record folder removed: {cache_folder:?}");
+                        match PlatformType::from_str(&record.platform) {
+                            Ok(platform) => {
+                                if let Err(error) =
+                                    self.delete_archive(platform, &room_id, &live_id).await
+                                {
+                                    log::error!(
+                                        "Failed to remove empty recording {live_id}: {error}"
+                                    );
+                                }
+                            }
+                            Err(error) => log::error!("Invalid recording platform: {error}"),
+                        }
                     }
                 }
                 RecorderEvent::ProgressUpdate { .. }
@@ -610,18 +650,9 @@ impl RecorderManager {
         }
     }
 
-    pub fn set_migrating(&self, migrating: bool) {
-        self.is_migrating
-            .store(migrating, std::sync::atomic::Ordering::Relaxed);
-    }
-
     async fn monitor_recorders(&self) {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
         loop {
-            if self.is_migrating.load(std::sync::atomic::Ordering::Relaxed) {
-                interval.tick().await;
-                continue;
-            }
             // get a list of recorders in db, if not created yet, create them
             let recorders = match self.db.get_recorders().await {
                 Ok(recorders) => recorders,
@@ -655,9 +686,6 @@ impl RecorderManager {
                 }
             }
             for (platform, room_id) in recorders_to_add {
-                if self.is_migrating.load(std::sync::atomic::Ordering::Relaxed) {
-                    break;
-                }
                 let Some((auto_start, extra)) = recorder_map.get(&(platform, room_id.clone()))
                 else {
                     continue;
@@ -709,6 +737,21 @@ impl RecorderManager {
         extra: &str,
         enabled: bool,
     ) -> Result<String, RecorderManagerError> {
+        self.add_recorder_with_selection(account, platform, room_id, extra, enabled, None)
+            .await
+    }
+
+    /// `None` loads the saved recorder choice; `Some(None)` explicitly inherits
+    /// the current default for a new recorder whose DB row is not inserted yet.
+    pub async fn add_recorder_with_selection(
+        &self,
+        account: &Account,
+        platform: PlatformType,
+        room_id: &str,
+        extra: &str,
+        enabled: bool,
+        selection: Option<Option<String>>,
+    ) -> Result<String, RecorderManagerError> {
         let normalized_room_id = match platform {
             PlatformType::Twitch => recorder::platforms::twitch::api::normalize_channel(room_id)
                 .map_err(RecorderManagerError::RecorderError)?,
@@ -725,8 +768,12 @@ impl RecorderManager {
             });
         }
 
-        let cache_dir = self.config.read().await.cache.clone();
-        let cache_dir = PathBuf::from(&cache_dir);
+        // Validate an explicit choice at creation; actual recording writes resolve
+        // the saved preference/default anew for each live ID.
+        if let Some(id) = selection {
+            self.archive_storage.selected_store(id.as_deref()).await?;
+        }
+        let storage = self.archive_storage.recording_writer();
 
         let event_tx = self.get_event_sender();
         let update_interval = self.config.read().await.update_interval.clone();
@@ -736,7 +783,7 @@ impl RecorderManager {
                 let recorder = RtmpRecorder::new(
                     room_id,
                     RtmpConfig::parse(extra).map_err(|error| RecorderError::ApiError { error })?,
-                    cache_dir,
+                    storage,
                     event_tx,
                     enabled,
                 )
@@ -751,7 +798,7 @@ impl RecorderManager {
             PlatformType::BiliBili => Box::new(BiliRecorder::new(
                 room_id,
                 account,
-                cache_dir,
+                storage,
                 event_tx,
                 update_interval,
                 enabled,
@@ -761,7 +808,7 @@ impl RecorderManager {
                 room_id,
                 extra,
                 account,
-                cache_dir,
+                storage,
                 event_tx,
                 update_interval,
                 enabled,
@@ -769,7 +816,7 @@ impl RecorderManager {
             PlatformType::Douyu => Box::new(DouyuRecorder::new(
                 room_id,
                 account,
-                cache_dir,
+                storage,
                 event_tx,
                 update_interval,
                 enabled,
@@ -777,7 +824,7 @@ impl RecorderManager {
             PlatformType::Huya => Box::new(HuyaRecorder::new(
                 room_id,
                 account,
-                cache_dir,
+                storage,
                 event_tx,
                 update_interval,
                 enabled,
@@ -785,7 +832,7 @@ impl RecorderManager {
             PlatformType::Kuaishou => Box::new(KuaishouRecorder::new(
                 room_id,
                 account,
-                cache_dir,
+                storage,
                 event_tx,
                 update_interval,
                 enabled,
@@ -793,7 +840,7 @@ impl RecorderManager {
             PlatformType::TikTok => Box::new(TikTokRecorder::new(
                 room_id,
                 account,
-                cache_dir,
+                storage,
                 event_tx,
                 update_interval,
                 enabled,
@@ -801,7 +848,7 @@ impl RecorderManager {
             PlatformType::Twitch => Box::new(TwitchRecorder::new(
                 room_id,
                 account,
-                cache_dir,
+                storage,
                 event_tx,
                 update_interval,
                 enabled,
@@ -809,7 +856,7 @@ impl RecorderManager {
             PlatformType::Youtube => Box::new(YoutubeRecorder::new(
                 room_id,
                 account,
-                cache_dir,
+                storage,
                 event_tx,
                 update_interval,
                 enabled,
@@ -888,9 +935,6 @@ impl RecorderManager {
             });
         }
 
-        // remove from db
-        let recorder = self.db.remove_recorder(room_id).await?;
-
         // add to to_remove
         log::debug!("Add to to_remove: {recorder_id}");
         self.to_remove.write().await.insert(recorder_id.clone());
@@ -903,25 +947,55 @@ impl RecorderManager {
             recorder_ref.stop().await;
         }
 
+        // Keep the recorder/index available for retry if any backend operation
+        // fails. Historical archives can belong to different providers.
+        let result = async {
+            let room_stores = self
+                .archive_storage
+                .room_stores(platform.as_str(), room_id)
+                .await?;
+            let archives = self
+                .db
+                .get_room_records(platform.as_str(), room_id, 0, -1)
+                .await?;
+            let _mutations = archives
+                .iter()
+                .map(|archive| {
+                    self.archive_storage.try_lock_recording(
+                        platform.as_str(),
+                        room_id,
+                        &archive.live_id,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            for archive in &archives {
+                self.recording_storage(platform, room_id, &archive.live_id)
+                    .await?
+                    .remove_all()
+                    .await?;
+            }
+            for storage in room_stores {
+                storage.remove_all().await?;
+            }
+            let recorder = self
+                .db
+                .remove_recorder_for_platform(platform.as_str(), room_id)
+                .await?;
+            for archive in archives {
+                self.archive_storage
+                    .forget_recording(platform.as_str(), room_id, &archive.live_id)
+                    .await?;
+            }
+            Ok::<_, RecorderManagerError>(recorder)
+        }
+        .await;
+        self.to_remove.write().await.remove(&recorder_id);
+        let recorder = result?;
+
         // remove recorder
         log::debug!("Remove recorder from manager: {recorder_id}");
         self.recorders.write().await.remove(&recorder_id);
         self.db.notify_change(DataChange::Recorders);
-
-        // remove from to_remove
-        log::debug!("Remove from to_remove: {recorder_id}");
-        self.to_remove.write().await.remove(&recorder_id);
-
-        // remove related cache folder
-        let cache_folder = format!(
-            "{}/{}/{}",
-            self.config.read().await.cache,
-            platform.as_str(),
-            room_id
-        );
-        log::debug!("Remove cache folder: {cache_folder}");
-        let _ = tokio::fs::remove_dir_all(cache_folder).await;
-        log::info!("Recorder {room_id} cache folder removed");
 
         Ok(recorder)
     }
@@ -932,25 +1006,11 @@ impl RecorderManager {
         room_id: &str,
         live_id: &str,
     ) -> Result<Vec<u8>, RecorderManagerError> {
-        let cache_path = self.config.read().await.cache.clone();
-        let cache_path = Path::new(&cache_path);
-        let playlist_path = cache_path
-            .join(platform.as_str())
-            .join(room_id)
-            .join(live_id)
-            .join("playlist.m3u8");
-        if !playlist_path.exists() {
-            return Err(RecorderManagerError::IoError(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Playlist file not found",
-            )));
-        }
-        let mut bytes: Vec<u8> = Vec::new();
-        tokio::fs::File::open(playlist_path)
+        Ok(self
+            .recording_storage(platform, room_id, live_id)
             .await?
-            .read_to_end(&mut bytes)
-            .await?;
-        Ok(bytes)
+            .read("playlist.m3u8")
+            .await?)
     }
 
     /// Check if the playlist is outdated
@@ -1072,57 +1132,26 @@ impl RecorderManager {
         room_id: &str,
         live_id: &str,
     ) -> Result<Vec<DanmuEntry>, RecorderManagerError> {
-        let cache_path = self.config.read().await.cache.clone();
-        let cache_path = Path::new(&cache_path);
-        let mut danmus_path = cache_path
-            .join(platform.as_str())
-            .join(room_id)
-            .join(live_id)
-            .join("events.jsonl");
-        if !danmus_path.exists() {
-            // Keep existing archives readable after the storage format
-            // migration. New recordings only create events.jsonl.
-            let legacy_path = danmus_path.with_file_name("danmu.txt");
-            if !legacy_path.exists() {
-                return Ok(Vec::new());
-            }
-            danmus_path = legacy_path;
-        }
-        let Some(storage) = DanmuStorage::new(&danmus_path).await else {
-            log::error!("Failed to load danmu storage: {danmus_path:?}");
+        let storage = self.recording_storage(platform, room_id, live_id).await?;
+        let key = if storage.log_exists("events.jsonl").await? {
+            "events.jsonl"
+        } else if storage.log_exists("danmu.txt").await? {
+            "danmu.txt"
+        } else {
             return Ok(Vec::new());
         };
-        let danmus = storage.get_entries(0).await;
+        let danmus = DanmuStorage::read_entries(&storage, key).await?;
         if platform != PlatformType::Twitch {
             return Ok(danmus);
         }
 
-        let Some(work_dir) = danmus_path.parent() else {
-            return Ok(danmus);
-        };
-        let skipped_ad_ranges = match load_skipped_ad_ranges(work_dir).await {
-            Ok(ranges) => ranges,
-            Err(error) => {
-                log::warn!("Failed to load skipped ad ranges for {live_id}: {error}");
-                return Ok(danmus);
-            }
-        };
+        let skipped_ad_ranges = load_skipped_ad_ranges_from_storage(&storage).await?;
         if skipped_ad_ranges.is_empty() {
             return Ok(danmus);
         }
-        let timeline_start_ms = match self
+        let timeline_start_ms = self
             .first_segment_timestamp(platform, room_id, live_id)
-            .await
-        {
-            Ok(timestamp) => timestamp,
-            Err(error) => {
-                log::warn!("Failed to load archive timeline origin for {live_id}: {error}");
-                match live_id.parse::<i64>() {
-                    Ok(timestamp) => timestamp,
-                    Err(_) => return Ok(danmus),
-                }
-            }
-        };
+            .await?;
         Ok(align_danmus_to_recording(
             danmus,
             timeline_start_ms,
@@ -1159,44 +1188,37 @@ impl RecorderManager {
         platform: &PlatformType,
         room_id: &str,
         parent_id: &str,
-    ) -> Vec<RelatedPlaylist> {
-        let cache_path = self.config.read().await.cache.clone();
-        let cache_path = Path::new(&cache_path);
-        let archives = match self.db.get_archives_by_parent_id(room_id, parent_id).await {
-            Ok(archives) => archives,
-            Err(e) => {
-                log::error!(
-                    "[{}] Failed to get all related playlists: {} {}",
-                    room_id,
-                    parent_id,
-                    e
-                );
-                return Vec::new();
-            }
-        };
-
-        let archives: Vec<(String, String)> = archives
-            .iter()
-            .map(|a| (a.title.clone(), a.live_id.clone()))
-            .collect();
-
-        let playlists = archives
-            .iter()
-            .map(async |a| {
-                let work_dir =
-                    CachePath::new(cache_path.to_path_buf(), *platform, room_id, a.1.as_str());
-
-                RelatedPlaylist {
-                    live_id: a.1.clone(),
-                    title: a.0.clone(),
-                    path: work_dir.with_filename("playlist.m3u8").full_path(),
-                }
-            })
-            .collect::<Vec<_>>();
-
-        let playlists = futures::future::join_all(playlists).await;
-
-        playlists
+        selected_live_ids: Option<&[String]>,
+    ) -> Result<Vec<RelatedPlaylist>, RecorderManagerError> {
+        let archives = self
+            .db
+            .get_archives_by_parent_id(room_id, parent_id)
+            .await?;
+        let mut playlists = Vec::new();
+        for archive in archives
+            .into_iter()
+            .filter(|archive| archive.platform == platform.as_str())
+            .filter(|archive| selected_live_ids.is_none_or(|ids| ids.contains(&archive.live_id)))
+        {
+            let assets = self
+                .materialize_recording(*platform, room_id, &archive.live_id)
+                .await
+                .map_err(|error| RecorderManagerError::ClipError {
+                    err: format!(
+                        "Failed to materialize archive {}/{}/{} from playlist.m3u8: {error}",
+                        platform.as_str(),
+                        room_id,
+                        archive.live_id
+                    ),
+                })?;
+            playlists.push(RelatedPlaylist {
+                live_id: archive.live_id,
+                title: archive.title,
+                path: assets.path("playlist.m3u8")?,
+                _assets: assets,
+            });
+        }
+        Ok(playlists)
     }
 
     /// Cut `params.ranges` into `clip_file`, returning it with the recording
@@ -1212,20 +1234,17 @@ impl RecorderManager {
                 .validate()
                 .map_err(|err| RecorderManagerError::ClipError { err })?;
         }
-        let cache_path = self.config.read().await.cache.clone();
-        let cache_path = Path::new(&cache_path);
-        let playlist_path = cache_path
-            .join(params.platform.clone())
-            .join(params.room_id.clone())
-            .join(params.live_id.clone())
-            .join("playlist.m3u8");
-
-        if !playlist_path.exists() {
-            log::error!("Playlist file not found: {}", playlist_path.display());
-            return Err(RecorderManagerError::ClipError {
-                err: "Playlist file not found".to_string(),
-            });
-        }
+        let platform = PlatformType::from_str(&params.platform).map_err(|_| {
+            RecorderManagerError::InvalidPlatformType {
+                platform: params.platform.clone(),
+            }
+        })?;
+        let storage = self
+            .recording_storage(platform, &params.room_id, &params.live_id)
+            .await?;
+        let assets =
+            crate::recording_materialization::materialize(&storage, &params.ranges).await?;
+        let playlist_path = assets.path("playlist.m3u8")?;
 
         let covered = if params.ranges.is_empty() {
             let extracting = reporter.map(|reporter| reporter.stage("提取片段"));
@@ -1396,6 +1415,7 @@ impl RecorderManager {
                 summary.recorders.push(RecorderInfo {
                     platform_live_id: "".to_string(),
                     live_id: "".to_string(),
+                    storage_id: None,
                     recording: false,
                     enabled: false,
                     room_info: RoomInfo {
@@ -1485,17 +1505,29 @@ impl RecorderManager {
             check,
             check_interval_secs,
             current_record,
+            storage_backend_id: self
+                .db
+                .recorder_storage_id(platform.as_str(), room_id)
+                .await?,
         })
     }
 
     pub async fn archive_records(&self, records: Vec<RecordRow>) -> Vec<ArchiveRecord> {
-        let cache_dir = PathBuf::from(self.config.read().await.cache.clone());
         let mut archives = Vec::with_capacity(records.len());
         for record in records {
-            let relative = format!("{}/{}/{}", record.platform, record.room_id, record.live_id);
-            let timing = match join_relative(&cache_dir, &relative) {
-                Some(directory) => self.archive_timing.get(&directory).await,
-                None => None,
+            let timing = match self
+                .archive_storage
+                .recording(&record.platform, &record.room_id, &record.live_id)
+                .await
+            {
+                Ok(storage) => self.archive_timing.get_from_storage(&storage).await,
+                Err(error) => {
+                    log::warn!(
+                        "Failed to resolve archive timing storage for {}: {error}",
+                        record.live_id
+                    );
+                    None
+                }
             };
             archives.push(ArchiveRecord {
                 record,
@@ -1529,23 +1561,18 @@ impl RecorderManager {
         room_id: &str,
         live_id: &str,
     ) -> Result<String, RecorderManagerError> {
-        // read subtitle file under work_dir
-        let work_dir = CachePath::new(
-            self.config.read().await.cache.clone().into(),
-            platform,
-            room_id,
-            live_id,
-        );
-        let subtitle_file_path = work_dir.with_filename("subtitle.srt");
-        let subtitle_file = File::open(subtitle_file_path.full_path())
-            .await
-            .map_err(|_| RecorderManagerError::SubtitleNotFound {
-                live_id: live_id.to_string(),
-            })?;
-        let mut subtitle_file = BufReader::new(subtitle_file);
-        let mut subtitle_content = String::new();
-        subtitle_file.read_to_string(&mut subtitle_content).await?;
-        Ok(subtitle_content)
+        let storage = self.recording_storage(platform, room_id, live_id).await?;
+        let bytes = storage.read("subtitle.srt").await.map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                RecorderManagerError::SubtitleNotFound {
+                    live_id: live_id.to_string(),
+                }
+            } else {
+                error.into()
+            }
+        })?;
+        String::from_utf8(bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error).into())
     }
 
     pub async fn generate_archive_subtitle(
@@ -1554,49 +1581,45 @@ impl RecorderManager {
         room_id: &str,
         live_id: &str,
     ) -> Result<String, RecorderManagerError> {
-        // generate subtitle file under work_dir
-        let work_dir = CachePath::new(
-            self.config.read().await.cache.clone().into(),
-            platform,
-            room_id,
-            live_id,
-        );
-        let subtitle_file_path = work_dir.with_filename("subtitle.srt");
-        let mut subtitle_file = File::create(subtitle_file_path.full_path()).await?;
-        // first generate a tmp clip file
-        // generate a tmp m3u8 index file
-        let m3u8_index_file_path = work_dir.with_filename("tmp.m3u8");
-        let mut playlist = self.load_playlist(platform, room_id, live_id).await?;
-        playlist.end_list = true;
-        playlist.playlist_type = Some(MediaPlaylistType::Vod);
-
-        let mut v: Vec<u8> = Vec::new();
-        playlist.write_to(&mut v)?;
-        let m3u8_content = std::str::from_utf8(&v).map_err(|e| RecorderManagerError::HLSError {
-            err: format!("Failed to encode playlist: {e}"),
-        })?;
-        tokio::fs::write(&m3u8_index_file_path.full_path(), m3u8_content).await?;
-        log::info!(
-            "[{}]M3U8 index file generated: {}",
-            room_id,
-            m3u8_index_file_path.full_path().display()
-        );
+        self.archive_storage.initialize().await?;
+        let _mutation =
+            self.archive_storage
+                .try_lock_recording(platform.as_str(), room_id, live_id)?;
+        let storage = self.recording_storage(platform, room_id, live_id).await?;
+        let assets = crate::recording_materialization::materialize(&storage, &[]).await?;
+        // Native processing reads the snapshot directly. Put outputs in a
+        // separate lease so arbitrary archive names cannot collide with them.
+        let temporary = storage.materialize(&[]).await?;
+        let m3u8_index_file_path = assets.path("playlist.m3u8")?;
+        let resources = vec![
+            ffmpeg_utils::MediaResourceLease::new(assets.clone()),
+            ffmpeg_utils::MediaResourceLease::new(temporary.clone()),
+        ];
 
         // Generate a tmp mp4 clip file first
-        let clip_file_path = work_dir.with_filename("tmp.mp4");
-        if let Err(e) = crate::ffmpeg::playlist::clip_from_playlist(
-            None::<&crate::progress::progress_reporter::ProgressReporter>,
-            Path::new(&m3u8_index_file_path.full_path()),
-            Path::new(&clip_file_path.full_path()),
-            None,
-        )
-        .await
+        let clip_file_path = temporary.path("tmp.mp4")?;
+        let output = clip_file_path.clone();
+        if let Err(e) =
+            crate::ffmpeg::subtitle::run_native_with_resources(resources.clone(), async move {
+                crate::ffmpeg::playlist::clip_from_playlist(
+                    None::<&crate::progress::progress_reporter::ProgressReporter>,
+                    &m3u8_index_file_path,
+                    &output,
+                    None,
+                )
+                .await
+            })
+            .await
         {
             return Err(RecorderManagerError::SubtitleGenerationFailed {
                 error: e.to_string(),
             });
         }
-        log::info!("[{}]Temp clip file generated: {}", room_id, clip_file_path);
+        log::info!(
+            "[{}]Temp clip file generated: {}",
+            room_id,
+            clip_file_path.display()
+        );
 
         // Copy the settings out so no config guard is held across the ffmpeg
         // and subtitle jobs below.
@@ -1624,13 +1647,24 @@ impl RecorderManager {
 
         // For third-party services (powerlive), extract opus audio from mp4
         let media_file_path = if generator_type.is_powerlive() {
-            let opus_file_path = work_dir.with_filename("tmp.opus");
+            let opus_file_path = temporary.path("tmp.opus")?;
             log::info!("[{}]Extracting opus audio for third-party service", room_id);
 
-            prepare_powerlive_audio(&clip_file_path.full_path(), &opus_file_path.full_path())
-                .await?;
+            let input = clip_file_path.clone();
+            let output = opus_file_path.clone();
+            crate::ffmpeg::subtitle::run_native_with_resources(resources.clone(), async move {
+                prepare_powerlive_audio(&input, &output)
+                    .await
+                    .map_err(|error| error.to_string())
+            })
+            .await
+            .map_err(|error| RecorderManagerError::SubtitleGenerationFailed { error })?;
 
-            log::info!("[{}]Opus audio extracted: {}", room_id, opus_file_path);
+            log::info!(
+                "[{}]Opus audio extracted: {}",
+                room_id,
+                opus_file_path.display()
+            );
             opus_file_path
         } else {
             // For whisper/whisper_online, use mp4 directly
@@ -1639,9 +1673,9 @@ impl RecorderManager {
 
         // generate subtitle file
         let resource_dir = self.resource_dir.clone();
-        let result = crate::ffmpeg::generate_video_subtitle(
+        let result = crate::ffmpeg::subtitle::generate_video_subtitle_with_resources(
             None,
-            Path::new(&media_file_path.full_path()),
+            &media_file_path,
             generator_type,
             &resource_dir,
             &whisper_model,
@@ -1650,6 +1684,7 @@ impl RecorderManager {
             &openai_api_endpoint,
             &whisper_language,
             Some(powerlive),
+            resources,
         )
         .await;
         // write subtitle file
@@ -1667,19 +1702,11 @@ impl RecorderManager {
             .iter()
             .map(item_to_srt)
             .collect::<String>();
-        subtitle_file.write_all(subtitle_content.as_bytes()).await?;
+        storage
+            .write("subtitle.srt", subtitle_content.as_bytes())
+            .await?;
         log::info!("[{room_id}]Subtitle file written");
-        // remove tmp files
-        tokio::fs::remove_file(&m3u8_index_file_path.full_path()).await?;
-
-        // Remove both mp4 and opus files if they exist
-        let clip_file_path = work_dir.with_filename("tmp.mp4");
-        let _ = tokio::fs::remove_file(&clip_file_path.full_path()).await;
-
-        let opus_file_path = work_dir.with_filename("tmp.opus");
-        let _ = tokio::fs::remove_file(&opus_file_path.full_path()).await;
-
-        log::info!("[{room_id}]Tmp files removed");
+        // The lease cleans up all temporary files, including on failure.
         Ok(subtitle_content)
     }
 
@@ -1689,13 +1716,30 @@ impl RecorderManager {
         room_id: &str,
         live_id: &str,
     ) -> Result<RecordRow, RecorderManagerError> {
+        self.archive_storage.initialize().await?;
+        let _mutation =
+            self.archive_storage
+                .try_lock_recording(platform.as_str(), room_id, live_id)?;
         log::info!("Deleting archive {room_id}:{live_id}");
+        let record = self.db.get_record(room_id, live_id).await?;
+        if record.platform != platform.as_str() || record.room_id != room_id {
+            return Err(DatabaseError::NotFound.into());
+        }
+        if let Some(recorder) = self.get_recorder_info(platform, room_id).await {
+            if recorder.live_id == live_id && recorder.recording {
+                return Err(RecorderManagerError::Recording {
+                    live_id: live_id.to_string(),
+                });
+            }
+        }
+        self.recording_storage(platform, room_id, live_id)
+            .await?
+            .remove_all()
+            .await?;
         let to_delete = self.db.remove_record(live_id).await?;
-        let cache_folder = Path::new(self.config.read().await.cache.as_str())
-            .join(platform.as_str())
-            .join(room_id)
-            .join(live_id);
-        let _ = tokio::fs::remove_dir_all(cache_folder).await;
+        self.archive_storage
+            .forget_recording(platform.as_str(), room_id, live_id)
+            .await?;
         Ok(to_delete)
     }
 
@@ -1715,7 +1759,6 @@ impl RecorderManager {
     }
 
     pub async fn handle_hls_request(&self, uri: &str) -> Result<Vec<u8>, RecorderManagerError> {
-        let cache_path = self.config.read().await.cache.clone();
         let path = uri.split('?').next().unwrap_or(uri);
         let params = uri.split('?').nth(1).unwrap_or("");
         let path_segs: Vec<&str> = path.split('/').collect();
@@ -1726,13 +1769,7 @@ impl RecorderManager {
                 err: "Invalid hls path".into(),
             });
         }
-        // Resolve before branching so room_id / live_id are vetted for playlists too.
-        let Some(file_path) = resolve_hls_path(Path::new(&cache_path), path) else {
-            log::warn!("Rejected request path outside the cache dir: {path}");
-            return Err(RecorderManagerError::HLSError {
-                err: "Invalid hls path".into(),
-            });
-        };
+        recording_storage::validate_key(path)?;
         // parse recorder type
         let platform = path_segs[0];
         // parse room id
@@ -1798,24 +1835,36 @@ impl RecorderManager {
         // - "some_dir/segment.ts" (5+ segments)
         let remaining_path = path_segs[3..].join("/");
 
-        if remaining_path == "playlist.m3u8" || remaining_path.ends_with("/playlist.m3u8") {
+        if remaining_path == "playlist.m3u8" {
             let playlist = self.load_playlist(platform, room_id, live_id).await?;
             let playlist = self.playlist_range(&playlist, range).await?;
             let mut bytes: Vec<u8> = Vec::new();
             playlist.write_to(&mut bytes)?;
             Ok(bytes)
         } else {
-            // try to find requested ts file in recorder's cache
-            // cache files are stored in {cache_dir}/{platform}/{room_id}/{live_id}/{ts_file}
-            let ts_file_content = tokio::fs::read(&file_path).await.map_err(|e| {
-                log::warn!("Failed to read segment file {}: {e}", file_path.display());
-                RecorderManagerError::HLSError {
-                    err: "Segment file not found".into(),
-                }
-            })?;
-
-            Ok(ts_file_content)
+            Ok(self
+                .recording_storage(platform, room_id, live_id)
+                .await?
+                .read(&remaining_path)
+                .await?)
         }
+    }
+
+    pub async fn set_recorder_storage(
+        &self,
+        platform: PlatformType,
+        room_id: &str,
+        storage_backend_id: Option<String>,
+    ) -> Result<RecorderRow, RecorderManagerError> {
+        self.archive_storage
+            .selected_store(storage_backend_id.as_deref())
+            .await?;
+        // This is a preference for the next recording. Existing bindings and
+        // running writers are deliberately unchanged.
+        Ok(self
+            .db
+            .set_recorder_storage(platform.as_str(), room_id, storage_backend_id.as_deref())
+            .await?)
     }
 
     pub async fn set_enable(&self, platform: PlatformType, room_id: &str, enabled: bool) {
@@ -1869,8 +1918,13 @@ impl RecorderManager {
         })?;
 
         let mut playlists = self
-            .get_related_playlists(&platform, &room_id, &parent_id)
-            .await;
+            .get_related_playlists(
+                &platform,
+                &room_id,
+                &parent_id,
+                selected_live_ids.as_deref(),
+            )
+            .await?;
         if playlists.is_empty() {
             log::error!("No related playlists found: {parent_id}");
             return Ok(());
@@ -1901,17 +1955,14 @@ impl RecorderManager {
         // each playlist's text and images together in its own temporary directory.
         let danmu_options = self.config.read().await.danmu_ass_options.clone();
         let danmu_tracks = if encode_danmu {
-            let danmu_tracks = playlists
-                .iter()
-                .map(async |p| {
-                    (self
-                        .load_archive_danmus(platform, &room_id, &p.live_id)
-                        .await)
-                        .ok()
-                })
-                .collect::<Vec<_>>();
-
-            futures::future::join_all(danmu_tracks).await
+            let mut tracks = Vec::with_capacity(playlists.len());
+            for playlist in &playlists {
+                tracks.push(Some(
+                    self.load_archive_danmus(platform, &room_id, &playlist.live_id)
+                        .await?,
+                ));
+            }
+            tracks
         } else {
             vec![None; playlists.len()]
         };
@@ -2165,6 +2216,7 @@ mod live_end_tests {
         RecorderInfo {
             platform_live_id: parent_id.into(),
             live_id: live_id.into(),
+            storage_id: None,
             room_info: RoomInfo::default(),
             user_info: UserInfo::default(),
             recording: false,
@@ -2279,18 +2331,17 @@ mod live_end_tests {
         })
         .await
         .unwrap();
-        // This fixture deliberately has no playlist file: reaching concat proves
+        // This fixture deliberately has no playlist: reaching materialization proves
         // the worker kept valid scheduled settings instead of rereading zero.
         assert!(
-            finished.message.contains("Failed to concat playlists"),
+            finished.message.contains("Failed to materialize archive"),
             "{}",
             finished.message
         );
         assert!(
-            finished.message.contains("playlist.m3u8")
-                && finished
-                    .message
-                    .contains("Failed to generate playlist video"),
+            finished.message.contains("bilibili/10220184/archive")
+                && finished.message.contains("playlist.m3u8")
+                && finished.message.contains("IO error:"),
             "the task must retain the failing recording and its cause: {}",
             finished.message
         );
@@ -2378,80 +2429,542 @@ mod live_end_tests {
 
 #[cfg(test)]
 mod hls_path_tests {
-    use super::*;
-
-    /// A temp dir holding `cache/` with a few segments, plus `secret.txt` just outside it.
-    fn cache_with_outside_secret() -> (tempfile::TempDir, PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = dir.path().join("cache");
-        std::fs::create_dir_all(cache.join("bilibili/1/2/some_dir")).unwrap();
-        std::fs::write(cache.join("bilibili/1/2/segment.ts"), "segment").unwrap();
-        std::fs::write(cache.join("bilibili/1/2/some_dir/segment.ts"), "nested").unwrap();
-        std::fs::write(dir.path().join("secret.txt"), "secret").unwrap();
-        (dir, cache)
-    }
-
     #[test]
-    fn resolves_segment_paths_inside_the_cache_dir() {
-        let (_dir, cache) = cache_with_outside_secret();
-        for (path, content) in [
-            ("bilibili/1/2/segment.ts", "segment"),
-            ("bilibili/1/2/some_dir/segment.ts", "nested"),
-        ] {
-            let resolved = resolve_hls_path(&cache, path).unwrap();
-            assert_eq!(std::fs::read_to_string(resolved).unwrap(), content);
-        }
-        assert_eq!(
-            resolve_hls_path(&cache, "bilibili/1/2/a%7Cb.ts"),
-            Some(cache.join("bilibili/1/2/a|b.ts"))
-        );
-    }
-
-    #[test]
-    fn rejects_paths_escaping_the_cache_dir() {
-        let (dir, cache) = cache_with_outside_secret();
-        let absolute = dir.path().join("secret.txt").to_string_lossy().into_owned();
+    fn accepts_scoped_segment_keys() {
         for path in [
-            // What axum's `Path` extractor yields for `..%2F..%2F..%2F..%2Fsecret.txt`,
-            // and what a raw `curl --path-as-is` request carries.
-            "bilibili/1/2/../../../../secret.txt".to_string(),
-            // Room and live ids are path segments too.
-            "bilibili/../../secret.txt".to_string(),
-            "bilibili/1/2/./segment.ts".to_string(),
-            "bilibili/1/2//segment.ts".to_string(),
-            // Windows trims trailing dots and spaces, so these could act as `..`.
-            "bilibili/1/2/.. /.. /.. /.. /secret.txt".to_string(),
-            "bilibili/1/2/.. ./secret.txt".to_string(),
-            "bilibili/1/2/.../secret.txt".to_string(),
-            absolute.clone(),
-            format!("bilibili/1/2/{absolute}"),
+            "bilibili/1/2/segment.ts",
+            "bilibili/1/2/some_dir/segment.ts",
         ] {
-            let resolved = resolve_hls_path(&cache, &path);
-            let leaked = resolved
-                .as_ref()
-                .and_then(|p| std::fs::read_to_string(p).ok());
-            assert_eq!(
-                resolved, None,
-                "{path:?} must be rejected (reads {leaked:?})"
-            );
+            recording_storage::validate_key(path).unwrap();
         }
     }
 
-    #[cfg(windows)]
     #[test]
-    fn rejects_windows_separators_and_prefixes() {
-        let (_dir, cache) = cache_with_outside_secret();
+    fn rejects_paths_escaping_the_recording_namespace() {
         for path in [
+            "bilibili/1/2/../../../../secret.txt",
+            "bilibili/../../secret.txt",
+            "bilibili/1/2/./segment.ts",
+            "bilibili/1/2//segment.ts",
+            "bilibili/1/2/.. /.. /.. /.. /secret.txt",
+            "bilibili/1/2/.. ./secret.txt",
+            "bilibili/1/2/.../secret.txt",
+            "/secret.txt",
             "bilibili\\..\\..\\secret.txt",
             "bilibili/1/2/C:",
             "bilibili/1/2/C:\\secret.txt",
             "bilibili/1/2/.. \\/.. \\/secret.txt",
         ] {
-            assert_eq!(
-                resolve_hls_path(&cache, path),
-                None,
-                "{path:?} must be rejected"
-            );
+            assert!(recording_storage::validate_key(path).is_err(), "{path:?}");
         }
+    }
+}
+
+#[cfg(all(test, feature = "headless"))]
+mod archive_storage_tests {
+    use super::*;
+    use recording_storage::RecordingStore;
+
+    async fn manager(dir: &Path) -> RecorderManager {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE records (
+                live_id TEXT PRIMARY KEY, platform TEXT, parent_id TEXT,
+                room_id TEXT, title TEXT, length REAL, size INTEGER,
+                created_at TEXT, cover TEXT
+            );
+            CREATE TABLE record_summaries (platform TEXT, room_id TEXT, live_id TEXT);
+            CREATE TABLE recorders (
+                room_id TEXT PRIMARY KEY, platform TEXT, created_at TEXT,
+                auto_start BOOLEAN, extra TEXT, storage_backend_id TEXT
+            );",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::raw_sql(crate::database::storage::SCHEMA_SQL)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let db = Arc::new(Database::new(
+            pool,
+            crate::database::credentials::CredentialCipher::new(&[0; 32]).unwrap(),
+            EventBus::new(),
+        ));
+        let config = Arc::new(RwLock::new(
+            Config::load(&dir.join("config.toml"), dir, dir).unwrap(),
+        ));
+        let archive_storage = Arc::new(ArchiveStorage::new(db.clone(), config.clone()));
+        let (event_tx, _) = recorder_event_channel(16);
+        // No monitor/event tasks: tests control every mutation explicitly.
+        RecorderManager {
+            events: EventBus::new(),
+            db,
+            config,
+            task_manager: Arc::new(TaskManager::new()),
+            resource_dir: dir.into(),
+            recorders: Arc::new(RwLock::new(HashMap::new())),
+            to_remove: Arc::new(RwLock::new(HashSet::new())),
+            event_tx,
+            webhook_poster: WebhookPoster::new(crate::webhook::poster::WebhookConfig::default())
+                .unwrap(),
+            material_hook: Arc::new(std::sync::OnceLock::new()),
+            archive_timing: Arc::new(ArchiveTimingCache::default()),
+            archive_storage,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_saved_preference_change_applies_to_the_next_archive_without_reconstruction() {
+        let directory = tempfile::tempdir().unwrap();
+        let manager = manager(directory.path()).await;
+        for id in ["first", "second"] {
+            manager
+                .archive_storage
+                .register_backend(id, RecordingStore::local(directory.path().join(id)))
+                .await
+                .unwrap();
+        }
+        manager
+            .db
+            .add_recorder_with_storage(PlatformType::BiliBili, "room", "", Some("first"))
+            .await
+            .unwrap();
+        let writer = manager.archive_storage.recording_writer();
+        let first = writer
+            .resolve_recording("bilibili", "room", "first-live")
+            .await
+            .unwrap();
+        manager
+            .set_recorder_storage(PlatformType::BiliBili, "room", Some("second".into()))
+            .await
+            .unwrap();
+        let second = writer
+            .resolve_recording("bilibili", "room", "second-live")
+            .await
+            .unwrap();
+        assert_eq!(first.identity(), Some("first"));
+        drop(first);
+        let resumed = writer
+            .resolve_recording("bilibili", "room", "first-live")
+            .await
+            .unwrap();
+        assert_eq!(resumed.identity(), Some("first"));
+        assert_eq!(second.identity(), Some("second"));
+    }
+
+    #[tokio::test]
+    async fn storage_preference_can_change_without_stopping_an_active_recording() {
+        use recorder::traits::RecorderBasicTrait;
+        let directory = tempfile::tempdir().unwrap();
+        let manager = manager(directory.path()).await;
+        manager
+            .db
+            .add_recorder(PlatformType::Rtmp, "rtmp-obs", "{}")
+            .await
+            .unwrap();
+        let recorder = RtmpRecorder::new(
+            "obs",
+            RtmpConfig {
+                listen_addr: "127.0.0.1".parse().unwrap(),
+                ..RtmpConfig::default()
+            },
+            directory.path().to_path_buf(),
+            manager.event_tx.clone(),
+            true,
+        )
+        .await
+        .unwrap();
+        recorder
+            .is_recording()
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        *recorder.live_id().write().await = "active".into();
+        manager
+            .recorders
+            .write()
+            .await
+            .insert("rtmp:rtmp-obs".into(), Arc::new(recorder));
+        manager
+            .set_recorder_storage(PlatformType::Rtmp, "rtmp-obs", Some("default".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            manager
+                .db
+                .recorder_storage_id("rtmp", "rtmp-obs")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("default")
+        );
+        assert!(
+            manager
+                .get_recorder_info(PlatformType::Rtmp, "rtmp-obs")
+                .await
+                .unwrap()
+                .recording
+        );
+    }
+
+    async fn archive(
+        manager: &RecorderManager,
+        platform: PlatformType,
+        live: &str,
+        backend: &str,
+    ) -> RecordingStorage {
+        manager
+            .archive_storage
+            .bind_recording(platform.as_str(), "room", live, Some(backend))
+            .await
+            .unwrap();
+        manager
+            .db
+            .add_record(platform, "session", live, "room", "archive", None)
+            .await
+            .unwrap();
+        let storage = manager
+            .recording_storage(platform, "room", live)
+            .await
+            .unwrap();
+        storage
+            .write("subtitle.srt", live.as_bytes())
+            .await
+            .unwrap();
+        storage.write("segment.ts", live.as_bytes()).await.unwrap();
+        storage
+    }
+
+    #[tokio::test]
+    async fn reads_and_deletes_the_pinned_backend_not_the_current_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager(dir.path()).await;
+        for id in ["first", "second"] {
+            manager
+                .archive_storage
+                .register_backend(id, RecordingStore::local(dir.path().join(id)))
+                .await
+                .unwrap();
+        }
+        let first = archive(&manager, PlatformType::BiliBili, "old", "first").await;
+        let second = archive(&manager, PlatformType::BiliBili, "new", "second").await;
+        let other_platform = archive(&manager, PlatformType::Twitch, "twitch", "first").await;
+        manager.config.write().await.storage = crate::config::StorageConfig::local(
+            dir.path().join("unrelated").to_string_lossy().into_owned(),
+        );
+
+        assert_eq!(
+            manager
+                .get_archive_subtitle(PlatformType::BiliBili, "room", "old")
+                .await
+                .unwrap(),
+            "old"
+        );
+        assert_eq!(
+            manager
+                .get_archive_subtitle(PlatformType::BiliBili, "room", "new")
+                .await
+                .unwrap(),
+            "new"
+        );
+        assert_eq!(
+            manager
+                .handle_hls_request("bilibili/room/old/segment.ts")
+                .await
+                .unwrap(),
+            b"old"
+        );
+        manager
+            .delete_archive(PlatformType::BiliBili, "room", "old")
+            .await
+            .unwrap();
+        assert!(!first.exists("segment.ts").await.unwrap());
+        assert_eq!(second.read("segment.ts").await.unwrap(), b"new");
+        assert_eq!(other_platform.read("segment.ts").await.unwrap(), b"twitch");
+        assert!(manager.db.get_record("room", "old").await.is_err());
+        assert!(manager.db.get_record("room", "new").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn wrong_platform_or_room_cannot_delete_an_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager(dir.path()).await;
+        manager
+            .archive_storage
+            .register_backend("first", RecordingStore::local(dir.path().join("first")))
+            .await
+            .unwrap();
+        let storage = archive(&manager, PlatformType::BiliBili, "old", "first").await;
+        assert!(manager
+            .delete_archive(PlatformType::Twitch, "room", "old")
+            .await
+            .is_err());
+        assert!(manager
+            .delete_archive(PlatformType::BiliBili, "another-room", "old")
+            .await
+            .is_err());
+        assert_eq!(storage.read("segment.ts").await.unwrap(), b"old");
+        assert!(manager.db.get_record("room", "old").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn recording_setup_and_logs_block_deletion_and_deleted_resumes_cannot_rebind() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager(dir.path()).await;
+        let original = archive(&manager, PlatformType::BiliBili, "old", "default").await;
+        let writer = manager.archive_storage.recording_writer();
+        // No running recorder/is_recording flag: this is the setup window.
+        let setup = writer
+            .resolve_recording("bilibili", "room", "old")
+            .await
+            .unwrap();
+        assert!(matches!(
+            manager.delete_archive(PlatformType::BiliBili, "room", "old").await,
+            Err(RecorderManagerError::IoError(error)) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
+        let log = setup.open_log("events.jsonl").await.unwrap();
+        drop(setup);
+        assert!(manager
+            .delete_archive(PlatformType::BiliBili, "room", "old")
+            .await
+            .is_err());
+        log.flush().await.unwrap();
+        drop(log);
+        assert_eq!(original.read("subtitle.srt").await.unwrap(), b"old");
+
+        // Capture a pre-delete initializer as well as the delayed resume resolver.
+        let captured = manager
+            .archive_storage
+            .selected_store(None)
+            .await
+            .unwrap()
+            .recording("bilibili", "room", "old")
+            .unwrap();
+        manager
+            .delete_archive(PlatformType::BiliBili, "room", "old")
+            .await
+            .unwrap();
+        assert_eq!(
+            writer
+                .resolve_recording("bilibili", "room", "old")
+                .await
+                .err()
+                .unwrap()
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            captured.prepare().await.unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+        assert!(manager.db.get_record("room", "old").await.is_err());
+        assert!(manager
+            .db
+            .recording_storage_id("bilibili", "room", "old")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(!original.exists("subtitle.srt").await.unwrap());
+
+        // A fresh registry cannot forget the durable deletion marker.
+        let restarted = Arc::new(ArchiveStorage::new(
+            manager.db.clone(),
+            manager.config.clone(),
+        ));
+        assert!(restarted
+            .recording_writer()
+            .resolve_recording("bilibili", "room", "old")
+            .await
+            .is_err());
+        let fresh = restarted
+            .recording_writer()
+            .resolve_recording("bilibili", "room", "new")
+            .await
+            .unwrap();
+        fresh.prepare().await.unwrap();
+        assert_eq!(fresh.identity(), Some("default"));
+    }
+
+    #[tokio::test]
+    async fn removed_storage_keeps_archive_lists_and_refuses_file_operations() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager(dir.path()).await;
+        let mut config = manager.archive_storage.configuration().await.unwrap();
+        config.backends.insert(
+            "archive".into(),
+            crate::config::RecordingBackendConfig {
+                kind: "local".into(),
+                root: dir.path().join("archive").to_string_lossy().into_owned(),
+            },
+        );
+        manager
+            .archive_storage
+            .replace_configuration(config.clone())
+            .await
+            .unwrap();
+        let original = archive(&manager, PlatformType::BiliBili, "old", "archive").await;
+        assert!(
+            manager
+                .get_archive("room", "old")
+                .await
+                .unwrap()
+                .storage_available
+        );
+        config.backends.remove("archive");
+        manager
+            .archive_storage
+            .replace_configuration(config)
+            .await
+            .unwrap();
+
+        let record = manager.get_archive("room", "old").await.unwrap();
+        assert_eq!(record.storage_backend_id, "archive");
+        assert!(!record.storage_available);
+        assert!(record.storage_unavailable_reason.is_some());
+        let lists = [
+            manager.get_archives("room", 0, 10).await.unwrap(),
+            manager
+                .db
+                .get_archives_by_parent_id("room", &record.parent_id)
+                .await
+                .unwrap(),
+            manager.db.get_recent_record("", 0, 10).await.unwrap(),
+            manager.db.get_recent_record("room", 0, 10).await.unwrap(),
+            manager
+                .db
+                .get_room_records("bilibili", "room", 0, 10)
+                .await
+                .unwrap(),
+        ];
+        for list in lists {
+            assert_eq!(list.len(), 1);
+            assert_eq!(list[0].storage_backend_id, "archive");
+            assert!(!list[0].storage_available);
+            let enriched = manager.archive_records(list).await;
+            let json = serde_json::to_value(&enriched[0]).unwrap();
+            assert_eq!(json["storage_backend_id"], "archive");
+            assert_eq!(json["storage_available"], false);
+        }
+        assert!(manager
+            .get_archive_subtitle(PlatformType::BiliBili, "room", "old")
+            .await
+            .is_err());
+        assert!(manager
+            .delete_archive(PlatformType::BiliBili, "room", "old")
+            .await
+            .is_err());
+        assert!(manager.db.get_record("room", "old").await.is_ok());
+        assert_eq!(
+            manager
+                .db
+                .recording_storage_id("bilibili", "room", "old")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("archive")
+        );
+        assert_eq!(original.read("subtitle.srt").await.unwrap(), b"old");
+    }
+
+    #[tokio::test]
+    async fn missing_provider_never_falls_back_to_the_default_backend() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = manager(dir.path()).await;
+        manager
+            .archive_storage
+            .register_backend("first", RecordingStore::local(dir.path().join("first")))
+            .await
+            .unwrap();
+        let original = archive(&manager, PlatformType::BiliBili, "old", "first").await;
+        let fallback =
+            RecordingStore::local(&manager.config.read().await.storage.backends["default"].root)
+                .recording("bilibili", "room", "old")
+                .unwrap();
+        fallback
+            .write("subtitle.srt", b"wrong backend")
+            .await
+            .unwrap();
+        // Simulate restarting without the programmatic provider registration.
+        manager.archive_storage = Arc::new(ArchiveStorage::new(
+            manager.db.clone(),
+            manager.config.clone(),
+        ));
+        assert!(manager
+            .get_archive_subtitle(PlatformType::BiliBili, "room", "old")
+            .await
+            .is_err());
+        assert!(manager
+            .delete_archive(PlatformType::BiliBili, "room", "old")
+            .await
+            .is_err());
+        assert!(manager.db.get_record("room", "old").await.is_ok());
+        assert_eq!(original.read("subtitle.srt").await.unwrap(), b"old");
+        assert_eq!(
+            fallback.read("subtitle.srt").await.unwrap(),
+            b"wrong backend"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_subtitle_generation_preserves_the_previous_subtitle() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager(dir.path()).await;
+        manager
+            .archive_storage
+            .register_backend("first", RecordingStore::local(dir.path().join("first")))
+            .await
+            .unwrap();
+        let storage = archive(&manager, PlatformType::BiliBili, "old", "first").await;
+        storage
+            .write(
+                "playlist.m3u8",
+                b"#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-ENDLIST\n",
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            manager
+                .generate_archive_subtitle(PlatformType::BiliBili, "room", "old")
+                .await,
+            Err(RecorderManagerError::SubtitleGenerationFailed { .. })
+        ));
+        assert_eq!(storage.read("subtitle.srt").await.unwrap(), b"old");
+        assert!(!storage.exists("tmp.mp4").await.unwrap());
+        assert!(!storage.exists("tmp.m3u8").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn failed_storage_access_keeps_the_database_index_and_is_not_missing_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager(dir.path()).await;
+        let root = dir.path().join("backend");
+        manager
+            .archive_storage
+            .register_backend("first", RecordingStore::local(&root))
+            .await
+            .unwrap();
+        archive(&manager, PlatformType::BiliBili, "old", "first").await;
+        // A non-directory ancestor deterministically fails on every platform,
+        // unlike permission-based tests run by an elevated CI account.
+        std::fs::rename(&root, dir.path().join("saved")).unwrap();
+        std::fs::write(&root, b"unavailable backend root").unwrap();
+        assert!(manager
+            .delete_archive(PlatformType::BiliBili, "room", "old")
+            .await
+            .is_err());
+        assert!(manager.db.get_record("room", "old").await.is_ok());
+        assert!(manager
+            .load_danmus(PlatformType::BiliBili, "room", "old")
+            .await
+            .is_err());
+        assert!(matches!(
+            manager
+                .get_archive_subtitle(PlatformType::BiliBili, "room", "old")
+                .await,
+            Err(RecorderManagerError::IoError(_))
+        ));
     }
 }

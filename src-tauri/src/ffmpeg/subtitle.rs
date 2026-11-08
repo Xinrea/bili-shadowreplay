@@ -227,6 +227,58 @@ pub async fn generate_video_subtitle(
     language_hint: &str,
     powerlive: Option<crate::subtitle_generator::powerlive::PowerLiveOptions<'_>>,
 ) -> Result<GenerateResult, String> {
+    generate_video_subtitle_with_resources(
+        reporter,
+        file,
+        generator_type,
+        resource_dir,
+        whisper_model,
+        whisper_prompt,
+        openai_api_key,
+        openai_api_endpoint,
+        language_hint,
+        powerlive,
+        Vec::new(),
+    )
+    .await
+}
+
+/// Run only native work here, never transcription or other network operations.
+/// Dropping the caller does not cancel an already-running blocking media worker;
+/// this task keeps its inputs/outputs alive until that worker has actually exited.
+pub(crate) async fn run_native_with_resources<T, F>(
+    resources: Vec<ffmpeg_utils::MediaResourceLease>,
+    work: F,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = Result<T, String>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        let result = work.await;
+        drop(resources);
+        result
+    })
+    .await
+    .map_err(|error| format!("Native media task failed: {error}"))?
+}
+
+/// As above, but retain materialized archive assets during each native-only
+/// operation. The caller still owns/cancels the transcription pipeline.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn generate_video_subtitle_with_resources(
+    reporter: Option<&ProgressReporter>,
+    file: &Path,
+    generator_type: SubtitleGeneratorType,
+    resource_dir: &Path,
+    whisper_model: &str,
+    whisper_prompt: &str,
+    openai_api_key: &str,
+    openai_api_endpoint: &str,
+    language_hint: &str,
+    powerlive: Option<crate::subtitle_generator::powerlive::PowerLiveOptions<'_>>,
+    resources: Vec<ffmpeg_utils::MediaResourceLease>,
+) -> Result<GenerateResult, String> {
     match generator_type {
         SubtitleGeneratorType::Whisper => {
             if whisper_model.is_empty() {
@@ -249,8 +301,14 @@ pub async fn generate_video_subtitle(
             if let Some(reporter) = reporter {
                 reporter.update("提取完整音频中").await;
             }
-            let full_wav = super::audio::extract_full_audio(file).await?;
-            let full_wav_guard = TempArtifact::new(full_wav.clone());
+            let input = file.to_path_buf();
+            let (full_wav, full_wav_guard) =
+                run_native_with_resources(resources.clone(), async move {
+                    let path = super::audio::extract_full_audio(&input).await?;
+                    let guard = TempArtifact::new(path.clone());
+                    Ok((path, guard))
+                })
+                .await?;
             let (f32_samples, sample_rate) = read_wav_f32(&full_wav)?;
             // The samples are in memory and chunks are cut from `file`, so the
             // WAV is no longer needed. The guard also removes it if decoding fails.
@@ -298,7 +356,8 @@ pub async fn generate_video_subtitle(
             // Process each chunk
             let mut results = Vec::new();
             let mut rolling_context = String::new();
-            let temp_dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+            let temp_dir =
+                std::sync::Arc::new(tempfile::tempdir().map_err(|error| error.to_string())?);
             let chunk_padding = 0.35;
             for (i, chunk) in chunks.iter().enumerate() {
                 let segment_path = temp_dir.path().join(format!("seg_{i:03}.wav"));
@@ -316,12 +375,14 @@ pub async fn generate_video_subtitle(
                         ))
                         .await;
                 }
-                match super::audio::extract_audio_segment(
-                    file,
-                    padded_start,
-                    duration,
-                    &segment_path,
-                )
+                let mut extraction_resources = resources.clone();
+                extraction_resources.push(ffmpeg_utils::MediaResourceLease::new(temp_dir.clone()));
+                let input = file.to_path_buf();
+                let output = segment_path.clone();
+                match run_native_with_resources(extraction_resources, async move {
+                    super::audio::extract_audio_segment(&input, padded_start, duration, &output)
+                        .await
+                })
                 .await
                 {
                     Ok(()) => {
@@ -401,7 +462,11 @@ pub async fn generate_video_subtitle(
             )
             .await
             .map_err(|_| "Failed to initialize Whisper Online".to_string())?;
-            let chunk_dir = super::audio::extract_audio_chunks_guarded(file).await?;
+            let input = file.to_path_buf();
+            let chunk_dir = run_native_with_resources(resources.clone(), async move {
+                super::audio::extract_audio_chunks_guarded(&input).await
+            })
+            .await?;
             let mut chunk_paths = std::fs::read_dir(chunk_dir.path())
                 .map_err(|error| format!("Failed to read chunk directory: {error}"))?
                 .map(|entry| entry.map(|entry| entry.path()))
@@ -443,8 +508,14 @@ pub async fn generate_video_subtitle(
             ) {
                 file.to_path_buf()
             } else {
-                let path = super::audio::extract_full_audio(file).await?;
-                _extracted = TempArtifact::new(path.clone());
+                let input = file.to_path_buf();
+                let (path, guard) = run_native_with_resources(resources.clone(), async move {
+                    let path = super::audio::extract_full_audio(&input).await?;
+                    let guard = TempArtifact::new(path.clone());
+                    Ok((path, guard))
+                })
+                .await?;
+                _extracted = guard;
                 path
             };
             generator
@@ -457,6 +528,82 @@ pub async fn generate_video_subtitle(
 #[cfg(test)]
 mod subtitle_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cancelled_caller_keeps_native_assets_but_does_not_continue_pipeline() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        use tokio::sync::oneshot;
+        use tokio::time::{timeout, Duration};
+
+        struct Dropped(Option<oneshot::Sender<()>>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let input = directory.path().join("input");
+        std::fs::write(&input, b"native input").unwrap();
+        let (started_tx, started_rx) = oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (read_tx, read_rx) = oneshot::channel();
+        let (dropped_tx, dropped_rx) = oneshot::channel();
+        // Tuple fields drop in order: the cleanup notification follows TempDir.
+        let resource =
+            ffmpeg_utils::MediaResourceLease::new((directory, Dropped(Some(dropped_tx))));
+        let continued = Arc::new(AtomicBool::new(false));
+        let after_native = continued.clone();
+        let native_input = input.clone();
+        let caller = tokio::spawn(async move {
+            run_native_with_resources(vec![resource], async move {
+                tokio::task::spawn_blocking(move || {
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    read_tx.send(std::fs::read(native_input).unwrap()).unwrap();
+                    Ok::<_, String>(())
+                })
+                .await
+                .map_err(|error| error.to_string())?
+            })
+            .await
+            .unwrap();
+            // Represents transcription/network work, which must remain cancelled.
+            after_native.store(true, Ordering::SeqCst);
+        });
+        timeout(Duration::from_secs(3), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        assert!(
+            input.exists(),
+            "native input was removed before the worker finished"
+        );
+        release_tx.send(()).unwrap();
+        assert_eq!(
+            timeout(Duration::from_secs(3), read_rx)
+                .await
+                .unwrap()
+                .unwrap(),
+            b"native input"
+        );
+        timeout(Duration::from_secs(3), dropped_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            !input.exists(),
+            "lease must clean up after native completion"
+        );
+        assert!(!continued.load(Ordering::SeqCst));
+    }
 
     #[test]
     fn native_graph_preserves_source_timeline_and_ends_with_source_video() {

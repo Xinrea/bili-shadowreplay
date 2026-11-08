@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agent;
+mod archive_storage;
 mod archive_timing;
 mod audio_utils;
 mod config;
@@ -25,12 +26,15 @@ mod preview_audio;
 mod progress;
 mod project;
 mod recorder_manager;
+mod recording_assets;
+mod recording_materialization;
 mod safe_path;
 mod state;
 #[cfg(feature = "gui")]
 mod static_server;
 mod subtitle_generator;
 mod task;
+mod temp_storage;
 #[cfg(feature = "gui")]
 mod tray;
 mod webhook;
@@ -626,6 +630,36 @@ fn get_migrations() -> Vec<Migration> {
             sql: "ALTER TABLE uploads ADD COLUMN render_settings_json TEXT NOT NULL DEFAULT '{}';",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 26,
+            description: "add_recording_storage_bindings",
+            sql: database::storage::SCHEMA_SQL,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 27,
+            description: "add_recorder_storage_selection",
+            sql: database::recorder::STORAGE_BACKEND_MIGRATION_SQL,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 28,
+            description: "persist_recording_storage_configuration",
+            sql: database::storage::CONFIG_SCHEMA_SQL,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 29,
+            description: "prevent_deleted_recording_resurrection",
+            sql: database::storage::DELETION_SCHEMA_SQL,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 30,
+            description: "journal_recording_storage_transfers",
+            sql: database::storage_transfer::SCHEMA_SQL,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -651,6 +685,72 @@ impl MigrationSource<'static> for MigrationList {
             }
             Ok(migrations)
         })
+    }
+}
+
+#[cfg(all(test, feature = "headless"))]
+mod storage_migration_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn released_database_upgrades_directly_to_final_storage_schema() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let released = get_migrations()
+            .into_iter()
+            .filter(|migration| migration.version <= 25)
+            .collect();
+        Migrator::new(MigrationList(released))
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO records (platform, room_id, live_id) VALUES ('bilibili', '123', 'existing')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let current = Migrator::new(MigrationList(get_migrations()))
+            .await
+            .unwrap();
+        current.run(&pool).await.unwrap();
+        current.run(&pool).await.unwrap();
+        let version: i64 = sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(version, 30);
+        let mode: (String, i64, Option<String>) = sqlx::query_as(
+            "SELECT type, \"notnull\", dflt_value FROM pragma_table_info('recording_storage_transfers') WHERE name = 'mode'",
+        ).fetch_one(&pool).await.unwrap();
+        assert_eq!(mode, ("TEXT".into(), 1, None));
+        let obsolete_table: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'recording_storage_migrations'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(obsolete_table, 0);
+        let db = database::Database::new(
+            pool,
+            database::credentials::CredentialCipher::new(&[0; 32]).unwrap(),
+            events::EventBus::new(),
+        );
+        let storage = config::StorageConfig::local("/existing/cache".into());
+        db.initialize_storage_config(&storage).await.unwrap();
+        assert_eq!(db.storage_config().await.unwrap(), storage);
+        assert_eq!(
+            db.recording_storage_id("bilibili", "123", "existing")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("default"),
+        );
     }
 }
 
@@ -705,6 +805,10 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     db.fail_interrupted_uploads().await?;
     db.finish_pending_record_summaries().await?;
 
+    archive_storage::ArchiveStorage::new(db.clone(), config.clone())
+        .initialize()
+        .await?;
+
     let webhook_poster =
         webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None)
             .map_err(|e| e.to_string())?;
@@ -720,11 +824,11 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
         webhook_poster.clone(),
     ));
 
-    let _ = try_rebuild_archives(&db, config.read().await.cache.clone().into()).await;
-    let _ = try_convert_live_covers(&db, config.read().await.cache.clone().into()).await;
+    let _ = try_rebuild_archives(&db, &recorder_manager).await;
+    let _ = try_convert_live_covers(&db, &recorder_manager).await;
     let _ = try_convert_clip_covers(&db, config.read().await.output.clone().into()).await;
     let _ = try_add_parent_id_to_records(&db).await;
-    let _ = try_convert_entry_to_m3u8(&db, config.read().await.cache.clone().into()).await;
+    let _ = try_convert_entry_to_m3u8(&db, &recorder_manager).await;
     tokio::spawn(crate::handlers::project::create_legacy_projects(
         db.clone(),
         config.read().await.output.clone().into(),
@@ -732,6 +836,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
 
     let state = State {
         mcp_server: Arc::new(mcp::McpServer::default()),
+        temp_storage: temp_storage::TempStorage::new()?,
         db,
         config,
         webhook_poster,
@@ -849,6 +954,9 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
     if let Some(legacy) = &legacy {
         legacy_dirs::relocate_uploads(&db, legacy, &app_dirs).await;
     }
+    archive_storage::ArchiveStorage::new(db.clone(), config.clone())
+        .initialize()
+        .await?;
     let webhook_poster =
         webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None)
             .map_err(|e| e.to_string())?;
@@ -867,18 +975,25 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
         webhook_poster.clone(),
     ));
 
-    let static_server = Arc::new(start_static_server(config.clone()).await?);
+    let temp_storage = temp_storage::TempStorage::new()?;
+    let static_server = Arc::new(
+        start_static_server(
+            config.clone(),
+            recorder_manager.clone(),
+            temp_storage.clone(),
+        )
+        .await?,
+    );
 
     // try to rebuild archive table
-    let cache_path = config_clone.read().await.cache.clone();
     let output_path = config_clone.read().await.output.clone();
-    if let Err(e) = try_rebuild_archives(&db, cache_path.clone().into()).await {
+    if let Err(e) = try_rebuild_archives(&db, &recorder_manager).await {
         log::warn!("Rebuilding archive table failed: {e}");
     }
-    let _ = try_convert_live_covers(&db, cache_path.clone().into()).await;
+    let _ = try_convert_live_covers(&db, &recorder_manager).await;
     let _ = try_convert_clip_covers(&db, output_path.clone().into()).await;
     let _ = try_add_parent_id_to_records(&db).await;
-    let _ = try_convert_entry_to_m3u8(&db, cache_path.clone().into()).await;
+    let _ = try_convert_entry_to_m3u8(&db, &recorder_manager).await;
     tauri::async_runtime::spawn(crate::handlers::project::create_legacy_projects(
         db.clone(),
         output_path.clone().into(),
@@ -886,6 +1001,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
 
     let state = State {
         mcp_server: Arc::new(mcp::McpServer::default()),
+        temp_storage,
         events,
         db,
         config,
@@ -997,7 +1113,9 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::config::get_llm_config,
         crate::handlers::config::list_llm_models,
         crate::handlers::config::get_static_port,
-        crate::handlers::config::set_cache_path,
+        crate::handlers::config::set_storage_config,
+        crate::handlers::storage_transfer::preview_storage_transfer,
+        crate::handlers::storage_transfer::start_storage_transfer,
         crate::handlers::config::set_output_path,
         crate::handlers::config::update_notify,
         crate::handlers::config::update_whisper_model,
@@ -1027,6 +1145,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::recorder::get_recorder_list,
         crate::handlers::recorder::get_rtmp_ingest,
         crate::handlers::recorder::add_recorder,
+        crate::handlers::recorder::set_recorder_storage,
         crate::handlers::recorder::remove_recorder,
         crate::handlers::recorder::get_room_info,
         crate::handlers::recorder::get_recorder_status,

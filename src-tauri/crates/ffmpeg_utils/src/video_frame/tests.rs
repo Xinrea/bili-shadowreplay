@@ -32,6 +32,54 @@ fn clean(directory: &Path) {
         .starts_with(".bsr-frame-")));
 }
 
+#[tokio::test]
+async fn byte_jpeg_matches_native_file_extraction_without_a_cli() {
+    let ts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../recorder/tests/fixtures/probe-h264.ts");
+    // The tiny TS fixture has only one keyframe; use its beginning, as the
+    // existing native file seek cannot find a frame at a later timestamp.
+    for (source, timestamps) in [(ts, vec![0.0]), (fixture(), vec![0.0, 0.45])] {
+        for timestamp in timestamps {
+            for quality in [None, Some(2)] {
+                let expected = extract_jpeg(&source, timestamp, quality)
+                    .await
+                    .unwrap_or_else(|error| panic!("{} at {timestamp}: {error}", source.display()));
+                let actual =
+                    extract_jpeg_from_bytes(fs::read(&source).unwrap(), timestamp, quality)
+                        .await
+                        .unwrap();
+                jpeg(&actual);
+                assert_eq!(actual, expected, "{} at {timestamp}", source.display());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn byte_jpeg_rejects_invalid_inputs_without_a_cli() {
+    for data in [
+        Vec::new(),
+        b"not media".to_vec(),
+        b"ffconcat version 1.0\nfile 'unavailable.ts'\n".to_vec(),
+        b"#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nunavailable.ts\n#EXT-X-ENDLIST\n".to_vec(),
+    ] {
+        assert!(extract_jpeg_from_bytes(data, 0.0, None).await.is_err());
+    }
+    for timestamp in [f64::NAN, f64::INFINITY, -0.01, f64::MAX, 100.0] {
+        assert!(
+            extract_jpeg_from_bytes(fs::read(fixture()).unwrap(), timestamp, None)
+                .await
+                .is_err()
+        );
+    }
+    for quality in [0, 32, u32::MAX] {
+        assert!(
+            extract_jpeg_from_bytes(fs::read(fixture()).unwrap(), 0.0, Some(quality))
+                .await
+                .is_err()
+        );
+    }
+}
+
 #[test]
 fn rotated_dimensions_match_transpose_filters_including_flips() {
     assert_eq!(rotated_dimensions((1920, 1080), None), (1920, 1080));

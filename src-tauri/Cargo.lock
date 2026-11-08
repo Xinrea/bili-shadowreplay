@@ -732,6 +732,7 @@ dependencies = [
  "platform-dirs",
  "rand 0.10.3",
  "recorder",
+ "recording_storage",
  "regex",
  "reqwest 0.12.24",
  "rig-core",
@@ -2603,6 +2604,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]
@@ -5744,6 +5755,7 @@ dependencies = [
  "md5",
  "pct-str",
  "rand 0.10.3",
+ "recording_storage",
  "regex",
  "reqwest 0.12.24",
  "rml_rtmp",
@@ -5760,6 +5772,21 @@ dependencies = [
  "urlencoding",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "recording_storage"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "fs2",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

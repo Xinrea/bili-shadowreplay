@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::str::FromStr;
 
 use m3u8_rs::MediaPlaylistType;
@@ -159,8 +158,11 @@ fn summary_markdown(output: &SummaryOutput) -> String {
     markdown
 }
 
-async fn create_vod_playlist(playlist: &Path) -> Result<std::path::PathBuf, String> {
-    let bytes = tokio::fs::read(playlist)
+async fn create_vod_playlist(
+    workspace: &recording_storage::LocalAssets,
+) -> Result<std::path::PathBuf, String> {
+    let bytes = workspace
+        .read("playlist.m3u8")
         .await
         .map_err(|e| format!("读取录播播放列表失败: {e}"))?;
     let (_, mut media_playlist) =
@@ -171,15 +173,16 @@ async fn create_vod_playlist(playlist: &Path) -> Result<std::path::PathBuf, Stri
     media_playlist.end_list = true;
     media_playlist.playlist_type = Some(MediaPlaylistType::Vod);
 
-    let output_path = playlist.with_file_name(format!("summary-{}.m3u8", uuid::Uuid::new_v4()));
+    let output_key = format!("summary-{}.m3u8", uuid::Uuid::new_v4());
     let mut output = Vec::new();
     media_playlist
         .write_to(&mut output)
         .map_err(|e| format!("生成临时 VOD 播放列表失败: {e}"))?;
-    tokio::fs::write(&output_path, output)
+    workspace
+        .write(&output_key, &output)
         .await
         .map_err(|e| format!("写入临时 VOD 播放列表失败: {e}"))?;
-    Ok(output_path)
+    workspace.path(&output_key).map_err(|e| e.to_string())
 }
 
 async fn run_summary(
@@ -218,18 +221,25 @@ async fn run_summary(
         reporter.update("提取完整音频中").await;
 
         let config = state.config.read().await.clone();
-        let playlist = Path::new(&config.cache)
-            .join(&platform)
-            .join(&room_id)
-            .join(&live_id)
-            .join("playlist.m3u8");
-        if !playlist.is_file() {
-            return Err(format!("录播播放列表不存在: {}", playlist.display()));
-        }
-        let vod_playlist = create_vod_playlist(&playlist).await?;
-        let audio_result = crate::ffmpeg::extract_full_audio(&vod_playlist).await;
-        let _ = tokio::fs::remove_file(&vod_playlist).await;
-        let audio_path = audio_result?;
+        let workspace = state
+            .recorder_manager
+            .materialize_recording(
+                recorder::platforms::PlatformType::from_str(&platform)?,
+                &room_id,
+                &live_id,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        let vod_playlist = create_vod_playlist(&workspace).await?;
+        // Only native extraction is detached on cancellation: retain its inputs
+        // until the blocking worker exits, then return the lease to this caller.
+        // Never detach the pipeline that can initiate third-party transcription.
+        let (workspace, audio_path) = tokio::spawn(async move {
+            let audio_path = crate::ffmpeg::extract_full_audio(&vod_playlist).await?;
+            Ok::<_, String>((workspace, audio_path))
+        })
+        .await
+        .map_err(|e| format!("音频提取任务失败: {e}"))??;
 
         state
             .db
@@ -253,7 +263,7 @@ async fn run_summary(
             )),
         )
         .await;
-        let _ = tokio::fs::remove_file(&audio_path).await;
+        drop(workspace);
         let generated = generated?;
         if generated.subtitle_content.is_empty() {
             return Err("未识别出有效语音内容".to_string());

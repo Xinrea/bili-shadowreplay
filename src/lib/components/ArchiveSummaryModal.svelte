@@ -3,6 +3,7 @@
   import { marked } from "marked";
   import { AlertCircle, Loader2, RefreshCw, Sparkles, X } from "lucide-svelte";
   import { invoke } from "../invoker";
+  import { archiveFilesAvailable, archiveStorageReason } from "../recording-storage";
   import { trapFocus } from "../focus-trap";
   import { pageVisibility } from "../page-visibility";
   import ArchiveClipButton from "./ArchiveClipButton.svelte";
@@ -110,7 +111,7 @@
   }
 
   async function generate(force: boolean) {
-    if (!archive || actionLoading) return;
+    if (!archive || !archiveFilesAvailable(archive) || actionLoading) return;
     actionLoading = true;
     error = "";
     try {
@@ -234,6 +235,9 @@
       </div>
 
       <div class="ui-modal-body custom-scrollbar-light">
+        {#if !archiveFilesAvailable(archive)}
+          <p class="mb-3 text-[12px] text-danger-fg" role="status">{archiveStorageReason(archive)} 仅可查看数据库中已保存的总结和字幕，无法重新生成。</p>
+        {/if}
         {#if loading}
           <div class="flex min-h-[260px] items-center justify-center gap-2.5 text-[13px] text-fg-muted">
             <Loader2 class="h-5 w-5 animate-spin" />
@@ -298,7 +302,7 @@
               <p class="text-[13px] font-medium text-fg">总结生成失败</p>
               <p class="mt-2 max-w-xl text-[12px] text-danger-fg">{summary.error_message || "未知错误"}</p>
             </div>
-            <button class="ui-btn ui-btn-primary" onclick={() => generate(false)} disabled={actionLoading}>
+            <button class="ui-btn ui-btn-primary" onclick={() => generate(false)} disabled={actionLoading || !archiveFilesAvailable(archive)}>
               <RefreshCw class="h-3.5 w-3.5 {actionLoading ? 'animate-spin' : ''}" />
               从失败阶段重试
             </button>
@@ -336,7 +340,7 @@
             <button
               class="ui-btn ui-btn-primary h-8 px-4"
               onclick={() => generate(false)}
-              disabled={actionLoading || needsApiKey || llmConfigUnavailable}
+              disabled={actionLoading || needsApiKey || llmConfigUnavailable || !archiveFilesAvailable(archive)}
               title={needsApiKey || llmConfigError ? "请先在设置中配置 LLM API Key" : ""}
             >
               {actionLoading ? "正在创建任务…" : needsApiKey || llmConfigError ? "请先配置 LLM API Key" : llmConfigLoading ? "检测配置中…" : "生成总结"}
@@ -352,7 +356,7 @@
       {#if summary?.status === "success"}
         <div class="ui-modal-footer">
           <button class="ui-btn" onclick={close}>关闭</button>
-          <button class="ui-btn ui-btn-primary" onclick={() => generate(true)} disabled={actionLoading}>
+          <button class="ui-btn ui-btn-primary" onclick={() => generate(true)} disabled={actionLoading || !archiveFilesAvailable(archive)}>
             重新生成
           </button>
         </div>

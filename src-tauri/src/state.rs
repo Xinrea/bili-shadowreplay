@@ -17,6 +17,7 @@ pub struct State {
     pub mcp_server: Arc<crate::mcp::McpServer>,
     pub db: Arc<Database>,
     pub config: Arc<RwLock<Config>>,
+    pub temp_storage: crate::temp_storage::TempStorage,
     pub webhook_poster: WebhookPoster,
     pub recorder_manager: Arc<RecorderManager>,
     pub task_manager: Arc<TaskManager>,

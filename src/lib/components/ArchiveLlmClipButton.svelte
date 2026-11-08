@@ -8,6 +8,31 @@
   }
   /** Shared across instances so list rows and calendar menus stay in sync. */
   const llmClipStates = new SvelteMap<string, LlmClipState>();
+
+  // 一键 LLM 切片流程完全由前端驱动：页面卸载后剩余切片不会生成，后台
+  // Summary 任务即使完成也无人消费。菜单触发后组件可能先于流程结束卸载
+  // （onaction 会关闭菜单），所以计数与监听放在模块级，与实例生命周期解耦。
+  let activeLlmClipRuns = 0;
+
+  function handleBeforeUnload(event: BeforeUnloadEvent) {
+    if (activeLlmClipRuns === 0) return;
+    const message = "LLM 切片流程尚未完成，离开页面后剩余切片将不会生成。";
+    event.preventDefault();
+    event.returnValue = message;
+    return message;
+  }
+
+  function acquireUnloadGuard() {
+    if (activeLlmClipRuns++ === 0) {
+      window.addEventListener("beforeunload", handleBeforeUnload);
+    }
+  }
+
+  function releaseUnloadGuard() {
+    if (--activeLlmClipRuns === 0) {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    }
+  }
 </script>
 
 <script lang="ts">
@@ -86,6 +111,7 @@
     const setState = (next: LlmClipState) => llmClipStates.set(stateKey, next);
     onaction?.();
 
+    acquireUnloadGuard();
     try {
       setState({ phase: "summary", message: "正在读取 Summary…" });
 
@@ -97,21 +123,26 @@
 
       // 没有可复用的 Summary 时，先校验 LLM 配置，再走 Summary 链路重新生成并轮询结果
       if (!summary || summary.status !== "success") {
-        const llmConfig = await invoke<LlmConfig>("get_llm_config");
-        if (!(llmConfig.model || "").trim()) {
-          throw new Error("请先在设置中配置 Summary 使用的 LLM 模型");
-        }
-        if (llmConfig.provider === "openai" && !(llmConfig.api_key || "").trim()) {
-          throw new Error("请先在设置中配置 LLM API Key");
-        }
+        // 已有后台任务正在生成（processing）时直接轮询复用，不重新提交：
+        // 若旧任务在这期间完成，重新提交会被后端以“该录播已经生成 Summary”
+        // 拒绝，导致明明已有可用 Summary 却报切片失败。
+        if (summary?.status !== "processing") {
+          const llmConfig = await invoke<LlmConfig>("get_llm_config");
+          if (!(llmConfig.model || "").trim()) {
+            throw new Error("请先在设置中配置 Summary 使用的 LLM 模型");
+          }
+          if (llmConfig.provider === "openai" && !(llmConfig.api_key || "").trim()) {
+            throw new Error("请先在设置中配置 LLM API Key");
+          }
 
-        setState({ phase: "summary", message: "正在生成 Summary…" });
-        await invoke("generate_archive_summary", {
-          platform: target.platform,
-          roomId: target.room_id,
-          liveId: target.live_id,
-          force: false,
-        });
+          setState({ phase: "summary", message: "正在生成 Summary…" });
+          await invoke("generate_archive_summary", {
+            platform: target.platform,
+            roomId: target.room_id,
+            liveId: target.live_id,
+            force: false,
+          });
+        }
 
         let loaded = false;
         for (let attempt = 0; attempt < 3600; attempt++) {
@@ -237,6 +268,8 @@
       const message = String(error);
       setState({ phase: "failed", message });
       alert(`LLM 切片生成失败：${message}`);
+    } finally {
+      releaseUnloadGuard();
     }
   }
 </script>

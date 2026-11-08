@@ -9,6 +9,11 @@
   /** Shared across instances so list rows and calendar menus stay in sync. */
   const llmClipStates = new SvelteMap<string, LlmClipState>();
 
+  // 轮询兜底：后端启动时会把应用退出遗留的 processing Summary 标记为失败，
+  // 这里只限制异常挂死的最大等待（60 分钟）。
+  const SUMMARY_POLL_MAX_ATTEMPTS = 1800;
+  const SUMMARY_POLL_INTERVAL_MS = 2000;
+
   /*
   一键 LLM 切片流程完全由前端驱动：页面卸载后剩余切片不会生成，后台
   Summary 任务即使完成也无人消费。菜单触发后组件可能先于流程结束卸载
@@ -18,11 +23,8 @@
 
   function handleBeforeUnload(event: BeforeUnloadEvent) {
     if (activeLlmClipRuns === 0) return;
-    const message = "LLM 切片流程尚未完成，离开页面后剩余切片将不会生成。";
-    //这个codex review指出的问题实际上问题不大 我按照方案A做了提示处理 这个“剩余切片将不会生成”的情况实际上只会在浏览器模式发生 桌面端不会发生这样的情况 功能正常
     event.preventDefault();
-    event.returnValue = message;
-    return message;
+    event.returnValue = "LLM 切片流程尚未完成，离开页面后剩余切片将不会生成。";
   }
 
   function acquireUnloadGuard() {
@@ -54,10 +56,12 @@
   interface Props {
     archive: RecordItem;
     menu?: boolean;
+    /** Recording files are unavailable (e.g. backend-only storage); matches sibling buttons. */
+    disabled?: boolean;
     onaction?: () => void;
   }
 
-  let { archive, menu = false, onaction }: Props = $props();
+  let { archive, menu = false, disabled = false, onaction }: Props = $props();
 
   const key = $derived(archiveKey(archive));
   const state = $derived(llmClipStates.get(key));
@@ -165,8 +169,8 @@
         }
 
         let loaded = false;
-        for (let attempt = 0; attempt < 3600; attempt++) {
-          await delay(2000);
+        for (let attempt = 0; attempt < SUMMARY_POLL_MAX_ATTEMPTS; attempt++) {
+          await delay(SUMMARY_POLL_INTERVAL_MS);
           summary = await invoke<RecordSummary | null>("get_archive_summary", {
             platform: target.platform,
             roomId: target.room_id,
@@ -237,7 +241,8 @@
             merge: false,
           }),
         });
-        openTaskCenter(eventId);
+        // 第一个切片打开一次任务中心即可，后续切片不再反复切走焦点。
+        if (index === 0) openTaskCenter(eventId);
         try {
           await generateMaterials(eventId, params, false, false);
           succeeded++;
@@ -302,7 +307,7 @@
   class:text-accent-fg={state?.phase !== "done" && state?.phase !== "failed"}
   title={llmClipTitle()}
   aria-label={`一键 LLM 切片：${archive.title}`}
-  disabled={running || archive.length <= 0}
+  disabled={running || disabled || archive.length <= 0}
   onclick={() => void generateLlmClips()}
 >
   {#if running}

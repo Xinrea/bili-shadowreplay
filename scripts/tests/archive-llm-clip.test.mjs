@@ -168,7 +168,7 @@ test("reuses a successful summary and clips each highlight with danmu", async ()
   const second = f.requests[1];
   assert.equal(second.params.note, "连麦");
   assert.deepEqual(JSON.parse(JSON.stringify(second.params.ranges)), [{ start: 100, end: 160 }]);
-  assert.deepEqual(f.opened, [first.eventId]);
+  assert.deepEqual(f.opened, [first.eventId, second.eventId]);
   second.resolve({ id: 2 });
   await completion;
 
@@ -311,9 +311,9 @@ test("gives up after the polling bound when a summary never settles", async () =
   });
   await f.handlers.generateLlmClips();
   const reads = f.commandsCalled("get_archive_summary");
-  // Initial read plus one poll per attempt: 1800 attempts at 2s = the 60
-  // minutes backstop; the backend already fails summaries orphaned by restarts.
-  assert.equal(reads.length, 1801);
+  // Initial read plus one poll per attempt: 3600 attempts at 2s = the 2-hour
+  // backstop; the backend already fails summaries orphaned by restarts.
+  assert.equal(reads.length, 3601);
   assert.equal(f.state().phase, "failed");
   assert.match(f.state().message, /Summary 生成超时/);
   assert.deepEqual(f.requests, []);

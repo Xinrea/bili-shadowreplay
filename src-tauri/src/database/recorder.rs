@@ -325,4 +325,66 @@ mod tests {
             1
         );
     }
+
+    #[tokio::test]
+    async fn same_room_number_on_two_platforms_is_kept_and_removed_independently() {
+        let db = database().await;
+        db.add_recorder(PlatformType::BiliBili, "6", "bili")
+            .await
+            .unwrap();
+        db.add_recorder(PlatformType::Douyu, "6", "douyu")
+            .await
+            .unwrap();
+        let rows = db.get_recorders().await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows
+            .iter()
+            .any(|row| row.platform == "bilibili" && row.extra == "bili"));
+        assert!(rows
+            .iter()
+            .any(|row| row.platform == "douyu" && row.extra == "douyu"));
+
+        db.add_record(
+            PlatformType::BiliBili,
+            "bili-live",
+            "bili-live",
+            "6",
+            "title",
+            None,
+        )
+        .await
+        .unwrap();
+        db.add_record(
+            PlatformType::Douyu,
+            "douyu-live",
+            "douyu-live",
+            "6",
+            "title",
+            None,
+        )
+        .await
+        .unwrap();
+
+        let removed = db
+            .remove_recorder_for_platform("bilibili", "6")
+            .await
+            .unwrap();
+        assert_eq!(removed.platform, "bilibili");
+        let rows = db.get_recorders().await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].platform, "douyu");
+        assert_eq!(rows[0].extra, "douyu");
+        assert!(db
+            .get_room_records("bilibili", "6", 0, 10)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            db.get_room_records("douyu", "6", 0, 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
 }

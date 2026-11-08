@@ -660,6 +660,31 @@ fn get_migrations() -> Vec<Migration> {
             sql: database::storage_transfer::SCHEMA_SQL,
             kind: MigrationKind::Up,
         },
+        // Room numbers are not unique across platforms. A room_id-only primary
+        // key made adding Douyu 6 replace Bilibili 6.
+        Migration {
+            version: 31,
+            description: "recorders_primary_key_platform_room",
+            sql: r"
+                CREATE TABLE recorders_platform_room (
+                    room_id TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    created_at TEXT,
+                    auto_start INTEGER NOT NULL DEFAULT 1,
+                    extra TEXT,
+                    storage_backend_id TEXT,
+                    PRIMARY KEY (platform, room_id)
+                );
+                INSERT INTO recorders_platform_room (
+                    room_id, platform, created_at, auto_start, extra, storage_backend_id
+                )
+                SELECT room_id, platform, created_at, auto_start, extra, storage_backend_id
+                FROM recorders;
+                DROP TABLE recorders;
+                ALTER TABLE recorders_platform_room RENAME TO recorders;
+            ",
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -724,7 +749,7 @@ mod storage_migration_tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(version, 30);
+        assert_eq!(version, 31);
         let mode: (String, i64, Option<String>) = sqlx::query_as(
             "SELECT type, \"notnull\", dflt_value FROM pragma_table_info('recording_storage_transfers') WHERE name = 'mode'",
         ).fetch_one(&pool).await.unwrap();

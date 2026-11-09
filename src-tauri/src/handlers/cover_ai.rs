@@ -190,16 +190,15 @@ pub async fn suggest_upload_cover(
         }
     };
 
-    // `frame_index` counts the candidate slots, some of which may have failed
-    // to extract: take the nearest still-available frame. Without an AI pick,
-    // a middle candidate stands in, close to the usual default-cover rule.
+    // `frame_index` numbers the attached candidates, exactly as the prompt
+    // promises: attachment position into `candidates`, whose failed slots are
+    // already absent. An out-of-range answer clamps to the last attached
+    // candidate; without an AI pick, a middle candidate stands in, close to
+    // the usual default-cover rule.
     let slot = if warning.is_some() {
         candidates.len() / 2
     } else {
-        candidates
-            .iter()
-            .position(|(index, _)| *index == suggestion.frame_index.min(CANDIDATE_FRAMES - 1))
-            .unwrap_or(0)
+        suggestion.frame_index.min(candidates.len() - 1)
     };
     let timestamp = timestamps[candidates[slot].0];
 

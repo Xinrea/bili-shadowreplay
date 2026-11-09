@@ -9,13 +9,20 @@
     ListChecks,
     Loader2,
     Pen,
+    Sparkles,
     Upload,
     X,
   } from "lucide-svelte";
   import { onDestroy, untrack } from "svelte";
   import { trapFocus } from "../../focus-trap";
   import { get_static_url, invoke } from "../../invoker";
-  import { generateEventId, type OverlayImage, type ProjectItem, type UploadItem } from "../../interface";
+  import {
+    generateEventId,
+    type CoverSuggestion,
+    type OverlayImage,
+    type ProjectItem,
+    type UploadItem,
+  } from "../../interface";
   import { defaultRenderSettings, frameRateQuery, parseTimeline } from "../../project-timeline";
   import { announceTask, openTaskCenter, settleTask } from "../../stores/tasks";
   import {
@@ -27,6 +34,7 @@
     sourceDescription,
     sourceLabels,
   } from "../../uploads";
+  import { renderAutoCover } from "../cover/auto-cover-render";
   import CoverEditor from "../cover/CoverEditor.svelte";
   import { stickerRefUrl } from "../cover/custom-stickers";
   import { renderOverlayImages, StickerLoadError } from "../project/overlay-render";
@@ -56,6 +64,7 @@
   let saving: Promise<void> | null = null;
   let saveError = $state("");
   let posting = $state(false);
+  let generatingCover = $state(false);
   let showCoverEditor = $state(false);
   let coverUrl = $state("");
   let coverFailed = $state(false);
@@ -211,6 +220,27 @@
     await onChanged();
   }
 
+  /** AI 挑一帧画面并排上标题，生成即替换当前封面；不满意可再手动编辑。 */
+  async function generateCover() {
+    const title = profile.title.trim();
+    if (!editable || posting || generatingCover || !title) return;
+    generatingCover = true;
+    try {
+      const suggestion = await invoke<CoverSuggestion>("suggest_upload_cover", { id: upload.id });
+      const covers = await renderAutoCover(suggestion, title);
+      await invoke("update_upload_cover", { id: upload.id, ...covers });
+      // The previous file is gone; show the new one now.
+      await onChanged();
+      if (suggestion.warning) {
+        alert(`已用默认画面生成封面：${suggestion.warning}`);
+      }
+    } catch (error) {
+      alert("生成封面失败：" + (error instanceof Error ? error.message : error));
+    } finally {
+      generatingCover = false;
+    }
+  }
+
   async function post() {
     if (!editable || blocker || posting || savingDanmu || savingRenderSettings) return;
     posting = true;
@@ -338,10 +368,26 @@
             <div class="flex items-center justify-between">
               <span class="ui-label">视频封面</span>
               {#if editable}
-                <button type="button" class="ui-btn ui-btn-sm" disabled={posting} onclick={() => (showCoverEditor = true)}>
-                  <Pen class="h-3 w-3" />
-                  编辑封面
-                </button>
+                <div class="flex gap-1.5">
+                  <button
+                    type="button"
+                    class="ui-btn ui-btn-sm"
+                    disabled={posting || generatingCover || !profile.title.trim()}
+                    title={profile.title.trim() ? "AI 挑选画面并排上标题" : "先填写标题再生成封面"}
+                    onclick={generateCover}
+                  >
+                    {#if generatingCover}
+                      <Loader2 class="h-3 w-3 animate-spin" />
+                    {:else}
+                      <Sparkles class="h-3 w-3" />
+                    {/if}
+                    {generatingCover ? "生成中…" : "AI 生成封面"}
+                  </button>
+                  <button type="button" class="ui-btn ui-btn-sm" disabled={posting} onclick={() => (showCoverEditor = true)}>
+                    <Pen class="h-3 w-3" />
+                    编辑封面
+                  </button>
+                </div>
               {/if}
             </div>
             <div class="aspect-video overflow-hidden rounded-[10px] border border-line bg-sunken">

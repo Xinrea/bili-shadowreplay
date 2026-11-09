@@ -23,10 +23,21 @@ pub async fn extract_jpeg(
     timestamp: f64,
     quality: Option<u32>,
 ) -> Result<Vec<u8>, String> {
+    extract_jpeg_scaled(input, timestamp, quality, None).await
+}
+
+/// Like `extract_jpeg`, shrinking frames wider than `max_width` to it (never
+/// upscaling), keeping the aspect ratio.
+pub async fn extract_jpeg_scaled(
+    input: &Path,
+    timestamp: f64,
+    quality: Option<u32>,
+    max_width: Option<u32>,
+) -> Result<Vec<u8>, String> {
     let timestamp = parse_timestamp(timestamp)?;
     validate_quality(quality)?;
     let input = input.to_path_buf();
-    run_media(move |cancelled| extract_sync(&input, timestamp, quality, cancelled)).await
+    run_media(move |cancelled| extract_sync(&input, timestamp, quality, max_width, cancelled)).await
 }
 
 /// Extract a JPEG from owned recording bytes, without opening local files.
@@ -40,7 +51,7 @@ pub async fn extract_jpeg_from_bytes(
     validate_quality(quality)?;
     run_media(move |cancelled| {
         let input = open_bytes(data, cancelled.clone())?;
-        extract_input(input, timestamp, quality, cancelled)
+        extract_input(input, timestamp, quality, None, cancelled)
     })
     .await
 }
@@ -65,7 +76,7 @@ pub async fn write_jpeg(
         {
             return Err("JPEG 输出不能覆盖输入媒体".into());
         }
-        let data = extract_sync(&input, timestamp, quality, cancelled.clone())?;
+        let data = extract_sync(&input, timestamp, quality, None, cancelled.clone())?;
         let parent = output
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -182,16 +193,18 @@ fn extract_sync(
     path: &Path,
     start: i64,
     quality: Option<u32>,
+    max_width: Option<u32>,
     cancelled: Arc<AtomicBool>,
 ) -> Result<Vec<u8>, String> {
     let input = open_input(path, cancelled.clone())?;
-    extract_input(input, start, quality, cancelled)
+    extract_input(input, start, quality, max_width, cancelled)
 }
 
 fn extract_input(
     mut input: format::context::Input,
     start: i64,
     quality: Option<u32>,
+    max_width: Option<u32>,
     cancelled: Arc<AtomicBool>,
 ) -> Result<Vec<u8>, String> {
     let index = video_stream(&input).ok_or("媒体没有可提取的视频流")?;
@@ -284,14 +297,14 @@ fn extract_input(
                 Ok(()) => break,
                 Err(error) if again(error) => {
                     if receive_frame(&mut decoder, &mut decoded, &mut clock, &cancelled)? {
-                        return encode_frame(decoded, base, rate, rotation, quality, &cancelled);
+                        return encode_frame(decoded, base, rate, rotation, quality, max_width, &cancelled);
                     }
                 }
                 Err(error) => return Err(native_error("发送视频数据失败", error)),
             }
         }
         if receive_frame(&mut decoder, &mut decoded, &mut clock, &cancelled)? {
-            return encode_frame(decoded, base, rate, rotation, quality, &cancelled);
+            return encode_frame(decoded, base, rate, rotation, quality, max_width, &cancelled);
         }
     }
     loop {
@@ -299,14 +312,14 @@ fn extract_input(
             Ok(()) | Err(ffmpeg::Error::Eof) => break,
             Err(error) if again(error) => {
                 if receive_frame(&mut decoder, &mut decoded, &mut clock, &cancelled)? {
-                    return encode_frame(decoded, base, rate, rotation, quality, &cancelled);
+                    return encode_frame(decoded, base, rate, rotation, quality, max_width, &cancelled);
                 }
             }
             Err(error) => return Err(native_error("结束视频解码失败", error)),
         }
     }
     if receive_frame(&mut decoder, &mut decoded, &mut clock, &cancelled)? {
-        return encode_frame(decoded, base, rate, rotation, quality, &cancelled);
+        return encode_frame(decoded, base, rate, rotation, quality, max_width, &cancelled);
     }
     Err("指定时间没有可提取的视频帧".into())
 }
@@ -450,6 +463,7 @@ fn encode_frame(
     rate: ffi::AVRational,
     stream_rotation: Option<[i32; 9]>,
     quality: Option<u32>,
+    max_width: Option<u32>,
     cancelled: &AtomicBool,
 ) -> Result<Vec<u8>, String> {
     check_cancelled(cancelled)?;
@@ -489,6 +503,17 @@ fn encode_frame(
         .and_then(|side| display_matrix(side.data()))
         .or(stream_rotation);
     let mut filters = rotation_filters(rotation);
+    // Shrink oversized frames. The scale runs before the rotation filters, so
+    // it is sized from `decoded`'s pre-rotation dimensions; MJPEG keeps its
+    // chroma subsampling either way.
+    if let Some(max_width) = max_width.filter(|limit| decoded.width() > *limit) {
+        let scale = f64::from(max_width) / f64::from(decoded.width());
+        let height = ((f64::from(decoded.height()) * scale) / 2.0).round() * 2.0;
+        filters.insert(
+            0,
+            format!("scale={max_width}:{}:flags=lanczos", height.max(2.0) as u32),
+        );
+    }
     let pixel_formats = codec
         .video()
         .map_err(|error| native_error("读取 MJPEG 格式失败", error))?

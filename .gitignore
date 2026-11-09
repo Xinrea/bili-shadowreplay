@@ -14,6 +14,7 @@ dist-ssr
 /target/
 
 # Editor directories and files
+.zcode/
 .vscode/*
 !.vscode/extensions.json
 .idea

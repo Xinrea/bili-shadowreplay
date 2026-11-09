@@ -55,4 +55,4 @@ pub use metadata::{
     extract_video_metadata, extract_video_metadata_from_bytes, extract_video_metadata_from_parts,
     extract_video_metadata_with_init, probe_media, AudioStreamMetadata, MediaProbe, VideoMetadata,
 };
-pub use video_frame::{extract_jpeg, extract_jpeg_from_bytes, write_jpeg};
+pub use video_frame::{extract_jpeg, extract_jpeg_from_bytes, extract_jpeg_scaled, write_jpeg};

@@ -65,6 +65,10 @@
   let saveError = $state("");
   let posting = $state(false);
   let generatingCover = $state(false);
+  // Bumped when the AI replaces the cover, rebuilding the manual editor so
+  // it re-initializes from the new picture (its own state is kept across
+  // plain open/close, which must not reset an edit in progress).
+  let coverEditorKey = $state(0);
   let showCoverEditor = $state(false);
   let coverUrl = $state("");
   let coverFailed = $state(false);
@@ -226,11 +230,20 @@
     if (!editable || posting || generatingCover || !title) return;
     generatingCover = true;
     try {
+      // The suggestion reads the saved profile: land pending edits first,
+      // as `post` does, or the model sees stale title, desc and tags from
+      // before the 600 ms autosave fired.
+      if (saveTimer) clearTimeout(saveTimer);
+      await save();
       const suggestion = await invoke<CoverSuggestion>("suggest_upload_cover", { id: upload.id });
       const covers = await renderAutoCover(suggestion, title);
       await invoke("update_upload_cover", { id: upload.id, ...covers });
       // The previous file is gone; show the new one now.
       await onChanged();
+      // The AI cover replaced the file underneath the manual editor: bump
+      // the key so reopening rebuilds it from the new picture instead of
+      // keeping the pre-AI composition that would overwrite the result.
+      coverEditorKey++;
       if (suggestion.warning) {
         alert(`已用默认画面生成封面：${suggestion.warning}`);
       }
@@ -242,7 +255,10 @@
   }
 
   async function post() {
-    if (!editable || blocker || posting || savingDanmu || savingRenderSettings) return;
+    // Not while a cover generation runs: it saves its cover after the
+    // upload is claimed, which is refused, so the old cover would publish.
+    if (!editable || blocker || posting || savingDanmu || savingRenderSettings || generatingCover)
+      return;
     posting = true;
     const eventId = generateEventId();
     try {
@@ -528,7 +544,7 @@
           <button
             type="button"
             class="ui-btn ui-btn-primary"
-            disabled={Boolean(blocker) || posting || savingDanmu || savingRenderSettings}
+            disabled={Boolean(blocker) || posting || savingDanmu || savingRenderSettings || generatingCover}
             title={blocker || undefined}
             onclick={post}
           >
@@ -545,10 +561,12 @@
   </div>
 </div>
 
-<CoverEditor
-  bind:show={showCoverEditor}
-  video={videoUrl ? { file: videoUrl } : null}
-  image={coverUrl}
-  title={profile.title}
-  onSave={saveCover}
-/>
+{#key coverEditorKey}
+  <CoverEditor
+    bind:show={showCoverEditor}
+    video={videoUrl ? { file: videoUrl } : null}
+    image={coverUrl}
+    title={profile.title}
+    onSave={saveCover}
+  />
+{/key}

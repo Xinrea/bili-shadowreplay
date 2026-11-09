@@ -6,8 +6,10 @@ use base64::Engine;
 
 use crate::agent::{llm_prompt, llm_prompt_with_images, LlmImage};
 use crate::config::LlmConfig;
+use crate::database::upload::UploadRow;
 use crate::handlers::upload::{ensure_editable, frame_video_path};
 use crate::handlers::utils::parse_json_response;
+use crate::project::Timeline;
 use crate::state::State;
 use crate::state_type;
 
@@ -94,6 +96,50 @@ fn validate_llm_config(config: &LlmConfig) -> Result<(), String> {
     Ok(())
 }
 
+/// The `[start, end]` material intervals a project actually keeps, in file
+/// time, sorted: the posted video renders only its timeline clips, so a
+/// candidate frame picked outside them would never appear in the upload.
+/// `None` when the whole file is the video (material and file sources).
+async fn frame_clip_ranges(state: &State, upload: &UploadRow) -> Option<Vec<(f64, f64)>> {
+    if upload.source != "project" {
+        return None;
+    }
+    let project = state.db.get_project(upload.source_id).await.ok()?;
+    let timeline = Timeline::parse(&project.timeline).unwrap_or_default();
+    // `frame_video_path` samples the first clip's material, so only the
+    // clips cut from that same material can be shown as candidates: on a
+    // multi-material timeline the other materials get no candidates. The
+    // upload view's frame slider shares the limitation.
+    let material_id = timeline.clips.first()?.material_id;
+    let mut ranges: Vec<(f64, f64)> = timeline
+        .clips
+        .iter()
+        .filter(|clip| clip.material_id == material_id && clip.duration() > 0.0)
+        .map(|clip| (clip.start, clip.end))
+        .collect();
+    ranges.sort_by(|a, b| a.0.total_cmp(&b.0));
+    (!ranges.is_empty()).then_some(ranges)
+}
+
+/// Evenly spread `count` timestamps over `ranges` in file time, each range
+/// getting a share of the candidates proportional to its length.
+fn spread_over_ranges(ranges: &[(f64, f64)], count: usize) -> Vec<f64> {
+    let total: f64 = ranges.iter().map(|(start, end)| end - start).sum();
+    (0..count)
+        .map(|i| {
+            let target = total * (0.1 + 0.8 * (i as f64 / (count - 1) as f64));
+            let mut before = 0.0;
+            for (start, end) in ranges {
+                if target <= before + (end - start) {
+                    return start + (target - before);
+                }
+                before += end - start;
+            }
+            ranges.last().expect("non-empty ranges").1
+        })
+        .collect()
+}
+
 async fn request_frame_suggestion(
     config: &LlmConfig,
     prompt: &str,
@@ -139,9 +185,17 @@ pub async fn suggest_upload_cover(
         return Err("无法确定视频时长".to_string());
     }
 
-    let timestamps: Vec<f64> = (0..CANDIDATE_FRAMES)
-        .map(|i| duration * (0.1 + 0.8 * (i as f64 / (CANDIDATE_FRAMES - 1) as f64)))
-        .collect();
+    // Candidates must come from footage the upload actually keeps: a project
+    // renders only its timeline clips, so spreading over the raw material's
+    // duration would offer the model frames excluded from the posted video.
+    let timestamps = match frame_clip_ranges(&state, &upload).await {
+        Some(ranges) => spread_over_ranges(&ranges, CANDIDATE_FRAMES),
+        // The whole file is the video: the usual spread, skipping the black
+        // head most recordings start with.
+        None => (0..CANDIDATE_FRAMES)
+            .map(|i| duration * (0.1 + 0.8 * (i as f64 / (CANDIDATE_FRAMES - 1) as f64)))
+            .collect(),
+    };
     let mut candidates: Vec<(usize, String)> = Vec::new();
     for (index, timestamp) in timestamps.iter().enumerate() {
         match ffmpeg_utils::extract_jpeg_scaled(&video, *timestamp, Some(7), Some(CANDIDATE_WIDTH))

@@ -132,6 +132,16 @@ impl Database {
         Ok(rows)
     }
 
+    pub async fn has_recorder(&self, platform: &str, room_id: &str) -> Result<bool, DatabaseError> {
+        Ok(sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM recorders WHERE platform = ? AND room_id = ?)",
+        )
+        .bind(platform)
+        .bind(room_id)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     pub async fn recorder_storage_id(
         &self,
         platform: &str,

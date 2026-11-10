@@ -30,7 +30,7 @@
   const id = $props.id();
   const pageVisible = pageVisibility();
   let requestedSpanHours = $state<number | null>(null);
-  const spanHours = $derived(requestedSpanHours ?? (compact ? 12 : 24));
+  const spanHours = $derived(requestedSpanHours ?? (compact ? 4 : 8));
   let anchor = $state<number | null>(null);
   let selectedKey = $state<string | null>(null);
   let trigger: HTMLButtonElement | null = null;
@@ -158,17 +158,17 @@
 
 <div class="archive-calendar" class:compact class:is-dragging={drag !== null} bind:this={root} role="region" aria-label="录播时间日历">
   <div class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-line px-3 py-2">
-    <div class="flex flex-wrap items-center gap-2">
-      <div class="flex items-center gap-0.5">
+    <div class="flex flex-wrap items-center gap-1.5">
+      <div class="flex items-center gap-0.5 rounded-[8px] bg-control p-0.5">
         <button class="ui-btn ui-btn-ghost ui-btn-sm ui-btn-icon" aria-label="向前浏览时间轴" onclick={() => move(-1)}><ChevronLeft class="h-3.5 w-3.5" /></button>
-        <span class="text-center text-[11px] font-medium tabular-nums text-fg" style={`min-width:${compact ? 176 : 206}px`}>{rangeLabel()}</span>
+        <span class="whitespace-nowrap px-1 text-center text-[11px] font-medium tabular-nums text-fg" style="min-width:150px">{rangeLabel()}</span>
         <button class="ui-btn ui-btn-ghost ui-btn-sm ui-btn-icon" aria-label="向后浏览时间轴" onclick={() => move(1)}><ChevronRight class="h-3.5 w-3.5" /></button>
       </div>
       <button class="ui-btn ui-btn-sm" onclick={() => navigate(Date.now())}>现在</button>
       <button class="ui-btn ui-btn-ghost ui-btn-sm" disabled={latest === null} onclick={() => latest !== null && navigate(latest)}>最近录播</button>
-      <input type="datetime-local" class="ui-input h-7 w-[170px] px-2 py-0 text-[11px]" aria-label="定位时间" value={inputDate(anchor ?? latest ?? Date.now())} onchange={(event) => { if (event.currentTarget.value) navigate(Date.parse(event.currentTarget.value)); }} />
+      <input type="datetime-local" class="ui-input h-7 w-[162px] px-2 py-0 text-[11px]" aria-label="定位时间" value={inputDate(anchor ?? latest ?? Date.now())} onchange={(event) => { if (event.currentTarget.value) navigate(Date.parse(event.currentTarget.value)); }} />
     </div>
-    <div class="flex items-center gap-2 text-[11px] text-fg-muted">
+    <div class="flex items-center gap-1.5 text-[11px] text-fg-muted">
       <span class="tabular-nums">该范围 {layout.count} 条</span>
       <label class="flex items-center gap-1.5">缩放
         <select class="ui-input h-7 py-0 text-[11px]" aria-label="时间轴缩放" value={spanHours} onchange={(event) => zoom(Number(event.currentTarget.value))}>
@@ -224,20 +224,25 @@
 
 {#if selectedArchive && selectedEvent}
   <div use:placeMenu use:trapFocus={{ active: pageVisible() }} role="dialog" aria-modal="false" aria-labelledby={`${id}-event-title`} tabindex="-1" bind:this={popover} class="calendar-menu custom-scrollbar-light">
-    <div class="relative -mx-3 -mt-3 mb-3">
-      <ArchiveCover src={archiveFilesAvailable(selectedArchive) ? selectedArchive.cover : ""} alt={`直播封面：${selectedArchive.title || "未命名录播"}`} class="aspect-video w-full rounded-t-[9px]" loading="eager" />
-      <button class="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur-sm hover:bg-black/70" aria-label="关闭录播操作" onclick={closeMenu}><X class="h-3.5 w-3.5" /></button>
+    <div class="flex items-start gap-2.5">
+      <ArchiveCover src={archiveFilesAvailable(selectedArchive) ? selectedArchive.cover : ""} alt={`直播封面：${selectedArchive.title || "未命名录播"}`} class="h-[54px] w-24 shrink-0 rounded-[6px]" loading="eager" />
+      <div class="min-w-0 flex-1">
+        <h3 id={`${id}-event-title`} class="select-text break-words text-[13px] font-medium leading-snug text-fg">{selectedArchive.title || "未命名录播"}</h3>
+        <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-fg-muted">
+          <span class="min-w-0 truncate">{platformLabel(selectedArchive.platform)} · {roomNames.get(`${selectedArchive.platform}:${selectedArchive.room_id}`) || selectedArchive.room_id}</span>
+          {#if recordingKeys.has(archiveKey(selectedArchive))}<span class="ui-badge ui-badge-danger">录制中</span>{/if}
+        </div>
+        <ArchiveStorageBadge archive={selectedArchive} />
+      </div>
+      <button class="-mr-1 -mt-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] text-fg-muted transition-colors hover:bg-control-hover hover:text-fg" aria-label="关闭录播操作" onclick={closeMenu}><X class="h-3.5 w-3.5" /></button>
     </div>
-    <h3 id={`${id}-event-title`} class="select-text break-words text-[13px] font-medium text-fg">{selectedArchive.title || "未命名录播"}</h3>
-    <ArchiveStorageBadge archive={selectedArchive} />
-    <div class="mt-1 flex items-center gap-2 text-[11px] text-fg-muted"><span>{platformLabel(selectedArchive.platform)} · {roomNames.get(`${selectedArchive.platform}:${selectedArchive.room_id}`) || selectedArchive.room_id}</span>{#if recordingKeys.has(archiveKey(selectedArchive))}<span class="ui-badge ui-badge-danger">录制中</span>{/if}</div>
-    <dl class="my-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px] tabular-nums">
+    <dl class="mt-2.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-t border-line pt-2.5 text-[11px] tabular-nums">
       <dt class="text-fg-muted">{selectedEvent.timingKnown ? "开始" : "创建"}</dt><dd class="select-text text-fg-secondary">{new Date(selectedEvent.start).toLocaleString()}</dd>
       <dt class="text-fg-muted">{recordingKeys.has(archiveKey(selectedArchive)) ? "已录至" : "结束"}</dt><dd class="select-text text-fg-secondary">{selectedEvent.timingKnown ? new Date(selectedEvent.end).toLocaleString() : "未知"}</dd>
       <dt class="text-fg-muted">录制时长</dt><dd class="text-fg-secondary">{formatTimecode(selectedArchive.length, 0)}</dd>
       <dt class="text-fg-muted">大小 / 码率</dt><dd class="text-fg-secondary">{formatSize(selectedArchive.size)} / {formatBitrate(selectedArchive.size, selectedArchive.length)}</dd>
     </dl>
-    <div class="-mx-1 border-t border-line pt-1">{@render actions(selectedArchive, closeMenu)}</div>
+    <div class="-mx-1 mt-1.5 border-t border-line pt-1">{@render actions(selectedArchive, closeMenu)}</div>
     <label class="mt-1 flex cursor-pointer items-center gap-2 border-t border-line pt-2 text-[11px] text-fg-muted"><input type="checkbox" class="ui-checkbox" checked={selectedArchives.has(selectedArchive.live_id)} onchange={() => ontoggle(selectedArchive.live_id)} />加入批量选择</label>
   </div>
 {/if}
@@ -267,6 +272,10 @@
   .calendar-event.is-recording.is-open .event-block { outline-color: rgb(var(--c-danger)); }
   .calendar-event.is-unavailable .event-block { border: 1px dashed currentColor; background: rgb(var(--c-control)); color: rgb(var(--c-fg-muted)); box-shadow: none; }
   .event-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; font-size: 11px; font-weight: 500; line-height: 15px; }
-  .calendar-menu { position: absolute; z-index: 1100; overflow: auto; border: 1px solid rgb(var(--c-line-strong)); border-radius: 10px; background: rgb(var(--c-surface)); padding: 12px; color: rgb(var(--c-fg)); box-shadow: 0 8px 32px rgb(0 0 0 / .16); }
+  .calendar-menu { position: absolute; z-index: 1100; overflow: auto; border: 1px solid rgb(var(--c-line-strong)); border-radius: 10px; background: rgb(var(--c-surface)); padding: 12px; color: rgb(var(--c-fg)); box-shadow: 0 8px 32px rgb(0 0 0 / .16); scrollbar-width: thin; scrollbar-color: rgb(var(--c-scrollbar) / .45) transparent; }
+  .calendar-menu::-webkit-scrollbar { width: 6px; }
+  .calendar-menu::-webkit-scrollbar-track { background: transparent; }
+  .calendar-menu::-webkit-scrollbar-thumb { border: 0; background: rgb(var(--c-scrollbar) / .45); border-radius: 3px; }
+  .calendar-menu::-webkit-scrollbar-thumb:hover { background: rgb(var(--c-scrollbar-hover) / .6); }
   @media (prefers-reduced-motion: reduce) { .event-block { transition: none; } }
 </style>

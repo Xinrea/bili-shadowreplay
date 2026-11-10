@@ -6,7 +6,7 @@
   import { storageBackend, storageBackendEntries, storageBackendSupported, storageBackendLocation } from "../recording-storage";
   import StorageTransferSettings from "./StorageTransferSettings.svelte";
   import S3CredentialFields from "./S3CredentialFields.svelte";
-  import { Check, FolderOpen, HardDrive, Plus, Trash2, X } from "lucide-svelte";
+  import { Check, FolderOpen, HardDrive, ListChecks, Plus, Trash2, X } from "lucide-svelte";
   import { trapFocus } from "../focus-trap";
   import { pageVisibility } from "../page-visibility";
   import { openTaskCenter } from "../stores/tasks";
@@ -265,7 +265,7 @@
         <h2 id="storage-settings-title" tabindex="-1" class="!text-[16px] outline-none">录制存储</h2>
       </div>
       <div class="flex items-center gap-2">
-        <button class="ui-btn ui-btn-ghost ui-btn-sm" type="button" onclick={() => openTaskCenter()}>任务中心</button>
+        <button class="ui-btn ui-btn-ghost ui-btn-sm" type="button" onclick={() => openTaskCenter()}><ListChecks class="h-3.5 w-3.5" />任务中心</button>
         <button class="ui-btn ui-btn-ghost ui-btn-sm ui-btn-icon" type="button" aria-label="关闭录制存储设置窗口" disabled={saving || browsing || transferStarting} onclick={close}><X class="h-4 w-4" /></button>
       </div>
     </div>
@@ -350,74 +350,103 @@
               </fieldset>
             </form>
           {/if}
-          <ul class="divide-y divide-line border-y border-line">
-            {#each storageBackendEntries(storage) as [id, backend] (id)}
-              <li class="py-4">
-                <div class="flex items-start gap-3">
-                  <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] bg-control text-fg-muted"><HardDrive class="h-4 w-4" /></div>
-                  <div class="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row sm:items-start">
-                    <div class="min-w-0 flex-1">
-                      <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-                        <span class="break-all text-[13px] font-medium text-fg">{id}</span>
-                        {#if id === storage.default_backend}<span class="inline-flex items-center gap-1 text-[11px] text-accent-fg"><Check class="h-3 w-3" />默认</span>{/if}
-                        <span class="text-[11px] text-fg-muted">{backend.type === "local" ? "本地目录" : backend.type === "s3" ? "S3" : "暂不支持"}</span>
-                      </div>
-                      <p class="mt-1 select-text break-all text-[12px] leading-relaxed text-fg-muted">{storageBackendLocation(backend)}</p>
-                      {#if catalogStatuses[id]}
-                        <p class="mt-1 text-[12px] leading-relaxed" class:text-danger-fg={!catalogStatuses[id].ready} class:text-fg-muted={catalogStatuses[id].ready}>
-                          {catalogStatuses[id].ready ? (catalogStatuses[id].writable ? "已连接" : "只读：本机存储正在使用或应用处于只读模式") : catalogStatuses[id].error || "目录暂不可用"}
-                        </p>
+          <div class="overflow-hidden rounded-[8px] border border-line">
+            <table class="w-full table-fixed text-left">
+              <thead class="border-b border-line text-[11px] font-medium text-fg-muted">
+                <tr>
+                  <th class="w-8 px-3 py-2 font-medium"><span class="sr-only">状态</span></th>
+                  <th class="w-[200px] whitespace-nowrap px-2 py-2 font-medium">名称</th>
+                  <th class="w-[76px] whitespace-nowrap px-2 py-2 font-medium">类型</th>
+                  <th class="px-2 py-2 font-medium">位置</th>
+                  <th class="w-[170px] whitespace-nowrap px-3 py-2 text-right font-medium">操作</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-line text-[12px]">
+                {#if storageBackendEntries(storage).length === 0}
+                  <tr><td colspan="5" class="px-3 py-6 text-center text-[12px] text-fg-muted">还没有配置存储位置。</td></tr>
+                {/if}
+                {#each storageBackendEntries(storage) as [id, backend] (id)}
+                  {@const status = catalogStatuses[id]}
+                  <tr class="group hover:bg-control-hover/50">
+                    <td class="px-3 py-2.5">
+                      {#if status}
+                        <span class="inline-block h-2 w-2 rounded-full {status.ready ? (status.writable ? "bg-success" : "bg-warning") : "bg-danger"}"
+                          role="img" aria-label={status.ready ? (status.writable ? "已连接，可写入" : "只读") : "不可用"}
+                          title={status.ready ? (status.writable ? "已连接，可写入" : "只读：本机存储正在使用或应用处于只读模式")
+                            : (status.error || "目录暂不可用")}></span>
                       {:else}
-                        <p class="mt-1 text-[12px] text-fg-muted">目录状态暂不可用；如有旧转移未完成，请完成后重启应用进行迁移。</p>
+                        <span class="inline-block h-2 w-2 rounded-full bg-line-strong" role="img" aria-label="状态未知"
+                          title="目录状态暂不可用；如有旧转移未完成，请完成后重启应用进行迁移。"></span>
                       {/if}
-                    </div>
-                    <div class="storage-actions flex shrink-0 items-center gap-1" role="group" aria-label={`${id} 的存储操作`}>
-                      {#if backend.type === "s3"}
-                        <button class="ui-btn ui-btn-ghost ui-btn-sm" disabled={saving || browsing || transferBusy} onclick={() => editCredentials(id)}>
-                          {storage.credential_revisions?.[id] ? "更新凭证" : "填写凭证"}
-                        </button>
-                      {/if}
-                      {#if id !== storage.default_backend}
-                        <button class="ui-btn ui-btn-ghost ui-btn-sm" disabled={saving || browsing || transferBusy || !storageBackendSupported(backend)} onclick={() => setDefault(id)}>
-                          <Check class="h-3.5 w-3.5" />设为默认
-                        </button>
-                      {/if}
-                      <button class="ui-btn ui-btn-ghost ui-btn-sm" aria-label={`移除存储 ${id}`}
-                        disabled={saving || browsing || transferBusy || id === storage.default_backend}
-                        title={id === storage.default_backend ? "先将其他位置设为默认，再移除此存储" : "移除存储配置"}
-                        onclick={() => { removingId = id; error = ""; saved = ""; }}>
-                        <Trash2 class="h-3.5 w-3.5" />移除
-                      </button>
-                    </div>
-                  </div>
-                </div>
-                {#if editingCredentials === id}
-                  <form class="mt-3 space-y-3 rounded-[8px] border border-line-strong p-3" onsubmit={(event) => { event.preventDefault(); void saveCredentials(); }}>
-                    <h4 class="text-[13px] font-medium">{id} 的 S3 凭证</h4>
-                    <fieldset class="space-y-3" disabled={saving || browsing || transferBusy}>
-                      <S3CredentialFields idPrefix="edit-s3" bind:accessKeyId={s3AccessKeyId} bind:secretAccessKey={s3SecretAccessKey} bind:sessionToken={s3SessionToken} />
-                      <p class="ui-hint">更新不改变已有录播的位置。如果此存储正在录制，请先停止录制再更新。</p>
-                      <div class="flex justify-end gap-2">
-                        <button type="button" class="ui-btn ui-btn-ghost" onclick={cancelCredentials}>取消</button>
-                        <button type="submit" class="ui-btn ui-btn-primary" disabled={!s3AccessKeyId.trim() || !s3SecretAccessKey.trim()}>{saving ? "保存中…" : "保存凭证"}</button>
+                    </td>
+                    <td class="min-w-0 px-2 py-2.5">
+                      <div class="flex min-w-0 items-center gap-2">
+                        <span class="min-w-0 truncate text-[13px] font-medium text-fg" title={id}>{id}</span>
+                        {#if id === storage.default_backend}<span class="ui-badge ui-badge-accent inline-flex shrink-0 items-center gap-1"><Check class="h-3 w-3" />默认</span>{/if}
+                        {#if id !== storage.default_backend}
+                          <button class="storage-default-action opacity-0 pointer-events-none focus-visible:opacity-100 focus-visible:pointer-events-auto group-hover:opacity-100 group-hover:pointer-events-auto"
+                            disabled={saving || browsing || transferBusy || !storageBackendSupported(backend)} onclick={() => setDefault(id)}>
+                            <Check class="h-3 w-3" />设为默认
+                          </button>
+                        {/if}
                       </div>
-                    </fieldset>
-                  </form>
-                {/if}
-                {#if removingId === id}
-                  <div class="mt-3 space-y-2 rounded-[8px] border border-danger/30 bg-danger-soft p-3" role="group" aria-label={`确认移除存储 ${id}`}>
-                    <p class="text-[13px] font-medium text-danger-fg">移除 {id}？</p>
-                    <p class="text-[12px] leading-relaxed text-fg-secondary">对应录播将从列表隐藏，存储上的文件和目录数据库不会删除。重新添加同一目录或 S3 bucket/prefix 后会恢复。</p>
-                    <p class="text-[12px] leading-relaxed text-fg-secondary">存储名称可以复用。直播间仍绑定原存储，不会因同名存储被添加而自动切换。</p>
-                    <div class="flex justify-end gap-2">
-                      <button class="ui-btn ui-btn-ghost ui-btn-sm" disabled={saving} onclick={() => removingId = null}>取消</button>
-                      <button class="ui-btn ui-btn-sm ui-btn-danger" disabled={saving || browsing || transferBusy} onclick={() => removeBackend(id)}>确认移除</button>
-                    </div>
-                  </div>
-                {/if}
-              </li>
-            {/each}
-          </ul>
+                    </td>
+                    <td class="whitespace-nowrap px-2 py-2.5 text-fg-muted">{backend.type === "local" ? "本地目录" : backend.type === "s3" ? "S3" : "暂不支持"}</td>
+                    <td class="overflow-hidden px-2 py-2.5">
+                      <span class="block select-text truncate text-fg-muted" title={storageBackendLocation(backend)}>{storageBackendLocation(backend)}</span>
+                    </td>
+                    <td class="whitespace-nowrap px-3 py-2.5">
+                      <div class="storage-actions flex items-center justify-end gap-1" role="group" aria-label={`${id} 的存储操作`}>
+                        {#if backend.type === "s3"}
+                          <button class="ui-btn ui-btn-ghost ui-btn-sm" disabled={saving || browsing || transferBusy} onclick={() => editCredentials(id)}>
+                            {storage.credential_revisions?.[id] ? "更新凭证" : "填写凭证"}
+                          </button>
+                        {/if}
+                        <button class="ui-btn ui-btn-ghost ui-btn-sm" aria-label={`移除存储 ${id}`}
+                          disabled={saving || browsing || transferBusy || id === storage.default_backend}
+                          title={id === storage.default_backend ? "先将其他位置设为默认，再移除此存储" : "移除存储配置"}
+                          onclick={() => { removingId = id; error = ""; saved = ""; }}>
+                          <Trash2 class="h-3.5 w-3.5" />移除
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  {#if editingCredentials === id}
+                    <tr class="bg-sunken/40">
+                      <td colspan="5" class="px-3 pb-3 pt-1.5">
+                        <form class="space-y-3 rounded-[8px] border border-line-strong bg-surface p-3" onsubmit={(event) => { event.preventDefault(); void saveCredentials(); }}>
+                          <h4 class="text-[13px] font-medium">{id} 的 S3 凭证</h4>
+                          <fieldset class="space-y-3" disabled={saving || browsing || transferBusy}>
+                            <S3CredentialFields idPrefix="edit-s3" bind:accessKeyId={s3AccessKeyId} bind:secretAccessKey={s3SecretAccessKey} bind:sessionToken={s3SessionToken} />
+                            <p class="ui-hint">更新不改变已有录播的位置。如果此存储正在录制，请先停止录制再更新。</p>
+                            <div class="flex justify-end gap-2">
+                              <button type="button" class="ui-btn ui-btn-ghost" onclick={cancelCredentials}>取消</button>
+                              <button type="submit" class="ui-btn ui-btn-primary" disabled={!s3AccessKeyId.trim() || !s3SecretAccessKey.trim()}>{saving ? "正在保存…" : "保存凭证"}</button>
+                            </div>
+                          </fieldset>
+                        </form>
+                      </td>
+                    </tr>
+                  {/if}
+                  {#if removingId === id}
+                    <tr class="bg-danger-soft/40">
+                      <td colspan="5" class="px-3 pb-3 pt-1.5">
+                        <div class="space-y-2 rounded-[8px] border border-danger/30 bg-danger-soft p-3" role="group" aria-label={`确认移除存储 ${id}`}>
+                          <p class="text-[13px] font-medium text-danger-fg">移除 {id}？</p>
+                          <p class="text-[12px] leading-relaxed text-fg-secondary">对应录播将从列表隐藏，存储上的文件和目录数据库不会删除。重新添加同一目录或 S3 bucket/prefix 后会恢复。</p>
+                          <p class="text-[12px] leading-relaxed text-fg-secondary">存储名称可以复用。直播间仍绑定原存储，不会因同名存储被添加而自动切换。</p>
+                          <div class="flex justify-end gap-2">
+                            <button class="ui-btn ui-btn-ghost ui-btn-sm" disabled={saving} onclick={() => removingId = null}>取消</button>
+                            <button class="ui-btn ui-btn-sm ui-btn-danger" disabled={saving || browsing || transferBusy} onclick={() => removeBackend(id)}>确认移除</button>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  {/if}
+                {/each}
+              </tbody>
+            </table>
+          </div>
           {#if transferBusy}<p class="mt-3 text-[12px] text-fg-muted" role="status">正在检查或执行转移任务，存储配置暂不可修改。可在“录播转移”中查看状态。</p>{/if}
           <p class="mt-4 text-[11px] leading-relaxed text-fg-faint">上传、预览及处理产生的临时文件由系统管理，不占用这里的录播目录。</p>
         </div>
@@ -458,4 +487,23 @@
   .storage-view:hover:not(:disabled) { color: rgb(var(--c-fg)); }
   .storage-view:disabled { opacity: 0.5; cursor: not-allowed; }
   .storage-view:focus-visible { outline: 2px solid rgb(var(--c-accent)); outline-offset: -3px; }
+  /* Same pill as the default badge, but clickable. */
+  .storage-default-action {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 4px;
+    border-radius: 5px;
+    background: rgb(var(--c-control));
+    padding: 1px 6px;
+    color: rgb(var(--c-fg-muted));
+    font-size: 10px;
+    font-weight: 500;
+    line-height: 16px;
+    white-space: nowrap;
+    transition: background-color 120ms, color 120ms, opacity 120ms;
+  }
+  .storage-default-action:hover:not(:disabled) { background: rgb(var(--c-control-hover)); color: rgb(var(--c-fg)); }
+  .storage-default-action:disabled { cursor: not-allowed; }
+  .storage-default-action:focus-visible { outline: 2px solid rgb(var(--c-accent)); outline-offset: 1px; }
 </style>

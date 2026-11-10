@@ -3,7 +3,7 @@
   import { SvelteSet } from "svelte/reactivity";
   import {
     ArrowDown, ArrowUp, CalendarDays, ChevronLeft, ChevronRight, FileVideo, History,
-    List, Loader2, Play, Sparkles, Trash2,
+    List, Loader2, MoreVertical, Play, Sparkles, Trash2,
   } from "lucide-svelte";
   import { archiveKey, sortArchives, type ArchiveSortField, type ArchiveSortOrder } from "../archives";
   import { archiveFilesAvailable, archiveStorageReason } from "../recording-storage";
@@ -67,6 +67,11 @@
   let summaryStatuses: Record<string, RecordSummaryStatus> = $state({});
   let actionError = $state("");
   let disposed = false;
+  let openMenuArchiveKey: string | null = $state(null);
+  // The row menu is viewport-fixed so sticky cells and the table's scroll box cannot clip it.
+  let menuPlacement: { top: number; right: number; up: boolean } | null = $state(null);
+  const menuArchive = $derived(openMenuArchiveKey
+    ? archives.find((archive) => archiveKey(archive) === openMenuArchiveKey) ?? null : null);
 
   const roomOptions = $derived(rooms.map((room) => ({
     key: `${room.room_info.platform}:${room.room_info.room_id}`,
@@ -99,9 +104,15 @@
   });
   $effect(() => { if (currentPage > totalPages) currentPage = totalPages; });
   $effect(() => {
+    if (openMenuArchiveKey && !menuArchive) closeActionMenu();
+  });
+  $effect(() => {
     if (deleting) return;
     const available = new Set(archives.map((archive) => archive.live_id));
     for (const id of selectedArchives) if (!available.has(id)) selectedArchives.delete(id);
+  });
+  $effect(() => {
+    if (!pageVisible() && openMenuArchiveKey) closeActionMenu();
   });
 
   async function loadSummaryStatuses() {
@@ -200,15 +211,52 @@
     archiveToDelete = null;
   }
 
+  function closeActionMenu() {
+    openMenuArchiveKey = null;
+    menuPlacement = null;
+  }
+
+  // Pages are transformed for their slide transition, which would make a local
+  // `position: fixed` menu relative to the page box instead of the viewport.
+  function portalToBody(node: HTMLElement) {
+    document.body.appendChild(node);
+    return { destroy() { node.remove(); } };
+  }
+
+  function toggleActionMenu(event: MouseEvent, key: string) {
+    if (openMenuArchiveKey === key) { closeActionMenu(); return; }
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const gap = 4;
+    const estimatedHeight = 170; // four menu rows plus padding
+    const opensUp = rect.bottom + gap + estimatedHeight > window.innerHeight && rect.top - gap - estimatedHeight > 0;
+    menuPlacement = { top: opensUp ? rect.top - gap : rect.bottom + gap, right: Math.max(8, window.innerWidth - rect.right), up: opensUp };
+    openMenuArchiveKey = key;
+  }
+
+  function handlePointerDown(event: PointerEvent) {
+    if (!openMenuArchiveKey) return;
+    const target = event.target as Element;
+    if (target.closest(".archive-dropdown-menu") || target.closest("[data-action-menu-trigger]")) return;
+    closeActionMenu();
+  }
+
   function handleDeleteKeydown(event: KeyboardEvent) {
-    if (!showDeleteConfirm || !pageVisible() || event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+    if (!pageVisible() || event.isComposing || event.defaultPrevented) return;
+    if (openMenuArchiveKey && event.key === "Escape") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      closeActionMenu();
+      return;
+    }
+    if (!showDeleteConfirm || event.key !== "Escape") return;
     event.preventDefault();
     event.stopImmediatePropagation();
     cancelDelete();
   }
 </script>
 
-<svelte:window onkeydown={handleDeleteKeydown} />
+<svelte:window onkeydown={handleDeleteKeydown} onpointerdown={handlePointerDown}
+  onscrollcapture={() => { if (openMenuArchiveKey) closeActionMenu(); }} onresize={closeActionMenu} />
 
 {#snippet deleteSelectedButton()}
   <button class="ui-btn ui-btn-danger" disabled={selectedUnavailable} title={selectedUnavailable ? "选中项包含存储不可用的录播，无法删除文件；请先取消选择这些记录" : "删除选中的录播及文件"} onclick={() => { archiveToDelete = null; showDeleteConfirm = true; }}>
@@ -220,16 +268,26 @@
 {#snippet archiveActions(archive: RecordItem, menu: boolean, onaction: () => void)}
   {@const summaryStatus = summaryStatuses[archiveKey(archive)]?.status}
   {@const filesAvailable = archiveFilesAvailable(archive)}
+  {@const key = archiveKey(archive)}
   <!-- Dismissing the event menu clears its reactive archive argument. Capture it first. -->
-  <div class={menu ? "grid gap-0.5" : "flex items-center gap-0.5"} title={filesAvailable ? undefined : archiveStorageReason(archive)}>
-    <button class={`${menu ? "ui-menu-item w-full" : "archive-action"} hover:bg-accent-soft text-accent-fg`} title="预览录播" aria-label={`预览录播：${archive.title}`} disabled={!filesAvailable || archive.length <= 0} onclick={() => { const target = archive; onaction(); void playArchive(target); }}><Play class="h-4 w-4" />{#if menu}<span>预览录播</span>{/if}</button>
-    <button class={`${menu ? "ui-menu-item w-full" : "archive-action"} hover:bg-accent-soft text-accent-fg`} title="生成完整切片" aria-label={`生成完整切片：${archive.title}`} disabled={!filesAvailable || archive.length <= 0} onclick={() => { const target = archive; onaction(); wholeClipArchive = target; showWholeClipModal = true; }}><FileVideo class="h-4 w-4" />{#if menu}<span>生成完整切片</span>{/if}</button>
-    <ArchiveLlmClipButton {archive} {menu} {onaction} disabled={!filesAvailable} />
-    <button class={`${menu ? "ui-menu-item w-full" : "archive-action"} hover:bg-accent-soft`} class:text-success-fg={summaryStatus === "success"} class:text-danger-fg={summaryStatus === "failed"} class:text-accent-fg={summaryStatus !== "success" && summaryStatus !== "failed"} title={filesAvailable ? summaryButtonTitle(archive) : "查看已保存的总结（仅数据库）"} aria-label={`${filesAvailable ? summaryButtonTitle(archive) : "查看已保存的总结"}：${archive.title}`} disabled={filesAvailable && archive.length <= 0} onclick={() => { const target = archive; onaction(); summaryArchive = target; showSummaryModal = true; }}>
-      {#if summaryStatus === "processing"}<Loader2 class="h-4 w-4 animate-spin motion-reduce:animate-none" />{:else}<Sparkles class="h-4 w-4" />{/if}{#if menu}<span>{filesAvailable ? summaryButtonTitle(archive) : "查看已保存的总结"}</span>{/if}
-    </button>
-    <button class={`${menu ? "ui-menu-item w-full" : "archive-action"} text-danger-fg hover:bg-danger-soft`} title="删除记录及文件" aria-label={`删除记录：${archive.title}`} disabled={!filesAvailable} onclick={() => { const target = archive; onaction(); archiveToDelete = target; showDeleteConfirm = true; }}><Trash2 class="h-4 w-4" />{#if menu}<span>删除录播</span>{/if}</button>
-  </div>
+  {#if menu}
+    <div class="grid gap-0.5" title={filesAvailable ? undefined : archiveStorageReason(archive)}>
+      <button class="ui-menu-item w-full hover:bg-accent-soft text-accent-fg" disabled={!filesAvailable || archive.length <= 0} onclick={() => { const target = archive; onaction(); void playArchive(target); }}><Play class="h-4 w-4" /><span>预览录播</span></button>
+      <button class="ui-menu-item w-full hover:bg-accent-soft text-accent-fg" disabled={!filesAvailable || archive.length <= 0} onclick={() => { const target = archive; onaction(); wholeClipArchive = target; showWholeClipModal = true; }}><FileVideo class="h-4 w-4" /><span>生成完整切片</span></button>
+      <ArchiveLlmClipButton {archive} {menu} {onaction} disabled={!filesAvailable} />
+      <button class="ui-menu-item w-full hover:bg-accent-soft" class:text-success-fg={summaryStatus === "success"} class:text-danger-fg={summaryStatus === "failed"} class:text-accent-fg={summaryStatus !== "success" && summaryStatus !== "failed"} disabled={filesAvailable && archive.length <= 0} onclick={() => { const target = archive; onaction(); summaryArchive = target; showSummaryModal = true; }}>
+        {#if summaryStatus === "processing"}<Loader2 class="h-4 w-4 animate-spin motion-reduce:animate-none" />{:else}<Sparkles class="h-4 w-4" />{/if}<span>{filesAvailable ? summaryButtonTitle(archive) : "查看已保存的总结"}</span>
+      </button>
+      <button class="ui-menu-item w-full text-danger-fg hover:bg-danger-soft" disabled={!filesAvailable} onclick={() => { const target = archive; onaction(); archiveToDelete = target; showDeleteConfirm = true; }}><Trash2 class="h-4 w-4" /><span>删除录播</span></button>
+    </div>
+  {:else}
+    <div class="flex items-center justify-end gap-0.5" title={filesAvailable ? undefined : archiveStorageReason(archive)}>
+      <button class="archive-action hover:bg-accent-soft text-accent-fg" title="预览录播" aria-label={`预览录播：${archive.title}`} disabled={!filesAvailable || archive.length <= 0} onclick={() => { const target = archive; onaction(); void playArchive(target); }}><Play class="h-4 w-4" /></button>
+      <button class="archive-action hover:bg-control-hover text-fg-secondary" class:bg-control-hover={openMenuArchiveKey === key}
+        title="更多操作" aria-label={`更多操作：${archive.title}`} aria-haspopup="menu" aria-expanded={openMenuArchiveKey === key}
+        data-action-menu-trigger onclick={(event) => toggleActionMenu(event, key)}><MoreVertical class="h-4 w-4" /></button>
+    </div>
+  {/if}
 {/snippet}
 
 {#snippet calendarActions(archive: RecordItem, close: () => void)}
@@ -345,7 +403,7 @@
                   </td>
                   <td class="whitespace-nowrap px-3 py-2.5 tabular-nums">{formatSize(archive.size)}</td>
                   <td class="whitespace-nowrap px-3 py-2.5 tabular-nums text-fg-muted">{formatBitrate(archive.size, archive.length)}</td>
-                  <td class="sticky right-0 bg-surface px-3 py-2.5 group-hover:bg-control-hover">
+                  <td class="archive-actions-cell sticky right-0 px-3 py-2.5">
                     {@render archiveActions(archive, false, () => {})}
                   </td>
                 </tr>
@@ -357,6 +415,14 @@
     </div>
   </div>
 </BatchActionLayout>
+
+{#if menuArchive && menuPlacement}
+  <div use:portalToBody class="archive-dropdown-menu custom-scrollbar-light" class:opens-up={menuPlacement.up} role="menu"
+    aria-label={`录播操作：${menuArchive.title || "未命名录播"}`} tabindex="-1"
+    style={`top:${menuPlacement.top}px;right:${menuPlacement.right}px`}>
+    {@render archiveActions(menuArchive, true, closeActionMenu)}
+  </div>
+{/if}
 
 {#if showDeleteConfirm}
   <div class="ui-modal-backdrop">
@@ -389,4 +455,24 @@
   }
   .archive-action:disabled { cursor: not-allowed; opacity: 0.4; }
   .archive-action:focus-visible { outline: 2px solid rgb(var(--c-accent)); outline-offset: 1px; }
+  /* The sticky cell must stay opaque while rows scroll under it, yet match the
+     row's translucent hover tint instead of painting a darker block. */
+  .archive-actions-cell { background-color: rgb(var(--c-surface)); }
+  tbody tr:hover .archive-actions-cell {
+    background-image: linear-gradient(rgb(var(--c-control-hover) / .5), rgb(var(--c-control-hover) / .5));
+  }
+  .archive-dropdown-menu {
+    position: fixed;
+    z-index: 1100;
+    min-width: 172px;
+    max-height: min(320px, calc(100vh - 24px));
+    overflow: auto;
+    border: 1px solid rgb(var(--c-line-strong));
+    border-radius: 8px;
+    background: rgb(var(--c-surface));
+    padding: 4px;
+    color: rgb(var(--c-fg));
+    box-shadow: 0 8px 24px rgb(0 0 0 / .16);
+  }
+  .archive-dropdown-menu.opens-up { transform: translateY(-100%); }
 </style>

@@ -16,7 +16,7 @@ const context = vm.createContext({});
 const linked = new Map();
 // Icons are decorative; their package expects Vite's extension resolution.
 const icons = Object.fromEntries(["ArrowRight", "ArrowRightLeft", "Check", "CircleAlert",
-  "FolderOpen", "HardDrive", "Loader2", "Plus", "Trash2", "X"].map(name => [name, () => {}]));
+  "FolderOpen", "HardDrive", "ListChecks", "Loader2", "Plus", "Trash2", "X"].map(name => [name, () => {}]));
 async function dependency(name, dependencies) {
   return synthetic(name, name === "lucide-svelte" ? icons
     : name === "../recording-storage" ? recordingStorage : dependencies[name] ?? await import(name));
@@ -447,6 +447,7 @@ test("both settings views stay mounted with hidden/inert so background recovery 
     "../task-progress": progress.namespace,
     "../storage-transfer": helpers.namespace,
     "../stores/tasks": { openTaskCenter() {} },
+    "../focus-trap": { trapFocus() {} },
   }));
   await transfer.evaluate();
   const credentialSource = await readFile(new URL("../../src/lib/components/S3CredentialFields.svelte", import.meta.url), "utf8");
@@ -470,10 +471,11 @@ test("both settings views stay mounted with hidden/inert so background recovery 
     assert.match(body, /正在检查转移任务/, "recovery child exists even in locations view");
     assert.match(body, /\/A/);
     assert.match(body, /class="ui-badge tabular-nums" aria-label="2 个存储位置">2<\/span>/);
-    assert.match(body, /role="group" aria-label="B 的存储操作"[^>]*>[\s\S]*?设为默认[\s\S]*?移除<\/button><\/div>/);
+    assert.match(body, /role="group" aria-label="B 的存储操作"[^>]*>[\s\S]*?移除<\/button><\/div>/);
+    assert.match(body, /group-hover:opacity-100[\s\S]{0,200}?设为默认/, "default switch only appears on row hover");
     assert.doesNotMatch(body, /id="new-storage-id"/, "add editor is absent until requested");
     if (view === "locations") {
-      assert.match(body, /<div hidden="" inert=""><section[^>]*aria-labelledby="storage-transfer-title"/);
+      assert.match(body, /<div hidden="" inert=""><section[^>]*aria-label="录播转移"/);
     } else {
       assert.match(body, /<div hidden="" inert=""><div[^>]*>[\s\S]*?\/A/);
     }
@@ -503,13 +505,14 @@ test("transfer tasks have a Chinese name and A → B description, and cannot be 
   assert.equal(helpers.namespace.transferModeLabel("mixed"), "快速移动与复制");
 });
 
-async function showTransfer({ preview = null, rows = [], known = true, confirmed = false, sourceId = "A", storage = config() } = {}) {
+async function showTransfer({ preview = null, rows = [], known = true, confirmed = false, sourceId = "A", storage = config(), detail = null } = {}) {
   const dependencies = {
     "../invoker": { invoke() {}, TAURI_ENV: false },
     "../state-refresh": { createStateRefresh: () => ({}), watchStateChanges() {} },
     "../task-progress": progress.namespace,
     "../storage-transfer": helpers.namespace,
     "../stores/tasks": { openTaskCenter() {} },
+    "../focus-trap": { trapFocus() {} },
   };
   // Seed state without replacing bindable props. Fail loudly if declarations move,
   // rather than accidentally testing the unseeded recovery screen.
@@ -521,6 +524,7 @@ async function showTransfer({ preview = null, rows = [], known = true, confirmed
     ["let tasks = $state<TaskRow[]>([]);", `let tasks = $state<TaskRow[]>(${JSON.stringify(rows)});`],
     ["let tasksKnown = $state(false);", `let tasksKnown = $state(${known});`],
     ["let confirmed = $state(false);", `let confirmed = $state(${confirmed});`],
+    ["let detailTask = $state<TaskRow | null>(null);", `let detailTask = $state<TaskRow | null>(${JSON.stringify(detail)});`],
   ]) {
     assert.ok(seeded.includes(before), `Missing SSR seed declaration: ${before}`);
     seeded = seeded.replace(before, after);
@@ -596,18 +600,26 @@ test("rendered plans expose space and blockers, and task failures expose partial
   const cleanup = await showTransfer({ preview: plan({ recording_count: 0, cleanup_count: 2 }) });
   assert.match(cleanup, /开始转移/);
   assert.match(cleanup, /type="checkbox"/);
-  const failed = await showTransfer({ rows: [task({
+  const failedTask = task({
     status: "failed", message: "清理来源失败",
     metadata: JSON.stringify({ source_backend_id: "A", target_backend_id: "B", result: {
       transferred_recordings: 2, cleaned_recordings: 1, failed_recording: "live-3", error: "permission denied",
     } }),
-  })] });
+  });
+  const failed = await showTransfer({ rows: [failedTask] });
   assert.match(failed, /已转移 2 条，已清理来源 1 条/);
   assert.match(failed, /停止于：live-3/);
   assert.match(failed, /permission denied/);
   assert.match(failed, /已完成的录播不会回滚/);
   assert.match(failed, /重新检查这次转移/);
   assert.match(failed, /任务详情/);
+  assert.match(failed, /忽略转移结果/, "finished results can be dismissed");
+  const detailed = await showTransfer({ detail: failedTask });
+  assert.match(detailed, /转移任务详情/);
+  assert.match(detailed, /已转移录播<\/dt><dd[^>]*>2 条/);
+  assert.match(detailed, /停止于<\/dt><dd[^>]*>live-3/);
+  assert.match(detailed, /原始元数据/);
+  assert.match(detailed, /role="dialog" aria-modal="true" aria-labelledby="transfer-task-detail-title"/);
   const active = await showTransfer({ rows: [task({ status: "processing", message: "正在复制 1/3" })] });
   assert.match(active, /正在复制 1\/3/);
   assert.match(active, /可以关闭窗口，转移会在后台继续/);

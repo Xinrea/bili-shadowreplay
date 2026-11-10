@@ -240,22 +240,24 @@
     closeActionMenu();
   }
 
+  // Runs in the capture phase so an open row menu consumes Escape before the
+  // delete confirmation (or the page underneath) sees it.
+  function handleMenuKeydown(event: KeyboardEvent) {
+    if (!openMenuArchiveKey || !pageVisible() || event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    closeActionMenu();
+  }
+
   function handleDeleteKeydown(event: KeyboardEvent) {
-    if (!pageVisible() || event.isComposing || event.defaultPrevented) return;
-    if (openMenuArchiveKey && event.key === "Escape") {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      closeActionMenu();
-      return;
-    }
-    if (!showDeleteConfirm || event.key !== "Escape") return;
+    if (!showDeleteConfirm || !pageVisible() || event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
     event.preventDefault();
     event.stopImmediatePropagation();
     cancelDelete();
   }
 </script>
 
-<svelte:window onkeydown={handleDeleteKeydown} onpointerdown={handlePointerDown}
+<svelte:window onkeydowncapture={handleMenuKeydown} onkeydown={handleDeleteKeydown} onpointerdown={handlePointerDown}
   onscrollcapture={() => { if (openMenuArchiveKey) closeActionMenu(); }} onresize={closeActionMenu} />
 
 {#snippet deleteSelectedButton()}

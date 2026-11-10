@@ -106,6 +106,24 @@ impl Database {
         Ok(())
     }
 
+    pub async fn active_catalog_recordings_for_room(
+        &self,
+        platform: &str,
+        room: &str,
+    ) -> Result<Vec<String>, DatabaseError> {
+        if self.catalogs.get().is_none() {
+            return Ok(Vec::new());
+        }
+        Ok(sqlx::query_scalar(
+            "SELECT a.live_id FROM catalog_active_recordings a \
+             JOIN records r ON r.live_id=a.live_id WHERE r.platform=? AND r.room_id=?",
+        )
+        .bind(platform)
+        .bind(room)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     pub async fn catalog_recording_active(&self, alias: &str) -> Result<bool, DatabaseError> {
         if self.catalogs.get().is_none() {
             return Ok(false);

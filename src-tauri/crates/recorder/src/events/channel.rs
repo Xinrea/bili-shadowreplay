@@ -3,7 +3,7 @@ use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
 };
-use tokio::sync::{broadcast, mpsc, Notify};
+use tokio::sync::{broadcast, mpsc, oneshot, Notify};
 
 #[derive(Default)]
 struct PendingUpdates {
@@ -11,6 +11,14 @@ struct PendingUpdates {
     ready: VecDeque<String>,
 }
 type Updates = Arc<Mutex<PendingUpdates>>;
+
+enum Control {
+    Event(RecorderEvent),
+    DrainRecording {
+        live_id: String,
+        done: oneshot::Sender<()>,
+    },
+}
 
 /// Lifecycle events have bounded backpressure; recording deltas are coalesced
 /// per archive so slow event handling never stalls segment downloads.
@@ -23,17 +31,17 @@ pub struct RecorderEventSender {
 enum SenderKind {
     Broadcast(broadcast::Sender<RecorderEvent>),
     Queued {
-        control: mpsc::Sender<RecorderEvent>,
+        control: mpsc::Sender<Control>,
         updates: Updates,
         updated: Arc<Notify>,
     },
 }
 
 pub struct RecorderEventReceiver {
-    control: mpsc::Receiver<RecorderEvent>,
+    control: mpsc::Receiver<Control>,
     updates: Updates,
     updated: Arc<Notify>,
-    pending: Option<RecorderEvent>,
+    pending: Option<Control>,
 }
 
 pub fn recorder_event_channel(capacity: usize) -> (RecorderEventSender, RecorderEventReceiver) {
@@ -103,10 +111,41 @@ impl RecorderEventSender {
                     updated.notify_one();
                     Ok(())
                 } else {
-                    control.send(event).await
+                    control.send(Control::Event(event)).await.map_err(|error| {
+                        let Control::Event(event) = error.0 else {
+                            unreachable!()
+                        };
+                        mpsc::error::SendError(event)
+                    })
                 }
             }
         }
+    }
+
+    /// After stopping a producer, wait until earlier lifecycle events and its
+    /// final coalesced update have been handled. The consumer acknowledges on
+    /// its next recv, not when it merely dequeues that update.
+    ///
+    /// Must be awaited outside the event consumer: a full control queue needs
+    /// that consumer to keep making progress.
+    pub async fn drain_recording(&self, live_id: &str) -> std::io::Result<()> {
+        let SenderKind::Queued { control, .. } = &self.inner else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "broadcast recorder events cannot be drained",
+            ));
+        };
+        let (done, received) = oneshot::channel();
+        control
+            .send(Control::DrainRecording {
+                live_id: live_id.into(),
+                done,
+            })
+            .await
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
+        received
+            .await
+            .map_err(|_| std::io::ErrorKind::BrokenPipe.into())
     }
 
     /// Legacy broadcast consumers can still opt into preview events. The
@@ -141,18 +180,34 @@ impl RecorderEventReceiver {
 
     pub async fn recv(&mut self) -> Option<RecorderEvent> {
         if let Some(event) = self.pending.take() {
-            return Some(event);
+            match event {
+                Control::Event(event) => return Some(event),
+                Control::DrainRecording { done, .. } => {
+                    let _ = done.send(());
+                }
+            }
         }
         loop {
             tokio::select! {
                 biased;
-                event = self.control.recv() => {
-                    let Some(event) = event else { return self.take_update(None); };
+                control = self.control.recv() => {
+                    let Some(control) = control else { return self.take_update(None); };
+                    let event = match control {
+                        Control::Event(event) => event,
+                        Control::DrainRecording { live_id, done } => {
+                            if let Some(update) = self.take_update(Some(&live_id)) {
+                                self.pending = Some(Control::DrainRecording { live_id, done });
+                                return Some(update);
+                            }
+                            let _ = done.send(());
+                            continue;
+                        }
+                    };
                     // Persist the last accumulated deltas before RecordEnd
                     // checks archive size/duration or removes an empty record.
                     if let RecorderEvent::RecordEnd { recorder } | RecorderEvent::LiveEnd { recorder, .. } = &event {
                         if let Some(update) = self.take_update(Some(&recorder.live_id)) {
-                            self.pending = Some(event);
+                            self.pending = Some(Control::Event(event));
                             return Some(update);
                         }
                     }
@@ -189,6 +244,74 @@ mod tests {
             duration_secs: 0.25,
             cached_size_bytes: 10,
         }
+    }
+
+    #[tokio::test]
+    async fn recording_drain_waits_for_queued_start_and_handled_final_update() {
+        let (sender, mut receiver) = recorder_event_channel(1);
+        sender
+            .send(RecorderEvent::RecordStart {
+                recorder: snapshot("failed"),
+            })
+            .await
+            .unwrap();
+        sender.send(delta("failed")).await.unwrap();
+        sender.send(delta("other")).await.unwrap();
+        let mut draining = tokio_test::task::spawn(sender.drain_recording("failed"));
+        assert!(draining.poll().is_pending(), "full control queue must wait");
+        assert!(matches!(
+            receiver.recv().await,
+            Some(RecorderEvent::RecordStart { .. })
+        ));
+        assert!(draining.poll().is_pending());
+        assert!(
+            matches!(receiver.recv().await, Some(RecorderEvent::RecordUpdate { live_id, .. }) if live_id == "failed")
+        );
+        assert!(
+            draining.poll().is_pending(),
+            "dequeue is not acknowledgement of processing"
+        );
+        // Other recordings must keep their deltas and cannot delay the barrier.
+        sender.send(delta("other")).await.unwrap();
+        match receiver.recv().await.unwrap() {
+            RecorderEvent::RecordUpdate {
+                live_id,
+                duration_secs,
+                cached_size_bytes,
+            } => {
+                assert_eq!(live_id, "other");
+                assert_eq!((duration_secs, cached_size_bytes), (0.5, 20));
+            }
+            other => panic!("expected other recording update, got {other:?}"),
+        }
+        assert!(matches!(draining.poll(), std::task::Poll::Ready(Ok(()))));
+    }
+
+    #[tokio::test]
+    async fn recording_drain_reports_a_closed_consumer_and_cancelled_waits_keep_updates() {
+        let (sender, mut receiver) = recorder_event_channel(1);
+        sender.send(delta("a")).await.unwrap();
+        let mut draining = tokio_test::task::spawn(sender.drain_recording("a"));
+        assert!(draining.poll().is_pending());
+        drop(draining);
+        assert!(matches!(
+            receiver.recv().await,
+            Some(RecorderEvent::RecordUpdate { .. })
+        ));
+        sender
+            .send(RecorderEvent::RoomMetadataUpdated)
+            .await
+            .unwrap();
+        assert!(matches!(
+            receiver.recv().await,
+            Some(RecorderEvent::RoomMetadataUpdated)
+        ));
+        let mut draining = tokio_test::task::spawn(sender.drain_recording("a"));
+        assert!(draining.poll().is_pending());
+        drop(receiver);
+        assert!(
+            matches!(draining.poll(), std::task::Poll::Ready(Err(error)) if error.kind() == std::io::ErrorKind::BrokenPipe)
+        );
     }
 
     #[tokio::test]

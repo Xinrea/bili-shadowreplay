@@ -304,6 +304,56 @@ async fn live_end_parent_id(
         .then_some(parent_id))
 }
 
+/// Room numbers are not unique across platforms. The live map already keys
+/// `platform:room_id`; the catalog fallback must use the same identity or an
+/// unloaded Bilibili room disappears behind a loaded Douyu room with the same number.
+fn recorder_catalog_key(platform: &str, room_id: &str) -> String {
+    format!("{platform}:{room_id}")
+}
+
+fn offline_recorder(recorder: RecorderRow) -> RecorderInfo {
+    RecorderInfo {
+        platform_live_id: String::new(),
+        live_id: String::new(),
+        storage_id: None,
+        recording: false,
+        enabled: false,
+        room_info: RoomInfo {
+            platform: recorder.platform,
+            status: false,
+            room_title: recorder.room_id.clone(),
+            room_id: recorder.room_id,
+            room_cover: String::new(),
+        },
+        user_info: UserInfo {
+            user_id: String::new(),
+            user_name: String::new(),
+            user_avatar: String::new(),
+        },
+    }
+}
+
+fn merge_recorder_catalog(mut loaded: Vec<RecorderInfo>, stored: Vec<RecorderRow>) -> RecorderList {
+    let mut seen = HashSet::new();
+    for recorder in &loaded {
+        seen.insert(recorder_catalog_key(
+            &recorder.room_info.platform,
+            &recorder.room_info.room_id,
+        ));
+    }
+    let count = stored.len();
+    for recorder in stored {
+        if seen.insert(recorder_catalog_key(&recorder.platform, &recorder.room_id)) {
+            loaded.push(offline_recorder(recorder));
+        }
+    }
+    loaded.sort_by(|a, b| a.room_info.room_id.cmp(&b.room_info.room_id));
+    RecorderList {
+        count,
+        recorders: loaded,
+    }
+}
+
 impl RecorderManager {
     pub fn new(
         #[cfg(not(feature = "headless"))] app_handle: AppHandle,
@@ -1410,59 +1460,26 @@ impl RecorderManager {
     }
 
     pub async fn get_recorder_list(&self) -> RecorderList {
-        let mut summary = RecorderList {
-            count: 0,
-            recorders: Vec::new(),
-        };
-
-        // initialized recorder set
-        let mut recorder_set = HashSet::new();
         // Clone the Arcs out of the map so info().await doesn't hold the read lock.
         let recorders: Vec<_> = self.recorders.read().await.values().cloned().collect();
+        let mut loaded = Vec::with_capacity(recorders.len());
         for recorder in recorders {
-            let recorder_info = recorder.info().await;
-            summary.recorders.push(recorder_info.clone());
-            recorder_set.insert(recorder_info.room_info.room_id);
+            loaded.push(recorder.info().await);
         }
 
         // get recorders from db
-        let recorders = match self.db.get_recorders().await {
+        let stored = match self.db.get_recorders().await {
             Ok(recorders) => recorders,
             Err(e) => {
                 log::error!("Failed to get recorders from db: {e}");
-                return summary;
+                // Historical result on a catalog read failure: loaded rooms, count 0.
+                return RecorderList {
+                    count: 0,
+                    recorders: loaded,
+                };
             }
         };
-        summary.count = recorders.len();
-        for recorder in recorders {
-            // check if recorder is in recorder_set
-            if !recorder_set.contains(&recorder.room_id.to_string()) {
-                summary.recorders.push(RecorderInfo {
-                    platform_live_id: "".to_string(),
-                    live_id: "".to_string(),
-                    storage_id: None,
-                    recording: false,
-                    enabled: false,
-                    room_info: RoomInfo {
-                        platform: recorder.platform.as_str().to_string(),
-                        status: false,
-                        room_id: recorder.room_id.to_string(),
-                        room_title: recorder.room_id.to_string(),
-                        room_cover: "".to_string(),
-                    },
-                    user_info: UserInfo {
-                        user_id: "".to_string(),
-                        user_name: "".to_string(),
-                        user_avatar: "".to_string(),
-                    },
-                });
-            }
-        }
-
-        summary
-            .recorders
-            .sort_by(|a, b| a.room_info.room_id.cmp(&b.room_info.room_id));
-        summary
+        merge_recorder_catalog(loaded, stored)
     }
 
     pub async fn get_recorder_info(
@@ -2486,6 +2503,104 @@ mod hls_path_tests {
         ] {
             assert!(recording_storage::validate_key(path).is_err(), "{path:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod recorder_catalog_tests {
+    use super::{merge_recorder_catalog, RecorderInfo, RecorderRow, RoomInfo, UserInfo};
+
+    fn loaded(platform: &str, room_id: &str) -> RecorderInfo {
+        RecorderInfo {
+            platform_live_id: "live".into(),
+            live_id: "archive".into(),
+            storage_id: None,
+            recording: true,
+            enabled: true,
+            room_info: RoomInfo {
+                platform: platform.into(),
+                status: true,
+                room_id: room_id.into(),
+                room_title: format!("{platform} title"),
+                room_cover: String::new(),
+            },
+            user_info: UserInfo {
+                user_id: "user".into(),
+                user_name: platform.into(),
+                user_avatar: String::new(),
+            },
+        }
+    }
+
+    fn stored(platform: &str, room_id: &str) -> RecorderRow {
+        RecorderRow {
+            room_id: room_id.into(),
+            created_at: String::new(),
+            platform: platform.into(),
+            auto_start: true,
+            extra: String::new(),
+            storage_backend_id: None,
+        }
+    }
+
+    fn keys(list: &super::RecorderList) -> Vec<String> {
+        list.recorders
+            .iter()
+            .map(|recorder| {
+                format!(
+                    "{}:{}",
+                    recorder.room_info.platform, recorder.room_info.room_id
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn unloaded_room_stays_visible_when_another_platform_uses_the_same_number() {
+        // Douyu 6 is running. Bilibili 6 is still in the catalog but failed to
+        // load (for example its account is missing). Both must stay listed, or
+        // the archive page never asks for the Bilibili recordings.
+        let list = merge_recorder_catalog(
+            vec![loaded("douyu", "6")],
+            vec![stored("bilibili", "6"), stored("douyu", "6")],
+        );
+
+        assert_eq!(list.count, 2);
+        let mut identities = keys(&list);
+        identities.sort();
+        assert_eq!(
+            identities,
+            vec!["bilibili:6".to_string(), "douyu:6".to_string()]
+        );
+        let bilibili = list
+            .recorders
+            .iter()
+            .find(|recorder| recorder.room_info.platform == "bilibili")
+            .unwrap();
+        assert!(!bilibili.recording);
+        assert!(!bilibili.enabled);
+        assert_eq!(bilibili.room_info.room_title, "6");
+        let douyu = list
+            .recorders
+            .iter()
+            .find(|recorder| recorder.room_info.platform == "douyu")
+            .unwrap();
+        assert!(douyu.recording);
+        assert_eq!(douyu.room_info.room_title, "douyu title");
+    }
+
+    #[test]
+    fn loaded_room_is_not_listed_twice() {
+        let list = merge_recorder_catalog(
+            vec![loaded("bilibili", "6"), loaded("douyu", "7")],
+            vec![stored("bilibili", "6"), stored("douyu", "7")],
+        );
+
+        assert_eq!(list.count, 2);
+        assert_eq!(
+            keys(&list),
+            vec!["bilibili:6".to_string(), "douyu:7".to_string()]
+        );
     }
 }
 

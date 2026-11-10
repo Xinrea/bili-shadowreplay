@@ -68,6 +68,9 @@ jobs:
         with:
           packages: fonts-wqy-microhei libclang-dev ninja-build python3 libicu-dev libpng-dev libexpat1-dev libjpeg-dev
 
+      - name: Setup sherpa-onnx archive
+        uses: ./.github/actions/setup-sherpa-onnx
+
       - name: Setup Rust 1.99.0
         uses: dtolnay/rust-toolchain@1.99.0
 
@@ -79,6 +82,18 @@ jobs:
           # PRs restore main's cache. Saving one per PR fills the 10 GB repo
           # cache limit and evicts the larger Lint cache.
           save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # Same rust-cache stripping trap as the Lint workflow: on a cache hit the
+      # extracted `lib` directory survives as empty dirs while the .a files are
+      # gone, and `sherpa-onnx-sys`'s build script only checks the directory
+      # exists, so linking would fail without forcing a rebuild. The re-extract
+      # comes from SHERPA_ONNX_ARCHIVE_DIR instead of the flaky download.
+      - name: Repair sherpa-onnx prebuilt libs
+        run: |
+          if ! find src-tauri/target/sherpa-onnx-prebuilt -name 'libsherpa-onnx-c-api.a' 2>/dev/null | grep -q .; then
+            rm -rf src-tauri/target/sherpa-onnx-prebuilt
+            cargo clean -p sherpa-onnx-sys --manifest-path src-tauri/Cargo.toml
+          fi
 
       - name: Run tests
         working-directory: src-tauri

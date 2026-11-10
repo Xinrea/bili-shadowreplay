@@ -20,6 +20,7 @@
   import { archiveViewMode, restoreArchiveViewPreference, setArchiveViewMode } from "../stores/archive-view";
   import ArchiveCalendarView from "./ArchiveCalendarView.svelte";
   import ArchiveCover from "./ArchiveCover.svelte";
+  import ArchiveLlmClipButton from "./ArchiveLlmClipButton.svelte";
   import ArchiveSummaryModal from "./ArchiveSummaryModal.svelte";
   import BatchActionLayout from "./BatchActionLayout.svelte";
   import DeleteConfirmActions from "./DeleteConfirmActions.svelte";
@@ -223,6 +224,7 @@
   <div class={menu ? "grid gap-0.5" : "flex items-center gap-0.5"} title={filesAvailable ? undefined : archiveStorageReason(archive)}>
     <button class={`${menu ? "ui-menu-item w-full" : "archive-action"} hover:bg-accent-soft text-accent-fg`} title="预览录播" aria-label={`预览录播：${archive.title}`} disabled={!filesAvailable || archive.length <= 0} onclick={() => { const target = archive; onaction(); void playArchive(target); }}><Play class="h-4 w-4" />{#if menu}<span>预览录播</span>{/if}</button>
     <button class={`${menu ? "ui-menu-item w-full" : "archive-action"} hover:bg-accent-soft text-accent-fg`} title="生成完整切片" aria-label={`生成完整切片：${archive.title}`} disabled={!filesAvailable || archive.length <= 0} onclick={() => { const target = archive; onaction(); wholeClipArchive = target; showWholeClipModal = true; }}><FileVideo class="h-4 w-4" />{#if menu}<span>生成完整切片</span>{/if}</button>
+    <ArchiveLlmClipButton {archive} {menu} {onaction} disabled={!filesAvailable} />
     <button class={`${menu ? "ui-menu-item w-full" : "archive-action"} hover:bg-accent-soft`} class:text-success-fg={summaryStatus === "success"} class:text-danger-fg={summaryStatus === "failed"} class:text-accent-fg={summaryStatus !== "success" && summaryStatus !== "failed"} title={filesAvailable ? summaryButtonTitle(archive) : "查看已保存的总结（仅数据库）"} aria-label={`${filesAvailable ? summaryButtonTitle(archive) : "查看已保存的总结"}：${archive.title}`} disabled={filesAvailable && archive.length <= 0} onclick={() => { const target = archive; onaction(); summaryArchive = target; showSummaryModal = true; }}>
       {#if summaryStatus === "processing"}<Loader2 class="h-4 w-4 animate-spin motion-reduce:animate-none" />{:else}<Sparkles class="h-4 w-4" />{/if}{#if menu}<span>{filesAvailable ? summaryButtonTitle(archive) : "查看已保存的总结"}</span>{/if}
     </button>

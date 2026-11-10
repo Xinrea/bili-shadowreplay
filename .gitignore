@@ -27,6 +27,7 @@ dist-ssr
 
 src-tauri/*.exe
 src-tauri/windows-runtime/*.dll
+src-tauri/windows-runtime/*.bsr-old
 
 # test files
 src-tauri/tests/audio/*.srt
@@ -40,6 +41,9 @@ docs/.vitepress/dist
 *.debug.map
 
 .cargo
+
+# local dev script
+start-dev-cuda.ps1
 
 # Local updater signing key (never commit the private key).
 .updater/

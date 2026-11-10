@@ -409,9 +409,13 @@ impl CatalogRuntime {
         }
         let ids: Vec<String> = sqlx::query_scalar(
             "SELECT live_id FROM recording_records r WHERE storage_backend_id=? \
-             AND NOT EXISTS(SELECT 1 FROM recording_storage_transfers t WHERE t.live_id=r.live_id)",
+             AND NOT EXISTS(SELECT 1 FROM recording_storage_transfers t WHERE t.live_id=r.live_id) \
+             AND NOT EXISTS(SELECT 1 FROM catalog_projection_entries e \
+                 JOIN catalog_projection_heads h ON h.storage_uuid=e.storage_uuid AND h.generation=e.generation \
+                 WHERE e.storage_uuid=? AND json_extract(e.entry,'$.record.live_id')=r.live_id)",
         )
         .bind(alias)
+        .bind(uuid.to_string())
         .fetch_all(&mut *tx)
         .await?;
         for id in ids {
@@ -685,14 +689,38 @@ async fn restore_summary(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     record: &CatalogRecord,
 ) -> Result<(), DatabaseError> {
-    if record.results.is_null() {
+    let summary = if record.results.is_null() {
+        None
+    } else {
+        let results: ArchiveResults =
+            serde_json::from_value(record.results.clone()).map_err(error)?;
+        if results.version != 1 {
+            return Err(error("Unsupported archive results version"));
+        }
+        results.summary
+    };
+    // A catalog stores completed results, not a running/failed local task's
+    // transcript, stage or task association. Preserve those operational rows
+    // for surviving recordings, including regeneration of an older summary.
+    let operational: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM record_summaries \
+         WHERE platform=? AND room_id=? AND live_id=? AND status!='success')",
+    )
+    .bind(&record.platform)
+    .bind(&record.room_id)
+    .bind(&record.live_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if operational {
         return Ok(());
     }
-    let results: ArchiveResults = serde_json::from_value(record.results.clone()).map_err(error)?;
-    if results.version != 1 {
-        return Err(error("Unsupported archive results version"));
-    }
-    if let Some(s) = results.summary {
+    sqlx::query("DELETE FROM record_summaries WHERE platform=? AND room_id=? AND live_id=?")
+        .bind(&record.platform)
+        .bind(&record.room_id)
+        .bind(&record.live_id)
+        .execute(&mut **tx)
+        .await?;
+    if let Some(s) = summary {
         sqlx::query("INSERT INTO record_summaries(platform,room_id,live_id,status,stage,subtitle_srt,subtitle_text,summary_markdown,highlights_json,model_provider,model_name,prompt_version,source_duration,created_at,updated_at) \
             VALUES (?,?,?,'success','completed',?,?,?,?,?,?,?,?,?,?)")
             .bind(&record.platform).bind(&record.room_id).bind(&record.live_id)

@@ -14,6 +14,56 @@ fn event(ts: i64, content: &str) -> LiveEvent {
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn lost_head_reply_and_failed_readback_do_not_duplicate_a_batch() {
+    let backend = Arc::new(HistoryBackend::new("", 2));
+    let storage = backend.storage();
+    let writer = DanmuWriter::from_storage(&storage, "events.jsonl")
+        .await
+        .unwrap();
+    backend.allow_history.store(true, Ordering::Relaxed);
+    backend.lose_head_reply.store(true, Ordering::Relaxed);
+    for ts in 100..110 {
+        writer.add_event(&event(ts, "batch")).await.unwrap();
+    }
+    settle().await;
+    advance(Duration::from_secs(5)).await;
+    settle().await;
+    assert_eq!(
+        backend.writes.load(Ordering::Relaxed),
+        2,
+        "batch committed but reply lost"
+    );
+    writer.add_event(&event(110, "next batch")).await.unwrap();
+    advance(Duration::from_secs(5)).await;
+    settle().await;
+    assert_eq!(
+        backend.writes.load(Ordering::Relaxed),
+        2,
+        "readback failure must retain original position"
+    );
+    advance(Duration::from_secs(5)).await;
+    settle().await;
+    writer.close().await.unwrap();
+    assert_eq!(
+        backend.writes.load(Ordering::Relaxed),
+        4,
+        "retry verifies rather than rewrites committed bytes"
+    );
+    assert_eq!(
+        backend.history_reads.load(Ordering::Relaxed),
+        1,
+        "only the attempted batch is verified"
+    );
+    let entries = DanmuStorage::read_entries(&storage, "events.jsonl")
+        .await
+        .unwrap();
+    assert_eq!(
+        entries.iter().map(|e| e.ts).collect::<Vec<_>>(),
+        [vec![0, 1], (100..111).collect()].concat()
+    );
+}
+
 fn sized_event(bytes: usize) -> LiveEvent {
     let mut event = event(0, "");
     let padding = bytes - event_line(&event).unwrap().len();

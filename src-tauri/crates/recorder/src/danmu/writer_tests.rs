@@ -21,6 +21,8 @@ pub(crate) struct HistoryBackend {
     writes: AtomicUsize,
     fail_writes: AtomicBool,
     fail_head: AtomicBool,
+    lose_head_reply: AtomicBool,
+    fail_head_reads: AtomicUsize,
     pause_write: AtomicBool,
     writing: tokio::sync::Notify,
     release: tokio::sync::Notify,
@@ -53,6 +55,8 @@ impl HistoryBackend {
             writes: AtomicUsize::new(0),
             fail_writes: AtomicBool::new(false),
             fail_head: AtomicBool::new(false),
+            lose_head_reply: AtomicBool::new(false),
+            fail_head_reads: AtomicUsize::new(0),
             pause_write: AtomicBool::new(false),
             writing: tokio::sync::Notify::new(),
             release: tokio::sync::Notify::new(),
@@ -77,6 +81,15 @@ impl StorageBackend for HistoryBackend {
         }
         if key.ends_with("/head") {
             self.head_reads.fetch_add(1, Ordering::Relaxed);
+            if self
+                .fail_head_reads
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                    count.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
         }
         self.objects
             .lock()
@@ -110,6 +123,10 @@ impl StorageBackend for HistoryBackend {
             .lock()
             .unwrap()
             .insert(key.into(), bytes.to_vec());
+        if key.ends_with("/head") && self.lose_head_reply.swap(false, Ordering::Relaxed) {
+            self.fail_head_reads.store(1, Ordering::Relaxed);
+            return Err(io::ErrorKind::ConnectionReset.into());
+        }
         Ok(())
     }
     async fn remove(&self, key: &str) -> io::Result<()> {

@@ -423,3 +423,29 @@ async fn substituted_backend_propagates_failures_without_calling_them_missing() 
     );
     assert_eq!(storage.workspace().read("0.ts").await.unwrap(), b"complete");
 }
+#[tokio::test]
+async fn positional_append_resumes_partial_local_writes_and_rejects_changed_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let storage = recording_storage::RecordingStore::local(directory.path())
+        .scope("bilibili/room/live")
+        .unwrap();
+    storage.prepare().await.unwrap();
+    let log = storage.open_log("events.jsonl").await.unwrap();
+    log.append(b"old\n").await.unwrap();
+    let position = log.position().await.unwrap();
+    storage.write("events.jsonl", b"old\npar").await.unwrap();
+    log.append_at(position, b"partial\n").await.unwrap();
+    log.append_at(position, b"partial\n").await.unwrap();
+    assert_eq!(
+        storage.read_log("events.jsonl").await.unwrap(),
+        b"old\npartial\n"
+    );
+    assert!(log.append_at(position, b"changed\n").await.is_err());
+    let next = log.position().await.unwrap();
+    log.append_at(next, b"next\n").await.unwrap();
+    assert!(log.append_at(position, b"partial\n").await.is_err());
+    assert_eq!(
+        storage.read_log("events.jsonl").await.unwrap(),
+        b"old\npartial\nnext\n"
+    );
+}

@@ -94,6 +94,136 @@ async fn close(db: &Database) {
 }
 
 #[tokio::test]
+async fn refresh_preserves_summary_work_but_reconciles_completed_and_removed_results() {
+    for regenerate in [false, true] {
+        let (_root, db, storage, _) = fixture().await;
+        storage.start_catalogs(false).await.unwrap();
+        create(&db, &storage, "summary", "a").await;
+        if regenerate {
+            db.start_record_summary("bilibili", "123", "summary", "previous-task", false)
+                .await
+                .unwrap();
+            db.complete_record_summary(
+                "bilibili",
+                "123",
+                "summary",
+                "old summary",
+                "[]",
+                "test",
+                "test",
+            )
+            .await
+            .unwrap();
+        }
+        db.start_record_summary("bilibili", "123", "summary", "current-task", true)
+            .await
+            .unwrap();
+        db.save_record_summary_subtitle(
+            "bilibili",
+            "123",
+            "summary",
+            "cached srt",
+            "cached text",
+            3.5,
+        )
+        .await
+        .unwrap();
+        let before = db
+            .get_record_summary("bilibili", "123", "summary")
+            .await
+            .unwrap()
+            .unwrap();
+        storage.refresh_catalogs(true).await.unwrap();
+        let after = db
+            .get_record_summary("bilibili", "123", "summary")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&before).unwrap(),
+            serde_json::to_value(&after).unwrap()
+        );
+        db.fail_record_summary("bilibili", "123", "summary", "temporary failure")
+            .await
+            .unwrap();
+        storage.refresh_catalogs(true).await.unwrap();
+        let failed = db
+            .get_record_summary("bilibili", "123", "summary")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(failed.status, "failed");
+        assert_eq!(failed.subtitle_text.as_deref(), Some("cached text"));
+        assert_eq!(failed.task_id.as_deref(), Some("current-task"));
+        db.start_record_summary("bilibili", "123", "summary", "retry-task", false)
+            .await
+            .unwrap();
+        db.complete_record_summary(
+            "bilibili",
+            "123",
+            "summary",
+            "new summary",
+            "[]",
+            "test",
+            "test",
+        )
+        .await
+        .unwrap();
+        storage.refresh_catalogs(true).await.unwrap();
+        let completed = db
+            .get_record_summary("bilibili", "123", "summary")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(completed.status, "success");
+        assert_eq!(completed.summary_markdown.as_deref(), Some("new summary"));
+        let writer = db.catalogs.get().unwrap().handles.lock().await["a"]
+            .writer
+            .clone()
+            .unwrap();
+        let mut entry = writer
+            .find_recording("bilibili", "123", "summary")
+            .await
+            .unwrap()
+            .unwrap();
+        entry.record.results = serde_json::json!({"version": 1, "summary": null});
+        writer
+            .put(entry.record, Some(entry.revision))
+            .await
+            .unwrap();
+        storage.refresh_catalogs(true).await.unwrap();
+        assert!(db
+            .get_record_summary("bilibili", "123", "summary")
+            .await
+            .unwrap()
+            .is_none());
+        db.start_record_summary("bilibili", "123", "summary", "deleted-task", false)
+            .await
+            .unwrap();
+        let writer = db.catalogs.get().unwrap().handles.lock().await["a"]
+            .writer
+            .clone()
+            .unwrap();
+        let entry = writer
+            .find_recording("bilibili", "123", "summary")
+            .await
+            .unwrap()
+            .unwrap();
+        writer
+            .delete_recording(entry.record, entry.revision)
+            .await
+            .unwrap();
+        storage.refresh_catalogs(true).await.unwrap();
+        assert!(db
+            .get_record_summary("bilibili", "123", "summary")
+            .await
+            .unwrap()
+            .is_none());
+        close(&db).await;
+    }
+}
+
+#[tokio::test]
 async fn remount_finishes_media_cleanup_from_json_deletion_marker() {
     let (root, db, storage, _) = fixture().await;
     storage.start_catalogs(false).await.unwrap();

@@ -1,6 +1,6 @@
 use super::event_line;
 use danmu_stream::LiveEvent;
-use recording_storage::{AppendLog, RecordingStorage, LOG_CHUNK_BYTES};
+use recording_storage::{AppendLog, LogPosition, RecordingStorage, LOG_CHUNK_BYTES};
 use std::{io, time::Duration};
 use tokio::{
     sync::{mpsc, oneshot},
@@ -42,6 +42,7 @@ impl DanmuWriter {
                 stopped,
                 closing: false,
                 pending: Vec::new(),
+                position: None,
                 deadline: None,
                 context,
             };
@@ -103,6 +104,7 @@ struct BatchWriter {
     stopped: oneshot::Receiver<()>,
     closing: bool,
     pending: Vec<u8>,
+    position: Option<LogPosition>,
     deadline: Option<Instant>,
     context: String,
 }
@@ -162,7 +164,19 @@ impl BatchWriter {
         }
         loop {
             let started = Instant::now();
-            match self.log.append(&self.pending).await {
+            let result = async {
+                let position = match self.position {
+                    Some(position) => position,
+                    None => {
+                        let position = self.log.position().await?;
+                        self.position = Some(position);
+                        position
+                    }
+                };
+                self.log.append_at(position, &self.pending).await
+            }
+            .await;
+            match result {
                 Ok(()) => {
                     log::debug!(
                         "Event batch committed: {} bytes={} duration_ms={}",
@@ -171,6 +185,7 @@ impl BatchWriter {
                         started.elapsed().as_millis()
                     );
                     self.pending.clear();
+                    self.position = None;
                     self.deadline = None;
                     return Ok(());
                 }

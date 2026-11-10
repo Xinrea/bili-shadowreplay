@@ -89,9 +89,49 @@ pub(crate) async fn append<B: StorageBackend + ?Sized>(
     bytes: &[u8],
 ) -> io::Result<()> {
     let directory = directory(key)?;
-    let mut next = count(backend, key).await?.ok_or_else(|| {
+    let next = count(backend, key).await?.ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound, "log must be opened before append")
     })?;
+    publish(backend, &directory, bytes, next).await
+}
+
+pub(crate) async fn append_at<B: StorageBackend + ?Sized>(
+    backend: &B,
+    key: &str,
+    bytes: &[u8],
+    start: u64,
+) -> io::Result<()> {
+    let directory = directory(key)?;
+    let end = start
+        .checked_add(bytes.len().div_ceil(LOG_CHUNK_BYTES) as u64)
+        .ok_or_else(|| io::Error::other("log chunk count overflow"))?;
+    let current = count(backend, key)
+        .await?
+        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+    if current == end {
+        // The head PUT may have succeeded despite a lost response. Verify only
+        // this batch, never scan the history or append at the advanced head.
+        for (index, expected) in bytes.chunks(LOG_CHUNK_BYTES).enumerate() {
+            let key = format!("{directory}/{:020}", start + index as u64);
+            if backend.read_bounded(&key, LOG_CHUNK_BYTES).await? != expected {
+                return Err(io::Error::other("committed log batch does not match retry"));
+            }
+        }
+        return Ok(());
+    }
+    if current != start {
+        return Err(io::Error::other("log position changed during append"));
+    }
+    // Reuse the original indices even after an unacknowledged publication.
+    publish(backend, &directory, bytes, start).await
+}
+
+async fn publish<B: StorageBackend + ?Sized>(
+    backend: &B,
+    directory: &str,
+    bytes: &[u8],
+    mut next: u64,
+) -> io::Result<()> {
     if bytes.is_empty() {
         return Ok(());
     }

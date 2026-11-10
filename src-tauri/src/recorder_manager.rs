@@ -225,6 +225,10 @@ pub struct RecorderManager {
     task_manager: Arc<TaskManager>,
     resource_dir: PathBuf,
     recorders: Arc<RwLock<HashMap<String, Arc<dyn RecorderTrait + Send + Sync>>>>,
+    /// Rooms whose removal is in progress. Lock order: `to_remove` before
+    /// `recorders`. Never wait for `to_remove` while holding a `recorders`
+    /// guard; tokio's fair RwLock turns the inversion into a deadlock as soon
+    /// as a writer queues on either lock.
     to_remove: Arc<RwLock<HashSet<String>>>,
     event_tx: RecorderEventSender,
     webhook_poster: WebhookPoster,
@@ -239,6 +243,8 @@ pub enum RecorderManagerError {
     AlreadyExisted { room_id: String },
     #[error("Recorder not found: {room_id}")]
     NotFound { room_id: String },
+    #[error("Recorder is being removed: {room_id}")]
+    Removing { room_id: String },
     #[error("Invalid platform type: {platform}")]
     InvalidPlatformType { platform: String },
     #[error("Recorder error: {0}")]
@@ -726,12 +732,14 @@ impl RecorderManager {
                 let extra = recorder.extra;
                 recorder_map.insert((platform, room_id), (auto_start, extra));
             }
+            // Snapshot each set on its own: holding the `recorders` guard while
+            // waiting for `to_remove` inverts the lock order of `add_recorder`.
+            let removing = self.to_remove.read().await.clone();
+            let loaded: HashSet<String> = self.recorders.read().await.keys().cloned().collect();
             let mut recorders_to_add = Vec::new();
             for (platform, room_id) in recorder_map.keys() {
                 let recorder_id = format!("{}:{}", platform.as_str(), room_id);
-                if !self.recorders.read().await.contains_key(&recorder_id)
-                    && !self.to_remove.read().await.contains(&recorder_id)
-                {
+                if !loaded.contains(&recorder_id) && !removing.contains(&recorder_id) {
                     recorders_to_add.push((*platform, room_id.clone()));
                 }
             }
@@ -762,16 +770,19 @@ impl RecorderManager {
                     Account::default()
                 };
 
-                if let Err(e) = self
+                match self
                     .add_recorder(&account, platform, &room_id, extra, *auto_start)
                     .await
                 {
-                    log::error!(
+                    Ok(_) => {}
+                    // The room was deleted after this pass read the catalog.
+                    Err(RecorderManagerError::Removing { .. }) => {}
+                    Err(e) => log::error!(
                         "Failed to add recorder: {} {} {}",
                         platform.as_str(),
                         room_id,
                         e
-                    );
+                    ),
                 }
             }
             interval.tick().await;
@@ -924,14 +935,15 @@ impl RecorderManager {
         }));
         let recorder: Arc<dyn RecorderTrait + Send + Sync> = Arc::from(recorder_boxed);
         {
-            // `to_remove` is taken before the recorder map, matching
-            // `remove_recorder`. A catalog room can be deleted while this
-            // constructor is still binding a port; inserting afterwards would
-            // bring the removed room back.
+            // Check and insert under one `to_remove` guard (lock order:
+            // `to_remove`, then `recorders`). `remove_recorder` marks the room
+            // before it looks for a loaded recorder, so either it finds this
+            // insert or this add sees the mark. Without that, a room deleted
+            // while this constructor awaited a port bind would come back.
             let removing = self.to_remove.read().await;
             let mut recorders = self.recorders.write().await;
             if removing.contains(&recorder_id) {
-                return Err(RecorderManagerError::NotFound {
+                return Err(RecorderManagerError::Removing {
                     room_id: room_id.to_string(),
                 });
             }
@@ -993,11 +1005,7 @@ impl RecorderManager {
         // list still offers removal.
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
         let loaded = self.recorders.read().await.contains_key(&recorder_id);
-        let in_catalog =
-            self.db.get_recorders().await?.iter().any(|recorder| {
-                recorder.platform == platform.as_str() && recorder.room_id == room_id
-            });
-        if !loaded && !in_catalog {
+        if !loaded && !self.db.has_recorder(platform.as_str(), room_id).await? {
             return Err(RecorderManagerError::NotFound {
                 room_id: room_id.to_string(),
             });
@@ -3147,6 +3155,21 @@ mod archive_storage_tests {
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].platform, "douyu");
         assert_eq!(remaining[0].extra, "kept");
+        assert!(manager.recorders.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_room_being_removed_is_not_loaded_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager(dir.path()).await;
+        manager.to_remove.write().await.insert("douyu:room".into());
+
+        assert!(matches!(
+            manager
+                .add_recorder(&Account::default(), PlatformType::Douyu, "room", "", false)
+                .await,
+            Err(RecorderManagerError::Removing { .. })
+        ));
         assert!(manager.recorders.read().await.is_empty());
     }
 }

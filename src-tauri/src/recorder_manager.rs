@@ -924,7 +924,17 @@ impl RecorderManager {
         }));
         let recorder: Arc<dyn RecorderTrait + Send + Sync> = Arc::from(recorder_boxed);
         {
+            // `to_remove` is taken before the recorder map, matching
+            // `remove_recorder`. A catalog room can be deleted while this
+            // constructor is still binding a port; inserting afterwards would
+            // bring the removed room back.
+            let removing = self.to_remove.read().await;
             let mut recorders = self.recorders.write().await;
+            if removing.contains(&recorder_id) {
+                return Err(RecorderManagerError::NotFound {
+                    room_id: room_id.to_string(),
+                });
+            }
             // Construction can await a port bind. Another add may have won
             // while it was pending; never overwrite and orphan its listener.
             if recorders.contains_key(&recorder_id) {
@@ -977,15 +987,24 @@ impl RecorderManager {
         platform: PlatformType,
         room_id: &str,
     ) -> Result<RecorderRow, RecorderManagerError> {
-        // check recorder exists
+        // Catalog entries stay visible when startup could not construct the
+        // recorder (for example the platform account is missing). Those rooms
+        // are not in the live map, but their archives are real and the room
+        // list still offers removal.
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
-        if !self.recorders.read().await.contains_key(&recorder_id) {
+        let loaded = self.recorders.read().await.contains_key(&recorder_id);
+        let in_catalog =
+            self.db.get_recorders().await?.iter().any(|recorder| {
+                recorder.platform == platform.as_str() && recorder.room_id == room_id
+            });
+        if !loaded && !in_catalog {
             return Err(RecorderManagerError::NotFound {
                 room_id: room_id.to_string(),
             });
         }
 
-        // add to to_remove
+        // add to to_remove before stopping, so a concurrent reload cannot
+        // insert this room again while its files are being deleted.
         log::debug!("Add to to_remove: {recorder_id}");
         self.to_remove.write().await.insert(recorder_id.clone());
 
@@ -2594,8 +2613,9 @@ mod archive_storage_tests {
             );
             CREATE TABLE record_summaries (platform TEXT, room_id TEXT, live_id TEXT);
             CREATE TABLE recorders (
-                room_id TEXT PRIMARY KEY, platform TEXT, created_at TEXT,
-                auto_start BOOLEAN, extra TEXT, storage_backend_id TEXT
+                room_id TEXT NOT NULL, platform TEXT NOT NULL, created_at TEXT,
+                auto_start BOOLEAN, extra TEXT, storage_backend_id TEXT,
+                PRIMARY KEY (platform, room_id)
             );",
         )
         .execute(&pool)
@@ -3081,5 +3101,52 @@ mod archive_storage_tests {
                 .await,
             Err(RecorderManagerError::IoError(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn unloaded_catalog_room_removal_deletes_only_that_platform() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager(dir.path()).await;
+        manager
+            .archive_storage
+            .register_backend("first", RecordingStore::local(dir.path().join("first")))
+            .await
+            .unwrap();
+        // The room is in the catalog and on disk, but startup never constructed
+        // it (its account is missing). The list still shows it.
+        manager
+            .db
+            .add_recorder_with_storage(PlatformType::BiliBili, "room", "", Some("first"))
+            .await
+            .unwrap();
+        manager
+            .db
+            .add_recorder(PlatformType::Douyu, "room", "kept")
+            .await
+            .unwrap();
+        let removed = archive(&manager, PlatformType::BiliBili, "old", "first").await;
+        let kept = archive(&manager, PlatformType::Douyu, "other", "first").await;
+        assert!(manager.recorders.read().await.is_empty());
+        assert!(matches!(
+            manager
+                .remove_recorder(PlatformType::BiliBili, "missing")
+                .await,
+            Err(RecorderManagerError::NotFound { .. })
+        ));
+
+        manager
+            .remove_recorder(PlatformType::BiliBili, "room")
+            .await
+            .unwrap();
+
+        assert!(manager.db.get_record("room", "old").await.is_err());
+        assert!(!removed.exists("segment.ts").await.unwrap());
+        assert_eq!(kept.read("segment.ts").await.unwrap(), b"other");
+        assert!(manager.db.get_record("room", "other").await.is_ok());
+        let remaining = manager.db.get_recorders().await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].platform, "douyu");
+        assert_eq!(remaining[0].extra, "kept");
+        assert!(manager.recorders.read().await.is_empty());
     }
 }

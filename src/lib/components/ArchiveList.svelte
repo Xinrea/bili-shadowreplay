@@ -70,6 +70,11 @@
   let openMenuArchiveKey: string | null = $state(null);
   // The row menu is viewport-fixed so sticky cells and the table's scroll box cannot clip it.
   let menuPlacement: { top: number; right: number; up: boolean } | null = $state(null);
+  let menuEl = $state<HTMLDivElement | null>(null);
+  let menuTrigger: HTMLButtonElement | null = null;
+  // A pointerdown that dismisses the menu also ends in a click; keep that click
+  // from reaching a dialog backdrop that would close the whole dialog.
+  let suppressClickUntil = 0;
   const menuArchive = $derived(openMenuArchiveKey
     ? archives.find((archive) => archiveKey(archive) === openMenuArchiveKey) ?? null : null);
 
@@ -91,7 +96,7 @@
   const recordingKeys = $derived(new Set(rooms.filter((room) => room.recording).map((room) =>
     archiveKey({ platform: room.room_info.platform, room_id: room.room_info.room_id, live_id: room.live_id }))));
 
-  $effect(() => { dialogOpen = showDeleteConfirm || showWholeClipModal || showSummaryModal || calendarMenuOpen; });
+  $effect(() => { dialogOpen = showDeleteConfirm || showWholeClipModal || showSummaryModal || calendarMenuOpen || openMenuArchiveKey !== null; });
   // Keep open dialogs on the latest per-archive availability after storage edits.
   $effect(() => {
     if (summaryArchive) summaryArchive = archives.find((item) => archiveKey(item) === archiveKey(summaryArchive!)) ?? null;
@@ -113,6 +118,13 @@
   });
   $effect(() => {
     if (!pageVisible() && openMenuArchiveKey) closeActionMenu();
+  });
+
+  $effect(() => {
+    // Move focus with the menu so keyboard users can reach its actions.
+    if (openMenuArchiveKey && menuEl) {
+      (menuEl.querySelector<HTMLButtonElement>("button:not(:disabled)") ?? menuEl).focus({ preventScroll: true });
+    }
   });
 
   async function loadSummaryStatuses() {
@@ -212,24 +224,35 @@
   }
 
   function closeActionMenu() {
+    const restoreFocus = menuEl?.contains(document.activeElement) ?? false;
     openMenuArchiveKey = null;
     menuPlacement = null;
+    if (restoreFocus) menuTrigger?.focus({ preventScroll: true });
   }
 
-  // Pages are transformed for their slide transition, which would make a local
-  // `position: fixed` menu relative to the page box instead of the viewport.
-  function portalToBody(node: HTMLElement) {
-    document.body.appendChild(node);
-    return { destroy() { node.remove(); } };
+  // A fixed menu inside the transformed page anchors to the page box, not the
+  // window, so convert window coordinates into the containing block's space.
+  function fixedContainingBlock(node: HTMLElement) {
+    for (let el = node.parentElement; el && el !== document.documentElement; el = el.parentElement) {
+      const style = getComputedStyle(el);
+      if (style.transform !== "none" || style.filter !== "none" || style.perspective !== "none") {
+        const rect = el.getBoundingClientRect();
+        return { top: rect.top + el.clientTop, right: rect.left + el.clientLeft + el.clientWidth };
+      }
+    }
+    return { top: 0, right: window.innerWidth };
   }
 
   function toggleActionMenu(event: MouseEvent, key: string) {
     if (openMenuArchiveKey === key) { closeActionMenu(); return; }
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const trigger = event.currentTarget as HTMLButtonElement;
+    const rect = trigger.getBoundingClientRect();
     const gap = 4;
     const estimatedHeight = 170; // four menu rows plus padding
+    const block = fixedContainingBlock(trigger);
     const opensUp = rect.bottom + gap + estimatedHeight > window.innerHeight && rect.top - gap - estimatedHeight > 0;
-    menuPlacement = { top: opensUp ? rect.top - gap : rect.bottom + gap, right: Math.max(8, window.innerWidth - rect.right), up: opensUp };
+    menuTrigger = trigger;
+    menuPlacement = { top: (opensUp ? rect.top - gap : rect.bottom + gap) - block.top, right: Math.max(8, block.right - rect.right), up: opensUp };
     openMenuArchiveKey = key;
   }
 
@@ -237,7 +260,18 @@
     if (!openMenuArchiveKey) return;
     const target = event.target as Element;
     if (target.closest(".archive-dropdown-menu") || target.closest("[data-action-menu-trigger]")) return;
+    // Outside the menu but on a dialog's dimmed backdrop: that same gesture's
+    // click must not close the dialog underneath.
+    if (target.closest(".ui-modal-backdrop")) suppressClickUntil = performance.now() + 500;
     closeActionMenu();
+  }
+
+  // Runs in the capture phase so the dismissing click never reaches a backdrop.
+  function handleClickCapture(event: MouseEvent) {
+    if (performance.now() > suppressClickUntil) return;
+    suppressClickUntil = 0;
+    event.stopPropagation();
+    event.preventDefault();
   }
 
   // Runs in the capture phase so an open row menu consumes Escape before the
@@ -257,8 +291,8 @@
   }
 </script>
 
-<svelte:window onkeydowncapture={handleMenuKeydown} onkeydown={handleDeleteKeydown} onpointerdown={handlePointerDown}
-  onscrollcapture={() => { if (openMenuArchiveKey) closeActionMenu(); }} onresize={closeActionMenu} />
+<svelte:window onkeydowncapture={handleMenuKeydown} onkeydown={handleDeleteKeydown} onclickcapture={handleClickCapture}
+  onpointerdown={handlePointerDown} onscrollcapture={() => { if (openMenuArchiveKey) closeActionMenu(); }} onresize={closeActionMenu} />
 
 {#snippet deleteSelectedButton()}
   <button class="ui-btn ui-btn-danger" disabled={selectedUnavailable} title={selectedUnavailable ? "选中项包含存储不可用的录播，无法删除文件；请先取消选择这些记录" : "删除选中的录播及文件"} onclick={() => { archiveToDelete = null; showDeleteConfirm = true; }}>
@@ -419,7 +453,7 @@
 </BatchActionLayout>
 
 {#if menuArchive && menuPlacement}
-  <div use:portalToBody class="archive-dropdown-menu custom-scrollbar-light" class:opens-up={menuPlacement.up} role="menu"
+  <div bind:this={menuEl} class="archive-dropdown-menu custom-scrollbar-light" class:opens-up={menuPlacement.up} role="menu"
     aria-label={`录播操作：${menuArchive.title || "未命名录播"}`} tabindex="-1"
     style={`top:${menuPlacement.top}px;right:${menuPlacement.right}px`}>
     {@render archiveActions(menuArchive, true, closeActionMenu)}

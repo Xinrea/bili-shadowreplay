@@ -1308,6 +1308,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::upload::create_upload,
         crate::handlers::upload::update_upload,
         crate::handlers::upload::update_upload_cover,
+        crate::handlers::cover_ai::suggest_upload_cover,
         crate::handlers::upload::update_upload_danmu,
         crate::handlers::upload::update_upload_render_settings,
         crate::handlers::upload::delete_upload,

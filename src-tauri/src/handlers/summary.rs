@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::database::summary::{RecordSummaryRow, RecordSummaryStatusRow};
 use crate::database::task::TaskRow;
+use crate::handlers::utils::parse_json_response;
 use crate::progress::progress_reporter::{ProgressReporter, ProgressReporterTrait};
 use crate::state::State;
 use crate::state_type;
@@ -69,24 +70,6 @@ fn subtitle_for_llm(items: &[srtparse::Item]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-fn parse_json_response<T: for<'de> Deserialize<'de>>(raw: &str) -> Result<T, String> {
-    let trimmed = raw
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```");
-    let trimmed = trimmed.trim_end_matches("```").trim();
-    if let Ok(value) = serde_json::from_str(trimmed) {
-        return Ok(value);
-    }
-    let start = trimmed
-        .find('{')
-        .ok_or_else(|| "LLM response does not contain JSON".to_string())?;
-    let end = trimmed
-        .rfind('}')
-        .ok_or_else(|| "LLM response does not contain complete JSON".to_string())?;
-    serde_json::from_str(&trimmed[start..=end]).map_err(|e| e.to_string())
 }
 
 async fn request_summary_json(

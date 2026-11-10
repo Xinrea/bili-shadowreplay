@@ -100,6 +100,79 @@ pub async fn llm_prompt(
     }
 }
 
+/// An image attached to a one-shot prompt. `data` is raw base64 or a data URL.
+pub struct LlmImage {
+    pub mime_type: String,
+    pub data: String,
+}
+
+/// One-shot prompt with attached images, for vision-capable models. The same
+/// provider rules as `llm_prompt` apply; a model without vision support makes
+/// the provider reject the request.
+pub async fn llm_prompt_with_images(
+    config: &LlmConfig,
+    preamble: &str,
+    prompt: &str,
+    images: &[LlmImage],
+) -> Result<String, String> {
+    if config.model.trim().is_empty() {
+        return Err("请选择模型".to_string());
+    }
+    let mut contents = Vec::with_capacity(1 + images.len());
+    contents.push(UserContent::text(prompt.to_string()));
+    for image in images {
+        let data = image_base64_data(&image.data);
+        if data.is_empty() {
+            continue;
+        }
+        let media_type = image_media_type(Some(&image.mime_type))?;
+        contents.push(UserContent::image_base64(data, Some(media_type), None));
+    }
+    let message = Message::User {
+        content: OneOrMany::many(contents).map_err(|e| e.to_string())?,
+    };
+    match config.provider.as_str() {
+        "openai" => {
+            if config.api_key.trim().is_empty() {
+                return Err("请配置 API Key".to_string());
+            }
+            let client = openai::Client::builder()
+                .api_key(&config.api_key)
+                .base_url(&config.endpoint)
+                .build()
+                .map_err(|e| e.to_string())?
+                .completions_api();
+            client
+                .agent(&config.model)
+                .preamble(preamble)
+                .build()
+                .chat(message, &mut Vec::new())
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "ollama" => {
+            let endpoint = if config.endpoint.trim().is_empty() {
+                "http://localhost:11434"
+            } else {
+                &config.endpoint
+            };
+            let client = ollama::Client::builder()
+                .api_key(Nothing)
+                .base_url(endpoint)
+                .build()
+                .map_err(|e| e.to_string())?;
+            client
+                .agent(&config.model)
+                .preamble(preamble)
+                .build()
+                .chat(message, &mut Vec::new())
+                .await
+                .map_err(|e| e.to_string())
+        }
+        _ => Err("Unsupported AI provider".to_string()),
+    }
+}
+
 static TOOL_CALL_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Deserialize)]

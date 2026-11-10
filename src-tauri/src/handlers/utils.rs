@@ -30,6 +30,28 @@ pub(crate) fn decode_data_url(data: &str) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("Failed to decode image: {e}"))
 }
 
+/// Parse an LLM response into `T`, tolerating Markdown code fences and prose
+/// around the JSON object.
+pub(crate) fn parse_json_response<T: for<'de> serde::de::Deserialize<'de>>(
+    raw: &str,
+) -> Result<T, String> {
+    let trimmed = raw
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```");
+    let trimmed = trimmed.trim_end_matches("```").trim();
+    if let Ok(value) = serde_json::from_str(trimmed) {
+        return Ok(value);
+    }
+    let start = trimmed
+        .find('{')
+        .ok_or_else(|| "LLM response does not contain JSON".to_string())?;
+    let end = trimmed
+        .rfind('}')
+        .ok_or_else(|| "LLM response does not contain complete JSON".to_string())?;
+    serde_json::from_str(&trimmed[start..=end]).map_err(|e| e.to_string())
+}
+
 #[allow(dead_code)]
 pub fn copy_dir_all(
     src: impl AsRef<std::path::Path>,

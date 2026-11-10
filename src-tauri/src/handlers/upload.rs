@@ -205,13 +205,37 @@ async fn capture_file_cover(state: &State, upload: &UploadRow) -> Result<String,
     Ok(relative)
 }
 
-fn ensure_editable(upload: &UploadRow) -> Result<(), String> {
+pub(crate) fn ensure_editable(upload: &UploadRow) -> Result<(), String> {
     if upload.is_active() {
         Err("投稿进行中，暂时无法修改".to_string())
     } else if upload.status == "posted" {
         Err("已投稿的记录无法修改".to_string())
     } else {
         Ok(())
+    }
+}
+
+/// The video file to pick cover frames from, the same one `upload_view`
+/// serves for the frame slider: a material, a project's first material, or
+/// the uploaded file itself.
+pub(crate) async fn frame_video_path(state: &State, upload: &UploadRow) -> Option<PathBuf> {
+    match upload.source.as_str() {
+        "material" => {
+            let material = state.db.get_video(upload.source_id).await.ok()?;
+            Some(output_dir(state).await.join(material.file))
+        }
+        "project" => {
+            let project = state.db.get_project(upload.source_id).await.ok()?;
+            let timeline = Timeline::parse(&project.timeline).unwrap_or_default();
+            let clip = timeline.clips.first()?;
+            let material = state.db.get_video(clip.material_id).await.ok()?;
+            Some(output_dir(state).await.join(material.file))
+        }
+        "file" => {
+            let path = PathBuf::from(&upload.file);
+            path.is_file().then_some(path)
+        }
+        _ => None,
     }
 }
 

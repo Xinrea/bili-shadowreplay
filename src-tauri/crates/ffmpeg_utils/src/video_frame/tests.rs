@@ -128,6 +128,38 @@ async fn native_jpeg_quality_and_seek_work_without_a_cli() {
     assert!(extract_jpeg(&fixture(), 1.2, None).await.is_err());
 }
 
+/// The pixel size declared by a JPEG's SOF marker.
+fn jpeg_size(data: &[u8]) -> (usize, usize) {
+    let mut i = 2;
+    while i + 9 <= data.len() && data[i] == 0xFF {
+        let marker = data[i + 1];
+        if (0xC0..=0xCF).contains(&marker) && ![0xC4, 0xC8, 0xCC].contains(&marker) {
+            let height = u16::from_be_bytes([data[i + 5], data[i + 6]]) as usize;
+            let width = u16::from_be_bytes([data[i + 7], data[i + 8]]) as usize;
+            return (width, height);
+        }
+        let length = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
+        i += 2 + length;
+    }
+    panic!("no SOF marker in JPEG");
+}
+
+#[tokio::test]
+async fn scaled_extraction_shrinks_wide_frames_only() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("宽幅.ppm");
+    ppm(&source, 320, 180);
+    let full = extract_jpeg(&source, 0.0, Some(2)).await.unwrap();
+    let scaled = extract_jpeg_scaled(&source, 0.0, Some(2), Some(160)).await.unwrap();
+    jpeg(&full);
+    jpeg(&scaled);
+    assert_eq!(jpeg_size(&full), (320, 180));
+    assert_eq!(jpeg_size(&scaled), (160, 90));
+    // At the frame's own width there is nothing to shrink.
+    let unscaled = extract_jpeg_scaled(&source, 0.0, Some(2), Some(320)).await.unwrap();
+    assert_eq!(jpeg_size(&unscaled), (320, 180));
+}
+
 #[tokio::test]
 async fn native_jpeg_validation_and_atomic_output_work_without_a_cli() {
     let directory = tempfile::tempdir().unwrap();
@@ -176,7 +208,7 @@ async fn native_jpeg_validation_and_atomic_output_work_without_a_cli() {
 
 #[tokio::test]
 async fn native_jpeg_pre_cancel_and_concurrent_extracts_work_without_a_cli() {
-    assert!(extract_sync(&fixture(), 0, None, Arc::new(AtomicBool::new(true))).is_err());
+    assert!(extract_sync(&fixture(), 0, None, None, Arc::new(AtomicBool::new(true))).is_err());
     let source = fixture();
     let (first, second) = tokio::join!(
         extract_jpeg(&source, 0.0, Some(2)),

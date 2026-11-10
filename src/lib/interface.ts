@@ -387,6 +387,20 @@ export interface UploadItem {
   video: StaticFile | null;
 }
 
+/** What `suggest_upload_cover` returns for the AI cover button. */
+export interface CoverSuggestion {
+  /** Where the chosen frame came from, for reference. */
+  timestamp: number;
+  /** The chosen frame as base64 JPEG, to compose the title over. */
+  frame_base64: string;
+  /** A `TEXT_STYLES` id, such as `yellow`; unknown ids fall back to it. */
+  style: string;
+  /** Title text center as fractions of the cover's width and height. */
+  position: { x: number; y: number };
+  /** Set when the vision model failed and defaults were used instead. */
+  warning: string | null;
+}
+
 export interface MaterialPeaks {
   rate: number;
   peaks: number[];

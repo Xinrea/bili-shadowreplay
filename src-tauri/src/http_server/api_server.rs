@@ -31,6 +31,10 @@ use crate::{
             update_subtitle_generator_type, update_subtitle_setting, update_webhook_url,
             update_whisper_language, update_whisper_model, update_whisper_prompt,
         },
+        // The AI cover suggestion must be reachable over HTTP too: the
+        // web/Docker client invokes commands as `POST /api/<command>` instead
+        // of the Tauri command table.
+        cover_ai::{suggest_upload_cover, CoverSuggestion},
         message::{delete_message, get_messages, read_message},
         project::{
             create_project, delete_project, export_project, generate_materials, get_material_danmu,
@@ -1511,6 +1515,23 @@ async fn handler_update_upload_cover(
 ) -> Result<Json<ApiResponse<UploadView>>, ApiError> {
     let upload = update_upload_cover(state.0, param.id, param.cover, param.cover43).await?;
     Ok(Json(ApiResponse::success(upload)))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SuggestUploadCoverRequest {
+    id: i64,
+}
+
+// HTTP twin of the `suggest_upload_cover` Tauri command: the web/Docker
+// client's invoker sends every command as `POST /api/<command>`, so without
+// this route the AI cover button cannot work there at all.
+async fn handler_suggest_upload_cover(
+    state: axum::extract::State<State>,
+    Json(param): Json<SuggestUploadCoverRequest>,
+) -> Result<Json<ApiResponse<CoverSuggestion>>, ApiError> {
+    let suggestion = suggest_upload_cover(state.0, param.id).await?;
+    Ok(Json(ApiResponse::success(suggestion)))
 }
 
 async fn handler_get_cover_stickers(
@@ -3057,6 +3078,11 @@ pub async fn start_api_server(state: State) {
             .route(
                 "/api/update_upload_cover",
                 post(handler_update_upload_cover),
+            )
+            // Same route the web invoker derives for the cover suggestion.
+            .route(
+                "/api/suggest_upload_cover",
+                post(handler_suggest_upload_cover),
             )
             .route(
                 "/api/update_upload_danmu",

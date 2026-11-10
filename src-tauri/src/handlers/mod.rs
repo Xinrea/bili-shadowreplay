@@ -1,6 +1,7 @@
 pub mod account;
 pub mod audio;
 pub mod config;
+pub mod cover_ai;
 #[cfg(feature = "gui")]
 pub mod events;
 pub mod macros;

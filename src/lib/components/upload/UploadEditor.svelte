@@ -399,7 +399,13 @@
                     {/if}
                     {generatingCover ? "生成中…" : "AI 生成封面"}
                   </button>
-                  <button type="button" class="ui-btn ui-btn-sm" disabled={posting} onclick={() => (showCoverEditor = true)}>
+                  <button
+                    type="button"
+                    class="ui-btn ui-btn-sm"
+                    disabled={posting || generatingCover}
+                    title={generatingCover ? "AI 封面生成中，完成后再手动编辑" : undefined}
+                    onclick={() => (showCoverEditor = true)}
+                  >
                     <Pen class="h-3 w-3" />
                     编辑封面
                   </button>

@@ -445,6 +445,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn process_exit_during_local_publication_does_not_poison_transfer_recovery() {
+        for crash_key in [PROOF_KEY, "a.ts", ".private/checkpoint"] {
+            let (temp, transfer) = fixture().await;
+            let manifest = transfer.inspect().await.unwrap();
+            if crash_key != PROOF_KEY {
+                transfer
+                    .claim(&transfer.proof("token", &manifest).unwrap())
+                    .await
+                    .unwrap();
+            }
+            let root = temp.path().canonicalize().unwrap();
+            let target_root = root.join("target");
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "local_publication::tests::exit_during_publication",
+                    "--nocapture",
+                ])
+                .env("BSR_TEST_PUBLICATION_ROOT", &target_root)
+                .env("BSR_TEST_PUBLICATION_KEY", crash_key)
+                .status()
+                .unwrap();
+            assert_eq!(child.code(), Some(73));
+            assert!(!transfer.target.exists(crash_key).await.unwrap());
+            let orphan_count = std::fs::read_dir(&target_root)
+                .unwrap()
+                .filter(|entry| {
+                    entry
+                        .as_ref()
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".recording-transfer-object-")
+                })
+                .count();
+            assert_eq!(orphan_count, 1, "the subprocess left real crash debris");
+            drop(transfer);
+
+            // Reopen both endpoints and deserialize the journal as on restart.
+            let manifest: ObjectTransferManifest =
+                serde_json::from_slice(&serde_json::to_vec(&manifest).unwrap()).unwrap();
+            let resumed = ObjectTransfer::new(
+                RecordingStore::local(root.join("source"))
+                    .scope("bilibili/room/live")
+                    .unwrap(),
+                RecordingStore::local(target_root)
+                    .scope("bilibili/room/live")
+                    .unwrap(),
+                "bilibili/room/live".into(),
+                "a".into(),
+                "b".into(),
+            )
+            .unwrap();
+            resumed.copy("token", &manifest).await.unwrap();
+            resumed
+                .verify_destination("token", &manifest)
+                .await
+                .unwrap();
+            resumed.cleanup_source("token", &manifest).await.unwrap();
+            resumed.finish("token", &manifest).await.unwrap();
+            assert_eq!(resumed.target.read("a.ts").await.unwrap(), b"segment");
+            assert_eq!(
+                resumed.target.read(".private/checkpoint").await.unwrap(),
+                b"resume"
+            );
+            assert!(keys(&resumed.source).await.unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
     async fn unowned_targets_and_changed_payloads_never_get_overwritten_or_deleted() {
         let (_temp, transfer) = fixture().await;
         transfer.target.write("a.ts", b"segment").await.unwrap();
@@ -476,6 +546,24 @@ mod tests {
         transfer.copy("owner", &manifest).await.unwrap();
         transfer.source.write("new-file", b"unknown").await.unwrap();
         assert!(transfer.cleanup_source("owner", &manifest).await.is_err());
+        assert!(transfer.source.exists("a.ts").await.unwrap());
+
+        let (_temp, transfer) = fixture().await;
+        let manifest = transfer.inspect().await.unwrap();
+        transfer
+            .claim(&transfer.proof("owner", &manifest).unwrap())
+            .await
+            .unwrap();
+        transfer
+            .target
+            .write(".tmp-user-file", b"unowned")
+            .await
+            .unwrap();
+        assert!(transfer.copy("owner", &manifest).await.is_err());
+        assert_eq!(
+            transfer.target.read(".tmp-user-file").await.unwrap(),
+            b"unowned"
+        );
         assert!(transfer.source.exists("a.ts").await.unwrap());
     }
 

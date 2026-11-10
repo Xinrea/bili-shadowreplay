@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::Mutex;
 
+mod local_publication;
 mod logs;
 mod object_transfer;
 mod relocation;
@@ -234,15 +235,10 @@ impl StorageBackend for LocalBackend {
 
     async fn create(&self, key: &str, bytes: &[u8]) -> io::Result<()> {
         let path = self.path(key)?;
+        let root = self.root.clone();
         let bytes = bytes.to_vec();
         tokio::task::spawn_blocking(move || {
-            let parent = path.parent().ok_or_else(invalid_key)?;
-            std::fs::create_dir_all(parent)?;
-            let mut file = tempfile::NamedTempFile::new_in(parent)?;
-            file.write_all(&bytes)?;
-            file.as_file().sync_all()?;
-            file.persist_noclobber(&path).map_err(|error| error.error)?;
-            transfer::sync_directory(parent)
+            local_publication::create(&root, &path, |file| file.write_all(&bytes))
         })
         .await
         .map_err(io::Error::other)?
@@ -250,20 +246,15 @@ impl StorageBackend for LocalBackend {
 
     async fn create_from_file(&self, key: &str, file: &Path) -> io::Result<()> {
         let path = self.path(key)?;
+        let root = self.root.clone();
         let source = tokio::fs::File::open(file).await?;
         // Move the open source handle into the blocking task, retaining the
         // bytes even if the staging pathname disappears during shutdown.
         let mut source = source.into_std().await;
         tokio::task::spawn_blocking(move || {
-            let parent = path.parent().ok_or_else(invalid_key)?;
-            std::fs::create_dir_all(parent)?;
-            let mut staged = tempfile::NamedTempFile::new_in(parent)?;
-            std::io::copy(&mut source, &mut staged)?;
-            staged.as_file().sync_all()?;
-            staged
-                .persist_noclobber(&path)
-                .map_err(|error| error.error)?;
-            transfer::sync_directory(parent)
+            local_publication::create(&root, &path, |file| {
+                std::io::copy(&mut source, file).map(|_| ())
+            })
         })
         .await
         .map_err(io::Error::other)?

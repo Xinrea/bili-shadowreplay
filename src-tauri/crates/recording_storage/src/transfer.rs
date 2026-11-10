@@ -280,9 +280,9 @@ fn sync_dir(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Atomic publication must NEVER replace even an empty directory.
+/// Atomic publication must NEVER replace an existing file or even an empty directory.
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
-fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
     let from = CString::new(from.as_os_str().as_bytes()).map_err(|_| invalid("NUL path"))?;
     let to = CString::new(to.as_os_str().as_bytes()).map_err(|_| invalid("NUL path"))?;
@@ -306,7 +306,7 @@ fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
     let from: Vec<_> = from.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -324,7 +324,7 @@ fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
     target_os = "macos",
     windows
 )))]
-fn rename_new(_from: &Path, _to: &Path) -> io::Result<()> {
+pub(crate) fn rename_new(_from: &Path, _to: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "no atomic no-replace rename",

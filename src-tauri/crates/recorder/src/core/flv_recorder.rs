@@ -14,6 +14,7 @@ use crate::core::playlist::HlsPlaylist;
 use crate::core::storage_io::{NativeHlsStorage, NATIVE_HLS_OBJECT_BYTES};
 use crate::errors::RecorderError;
 use crate::events::RecorderEvent;
+use crate::startup::RecordingTrace;
 
 pub struct FlvRecorder {
     url: String,
@@ -24,6 +25,7 @@ pub struct FlvRecorder {
     enabled: Arc<AtomicBool>,
     event_channel: crate::events::RecorderEventSender,
     live_id: String,
+    trace: Option<RecordingTrace>,
 }
 
 impl FlvRecorder {
@@ -45,11 +47,17 @@ impl FlvRecorder {
             enabled,
             event_channel: event_channel.into(),
             live_id,
+            trace: None,
         }
     }
 
     pub fn with_read_timeout(mut self, timeout: Duration) -> Self {
         self.read_timeout = Some(timeout);
+        self
+    }
+
+    pub(crate) fn with_trace(mut self, trace: RecordingTrace) -> Self {
+        self.trace = Some(trace);
         self
     }
 
@@ -62,16 +70,29 @@ impl FlvRecorder {
     }
 
     pub async fn start(&self) -> Result<(), RecorderError> {
-        self.storage.prepare().await?;
-        if !self.storage.exists("playlist.m3u8").await? {
-            let playlist = HlsPlaylist::from_storage(self.storage.clone(), "playlist.m3u8").await?;
-            playlist.flush().await?;
-        }
+        let trace = self
+            .trace
+            .clone()
+            .unwrap_or_else(|| RecordingTrace::new("flv", "unknown", &self.live_id));
+        trace
+            .stage("flv_storage_prepare", self.storage.prepare())
+            .await?;
+        trace
+            .stage("flv_playlist_prepare", async {
+                if !self.storage.exists("playlist.m3u8").await? {
+                    let playlist =
+                        HlsPlaylist::from_storage(self.storage.clone(), "playlist.m3u8").await?;
+                    playlist.flush().await?;
+                }
+                Ok::<_, RecorderError>(())
+            })
+            .await?;
 
         // Storage failure stops this native worker, not the user's persistent
         // enabled flag shared by the platform recorder and its retry loop.
         let worker_enabled = Arc::new(AtomicBool::new(self.enabled.load(Ordering::Relaxed)));
-        let native_storage = Arc::new(NativeHlsStorage::new(self.storage.clone()));
+        let native_storage =
+            Arc::new(NativeHlsStorage::new(self.storage.clone()).with_trace(trace));
         let recording = record_to_hls_objects(
             &self.url,
             native_storage.clone(),

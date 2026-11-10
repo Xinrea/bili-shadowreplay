@@ -74,6 +74,9 @@ pub struct StorageConfig {
     pub default_backend: String,
     #[serde(default)]
     pub backends: HashMap<String, RecordingBackendConfig>,
+    /// Opaque CAS tokens only; credential values never enter the configuration DTO.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub credential_revisions: HashMap<String, String>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
@@ -83,17 +86,83 @@ pub struct RecordingBackendConfig {
     pub kind: String,
     #[serde(default)]
     pub root: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub s3: Option<recording_storage::S3Config>,
+}
+
+impl RecordingBackendConfig {
+    /// Canonical, credential-free namespace persisted as the backend identity.
+    pub fn normalized(&self) -> io::Result<Self> {
+        let mut value = self.clone();
+        match value.kind.as_str() {
+            "local" if !value.root.trim().is_empty() && value.s3.is_none() => {
+                value.root = std::path::absolute(&value.root)?
+                    .to_str()
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "storage root is not UTF-8")
+                    })?
+                    .to_owned();
+            }
+            "s3" if value.root.is_empty() => {
+                value.s3 = Some(
+                    value
+                        .s3
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "S3 configuration is required",
+                            )
+                        })?
+                        .normalized()?,
+                );
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unsupported or inconsistent storage configuration",
+                ))
+            }
+        }
+        Ok(value)
+    }
+
+    pub fn location(&self) -> io::Result<String> {
+        let normalized = self.normalized()?;
+        match normalized.s3 {
+            Some(s3) => serde_json::to_string(&s3).map_err(io::Error::other),
+            None => Ok(normalized.root),
+        }
+    }
+
+    pub fn from_location(kind: String, location: String) -> io::Result<Self> {
+        if kind == "s3" {
+            let s3 = serde_json::from_str(&location).map_err(io::Error::other)?;
+            Ok(Self {
+                kind,
+                root: String::new(),
+                s3: Some(s3),
+            })
+        } else {
+            Ok(Self {
+                kind,
+                root: location,
+                s3: None,
+            })
+        }
+    }
 }
 
 impl StorageConfig {
     pub fn local(root: String) -> Self {
         Self {
             default_backend: DEFAULT_RECORDING_STORAGE_ID.to_owned(),
+            credential_revisions: HashMap::new(),
             backends: HashMap::from([(
                 DEFAULT_RECORDING_STORAGE_ID.to_owned(),
                 RecordingBackendConfig {
                     kind: "local".to_owned(),
                     root,
+                    s3: None,
                 },
             )]),
         }
@@ -170,6 +239,7 @@ impl<'de> Deserialize<'de> for Config {
             None => StorageConfig {
                 default_backend: DEFAULT_RECORDING_STORAGE_ID.to_owned(),
                 backends: HashMap::new(),
+                credential_revisions: HashMap::new(),
             },
         };
         // The released configuration had a single cache directory. Preserve
@@ -177,6 +247,7 @@ impl<'de> Deserialize<'de> for Config {
         if let Some(root) = cache {
             let definition = RecordingBackendConfig {
                 kind: "local".into(),
+                s3: None,
                 root,
             };
             if storage
@@ -578,6 +649,7 @@ mod recording_storage_tests {
             RecordingBackendConfig {
                 kind: "local".into(),
                 root: "/mnt/archive".into(),
+                s3: None,
             },
         );
         config.storage.default_backend = "archive".into();

@@ -59,6 +59,8 @@ impl Database {
         .bind(storage_backend_id)
         .execute(&self.pool)
         .await?;
+        self.pin_recorder_catalog(platform.as_str(), room_id, storage_backend_id)
+            .await?;
         self.notify_change(DataChange::Recorders);
         Ok(recorder)
     }
@@ -70,6 +72,23 @@ impl Database {
         platform: &str,
         room_id: &str,
     ) -> Result<RecorderRow, DatabaseError> {
+        if self.catalogs.get().is_some() {
+            let lives: Vec<String> = sqlx::query_scalar(
+                "SELECT live_id FROM recording_records WHERE platform=? AND room_id=?",
+            )
+            .bind(platform)
+            .bind(room_id)
+            .fetch_all(&self.pool)
+            .await?;
+            for live in lives {
+                self.remove_record(&live).await?;
+            }
+            sqlx::query("DELETE FROM catalog_room_preferences WHERE platform=? AND room_id=?")
+                .bind(platform)
+                .bind(room_id)
+                .execute(&self.pool)
+                .await?;
+        }
         let mut transaction = self.pool.begin().await?;
         let recorder = sqlx::query_as::<_, RecorderRow>(
             "DELETE FROM recorders WHERE platform = ? AND room_id = ? RETURNING *",
@@ -96,9 +115,21 @@ impl Database {
     }
 
     pub async fn get_recorders(&self) -> Result<Vec<RecorderRow>, DatabaseError> {
-        Ok(sqlx::query_as::<_, RecorderRow>("SELECT * FROM recorders")
+        let mut rows = sqlx::query_as::<_, RecorderRow>("SELECT * FROM recorders")
             .fetch_all(&self.pool)
-            .await?)
+            .await?;
+        if self.catalogs.get().is_some() {
+            for row in &mut rows {
+                if let Some((uuid, alias)) = self
+                    .recorder_catalog_preference(&row.platform, &row.room_id)
+                    .await?
+                {
+                    row.storage_backend_id =
+                        Some(alias.unwrap_or_else(|| format!("unmounted-{uuid}")));
+                }
+            }
+        }
+        Ok(rows)
     }
 
     pub async fn recorder_storage_id(
@@ -106,6 +137,13 @@ impl Database {
         platform: &str,
         room_id: &str,
     ) -> Result<Option<String>, DatabaseError> {
+        if self.catalogs.get().is_some() {
+            if let Some((_, alias)) = self.recorder_catalog_preference(platform, room_id).await? {
+                return alias.map(Some).ok_or_else(|| {
+                    DatabaseError::Catalog("直播间指定的存储已卸载，请重新挂载或修改偏好".into())
+                });
+            }
+        }
         Ok(sqlx::query_scalar::<_, Option<String>>(
             "SELECT storage_backend_id FROM recorders WHERE platform = ? AND room_id = ?",
         )
@@ -131,8 +169,49 @@ impl Database {
         .fetch_optional(&self.pool)
         .await?
         .ok_or(DatabaseError::NotFound)?;
+        self.pin_recorder_catalog(platform, room_id, id).await?;
         self.notify_change(DataChange::Recorders);
         Ok(row)
+    }
+
+    async fn pin_recorder_catalog(
+        &self,
+        platform: &str,
+        room: &str,
+        alias: Option<&str>,
+    ) -> Result<(), DatabaseError> {
+        if self.catalogs.get().is_none() {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM catalog_room_preferences WHERE platform=? AND room_id=?")
+            .bind(platform)
+            .bind(room)
+            .execute(&mut *tx)
+            .await?;
+        if let Some(alias) = alias {
+            sqlx::query("INSERT INTO catalog_room_preferences(platform,room_id,storage_uuid) \
+                SELECT ?,?,storage_uuid FROM catalog_runtime_backends WHERE alias=? AND storage_uuid IS NOT NULL")
+                .bind(platform).bind(room).bind(alias).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn recorder_catalog_preference(
+        &self,
+        platform: &str,
+        room: &str,
+    ) -> Result<Option<(String, Option<String>)>, DatabaseError> {
+        Ok(sqlx::query_as(
+            "SELECT p.storage_uuid,c.alias FROM catalog_room_preferences p \
+            LEFT JOIN catalog_runtime_backends c ON c.storage_uuid=p.storage_uuid \
+            WHERE p.platform=? AND p.room_id=?",
+        )
+        .bind(platform)
+        .bind(room)
+        .fetch_optional(&self.pool)
+        .await?)
     }
 
     pub async fn update_recorder(

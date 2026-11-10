@@ -10,6 +10,22 @@ CREATE TABLE IF NOT EXISTS recording_storage_transfers (
     PRIMARY KEY(platform, room_id, live_id)
 );";
 
+// Migration 30 remains unchanged. SQLite CHECK constraints require a rebuild.
+pub const OBJECT_SCHEMA_SQL: &str = "
+CREATE TABLE recording_storage_transfers_objects (
+    platform TEXT NOT NULL, room_id TEXT NOT NULL, live_id TEXT NOT NULL,
+    source_id TEXT NOT NULL, target_id TEXT NOT NULL, token TEXT NOT NULL UNIQUE,
+    manifest TEXT NOT NULL, phase TEXT NOT NULL CHECK(phase IN ('copying', 'cleanup', 'finalizing')),
+    mode TEXT NOT NULL CHECK(mode IN ('copy', 'rename', 'object')),
+    PRIMARY KEY(platform, room_id, live_id)
+);
+INSERT INTO recording_storage_transfers_objects
+    SELECT platform, room_id, live_id, source_id, target_id, token, manifest, phase, mode
+    FROM recording_storage_transfers;
+DROP TABLE recording_storage_transfers;
+ALTER TABLE recording_storage_transfers_objects RENAME TO recording_storage_transfers;
+";
+
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct TransferJournal {
     pub platform: String,
@@ -43,6 +59,18 @@ pub struct TransferEstimate {
 }
 
 impl Database {
+    pub(super) async fn ensure_object_transfer_schema(&self) -> Result<(), DatabaseError> {
+        let mut tx = self.pool.begin().await?;
+        let schema: String = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'recording_storage_transfers'",
+        ).fetch_one(&mut *tx).await?;
+        if !schema.contains("'object'") {
+            sqlx::query(OBJECT_SCHEMA_SQL).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// An uncommitted rename may already have removed the source namespace.
     /// Query durable phase (not an in-memory guess after an unknown commit).
     pub async fn recording_awaits_rename_binding(
@@ -128,6 +156,9 @@ impl Database {
         &self,
         journal: &TransferJournal,
     ) -> Result<(), DatabaseError> {
+        if let Some(catalogs) = self.catalogs.get() {
+            catalogs.preflight_transfer(journal).await?;
+        }
         let mut tx = self.pool.begin().await?;
         // Pin legacy rows too, without weakening the normal immutable bind rule.
         sqlx::query(
@@ -181,23 +212,11 @@ impl Database {
         &self,
         journal: &TransferJournal,
     ) -> Result<(), DatabaseError> {
-        let mut tx = self.pool.begin().await?;
-        let result = sqlx::query(
-            "UPDATE recording_storage_bindings SET storage_id = ?5 \
-             WHERE platform = ?1 AND room_id = ?2 AND live_id = ?3 AND storage_id = ?4 \
-             AND EXISTS(SELECT 1 FROM recording_storage_transfers WHERE token = ?6 AND phase = 'copying') \
-             AND NOT EXISTS(SELECT 1 FROM recording_storage_deletions WHERE platform = ?1 AND room_id = ?2 AND live_id = ?3) \
-             AND EXISTS(SELECT 1 FROM recording_storage_enabled WHERE storage_id = ?5)",
-        ).bind(&journal.platform).bind(&journal.room_id).bind(&journal.live_id)
-            .bind(&journal.source_id).bind(&journal.target_id).bind(&journal.token)
-            .execute(&mut *tx).await?;
-        if result.rows_affected() != 1 {
-            return Err(DatabaseError::StorageBindingConflict);
+        if let Some(catalogs) = self.catalogs.get() {
+            return catalogs.commit_transfer(journal.clone()).await;
         }
-        sqlx::query("UPDATE recording_storage_transfers SET phase = 'cleanup' WHERE token = ?")
-            .bind(&journal.token)
-            .execute(&mut *tx)
-            .await?;
+        let mut tx = self.pool.begin().await?;
+        commit_binding(&mut tx, journal).await?;
         tx.commit().await?;
         self.notify_change(crate::events::DataChange::Records);
         Ok(())
@@ -220,6 +239,39 @@ impl Database {
         .bind(token)
         .execute(&self.pool)
         .await?;
+        if self.catalogs.get().is_some() {
+            sqlx::query(
+                "DELETE FROM catalog_transfer_intents WHERE token=? \
+                AND NOT EXISTS(SELECT 1 FROM recording_storage_transfers WHERE token=?)",
+            )
+            .bind(token)
+            .bind(token)
+            .execute(&self.pool)
+            .await?;
+        }
         Ok(())
     }
+}
+
+pub(super) async fn commit_binding(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    journal: &TransferJournal,
+) -> Result<(), DatabaseError> {
+    let result = sqlx::query(
+            "UPDATE recording_storage_bindings SET storage_id = ?5 \
+             WHERE platform = ?1 AND room_id = ?2 AND live_id = ?3 AND storage_id = ?4 \
+             AND EXISTS(SELECT 1 FROM recording_storage_transfers WHERE token = ?6 AND phase = 'copying') \
+             AND NOT EXISTS(SELECT 1 FROM recording_storage_deletions WHERE platform = ?1 AND room_id = ?2 AND live_id = ?3) \
+             AND EXISTS(SELECT 1 FROM recording_storage_enabled WHERE storage_id = ?5)",
+        ).bind(&journal.platform).bind(&journal.room_id).bind(&journal.live_id)
+            .bind(&journal.source_id).bind(&journal.target_id).bind(&journal.token)
+            .execute(&mut **tx).await?;
+    if result.rows_affected() != 1 {
+        return Err(DatabaseError::StorageBindingConflict);
+    }
+    sqlx::query("UPDATE recording_storage_transfers SET phase = 'cleanup' WHERE token = ?")
+        .bind(&journal.token)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }

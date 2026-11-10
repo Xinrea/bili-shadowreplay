@@ -32,8 +32,8 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust 1.99.0
+        uses: dtolnay/rust-toolchain@1.99.0
         with:
           components: rustfmt
 
@@ -69,6 +69,7 @@ jobs:
           filters: |
             rust:
               - 'src-tauri/**'
+              - 'rust-toolchain.toml'
               - 'public/icon.svg'
               - 'package.json'
               - '.pre-commit-config.yaml'
@@ -114,8 +115,8 @@ jobs:
       - name: Setup sherpa-onnx archive
         uses: ./.github/actions/setup-sherpa-onnx
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust 1.99.0
+        uses: dtolnay/rust-toolchain@1.99.0
         with:
           components: clippy
 

@@ -14,6 +14,7 @@
     Range,
   } from "../interface";
   import { keepEventSubscription } from "../event-subscription";
+  import { createDanmuHistoryLoader, type DanmuHistoryState } from "../danmu-history";
   import { PLAYBACK_RATES } from "../playback-rates";
   import { createFloatingOverlay, observeResize } from "../floating-overlay";
   import { createDanmakuFeed, FEED_TICK_MS } from "../danmaku-feed";
@@ -44,6 +45,8 @@
   const intervals: ReturnType<typeof setInterval>[] = [];
   let stopDanmu: (() => void) | undefined;
   let cancelDanmuBatch: (() => void) | undefined;
+  let danmuHistoryState = $state<DanmuHistoryState>("idle");
+  let reloadDanmuHistory: (() => Promise<void>) | undefined;
   let floatingOverlay: { clear(): void; destroy(): void } | undefined;
   let floatingPacer: ReturnType<typeof createDanmakuPacer<DanmuEntry>> | undefined;
   /**
@@ -507,6 +510,45 @@ ${mediaPlaylistUrl}`;
     );
   }
 
+  function startDanmuUpdates(
+    isLive: () => boolean,
+    onLive: (entry: DanmuEntry) => void,
+    onHistory: () => void,
+  ) {
+    if (destroyed) return;
+    const batcher = createDanmuBatcher<DanmuEntry>((batch) => {
+      if (!destroyed) danmu_records = danmu_records.concat(batch);
+    }, DANMU_FLUSH_INTERVAL_MS);
+    cancelDanmuBatch = () => batcher.cancel();
+    // Register independently of history/accounts. isLive is checked on delivery
+    // because an EVENT playlist can become live after the initial player load.
+    stopDanmu = keepEventSubscription((signal) => listen("danmu", (event) => {
+      if (destroyed || !isLive()) return;
+      const entry = event.payload as DanmuEntry;
+      if (global_offset > 0 && entry.ts < global_offset * 1000) return;
+      batcher.push(entry);
+      onLive(entry);
+    }, { platform, room: room_id }, signal), danmuSubscription.signal, (error) => {
+      log.error("弹幕订阅失败，将重试:", error);
+    });
+    const history = createDanmuHistoryLoader({
+      load: () => invoke<DanmuEntry[]>("get_danmu_record", {
+        roomId: room_id, liveId: live_id, platform,
+      }),
+      current: () => danmu_records,
+      flushLive: () => batcher.flushNow(),
+      publish: (entries) => {
+        danmu_records = entries;
+        onHistory();
+      },
+      state: (state) => { danmuHistoryState = state; },
+      onError: (error) => log.error("历史弹幕加载失败，可重试:", error),
+      signal: danmuSubscription.signal,
+    });
+    reloadDanmuHistory = history.reload;
+    void history.reload();
+  }
+
   async function init() {
     if (destroyed || initialized) return;
     initialized = true;
@@ -626,8 +668,8 @@ ${mediaPlaylistUrl}`;
       }
     });
 
-    document.getElementsByClassName("shaka-overflow-menu-button")[0].remove();
-    document.getElementsByClassName("shaka-fullscreen-button")[0].remove();
+    document.getElementsByClassName("shaka-overflow-menu-button")[0]?.remove();
+    document.getElementsByClassName("shaka-fullscreen-button")[0]?.remove();
     document
       .querySelectorAll(".shaka-remote-button")
       .forEach((el) => el.remove());
@@ -651,15 +693,6 @@ ${mediaPlaylistUrl}`;
 
     // add to shaka-spacer
     const shakaSpacer = document.querySelector(".shaka-spacer") as HTMLElement;
-
-    // get danmaku record
-    danmu_records = (await invoke("get_danmu_record", {
-      roomId: room_id,
-      liveId: live_id,
-      platform: platform,
-    })) as DanmuEntry[];
-
-    console.log("danmu loaded:", danmu_records.length);
 
     // Recorded danmaku go through the room's queue on the video's clock, as
     // burned videos do, so speed, pauses and seeks follow playback. Super
@@ -714,87 +747,67 @@ ${mediaPlaylistUrl}`;
 
     if (isLive()) {
       if (platform == "bilibili") {
-        // add a account select
-        const accountSelect = document.createElement("select");
-        accountSelect.style.height = "30px";
-        accountSelect.style.minWidth = "100px";
-        accountSelect.style.backgroundColor = "rgba(0, 0, 0, 0)";
-        accountSelect.style.color = "white";
-        accountSelect.style.border = "1px solid gray";
-        accountSelect.style.padding = "0 10px";
-        accountSelect.style.boxSizing = "border-box";
-        accountSelect.style.fontSize = "1em";
-        // get accounts from tauri
-        const account_info = (await invoke("get_accounts")) as AccountInfo;
-        danmu_accounts = account_info.accounts.filter(
-          (account) => account.platform === "bilibili",
-        );
-        danmu_accounts.forEach((account) => {
-          if (account.platform !== "bilibili") {
-            return;
-          }
-          const option = document.createElement("option");
-          option.value = account.uid.toString();
-          option.text = account.name;
-          accountSelect.appendChild(option);
-        });
-        danmu_account_uid = accountSelect.value;
-        can_send_danmaku = Boolean(danmu_account_uid);
-        // add a danmaku send input
-        const danmakuInput = document.createElement("input");
-        danmakuInput.type = "text";
-        danmakuInput.placeholder = "回车发送弹幕";
-        danmakuInput.style.width = "30%";
-        danmakuInput.style.height = "30px";
-        danmakuInput.style.backgroundColor = "rgba(0, 0, 0, 0)";
-        danmakuInput.style.color = "white";
-        danmakuInput.style.border = "1px solid gray";
-        danmakuInput.style.padding = "0 10px";
-        danmakuInput.style.boxSizing = "border-box";
-        danmakuInput.style.fontSize = "1em";
-        danmakuInput.addEventListener("keydown", async (e) => {
-          if (e.key === "Enter") {
-            const value = danmakuInput.value;
-            if (value) {
-              // get account uid from select
-              const uid = accountSelect.value;
-              danmu_account_uid = uid;
-              await sendDanmaku(value);
-              danmakuInput.value = "";
+        // Sending controls are optional; slow/rejected account loading must not
+        // prevent receiving danmaku or constructing the overlay.
+        void (async () => {
+          // add a account select
+          const accountSelect = document.createElement("select");
+          accountSelect.style.height = "30px";
+          accountSelect.style.minWidth = "100px";
+          accountSelect.style.backgroundColor = "rgba(0, 0, 0, 0)";
+          accountSelect.style.color = "white";
+          accountSelect.style.border = "1px solid gray";
+          accountSelect.style.padding = "0 10px";
+          accountSelect.style.boxSizing = "border-box";
+          accountSelect.style.fontSize = "1em";
+          // get accounts from tauri
+          const account_info = (await invoke("get_accounts")) as AccountInfo;
+          if (destroyed) return;
+          danmu_accounts = account_info.accounts.filter(
+            (account) => account.platform === "bilibili",
+          );
+          danmu_accounts.forEach((account) => {
+            if (account.platform !== "bilibili") {
+              return;
             }
-          }
+            const option = document.createElement("option");
+            option.value = account.uid.toString();
+            option.text = account.name;
+            accountSelect.appendChild(option);
+          });
+          danmu_account_uid = accountSelect.value;
+          can_send_danmaku = Boolean(danmu_account_uid);
+          // add a danmaku send input
+          const danmakuInput = document.createElement("input");
+          danmakuInput.type = "text";
+          danmakuInput.placeholder = "回车发送弹幕";
+          danmakuInput.style.width = "30%";
+          danmakuInput.style.height = "30px";
+          danmakuInput.style.backgroundColor = "rgba(0, 0, 0, 0)";
+          danmakuInput.style.color = "white";
+          danmakuInput.style.border = "1px solid gray";
+          danmakuInput.style.padding = "0 10px";
+          danmakuInput.style.boxSizing = "border-box";
+          danmakuInput.style.fontSize = "1em";
+          danmakuInput.addEventListener("keydown", async (e) => {
+            if (e.key === "Enter") {
+              const value = danmakuInput.value;
+              if (value) {
+                // get account uid from select
+                const uid = accountSelect.value;
+                danmu_account_uid = uid;
+                await sendDanmaku(value);
+                danmakuInput.value = "";
+              }
+            }
+          });
+
+          shakaSpacer.appendChild(accountSelect);
+          shakaSpacer.appendChild(danmakuInput);
+        })().catch((error) => {
+          if (!destroyed) log.error("发送弹幕账号加载失败:", error);
         });
-
-        shakaSpacer.appendChild(accountSelect);
-        shakaSpacer.appendChild(danmakuInput);
       }
-
-      // listen to danmaku event
-      const danmuBatcher = createDanmuBatcher<DanmuEntry>((batch) => {
-        danmu_records = danmu_records.concat(batch);
-      }, DANMU_FLUSH_INTERVAL_MS);
-      cancelDanmuBatch = () => danmuBatcher.cancel();
-      if (destroyed) return;
-      stopDanmu = keepEventSubscription((signal) => listen("danmu", (event) => {
-        if (destroyed) return;
-        if (global_offset == 0) {
-          return;
-        }
-
-        if (event.payload.ts < global_offset * 1000) {
-          log.error("invalid danmu ts:", event.payload.ts, global_offset);
-          return;
-        }
-
-        let danmu_record = event.payload;
-        danmuBatcher.push(danmu_record);
-        // Drawn now only while playback keeps up with live; otherwise the
-        // history sender draws it when playback gets there.
-        if (danmu_enabled && showLive) renderFloatingEntry(danmu_record);
-      }, { platform, room: room_id }, signal), danmuSubscription.signal, (error) => {
-        danmuBatcher.cancel();
-        log.error("弹幕订阅失败，将重试:", error);
-      });
     }
 
     // create a danmaku toggle button
@@ -816,7 +829,7 @@ ${mediaPlaylistUrl}`;
         : "rgba(255, 0, 0, 0.5)";
     });
 
-    // Initialization can resume after unmount while awaiting archive/accounts.
+    // Initialization can resume after unmount while awaiting the video.
     if (destroyed) return;
     // An overlay over the player, which danmaku float across from right to
     // left, laid out as in Bilibili's live room (see lib/danmaku-layout.ts).
@@ -1500,6 +1513,18 @@ ${mediaPlaylistUrl}`;
     let lastMarkerSignature = "";
     let lastStatsSignature = "";
 
+    startDanmuUpdates(isLive, (entry) => {
+      if (danmu_enabled && showLive) renderFloatingEntry(entry);
+    }, () => {
+      update_statistics();
+      // Backfill recorded playback at its current position, but don't wipe
+      // live messages already flying when a slow history request completes.
+      if (!showLive) {
+        feed.reset();
+        feedStep();
+      }
+    });
+
     function updateSeekbar() {
       if (destroyed) return;
       const total = get_total();
@@ -1699,6 +1724,14 @@ ${mediaPlaylistUrl}`;
       onratechange={(event) => (playback_rate = event.currentTarget.playbackRate)}
     ></video>
   </div>
+  {#if danmuHistoryState === "loading"}
+    <div class="danmu-history-status" role="status">正在加载历史弹幕…</div>
+  {:else if danmuHistoryState === "error"}
+    <div class="danmu-history-status" role="status">
+      历史弹幕加载失败
+      <button type="button" onclick={() => void reloadDanmuHistory?.()}>重试</button>
+    </div>
+  {/if}
 </section>
 <style>
   :global(.shaka-controls-container) {
@@ -1711,8 +1744,35 @@ ${mediaPlaylistUrl}`;
   }
 
   #wrap {
+    position: relative;
     width: 100%;
     height: 100%;
+  }
+
+  .danmu-history-status {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    z-index: 40;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    max-width: calc(100% - 24px);
+    padding: 4px 8px;
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.75);
+    color: white;
+    font-size: 12px;
+  }
+
+  .danmu-history-status button {
+    cursor: pointer;
+    text-decoration: underline;
+  }
+
+  .danmu-history-status button:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
   }
 
   video::-webkit-media-controls-wireless-playback-picker-button {

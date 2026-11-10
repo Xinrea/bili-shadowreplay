@@ -100,7 +100,7 @@ Docker builder 安装发行版的开发包。Docker runtime 保持与 builder �
 
 ### Windows
 
-准备当前 stable Rust MSVC x64、Node/Yarn、Visual Studio C++ 桌面工作负载（含 Windows SDK、CMake）、64 位 LLVM/VS Clang 工具后，在普通终端运行：
+准备 rustup（仓库固定 Rust 1.99.0，Windows 使用 MSVC x64）、Node/Yarn、Visual Studio C++ 桌面工作负载（含 Windows SDK、CMake）、64 位 LLVM/VS Clang 工具后，在普通终端运行：
 
 ```powershell
 yarn install --frozen-lockfile

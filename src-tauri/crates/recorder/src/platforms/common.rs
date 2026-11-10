@@ -18,9 +18,10 @@ use danmu_stream::{DanmuMessageType, LiveEvent};
 use crate::core::flv_recorder::FlvRecorder;
 use crate::core::hls_recorder::{construct_stream_from_variant, HlsRecorder, HlsVariantSelection};
 use crate::core::{Codec, Format, HlsStream};
-use crate::danmu::DanmuStorage;
+use crate::danmu::DanmuWriter;
 use crate::errors::RecorderError;
 use crate::events::RecorderEvent;
+use crate::startup::RecordingTrace;
 use crate::traits::RecorderTrait;
 use crate::{RoomInfo, UserInfo};
 use recording_storage::RecordingStorage;
@@ -314,6 +315,13 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
     /// Reset the state a recording attempt owns; session state that the live
     /// may still continue (`platform_live_id`, resume info) is kept.
     async fn reset_recording(&self) {
+        let started = std::time::Instant::now();
+        let platform = self.platform().as_str();
+        let room = self.room_id();
+        let live = self.live_id().read().await.clone();
+        if !live.is_empty() {
+            log::info!("[{platform}][{room}][{live}] Recording cleanup started");
+        }
         self.clear_stream().await;
         self.last_update()
             .store(Utc::now().timestamp(), Ordering::Relaxed);
@@ -324,13 +332,22 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
         {
             self.abort_danmu_task().await;
         }
-        // Keep long-lived danmu producers out while draining the current log.
-        let danmu_storage = self.danmu_storage();
-        let mut storage = danmu_storage.write().await;
-        self.storage().flush_logs().await;
-        *storage = None;
+        // Detach the current writer before draining it; long-lived producers
+        // can still deliver preview events, but cannot enqueue into this log.
+        let drain_started = std::time::Instant::now();
+        if !live.is_empty() {
+            log::info!("[{platform}][{room}][{live}] Event log drain started");
+        }
+        self.close_danmu_log().await;
         self.is_recording().store(false, Ordering::Relaxed);
         *self.live_id().write().await = String::new();
+        if !live.is_empty() {
+            log::info!(
+                "[{platform}][{room}][{live}] Recording cleanup completed: drain_ms={} total_ms={}",
+                drain_started.elapsed().as_millis(),
+                started.elapsed().as_millis()
+            );
+        }
     }
 
     /// Clear all state of the current live session.
@@ -385,25 +402,42 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
     async fn start_recording(&self, live_id: &str) -> Result<(), RecorderError> {
         let platform = self.platform().as_str();
         let room_id = self.room_id();
+        let trace = RecordingTrace::new(platform, &room_id, live_id);
 
         // Fail before any setup when there is no stream to record.
-        let pull = self.open_pull(live_id).await?;
+        let pull = trace.stage("stream_open", self.open_pull(live_id)).await?;
 
-        let storage = self.recording_storage(live_id).await?;
-        log::info!("[{platform}][{room_id}] New record started: {live_id}");
-        storage.prepare().await?;
+        let storage = trace
+            .stage("storage_resolve", self.recording_storage(live_id))
+            .await?;
+        log::info!(
+            "{trace} Recording storage resolved: storage={:?}",
+            storage.identity()
+        );
+        trace.stage("storage_prepare", storage.prepare()).await?;
 
-        self.prepare_cover(&storage).await?;
+        trace
+            .stage("cover_prepare", self.prepare_cover(&storage))
+            .await?;
 
-        // Setup danmu store
-        *self.danmu_storage().write().await =
-            match DanmuStorage::from_storage(&storage, "events.jsonl").await {
-                Ok(storage) => Some(storage),
-                Err(error) => {
-                    log::error!("Open danmu storage failed: {error}");
-                    None
-                }
-            };
+        // Only open the append cursor. Historical event GETs and parsing must
+        // never precede video startup, even when resuming the same archive.
+        *self.danmu_storage().write().await = match trace
+            .stage(
+                "danmu_append_open",
+                DanmuWriter::from_storage(&storage, "events.jsonl"),
+            )
+            .await
+        {
+            Ok(storage) => Some(storage),
+            Err(error) => {
+                log::error!(
+                    "{trace} Event persistence unavailable; continuing video: error_kind={:?}",
+                    error.kind()
+                );
+                None
+            }
+        };
 
         if self
             .danmu_config()
@@ -418,9 +452,12 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
         // Send record start event
         let mut info = self.info().await;
         info.storage_id = storage.identity().map(str::to_owned);
-        let _ = self
-            .event_channel()
-            .send(RecorderEvent::RecordStart { recorder: info })
+        let _ = trace
+            .stage(
+                "record_start_dispatch",
+                self.event_channel()
+                    .send(RecorderEvent::RecordStart { recorder: info }),
+            )
             .await;
 
         match pull {
@@ -429,19 +466,24 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                 cookies,
                 variant_selection,
             } => {
-                let hls_recorder = HlsRecorder::new_with_variant_selection(
-                    self.room_id(),
-                    stream,
-                    self.client().clone(),
-                    cookies,
-                    self.event_channel().clone(),
-                    storage,
-                    self.enabled().clone(),
-                    variant_selection,
-                )
-                .await?;
+                let hls_recorder = trace
+                    .stage(
+                        "hls_initialize",
+                        HlsRecorder::new_traced(
+                            self.room_id(),
+                            stream,
+                            self.client().clone(),
+                            cookies,
+                            self.event_channel().clone(),
+                            storage,
+                            self.enabled().clone(),
+                            variant_selection,
+                            trace.clone(),
+                        ),
+                    )
+                    .await?;
 
-                hls_recorder.start().await
+                trace.stage("media_pull", hls_recorder.start()).await
             }
             StreamPull::Flv {
                 url,
@@ -457,12 +499,13 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                     self.enabled().clone(),
                     self.event_channel().clone(),
                     live_id.to_string(),
-                );
+                )
+                .with_trace(trace.clone());
                 if let Some(timeout) = read_timeout {
                     flv_recorder = flv_recorder.with_read_timeout(timeout);
                 }
 
-                flv_recorder.start().await
+                trace.stage("media_pull", flv_recorder.start()).await
             }
         }
     }
@@ -485,6 +528,26 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                 platform = self.platform().as_str(),
                 room = self.room_id()
             );
+        }
+    }
+
+    /// Preview delivery does not wait for persistence. In particular, never
+    /// hold the recording-state lock while a full upload queue applies
+    /// backpressure: reset/stop must be able to close that queue.
+    async fn record_live_event(&self, event: LiveEvent) {
+        if let Some(received) = RecorderEvent::danmu_received_from_event(self.room_id(), &event) {
+            self.emit_preview_event(received);
+        }
+        let append = self
+            .danmu_storage()
+            .read()
+            .await
+            .as_ref()
+            .map(|storage| storage.add_event(&event));
+        if let Some(append) = append {
+            if let Err(error) = append.await {
+                log::error!("Failed to queue live event: {error}");
+            }
         }
     }
 
@@ -520,29 +583,11 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                     match recv_res {
                         Ok(Some(message)) => match message {
                             DanmuMessageType::Event(event) => {
-                                if let Some(received) =
-                                    RecorderEvent::danmu_received_from_event(room_id.clone(), &event)
-                                {
-                                    self.emit_preview_event(received);
-                                }
-                                if let Some(storage) = self.danmu_storage().write().await.as_ref() {
-                                    if let Err(error) = storage.add_event(event).await {
-                                        log::error!("Failed to persist live event: {error}");
-                                    }
-                                }
+                                self.record_live_event(event).await;
                             }
                             DanmuMessageType::DanmuMessage(danmu) => {
                                 let event = LiveEvent::danmu(danmu, self.platform().as_str());
-                                if let Some(received) =
-                                    RecorderEvent::danmu_received_from_event(room_id.clone(), &event)
-                                {
-                                    self.emit_preview_event(received);
-                                }
-                                if let Some(storage) = self.danmu_storage().write().await.as_ref() {
-                                    if let Err(error) = storage.add_event(event).await {
-                                        log::error!("Failed to persist danmu event: {error}");
-                                    }
-                                }
+                                self.record_live_event(event).await;
                             }
                         },
                         Ok(None) => {
@@ -585,7 +630,8 @@ pub trait PlatformApi: RecorderTrait + Clone + Send + Sync + 'static {
                                     // Resume the same recording with a fresh stream.
                                     recorder.should_continue().store(true, Ordering::Relaxed);
                                     log::info!(
-                                        "[{platform}][{room_id}] Stream expired at {expire}"
+                                        "[{platform}][{room_id}][{live_id}] Stream renewal requested: expires_at_unix={expire} remaining_seconds={}",
+                                        expire - Utc::now().timestamp()
                                     );
                                 }
                                 RecorderError::UpdateTimeout
@@ -725,6 +771,189 @@ mod tests {
             Err(RecorderError::NoStreamAvailable)
         }
         async fn clear_stream(&self) {}
+    }
+
+    #[tokio::test]
+    async fn reset_and_stop_flush_partial_event_batches_without_delaying_preview() {
+        use crate::danmu::DanmuStorage;
+        use crate::traits::RecorderBasicTrait;
+        for stop in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let (tx, _rx) = recorder_event_channel(4);
+            let recorder = Recorder::with_extra(
+                PlatformType::BiliBili,
+                "room",
+                &Account::default(),
+                recording_storage::RecordingStore::local(directory.path()),
+                tx,
+                Arc::new(AtomicU64::new(30)),
+                true,
+                Metadata(
+                    Arc::new(RwLock::new((String::new(), String::new(), None))),
+                    Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                ),
+            );
+            let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counter = delivered.clone();
+            recorder.set_preview_sink(Arc::new(move |_| {
+                counter.fetch_add(1, Ordering::Relaxed);
+            }));
+            let storage = recorder.recording_storage("first").await.unwrap();
+            storage.prepare().await.unwrap();
+            *recorder.live_id.write().await = "first".into();
+            *recorder.danmu_storage.write().await = Some(
+                DanmuWriter::from_storage(&storage, "events.jsonl")
+                    .await
+                    .unwrap(),
+            );
+            recorder
+                .record_live_event(LiveEvent {
+                    ts: 1,
+                    platform: "bilibili".into(),
+                    room_id: "room".into(),
+                    event_type: "danmu".into(),
+                    data: serde_json::json!({"content":"first"}),
+                    raw: serde_json::Value::Null,
+                })
+                .await;
+            assert_eq!(delivered.load(Ordering::Relaxed), 1);
+            // Timer starts only after this event; it must not be needed for
+            // either preview delivery or the final lifecycle flush.
+            assert!(storage.read_log("events.jsonl").await.unwrap().is_empty());
+            if stop {
+                recorder.stop().await;
+            } else {
+                recorder.reset_recording().await;
+            }
+            assert!(recorder.danmu_storage.read().await.is_none());
+            let entries = DanmuStorage::read_entries(&storage, "events.jsonl")
+                .await
+                .unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].content, "first");
+
+            // A later attempt has its own queue; no old events leak into it.
+            let next = recorder.recording_storage("second").await.unwrap();
+            next.prepare().await.unwrap();
+            *recorder.danmu_storage.write().await = Some(
+                DanmuWriter::from_storage(&next, "events.jsonl")
+                    .await
+                    .unwrap(),
+            );
+            recorder
+                .record_live_event(LiveEvent {
+                    ts: 2,
+                    platform: "bilibili".into(),
+                    room_id: "room".into(),
+                    event_type: "danmu".into(),
+                    data: serde_json::json!({"content":"second"}),
+                    raw: serde_json::Value::Null,
+                })
+                .await;
+            recorder.reset_recording().await;
+            let entries = DanmuStorage::read_entries(&next, "events.jsonl")
+                .await
+                .unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].content, "second");
+            assert_eq!(
+                DanmuStorage::read_entries(&storage, "events.jsonl")
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+    }
+
+    #[derive(Clone)]
+    struct StartupPull(Arc<HlsStream>);
+
+    #[async_trait]
+    impl RecorderTrait for Recorder<StartupPull> {
+        async fn run(&self) {}
+    }
+
+    #[async_trait]
+    impl PlatformApi for Recorder<StartupPull> {
+        async fn poll_room(&self) -> Result<RoomPoll, RecorderError> {
+            unreachable!()
+        }
+        async fn poll_stream(&self) -> bool {
+            true
+        }
+        async fn open_pull(&self, _: &str) -> Result<StreamPull, RecorderError> {
+            Ok(StreamPull::Hls {
+                stream: self.extra.0.clone(),
+                cookies: None,
+                variant_selection: HlsVariantSelection::First,
+            })
+        }
+        async fn clear_stream(&self) {}
+    }
+
+    #[tokio::test]
+    async fn video_startup_reaches_playlist_even_when_event_history_reads_never_finish() {
+        use crate::danmu::writer_tests::HistoryBackend;
+        use std::sync::atomic::AtomicBool;
+        use wiremock::{
+            matchers::{method, path},
+            Mock, MockServer, ResponseTemplate,
+        };
+        let server = MockServer::start().await;
+        let requested = Arc::new(tokio::sync::Notify::new());
+        let signal = requested.clone();
+        Mock::given(method("GET"))
+            .and(path("/live.m3u8"))
+            .respond_with(move |_: &wiremock::Request| {
+                signal.notify_one();
+                ResponseTemplate::new(200).set_body_string(
+                    "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:0\n",
+                )
+            })
+            .mount(&server)
+            .await;
+        let backend = Arc::new(HistoryBackend::new("bilibili/room/live/", 10_000));
+        let store = recording_storage::RecordingStore::with_backend(
+            backend.clone(),
+            "unused-startup-probe",
+        );
+        let (tx, mut rx) = recorder_event_channel(4);
+        let recorder = Recorder::with_extra(
+            PlatformType::BiliBili,
+            "room",
+            &Account::default(),
+            store,
+            tx,
+            Arc::new(AtomicU64::new(30)),
+            true,
+            StartupPull(Arc::new(HlsStream::new(
+                "live".into(),
+                server.uri(),
+                "/live.m3u8".into(),
+                String::new(),
+                Format::TS,
+                Codec::Avc,
+                0,
+            ))),
+        );
+        let enabled: Arc<AtomicBool> = recorder.enabled.clone();
+        let worker = tokio::spawn(async move { recorder.start_recording("live").await });
+        let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event, RecorderEvent::RecordStart { .. }));
+        tokio::time::timeout(Duration::from_secs(2), requested.notified())
+            .await
+            .unwrap();
+        assert_eq!(backend.history_reads.load(Ordering::Relaxed), 0);
+        enabled.store(false, Ordering::Relaxed);
+        tokio::time::timeout(Duration::from_secs(5), worker)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]

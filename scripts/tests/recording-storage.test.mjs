@@ -21,7 +21,7 @@ const helperSource = await readFile(new URL("../../src/lib/recording-storage.ts"
 const helper = new vm.SourceTextModule(transpile(helperSource));
 await helper.link(() => { throw new Error("Unexpected runtime dependency"); });
 await helper.evaluate();
-const { storageBackend, storageBackendEntries } = helper.namespace;
+const { storageBackend, storageBackendEntries, storageBackendSupported, storageBackendLocation } = helper.namespace;
 
 async function handlers(path, state) {
   const source = await readFile(new URL(`../../src/${path}`, import.meta.url), "utf8");
@@ -37,12 +37,17 @@ async function settingsFixture() {
   let persisted = config();
   const state = await handlers("lib/components/RecordingStorageSettings.svelte", {
     storage: config(), defaultId: "local", newId: "", newRoot: "",
+    newType: "local", s3Endpoint: "", s3Bucket: "", s3Region: "us-east-1",
+    s3Prefix: "", s3PathStyle: true, s3AccessKeyId: "", s3SecretAccessKey: "", s3SessionToken: "", editingCredentials: null,
     loading: false, saving: false, browsing: false, error: "", saved: "", removingId: null, storageBackend,
+    storageBackendSupported,
     transferBusy: false, transferStarting: false,
     view: "locations", showAdd: false,
+    catalogStatuses: {},
     tick: async () => {}, newIdInput: { focus() {} },
     invoke: async (command, args) => {
       if (command === "get_config") return { storage: plain(persisted) };
+      if (command === "get_storage_catalog_status") return [];
       requests.push({ command, args: plain(args) });
       persisted = plain(args.storage);
       return plain(args.storage);
@@ -187,6 +192,29 @@ test("every storage list and selector uses the shared stable ordering", async ()
   }
 });
 
+test("catalog status reads do not reconnect unless refresh is requested", async () => {
+  const { state } = await settingsFixture();
+  const calls = [];
+  state.invoke = async (command, args) => {
+    calls.push([command, plain(args)]);
+    return [{ alias: "archive", ready: true, writable: false, error: null }];
+  };
+  await state.loadCatalogStatus();
+  await state.loadCatalogStatus(true);
+  assert.deepEqual(calls, [
+    ["get_storage_catalog_status", { refresh: false }],
+    ["get_storage_catalog_status", { refresh: true }],
+  ]);
+  assert.deepEqual(plain(state.catalogStatuses.archive), {
+    alias: "archive", ready: true, writable: false, error: null,
+  });
+  const before = plain(state.storage);
+  state.invoke = async () => { throw new Error("offline"); };
+  await state.loadCatalogStatus(true);
+  assert.deepEqual(plain(state.catalogStatuses), {});
+  assert.deepEqual(plain(state.storage), before);
+});
+
 test("changing the default preserves all backend IDs and roots without moving recordings", async () => {
   const { state, requests } = await settingsFixture();
   await state.setDefault("archive");
@@ -244,6 +272,64 @@ test("unknown and unsupported defaults cannot silently fall back to local", asyn
   assert.equal(requests.length, 0);
 });
 
+test("S3 settings submit write-only credentials separately from the public configuration", async () => {
+  const { state, requests } = await settingsFixture();
+  state.newType = "s3";
+  state.newId = "rustfs";
+  state.s3Endpoint = " http://127.0.0.1:9000 ";
+  state.s3Bucket = "recordings";
+  state.s3Prefix = "app";
+  state.s3AccessKeyId = "test-access";
+  state.s3SecretAccessKey = "test-secret";
+  state.s3SessionToken = "test-token";
+  await state.save(true);
+  const definition = requests[0].args.storage.backends.rustfs;
+  assert.deepEqual(definition, {
+    type: "s3", root: "", s3: {
+      endpoint: "http://127.0.0.1:9000", bucket: "recordings", region: "us-east-1",
+      prefix: "app", path_style: true,
+    },
+  });
+  assert.deepEqual(requests[0].args.credentials, {
+    rustfs: { access_key_id: "test-access", secret_access_key: "test-secret", session_token: "test-token" },
+  });
+  assert.equal(state.s3AccessKeyId, "");
+  assert.equal(state.s3SecretAccessKey, "");
+  assert.equal(state.s3SessionToken, "");
+  assert.equal(storageBackendLocation(definition), "s3://recordings/app · http://127.0.0.1:9000");
+  assert.equal(storageBackendSupported(definition), true);
+  await state.setDefault("rustfs");
+  assert.equal(requests[1].args.storage.default_backend, "rustfs");
+  assert.equal(requests[1].args.credentials, undefined, "ordinary writes must preserve saved credentials");
+  const recorder = await recorderFixture();
+  recorder.state.storage.backends.rustfs = definition;
+  recorder.state.choice = "rustfs";
+  await recorder.state.save();
+  assert.equal(recorder.requests[0].args.storageBackendId, "rustfs");
+});
+
+test("S3 credential edits require complete input and preserve the CAS snapshot without changing the namespace", async () => {
+  const { state, requests } = await settingsFixture();
+  const before = plain(state.storage);
+  state.editCredentials("remote");
+  await state.saveCredentials();
+  assert.equal(requests.length, 0);
+  state.s3AccessKeyId = "updated-id";
+  state.s3SecretAccessKey = "updated-secret";
+  await state.saveCredentials();
+  assert.deepEqual(requests[0].args.storage, before);
+  assert.deepEqual(requests[0].args.expected, before);
+  assert.deepEqual(requests[0].args.credentials, {
+    remote: { access_key_id: "updated-id", secret_access_key: "updated-secret", session_token: "" },
+  });
+  assert.equal(state.editingCredentials, null);
+  assert.equal(state.s3SecretAccessKey, "");
+  state.editCredentials("remote");
+  state.s3SecretAccessKey = "discarded";
+  state.cancelCredentials();
+  assert.equal(state.s3SecretAccessKey, "");
+});
+
 test("removal requires explicit confirmation and cannot remove the persisted default", async () => {
   const { state, requests } = await settingsFixture();
   await state.removeBackend("archive");
@@ -260,7 +346,8 @@ test("removal requires explicit confirmation and cannot remove the persisted def
     args: { storage: { default_backend: "local", backends: { local: config().backends.local } }, expected: config() },
   }]);
   assert.equal(state.removingId, null);
-  assert.match(state.saved, /文件和录播记录未删除/);
+  assert.match(state.saved, /从列表隐藏/);
+  assert.match(state.saved, /文件和目录数据库未删除/);
 });
 
 test("failed removal keeps the backend and confirmation and clears stale success", async () => {
@@ -353,7 +440,7 @@ async function recorderFixture() {
   const state = {
     status: { recorder: { recording: false, room_info: { platform: "bilibili", room_id: "123" } } },
     storage: config(), choice: null, disabled: false, loading: false, saving: false,
-    error: "", saved: "", storageBackend, refreshed: 0,
+    error: "", saved: "", storageBackend, storageBackendSupported, refreshed: 0,
     onchanged: async () => { state.refreshed++; },
     invoke: async (command, args) => { requests.push({ command, args: plain(args) }); return {}; },
   };
@@ -411,7 +498,7 @@ test("add recorder sends the selected override and preserves errors for web clie
   const state = await handlers("page/Room.svelte", {
     creatingRoom: false, storageLoading: false, addStorage: config(),
     storageError: "", addStorageId: "archive", addError: "", addModal: true, addRoom: "123",
-    storageBackend, URLSearchParams,
+    storageBackend, storageBackendSupported, URLSearchParams,
     invoke: async (command, args) => { requests.push({ command, args: plain(args) }); return {}; },
   });
   state.addNewRecorder("123", "bilibili");
@@ -452,7 +539,7 @@ test("selector renders explicit missing IDs and unsupported backends without rep
   const component = new vm.SourceTextModule(compile(source, { generate: "server" }).js.code, { context });
   const linked = new Map();
   await component.link(async name => {
-    const exports = name === "../recording-storage" ? { storageBackend, storageBackendEntries } : await import(name);
+    const exports = name === "../recording-storage" ? { storageBackend, storageBackendEntries, storageBackendSupported, storageBackendLocation } : await import(name);
     if (!linked.has(name)) linked.set(name, new vm.SyntheticModule(Object.keys(exports), function () {
       for (const [key, value] of Object.entries(exports)) this.setExport(key, value);
     }, { context }));

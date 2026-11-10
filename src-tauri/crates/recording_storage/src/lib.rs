@@ -12,13 +12,18 @@ use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::Mutex;
 
+mod local_publication;
 mod logs;
+mod object_transfer;
 mod relocation;
+mod s3;
 mod transfer;
 pub use logs::LOG_CHUNK_BYTES;
+pub use object_transfer::{ObjectTransfer, ObjectTransferManifest};
+pub use s3::{S3Backend, S3Config, S3Credentials};
 pub use transfer::{
-    is_cross_device_error, LocalTransfer, RenameManifest, TransferDirectory, TransferFile,
-    TransferManifest,
+    is_cross_device_error, local_transfer_root, LocalTransfer, RenameManifest, TransferDirectory,
+    TransferFile, TransferManifest,
 };
 
 fn invalid_key() -> io::Error {
@@ -83,6 +88,22 @@ pub trait StorageBackend: Send + Sync {
     async fn read_range(&self, key: &str, range: std::ops::Range<u64>) -> io::Result<Vec<u8>>;
     /// Publish a complete replacement, never a partial object.
     async fn write(&self, key: &str, bytes: &[u8]) -> io::Result<()>;
+    /// Transfer primitives: reject existing targets and use bounded file I/O.
+    /// Local backends provide atomic no-clobber; S3 uses existence preflight
+    /// under the application's single-writer transfer gate, not distributed CAS.
+    /// Unsupported by default so custom backends never silently overwrite data.
+    async fn create(&self, _key: &str, _bytes: &[u8]) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+    async fn create_from_file(&self, _key: &str, _file: &Path) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+    async fn download_to_file(&self, _key: &str, _file: &Path) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+    async fn transfer_revision(&self, _key: &str) -> io::Result<String> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
     /// Removing a missing key succeeds.
     async fn remove(&self, key: &str) -> io::Result<()>;
     async fn stat(&self, key: &str) -> io::Result<ObjectMetadata>;
@@ -121,6 +142,28 @@ pub trait StorageBackend: Send + Sync {
     /// appends are durable; implementations must not buffer data until flush/drop.
     async fn append_log(&self, key: &str, bytes: &[u8]) -> io::Result<()> {
         logs::append(self, key, bytes).await
+    }
+
+    /// Capture an append position without reading historical payloads. Keep it
+    /// with the same bytes across retries; separate writers remain unsupported.
+    async fn log_position(&self, key: &str) -> io::Result<LogPosition> {
+        Ok(LogPosition::Chunks(
+            logs::count(self, key)
+                .await?
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?,
+        ))
+    }
+
+    async fn append_log_at(
+        &self,
+        key: &str,
+        bytes: &[u8],
+        position: LogPosition,
+    ) -> io::Result<()> {
+        match position {
+            LogPosition::Chunks(start) => logs::append_at(self, key, bytes, start).await,
+            LogPosition::Bytes(_) => Err(io::ErrorKind::Unsupported.into()),
+        }
     }
 
     async fn read_log(&self, key: &str) -> io::Result<Vec<u8>> {
@@ -210,6 +253,42 @@ impl StorageBackend for LocalBackend {
 
     async fn write(&self, key: &str, bytes: &[u8]) -> io::Result<()> {
         atomic_write(self.path(key)?, bytes.to_vec()).await
+    }
+
+    async fn create(&self, key: &str, bytes: &[u8]) -> io::Result<()> {
+        let path = self.path(key)?;
+        let root = self.root.clone();
+        let bytes = bytes.to_vec();
+        tokio::task::spawn_blocking(move || {
+            local_publication::create(&root, &path, |file| file.write_all(&bytes))
+        })
+        .await
+        .map_err(io::Error::other)?
+    }
+
+    async fn create_from_file(&self, key: &str, file: &Path) -> io::Result<()> {
+        let path = self.path(key)?;
+        let root = self.root.clone();
+        let source = tokio::fs::File::open(file).await?;
+        // Move the open source handle into the blocking task, retaining the
+        // bytes even if the staging pathname disappears during shutdown.
+        let mut source = source.into_std().await;
+        tokio::task::spawn_blocking(move || {
+            local_publication::create(&root, &path, |file| {
+                std::io::copy(&mut source, file).map(|_| ())
+            })
+        })
+        .await
+        .map_err(io::Error::other)?
+    }
+
+    async fn download_to_file(&self, key: &str, file: &Path) -> io::Result<()> {
+        tokio::fs::copy(self.path(key)?, file).await?;
+        Ok(())
+    }
+
+    async fn transfer_revision(&self, key: &str) -> io::Result<String> {
+        transfer::local_file_revision(&self.path(key)?)
     }
 
     async fn remove(&self, key: &str) -> io::Result<()> {
@@ -304,6 +383,59 @@ impl StorageBackend for LocalBackend {
         tokio::task::spawn_blocking(move || {
             let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
             file.write_all(&bytes)?;
+            file.sync_all()
+        })
+        .await
+        .map_err(io::Error::other)?
+    }
+
+    async fn log_position(&self, key: &str) -> io::Result<LogPosition> {
+        match logs::count(self, key).await? {
+            Some(count) => Ok(LogPosition::Chunks(count)),
+            None => Ok(LogPosition::Bytes(
+                tokio::fs::metadata(self.path(key)?).await?.len(),
+            )),
+        }
+    }
+
+    async fn append_log_at(
+        &self,
+        key: &str,
+        bytes: &[u8],
+        position: LogPosition,
+    ) -> io::Result<()> {
+        let start = match position {
+            LogPosition::Chunks(start) => return logs::append_at(self, key, bytes, start).await,
+            LogPosition::Bytes(start) => start,
+        };
+        if logs::count(self, key).await?.is_some() {
+            return Err(io::Error::other("log format changed during append"));
+        }
+        let path = self.path(key)?;
+        let bytes = bytes.to_vec();
+        tokio::task::spawn_blocking(move || {
+            use std::io::{Read, Seek, SeekFrom};
+            let mut file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)?;
+            let length = file.metadata()?.len();
+            let end = start
+                .checked_add(bytes.len() as u64)
+                .ok_or_else(|| io::Error::other("log size overflow"))?;
+            if length < start || length > end {
+                return Err(io::Error::other("log position changed during append"));
+            }
+            let written = (length - start) as usize;
+            let mut previous = vec![0; written];
+            file.seek(SeekFrom::Start(start))?;
+            file.read_exact(&mut previous)?;
+            if previous != bytes[..written] {
+                return Err(io::Error::other("log bytes changed during append"));
+            }
+            // Complete a partial file write or repeat fsync, never append the
+            // already written prefix again after an acknowledgement failure.
+            file.write_all(&bytes[written..])?;
             file.sync_all()
         })
         .await
@@ -647,6 +779,22 @@ impl StorageBackend for ScopedBackend {
         self.backend.write(&self.key(key)?, bytes).await
     }
 
+    async fn create(&self, key: &str, bytes: &[u8]) -> io::Result<()> {
+        self.backend.create(&self.key(key)?, bytes).await
+    }
+
+    async fn create_from_file(&self, key: &str, file: &Path) -> io::Result<()> {
+        self.backend.create_from_file(&self.key(key)?, file).await
+    }
+
+    async fn download_to_file(&self, key: &str, file: &Path) -> io::Result<()> {
+        self.backend.download_to_file(&self.key(key)?, file).await
+    }
+
+    async fn transfer_revision(&self, key: &str) -> io::Result<String> {
+        self.backend.transfer_revision(&self.key(key)?).await
+    }
+
     async fn remove(&self, key: &str) -> io::Result<()> {
         self.backend.remove(&self.key(key)?).await
     }
@@ -717,6 +865,21 @@ impl StorageBackend for ScopedBackend {
 
     async fn append_log(&self, key: &str, bytes: &[u8]) -> io::Result<()> {
         self.backend.append_log(&self.key(key)?, bytes).await
+    }
+
+    async fn log_position(&self, key: &str) -> io::Result<LogPosition> {
+        self.backend.log_position(&self.key(key)?).await
+    }
+
+    async fn append_log_at(
+        &self,
+        key: &str,
+        bytes: &[u8],
+        position: LogPosition,
+    ) -> io::Result<()> {
+        self.backend
+            .append_log_at(&self.key(key)?, bytes, position)
+            .await
     }
 
     async fn read_log(&self, key: &str) -> io::Result<Vec<u8>> {
@@ -839,6 +1002,27 @@ impl RecordingStorage {
 
     pub fn workspace(&self) -> &LocalWorkspace {
         &self.workspace
+    }
+
+    /// Track an asynchronous log producer, including its final buffered writes
+    /// after the caller is cancelled. Stop/drop the producer before calling
+    /// `RecordingStore::flush_logs`; the drain waits for the entire task.
+    pub fn spawn_log_task<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        let lock = Arc::new(Mutex::new(()));
+        let guard = lock.clone().try_lock_owned().expect("new log task lock");
+        {
+            let mut pending = self.pending_logs.lock().unwrap_or_else(|p| p.into_inner());
+            pending.retain(|entry| entry.strong_count() != 0);
+            pending.push(Arc::downgrade(&lock));
+        }
+        tokio::spawn(async move {
+            let _guard = guard;
+            future.await
+        })
     }
 
     pub async fn open_log(&self, key: &str) -> io::Result<AppendLog> {
@@ -1083,6 +1267,13 @@ impl LocalAssets {
     }
 }
 
+/// A single-writer append attempt's original position, not a cross-writer lock.
+#[derive(Clone, Copy, Debug)]
+pub enum LogPosition {
+    Chunks(u64),
+    Bytes(u64),
+}
+
 /// Backend-owned append log. Clones serialize complete appends. Separate opens
 /// require a single writer. Every successful append is durable, even without
 /// flush. Cancellation does not cancel an in-flight write; it finishes holding
@@ -1127,6 +1318,27 @@ impl AppendLog {
         tokio::spawn(async move {
             let _guard = guard;
             backend.append_log(&key, &bytes).await
+        })
+        .await
+        .map_err(io::Error::other)?
+    }
+
+    pub async fn position(&self) -> io::Result<LogPosition> {
+        let _guard = self.lock.lock().await;
+        self.backend.log_position(&self.key).await
+    }
+
+    /// Retry only with the same bytes and original position. A committed batch
+    /// is verified rather than appended again. The caller must not start the
+    /// next batch until this one succeeds.
+    pub async fn append_at(&self, position: LogPosition, bytes: &[u8]) -> io::Result<()> {
+        let guard = self.lock.clone().lock_owned().await;
+        let backend = self.backend.clone();
+        let key = self.key.clone();
+        let bytes = bytes.to_vec();
+        tokio::spawn(async move {
+            let _guard = guard;
+            backend.append_log_at(&key, &bytes, position).await
         })
         .await
         .map_err(io::Error::other)?

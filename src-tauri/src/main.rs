@@ -685,6 +685,36 @@ fn get_migrations() -> Vec<Migration> {
             ",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 32,
+            description: "enable_s3_recording_storage",
+            sql: database::storage::S3_SCHEMA_SQL,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 33,
+            description: "persist_s3_storage_credentials",
+            sql: database::storage::CREDENTIALS_SCHEMA_SQL,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 34,
+            description: "support_object_storage_transfers",
+            sql: database::storage_transfer::OBJECT_SCHEMA_SQL,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 35,
+            description: "stage_storage_owned_recording_catalogs",
+            sql: database::catalog::SCHEMA_SQL,
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 36,
+            description: "activate_storage_owned_recording_catalogs",
+            sql: database::catalog::runtime::SCHEMA_SQL,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -749,7 +779,22 @@ mod storage_migration_tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(version, 31);
+        assert_eq!(version, 36);
+        let legacy_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM records")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            legacy_count, 1,
+            "catalog migration must not hide or remove legacy rows"
+        );
+        let staged_count: i64 = sqlx::query_scalar(
+            "SELECT (SELECT COUNT(*) FROM catalog_legacy_imports) + (SELECT COUNT(*) FROM catalog_mounts)",
+        ).fetch_one(&pool).await.unwrap();
+        assert_eq!(
+            staged_count, 0,
+            "schema upgrade must not start imports or mounts"
+        );
         let mode: (String, i64, Option<String>) = sqlx::query_as(
             "SELECT type, \"notnull\", dflt_value FROM pragma_table_info('recording_storage_transfers') WHERE name = 'mode'",
         ).fetch_one(&pool).await.unwrap();
@@ -825,6 +870,8 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     let credentials = CredentialCipher::load(&db_pool).await?;
     let events = EventBus::new();
     let db = Arc::new(Database::new(db_pool, credentials, events.clone()));
+    db.catalog_startup_blocked
+        .store(true, std::sync::atomic::Ordering::Release);
     db.migrate_account_credentials().await?;
     db.finish_pending_tasks().await?;
     db.fail_interrupted_uploads().await?;
@@ -854,6 +901,12 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     let _ = try_convert_clip_covers(&db, config.read().await.output.clone().into()).await;
     let _ = try_add_parent_id_to_records(&db).await;
     let _ = try_convert_entry_to_m3u8(&db, &recorder_manager).await;
+    recorder_manager
+        .archive_storage()
+        .start_catalogs(args.readonly)
+        .await?;
+    db.catalog_startup_blocked
+        .store(false, std::sync::atomic::Ordering::Release);
     tokio::spawn(crate::handlers::project::create_legacy_projects(
         db.clone(),
         config.read().await.output.clone().into(),
@@ -972,6 +1025,8 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
         credentials,
         events.clone(),
     ));
+    db.catalog_startup_blocked
+        .store(true, std::sync::atomic::Ordering::Release);
     db.migrate_account_credentials().await?;
     db.finish_pending_tasks().await?;
     db.fail_interrupted_uploads().await?;
@@ -1019,6 +1074,12 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
     let _ = try_convert_clip_covers(&db, output_path.clone().into()).await;
     let _ = try_add_parent_id_to_records(&db).await;
     let _ = try_convert_entry_to_m3u8(&db, &recorder_manager).await;
+    recorder_manager
+        .archive_storage()
+        .start_catalogs(false)
+        .await?;
+    db.catalog_startup_blocked
+        .store(false, std::sync::atomic::Ordering::Release);
     tauri::async_runtime::spawn(crate::handlers::project::create_legacy_projects(
         db.clone(),
         output_path.clone().into(),
@@ -1132,6 +1193,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::account::get_qr_status,
         crate::handlers::account::get_qr,
         crate::handlers::config::get_config,
+        crate::handlers::config::get_storage_catalog_status,
         crate::handlers::config::request_settings,
         crate::handlers::config::get_mcp_server_status,
         crate::handlers::config::update_mcp_server,

@@ -32,8 +32,8 @@ impl RtmpConfig {
         struct NewRoom {
             name: String,
         }
-        let room: NewRoom = serde_json::from_str(extra)
-            .map_err(|error| format!("RTMP 配置无效: {error}"))?;
+        let room: NewRoom =
+            serde_json::from_str(extra).map_err(|error| format!("RTMP 配置无效: {error}"))?;
         Self {
             name: room.name,
             ..Self::default()

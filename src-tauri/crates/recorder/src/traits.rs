@@ -5,7 +5,7 @@ use std::{
 
 use crate::platforms::PlatformType;
 use crate::{
-    account::Account, danmu::DanmuStorage, events::RecorderEvent, CachePath, RecorderInfo,
+    account::Account, danmu::DanmuWriter, events::RecorderEvent, CachePath, RecorderInfo,
     RoomCheckStatus, RoomInfo, UserInfo,
 };
 use async_trait::async_trait;
@@ -39,7 +39,7 @@ pub trait RecorderBasicTrait {
     fn live_id(&self) -> Arc<RwLock<String>>;
     fn danmu_task(&self) -> Arc<Mutex<Option<JoinHandle<()>>>>;
     fn record_task(&self) -> Arc<Mutex<Option<JoinHandle<()>>>>;
-    fn danmu_storage(&self) -> Arc<RwLock<Option<DanmuStorage>>>;
+    fn danmu_storage(&self) -> Arc<RwLock<Option<DanmuWriter>>>;
     fn last_update(&self) -> &atomic::AtomicI64;
     fn last_sequence(&self) -> &atomic::AtomicU64;
     fn update_interval(&self) -> Arc<atomic::AtomicU64>;
@@ -63,11 +63,27 @@ pub trait RecorderTrait: RecorderBasicTrait {
             record_task.abort();
             let _ = record_task.await;
         }
+        self.close_danmu_log().await;
+    }
+
+    /// Detach first so long-lived producers cannot enqueue into the ended
+    /// recording. Dropped/cancelled close futures still leave a tracked worker.
+    async fn close_danmu_log(&self) {
+        let writer = self.danmu_storage().write().await.take();
+        if let Some(writer) = writer {
+            if let Err(error) = writer.close().await {
+                log::error!(
+                    "[{}][{}] Event log final commit failed: {error}",
+                    self.platform().as_str(),
+                    self.room_id()
+                );
+            }
+        }
         // Backend log commits may intentionally outlive their cancelled caller.
         // Do not let archive deletion race those outstanding appends.
         self.storage().flush_logs().await;
-        *self.danmu_storage().write().await = None;
     }
+
     async fn should_record(&self) -> bool {
         if self.quit().load(atomic::Ordering::Relaxed) {
             return false;

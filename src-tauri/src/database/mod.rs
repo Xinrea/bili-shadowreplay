@@ -5,6 +5,7 @@ use thiserror::Error;
 pub mod account;
 pub mod audio;
 pub mod bilibili_user;
+pub mod catalog;
 #[cfg_attr(
     not(feature = "credential-encryption"),
     path = "credentials_plaintext.rs"
@@ -26,6 +27,8 @@ pub struct Database {
     credentials: credentials::CredentialCipher,
     events: EventBus,
     storage_initialized: tokio::sync::OnceCell<()>,
+    pub(crate) catalogs: std::sync::OnceLock<std::sync::Arc<catalog::runtime::CatalogRuntime>>,
+    pub(crate) catalog_startup_blocked: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Error, Debug)]
@@ -38,9 +41,9 @@ pub enum DatabaseError {
     InvalidCookies,
     #[error("Number exceed i64 range")]
     NumberExceedI64Range,
-    #[error("Account credential storage error: {0}")]
+    #[error("Credential storage error: {0}")]
     Credentials(#[from] std::io::Error),
-    #[error("Database contains encrypted accounts; enable the credential-encryption feature")]
+    #[error("Database contains encrypted credentials; enable the credential-encryption feature")]
     EncryptionRequired,
     #[error("Recording is already bound to a different storage ID")]
     StorageBindingConflict,
@@ -50,6 +53,8 @@ pub enum DatabaseError {
     StorageBackendConflict(String),
     #[error("Invalid storage configuration: {0}")]
     InvalidStorageConfig(String),
+    #[error("Recording catalog error: {0}")]
+    Catalog(String),
     #[error("DB error: {0}")]
     DB(#[from] sqlx::Error),
     #[error("SQL is incorret: {sql}")]
@@ -84,6 +89,8 @@ impl Database {
             credentials,
             events,
             storage_initialized: tokio::sync::OnceCell::new(),
+            catalogs: std::sync::OnceLock::new(),
+            catalog_startup_blocked: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }

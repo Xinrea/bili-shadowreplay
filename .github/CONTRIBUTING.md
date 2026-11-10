@@ -11,6 +11,10 @@ cd bili-shadowreplay
 
 已有 checkout 如未初始化子模块，先运行 `git submodule update --init --recursive`，再按平台准备基础编译工具。
 
+项目通过根目录的 `rust-toolchain.toml` 固定 Rust **1.99.0**（含 rustfmt、Clippy）。
+安装 rustup 后，在仓库内运行 `rustc --version` 会自动选用或安装该版本，不修改全局默认工具链。
+CI、Docker 和 Dev Container 使用同一版本；各 workspace crate 的最低 Rust 版本统一为 1.99。
+
 ### MacOS
 
 准备 Rust、Node/Yarn 和 Xcode Command Line Tools 后，在仓库目录运行：
@@ -32,7 +36,7 @@ yarn tauri dev
 Windows 下分为两个版本，分别是 `cpu` 和 `cuda` 版本。区别在于 Whisper 是否使用 GPU 加速。
 `cpu` 版本使用 CPU 进行推理，`cuda` 版本使用 GPU 进行推理。
 
-基础编译工具：当前 stable Rust（`x86_64-pc-windows-msvc`）、Node/Yarn、Visual Studio 2022 或 Build Tools 的“使用 C++ 的桌面开发”（包含 MSVC x64、Windows SDK、CMake 工具），以及 64 位 LLVM（或 Visual Studio 的 C++ Clang 工具）。标准安装位置会自动发现，无需手动修改 `PATH` 或使用 Developer PowerShell。
+基础编译工具：Rust 1.99.0（`x86_64-pc-windows-msvc`，由仓库工具链配置选择）、Node/Yarn、Visual Studio 2022 或 Build Tools 的“使用 C++ 的桌面开发”（包含 MSVC x64、Windows SDK、CMake 工具），以及 64 位 LLVM（或 Visual Studio 的 C++ Clang 工具）。标准安装位置会自动发现，无需手动修改 `PATH` 或使用 Developer PowerShell。
 
 ```powershell
 yarn install --frozen-lockfile

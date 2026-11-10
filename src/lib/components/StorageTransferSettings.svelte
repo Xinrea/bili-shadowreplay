@@ -7,7 +7,7 @@
   import { createStateRefresh, watchStateChanges } from "../state-refresh";
   import { describeTask, isActiveTaskStatus } from "../task-progress";
   import { openTaskCenter } from "../stores/tasks";
-  import { storageBackendEntries } from "../recording-storage";
+  import { storageBackendEntries, storageBackendSupported, storageBackendLocation } from "../recording-storage";
   import {
     transferBytes, transferModeLabel, transferResult, transferSelectionError, transferStatus,
     type StorageTransferPlan,
@@ -248,18 +248,18 @@
           <label for="transfer-source" class="ui-label mb-1.5 block">从哪里转出</label>
           <select id="transfer-source" class="ui-input w-full" bind:value={sourceId}>
             <option value="">选择来源存储</option>
-            {#each storageBackendEntries(storage) as [id, backend] (id)}<option value={id} disabled={backend.type !== "local"}>{id}</option>{/each}
+            {#each storageBackendEntries(storage) as [id, backend] (id)}<option value={id} disabled={!storageBackendSupported(backend)}>{id}</option>{/each}
           </select>
-          {#if sourceId}<p class="mt-1.5 select-text break-all text-[11px] leading-relaxed text-fg-muted">{storage.backends[sourceId]?.root}</p>{/if}
+          {#if storage.backends[sourceId]}<p class="mt-1.5 select-text break-all text-[11px] leading-relaxed text-fg-muted">{storageBackendLocation(storage.backends[sourceId])}</p>{/if}
         </div>
         <ArrowRight class="route-arrow mt-7 h-4 w-4 text-fg-faint" />
         <div class="min-w-0">
           <label for="transfer-target" class="ui-label mb-1.5 block">转移到哪里</label>
           <select id="transfer-target" class="ui-input w-full" bind:value={targetId}>
             <option value="">选择目标存储</option>
-            {#each storageBackendEntries(storage) as [id, backend] (id)}<option value={id} disabled={backend.type !== "local" || id === sourceId}>{id}</option>{/each}
+            {#each storageBackendEntries(storage) as [id, backend] (id)}<option value={id} disabled={!storageBackendSupported(backend) || id === sourceId}>{id}</option>{/each}
           </select>
-          {#if targetId}<p class="mt-1.5 select-text break-all text-[11px] leading-relaxed text-fg-muted">{storage.backends[targetId]?.root}</p>{/if}
+          {#if storage.backends[targetId]}<p class="mt-1.5 select-text break-all text-[11px] leading-relaxed text-fg-muted">{storageBackendLocation(storage.backends[targetId])}</p>{/if}
         </div>
       </div>
       {#if sourceId && targetId && selectionError}<p class="text-[12px] text-danger-fg" role="alert">{selectionError}</p>{/if}
@@ -276,7 +276,7 @@
             <div><dt class="text-fg-muted">待转移录播（估算）</dt><dd class="mt-1 font-medium tabular-nums">{currentPlan.recording_count} 条 <span class="font-normal text-fg-muted">/ {transferBytes(currentPlan.total_bytes)}</span></dd></div>
             <div><dt class="text-fg-muted">待补清理</dt><dd class="mt-1 font-medium tabular-nums">{currentPlan.cleanup_count} 条</dd></div>
             <div><dt class="text-fg-muted">预计所需空间</dt><dd class="mt-1 font-medium tabular-nums">{transferBytes(currentPlan.required_bytes)}</dd></div>
-            <div><dt class="text-fg-muted">目标可用空间</dt><dd class="mt-1 font-medium tabular-nums">{transferBytes(currentPlan.available_bytes)}</dd></div>
+            <div><dt class="text-fg-muted">目标可用空间</dt><dd class="mt-1 font-medium tabular-nums">{currentPlan.available_bytes === null ? "未知（S3 不提供容量查询）" : transferBytes(currentPlan.available_bytes)}</dd></div>
           </dl>
           {#if !currentPlan.can_transfer || currentPlan.blockers.length}
             <div class="rounded-[8px] bg-warning-soft p-3 text-[12px] text-warning-fg">
@@ -288,14 +288,18 @@
           {:else if currentPlan.recording_count + currentPlan.cleanup_count === 0}
             <p class="text-[12px] text-fg-muted">没有需要转移或清理的录播。</p>
           {:else}
-            {#if currentPlan.required_bytes > currentPlan.available_bytes}
+            {#if currentPlan.available_bytes === null}
+              <p class="text-[12px] text-fg-muted">无法预估远端剩余容量；复制失败时不切换归属或清理来源，可使用相同来源和目标重试。</p>
+            {:else if currentPlan.required_bytes > currentPlan.available_bytes}
               <p class="flex items-start gap-1.5 text-[12px] text-warning-fg"><CircleAlert class="mt-0.5 h-3.5 w-3.5 shrink-0" />预计空间不足；重试会复用已完成的复制，实际写入空间不足则停止。</p>
             {:else if currentPlan.transfer_mode === "rename"}
               <p class="flex items-center gap-1.5 text-[12px] text-success-fg"><Check class="h-3.5 w-3.5" />无需预留完整副本空间</p>
             {:else}
               <p class="flex items-center gap-1.5 text-[12px] text-success-fg"><Check class="h-3.5 w-3.5" />预计空间足够</p>
             {/if}
-            {#if currentPlan.transfer_mode === "rename"}
+            {#if currentPlan.transfer_mode === "object"}
+              <p class="text-[11px] leading-relaxed text-fg-muted">通过应用所在机器逐对象中转，系统临时目录需容纳单个最大对象。上传至 S3 的单个对象上限为 5 GiB。重试会复用已校验对象，不覆盖已有的陌生文件。</p>
+            {:else if currentPlan.transfer_mode === "rename"}
               <p class="text-[11px] leading-relaxed text-fg-muted">直接移动录播目录，不复制媒体数据。若遇到跨文件系统错误，会按 DB 大小估算复制空间；其他错误会停止转移。</p>
             {:else}
               <p class="text-[11px] leading-relaxed text-fg-muted">空间只按 DB 大小估算，不预先详细统计文件。估算可能不包含全部附属文件；实际写入空间不足时停止当前录播，已完成的转移保留。</p>
@@ -314,7 +318,8 @@
     <details class="border-t border-line pt-3 text-[11px] text-fg-muted">
       <summary class="cursor-pointer hover:text-fg">转移范围与限制</summary>
       <ul class="mt-2 list-inside list-disc space-y-1.5 leading-relaxed">
-        <li>仅支持本地存储。来源和目标目录需已存在，不能相同、互相包含或经过符号链接。</li>
+        <li>支持本地与 S3 双向转移、S3 与 S3 转移。本地根目录须已存在；S3 bucket 须预先创建并配置读写及删除权限。</li>
+        <li>来源和目标不能相同或重叠；本地目录不能经过符号链接，同一 S3 bucket 的前缀不能互相包含。转移期间不要通过其他应用修改这些录播对象。</li>
         <li>同一文件系统内优先直接移动目录；跨文件系统则逐条完整复制、校验并切换录播绑定后，才清理来源文件。</li>
         <li>转移前会检查占用状态；只有明确的跨文件系统错误才回退到复制，空间判断仍按 DB 估算。权限或目标冲突等错误不会触发复制回退。</li>
         <li>复制逐场校验，成功后才切换绑定并清理来源。空间不足等写入失败会停止当前录播，可使用相同来源和目标重试。</li>

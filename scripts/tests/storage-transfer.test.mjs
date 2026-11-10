@@ -39,6 +39,12 @@ const config = () => ({
   default_backend: "A",
   backends: { A: { type: "local", root: "/A" }, B: { type: "local", root: "/B" } },
 });
+const s3 = prefix => ({
+  type: "s3", root: "", s3: {
+    endpoint: "http://127.0.0.1:9000", bucket: "recordings",
+    region: "us-east-1", prefix, path_style: true,
+  },
+});
 const plan = (extra = {}) => ({
   source_backend_id: "A", target_backend_id: "B", recording_count: 3,
   total_bytes: 1024, required_bytes: 1024, available_bytes: 4096,
@@ -89,6 +95,17 @@ function fixture() {
   state.taskRefresh = { schedule() { state.scheduled++; } };
   return { state, requests };
 }
+
+test("all S3 and local directions can be selected without weakening missing-backend validation", () => {
+  const storage = config();
+  storage.backends.C = s3("one");
+  storage.backends.D = s3("two");
+  for (const [source, target] of [["A", "C"], ["C", "A"], ["C", "D"], ["D", "C"]]) {
+    assert.equal(helpers.namespace.transferSelectionError(storage, source, target), "");
+  }
+  assert.notEqual(helpers.namespace.transferSelectionError(storage, "C", "missing"), "");
+  assert.notEqual(helpers.namespace.transferSelectionError(storage, "C", "C"), "");
+});
 
 test("selection invalidation does not subscribe to its own request counter", () => {
   const effect = source.match(/\$effect\(\(\) => \{([\s\S]*?)\}\);/)[1];
@@ -432,6 +449,10 @@ test("both settings views stay mounted with hidden/inert so background recovery 
     "../stores/tasks": { openTaskCenter() {} },
   }));
   await transfer.evaluate();
+  const credentialSource = await readFile(new URL("../../src/lib/components/S3CredentialFields.svelte", import.meta.url), "utf8");
+  const credentialFields = new vm.SourceTextModule(compile(credentialSource, { generate: "server" }).js.code, { context });
+  await credentialFields.link(async name => dependency(name, {}));
+  await credentialFields.evaluate();
   for (const view of ["locations", "transfer"]) {
     const seeded = parentSource
       .replace("let storage: StorageConfig | null = $state(null);", `let storage: StorageConfig | null = $state(${JSON.stringify(config())});`)
@@ -439,6 +460,7 @@ test("both settings views stay mounted with hidden/inert so background recovery 
       .replace('("locations");', `("${view}");`);
     const component = new vm.SourceTextModule(compile(seeded, { generate: "server" }).js.code, { context });
     await component.link(async name => name === "./StorageTransferSettings.svelte" ? transfer
+      : name === "./S3CredentialFields.svelte" ? credentialFields
       : dependency(name, dependencies));
     await component.evaluate();
     const body = render(component.namespace.default, { props: { onclose() {} } }).body;
@@ -462,9 +484,11 @@ test("both settings views stay mounted with hidden/inert so background recovery 
   assert.match(parentSource, /onclick=\{\(\) => setDefault\(id\)\}/);
   assert.doesNotMatch(parentSource, /openTransfer|转移录播/);
   assert.match(parentSource, /\{#if removingId === id\}[\s\S]*?aria-label=\{`确认移除存储 \$\{id\}`\}/);
-  assert.match(parentSource, /文件和录播记录会保留/);
-  assert.match(parentSource, /此 ID 无法重新添加/);
-  assert.match(parentSource, /type="button"[^>]*onclick=\{\(\) => showAdd = false\}>取消/);
+  assert.match(parentSource, /对应录播将从列表隐藏/);
+  assert.match(parentSource, /存储上的文件和目录数据库不会删除/);
+  assert.match(parentSource, /存储名称可以复用/);
+  assert.doesNotMatch(parentSource, /此 ID 无法重新添加/);
+  assert.match(parentSource, /type="button"[^>]*onclick=\{\(\) => \{ showAdd = false; clearCredentials\(\); \}\}>取消/);
   assert.match(source, /onMount\(\(\) => \{\s*const stop = watchStateChanges/);
 });
 
@@ -479,7 +503,7 @@ test("transfer tasks have a Chinese name and A → B description, and cannot be 
   assert.equal(helpers.namespace.transferModeLabel("mixed"), "快速移动与复制");
 });
 
-async function showTransfer({ preview = null, rows = [], known = true, confirmed = false, sourceId = "A" } = {}) {
+async function showTransfer({ preview = null, rows = [], known = true, confirmed = false, sourceId = "A", storage = config() } = {}) {
   const dependencies = {
     "../invoker": { invoke() {}, TAURI_ENV: false },
     "../state-refresh": { createStateRefresh: () => ({}), watchStateChanges() {} },
@@ -505,7 +529,7 @@ async function showTransfer({ preview = null, rows = [], known = true, confirmed
   await component.link(async name => dependency(name, dependencies));
   await component.evaluate();
   return render(component.namespace.default, {
-    props: { storage: config(), sourceId, busy: !known || rows.some(row => progress.namespace.isActiveTaskStatus(row.status)) },
+    props: { storage, sourceId, busy: !known || rows.some(row => progress.namespace.isActiveTaskStatus(row.status)) },
   }).body;
 }
 
@@ -526,6 +550,21 @@ test("transfer form shows three steps, bound source prefill and ordered cleanup 
   assert.match(prefilled, /<select[^>]*id="transfer-source"[\s\S]*?<option value="B"[^>]*selected/);
   assert.match(source, /sourceId = \$bindable\(""\)/);
   assert.doesNotMatch(source, /let sourceId = \$state/);
+});
+
+test("remote capacity stays unknown rather than claiming zero or sufficient space", async () => {
+  const storage = config();
+  storage.backends.B = s3("archive");
+  const body = await showTransfer({
+    storage, preview: plan({ transfer_mode: "object", available_bytes: null }), confirmed: true,
+  });
+  assert.match(body, /s3:\/\/recordings\/archive/);
+  assert.match(body, /逐对象复制并校验后清理来源/);
+  assert.match(body, /未知（S3 不提供容量查询）/);
+  assert.match(body, /系统临时目录需容纳单个最大对象/);
+  assert.match(body, /5 GiB/);
+  assert.doesNotMatch(body, /预计空间足够|预计空间不足；|仅支持本地存储/);
+  assert.match(body, /<button(?=[^>]*>开始转移)(?![^>]*disabled)[^>]*>/);
 });
 
 test("rendered plans expose space and blockers, and task failures expose partial success and retry guidance", async () => {

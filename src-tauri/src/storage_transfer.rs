@@ -11,6 +11,9 @@ use tokio::sync::{OwnedMutexGuard, OwnedRwLockReadGuard};
 
 const READER_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[path = "storage_transfer/objects.rs"]
+mod objects;
+
 #[derive(Clone, Debug, Serialize)]
 pub struct StorageTransferPreview {
     pub source_backend_id: String,
@@ -18,7 +21,7 @@ pub struct StorageTransferPreview {
     pub recording_count: usize,
     pub total_bytes: u64,
     pub required_bytes: u64,
-    pub available_bytes: u64,
+    pub available_bytes: Option<u64>,
     pub cleanup_count: usize,
     /// Root-level prediction, also accounting for durable pending copy journals.
     pub transfer_mode: &'static str,
@@ -169,7 +172,7 @@ impl ArchiveStorage {
                     recording_count: 0,
                     total_bytes: 0,
                     required_bytes: 0,
-                    available_bytes: 0,
+                    available_bytes: None,
                     cleanup_count: 0,
                     transfer_mode: "copy",
                     can_transfer: false,
@@ -177,6 +180,11 @@ impl ArchiveStorage {
                 })
             }
         };
+        if self.uses_object_transfer(source, target).await? {
+            return self
+                .preview_object_transfer(source, target, reservation)
+                .await;
+        }
         let (_gate, transfer) = self.local_transfer(source, target).await?;
         let rename = self.predicts_rename(&transfer);
         let records = self
@@ -190,7 +198,7 @@ impl ArchiveStorage {
             recording_count: 0,
             total_bytes: 0,
             required_bytes: 0,
-            available_bytes: 0,
+            available_bytes: None,
             cleanup_count: 0,
             transfer_mode: if rename { "rename" } else { "copy" },
             can_transfer: false,
@@ -264,19 +272,22 @@ impl ArchiveStorage {
                 }
             }
         };
-        preview.available_bytes = blocking((), move || transfer.available_bytes()).await?;
+        let available = blocking((), move || transfer.available_bytes()).await?;
         #[cfg(test)]
-        if let Some(available) = *self.transfer_available_bytes.lock().unwrap() {
-            preview.available_bytes = available;
-        }
+        let available = self
+            .transfer_available_bytes
+            .lock()
+            .unwrap()
+            .unwrap_or(available);
+        preview.available_bytes = Some(available);
         // A copying journal may already have a verified published destination
         // awaiting DB commit. Do not prevent recovery based on its conservative
         // full-size estimate; execution checks actual remaining bytes before
         // writing. Fresh archives still have to fit the preview estimate.
-        if fresh_bytes > preview.available_bytes {
+        if fresh_bytes > available {
             preview.blockers.push(format!(
                 "目标空间不足：预计需要 {} 字节，可用 {} 字节",
-                preview.required_bytes, preview.available_bytes
+                preview.required_bytes, available
             ));
         }
         preview.can_transfer = preview.blockers.is_empty();
@@ -421,7 +432,7 @@ impl ArchiveStorage {
                 .count(),
             total_bytes: 0,
             required_bytes: 0,
-            available_bytes: 0,
+            available_bytes: None,
             cleanup_count: work
                 .values()
                 .filter(|(_, _, _, j)| j.as_ref().is_some_and(|j| j.phase != "copying"))
@@ -511,10 +522,10 @@ impl ArchiveStorage {
         }
         // Never scan archive contents to refine these estimates. Actual write
         // failures stop the current per-archive transaction without deleting A.
-        preview.available_bytes = transfer.available_bytes()?;
+        preview.available_bytes = Some(transfer.available_bytes()?);
         #[cfg(test)]
         if let Some(available) = *self.transfer_available_bytes.lock().unwrap() {
-            preview.available_bytes = available;
+            preview.available_bytes = Some(available);
         }
         preview.can_transfer = preview.blockers.is_empty();
         Ok(Plan {
@@ -533,6 +544,20 @@ impl ArchiveStorage {
         reservation: Arc<OwnedMutexGuard<()>>,
         reporter: &ProgressReporter,
     ) -> StorageTransferResult {
+        match self.uses_object_transfer(source, target).await {
+            Ok(true) => {
+                return self
+                    .execute_object_transfer(source, target, reservation, reporter)
+                    .await
+            }
+            Ok(false) => {}
+            Err(error) => {
+                return StorageTransferResult {
+                    error: Some(error.to_string()),
+                    ..Default::default()
+                }
+            }
+        }
         let mut result = StorageTransferResult::default();
         reporter
             .update("正在检查存储路径、转移日志和可用空间")
@@ -759,7 +784,7 @@ mod tests {
     use std::path::Path;
     use tokio::sync::RwLock;
 
-    async fn fixture() -> (
+    pub(super) async fn fixture() -> (
         tempfile::TempDir,
         ArchiveStorage,
         sqlx::SqlitePool,
@@ -782,6 +807,7 @@ mod tests {
                 id.into(),
                 RecordingBackendConfig {
                     kind: "local".into(),
+                    s3: None,
                     root: dir
                         .path()
                         .join(id)
@@ -810,7 +836,12 @@ mod tests {
         (dir, storage, pool, reporter)
     }
 
-    async fn add(storage: &ArchiveStorage, pool: &sqlx::SqlitePool, root: &Path, live: &str) {
+    pub(super) async fn add(
+        storage: &ArchiveStorage,
+        pool: &sqlx::SqlitePool,
+        root: &Path,
+        live: &str,
+    ) {
         sqlx::query(
             "INSERT INTO records(platform, room_id, live_id, size) VALUES ('bilibili', '123', ?, 7)",
         )
@@ -1629,7 +1660,10 @@ mod tests {
         *storage.transfer_available_bytes.lock().unwrap() = Some(0);
         let preview = storage.preview_storage_transfer("a", "b").await.unwrap();
         assert!(preview.can_transfer, "{preview:?}");
-        assert_eq!((preview.required_bytes, preview.available_bytes), (7, 0));
+        assert_eq!(
+            (preview.required_bytes, preview.available_bytes),
+            (7, Some(0))
+        );
         // This override controls the estimate, not the real temporary disk.
         // Streaming writes still report actual exhaustion independently.
         let result = execute(&storage, &reporter).await;
@@ -1703,7 +1737,7 @@ mod tests {
                 preview.required_bytes,
                 preview.available_bytes
             ),
-            (14, 14, 6)
+            (14, 14, Some(6))
         );
         assert!(!preview.can_transfer);
         assert!(preview.blockers.iter().any(|b| b.contains("空间不足")));
@@ -1844,7 +1878,7 @@ mod tests {
                 preview.required_bytes,
                 preview.available_bytes
             ),
-            (1, 7, 0)
+            (1, 7, Some(0))
         );
         let mut config = restarted.configuration().await.unwrap();
         config.backends.remove("b");
@@ -2047,6 +2081,7 @@ mod tests {
             "child".into(),
             RecordingBackendConfig {
                 kind: "local".into(),
+                s3: None,
                 root: dir.path().join("a/child").to_str().unwrap().into(),
             },
         );

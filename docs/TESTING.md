@@ -37,8 +37,12 @@ src-tauri/
    ```
 
 2. **Rust Toolchain**:
+   Install Rust through rustup. The repository's `rust-toolchain.toml` selects
+   Rust **1.99.0**, including rustfmt and Clippy, without changing your global
+   default. From the repository directory, verify (and install if needed):
    ```bash
-   rustup update stable
+   rustc --version
+   cargo --version
    ```
 
 3. **Git Submodules** (for full build):

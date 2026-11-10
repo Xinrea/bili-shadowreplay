@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { StorageConfig } from "../interface";
-  import { storageBackend, storageBackendEntries } from "../recording-storage";
+  import { storageBackend, storageBackendEntries, storageBackendSupported, storageBackendLocation } from "../recording-storage";
 
   let {
     storage, value = $bindable<string | null>(null), id, disabled = false,
@@ -24,11 +24,11 @@
     <option value={value} disabled>未知存储：{value || "未配置"}</option>
   {/if}
   {#each storageBackendEntries(storage) as [backendId, entry] (backendId)}
-    <option value={backendId} disabled={entry.type !== "local"}>{backendId}{entry.type !== "local" ? "（暂不支持）" : ""}</option>
+    <option value={backendId} disabled={!storageBackendSupported(entry)}>{backendId}{!storageBackendSupported(entry) ? "（暂不支持）" : entry.type === "s3" ? "（S3）" : ""}</option>
   {/each}
 </select>
 {#if backend}
-  <p class="ui-hint mt-1 select-text break-all">{backend.root}</p>
+  <p class="ui-hint mt-1 select-text break-all">{storageBackendLocation(backend)}</p>
 {:else}
   <p class="mt-1 text-[12px] text-danger-fg" role="alert">存储 {selected || "（未配置）"} 不存在，请在设置中检查。不会自动改用其他存储。</p>
 {/if}

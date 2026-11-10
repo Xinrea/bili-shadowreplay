@@ -10,7 +10,7 @@ Vulkan 渲染还会从 `skia.lib` 拉入 `SkExecutor`，其中无异常 STL 的 
 
 `yarn tauri dev/build/bundle` 自动调用 `scripts/prepare-windows-skia.mjs`：下载同版本、同目标、同 feature 的官方压缩包并校验 SHA-256，用 `llvm-objcopy --redefine-sym` 把这些共有符号在 Skia 库中的定义和引用统一加上 `bsr_skia_` 前缀，再重新打包。准备结果记录源包校验值、补丁版本和输出校验值；后续启动校验并复用缓存，不再下载或处理符号。
 
-安装当前 stable Rust MSVC x64、Node/Yarn、Visual Studio C++ 桌面工作负载（含 Windows SDK、CMake）、64 位 LLVM 或 VS C++ Clang 工具后，普通 PowerShell/CMD 终端即可运行：
+安装 rustup（仓库固定 Rust 1.99.0，Windows 使用 MSVC x64）、Node/Yarn、Visual Studio C++ 桌面工作负载（含 Windows SDK、CMake）、64 位 LLVM 或 VS C++ Clang 工具后，普通 PowerShell/CMD 终端即可运行：
 
 ```powershell
 yarn install --frozen-lockfile

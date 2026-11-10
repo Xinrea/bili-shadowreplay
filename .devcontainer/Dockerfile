@@ -29,8 +29,9 @@ RUN adduser --disabled-password --gecos "" ${CONTAINER_USER}
 USER ${CONTAINER_USER}
 WORKDIR /home/${CONTAINER_USER}
 
-# Install rustup
-RUN curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+# Match the repository's rust-toolchain.toml.
+RUN curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+    --default-toolchain 1.99.0 --profile minimal --component rustfmt --component clippy
 ENV PATH=${PATH}:/home/${CONTAINER_USER}/.cargo/bin
 
 CMD [ "/bin/bash" ]

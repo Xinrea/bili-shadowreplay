@@ -1,7 +1,17 @@
-import type { StorageConfig } from "./interface";
+import type { RecordingBackendConfig, StorageConfig } from "./interface";
 import type { RecordItem } from "./db";
 
 const backendIds = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" });
+
+export function storageBackendSupported(backend: RecordingBackendConfig | undefined): boolean {
+  return backend?.type === "local" || (backend?.type === "s3" && !!backend.s3);
+}
+
+export function storageBackendLocation(backend: RecordingBackendConfig): string {
+  return backend.type === "s3" && backend.s3
+    ? `s3://${backend.s3.bucket}/${backend.s3.prefix}${backend.s3.endpoint ? ` · ${backend.s3.endpoint}` : ""}`
+    : backend.root;
+}
 
 /** Display order must not depend on backend map serialization or default selection. */
 export function storageBackendEntries(storage: StorageConfig) {

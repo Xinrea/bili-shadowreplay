@@ -172,11 +172,12 @@ test("direct preview waits for archive metadata and hides every file surface on 
 
 test("dashboard refresh updates old rows after backend removal even when newest live ID is unchanged", async () => {
   const state = await handlers("page/Summary.svelte", {
-    summary: {}, total: 0, online: 0, disk_usage: 0, disk_info: {}, account_count: 0,
+    summary: {}, total: 0, online: 0, disk_usage: 0, account_count: 0,
     total_length: 0, today_record_count: 0, offset: 2, hasMore: false,
     recent_records: [row("latest"), row("old")],
     get_static_url: async () => "/cover",
     invoke: async command => {
+      assert.notEqual(command, "get_disk_info", "host telemetry must not block the summary");
       if (command === "get_recorder_list") return { count: 0, recorders: [] };
       if (command === "get_recent_record") return [row("latest"), row("old", false)];
       return 0;
@@ -191,7 +192,7 @@ test("dashboard refresh updates old rows after backend removal even when newest 
 test("dashboard refresh reopens exhausted pagination when new rows displace old ones", async () => {
   const rows = [row("new"), row("latest"), row("old")];
   const state = await handlers("page/Summary.svelte", {
-    summary: {}, total: 0, online: 0, disk_usage: 0, disk_info: {}, account_count: 0,
+    summary: {}, total: 0, online: 0, disk_usage: 0, account_count: 0,
     total_length: 0, today_record_count: 0, offset: 2, hasMore: false,
     hasNewRecords: false, loading: false, RECORDS_PER_PAGE: 5,
     recent_records: [row("latest"), row("old")],

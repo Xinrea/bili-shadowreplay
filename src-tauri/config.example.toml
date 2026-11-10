@@ -36,7 +36,11 @@ default_backend = "default"
 type = "local"
 root = "./cache"
 
+# Add S3-compatible backends and credentials through recording storage settings.
+# S3 credentials are not read from the application environment.
+# Never put credential values in this file.
+
 # [storage.backends.archive]
 # type = "local"
 # root = "/mnt/recordings"
-# S3 is not implemented. Custom adapters must register their IDs in app code.
+# Other custom adapters must register their IDs in app code.

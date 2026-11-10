@@ -182,6 +182,30 @@ impl Database {
         model_provider: &str,
         model_name: &str,
     ) -> Result<(), DatabaseError> {
+        if let Some(catalogs) = self.catalogs.get() {
+            let mut summary = self
+                .get_record_summary(platform, room_id, live_id)
+                .await?
+                .ok_or(DatabaseError::NotFound)?;
+            summary.status = "success".into();
+            summary.summary_markdown = Some(summary_markdown.into());
+            summary.highlights_json = Some(highlights_json.into());
+            summary.model_provider = Some(model_provider.into());
+            summary.model_name = Some(model_name.into());
+            summary.updated_at = Utc::now().to_rfc3339();
+            let row = self.get_record(room_id, live_id).await?;
+            if row.platform != platform {
+                return Err(DatabaseError::NotFound);
+            }
+            let record = super::catalog::legacy_record(row, Some(summary))?;
+            let result = catalogs
+                .update(
+                    live_id.into(),
+                    super::catalog::runtime::Change::Results(record.results),
+                )
+                .await;
+            self.catalog_write_result(live_id, result).await?;
+        }
         sqlx::query(
             "UPDATE record_summaries SET status = 'success', stage = 'completed', summary_markdown = $1, highlights_json = $2, model_provider = $3, model_name = $4, error_message = NULL, updated_at = $5 WHERE platform = $6 AND room_id = $7 AND live_id = $8",
         )
@@ -224,6 +248,21 @@ impl Database {
         room_id: &str,
         live_id: &str,
     ) -> Result<(), DatabaseError> {
+        if let Some(catalogs) = self.catalogs.get() {
+            let row = self.get_record(room_id, live_id).await?;
+            if row.platform != platform {
+                return Err(DatabaseError::NotFound);
+            }
+            let result = catalogs
+                .update(
+                    live_id.into(),
+                    super::catalog::runtime::Change::Results(
+                        serde_json::json!({"version": 1, "summary": null}),
+                    ),
+                )
+                .await;
+            self.catalog_write_result(live_id, result).await?;
+        }
         sqlx::query(
             "DELETE FROM record_summaries WHERE platform = $1 AND room_id = $2 AND live_id = $3",
         )

@@ -260,9 +260,10 @@
     if (!openMenuArchiveKey) return;
     const target = event.target as Element;
     if (target.closest(".archive-dropdown-menu") || target.closest("[data-action-menu-trigger]")) return;
-    // Outside the menu but on a dialog's dimmed backdrop: that same gesture's
-    // click must not close the dialog underneath.
-    if (target.closest(".ui-modal-backdrop")) suppressClickUntil = performance.now() + 500;
+    // Outside the menu but on a dialog's dimmed area: that same gesture's click
+    // must not close the dialog underneath. The wrapper class also contains the
+    // dialog itself, so only the part outside `.ui-modal` counts as the backdrop.
+    if (target.closest(".ui-modal-backdrop") && !target.closest(".ui-modal")) suppressClickUntil = performance.now() + 500;
     closeActionMenu();
   }
 

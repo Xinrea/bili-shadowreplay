@@ -5,10 +5,11 @@ pub mod entry;
 pub mod errors;
 pub mod events;
 pub mod platforms;
+mod startup;
 pub mod timeline;
 pub mod traits;
 pub mod utils;
-use crate::danmu::DanmuStorage;
+use crate::danmu::DanmuWriter;
 use crate::events::RecorderEvent;
 use crate::{account::Account, platforms::PlatformType};
 pub use recording_storage;
@@ -31,7 +32,7 @@ pub(crate) fn new_recording_id() -> String {
     static LAST_ID: atomic::AtomicI64 = atomic::AtomicI64::new(0);
     let now = Utc::now().timestamp_millis();
     let previous = LAST_ID
-        .fetch_update(
+        .try_update(
             atomic::Ordering::Relaxed,
             atomic::Ordering::Relaxed,
             |last| Some(now.max(last.saturating_add(1))),
@@ -171,7 +172,7 @@ where
     /// The record task for the current recording
     record_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     /// The danmu storage for the current recording
-    danmu_storage: Arc<RwLock<Option<DanmuStorage>>>,
+    danmu_storage: Arc<RwLock<Option<DanmuWriter>>>,
     /// The last update time of the current recording
     last_update: Arc<atomic::AtomicI64>,
     /// The last sequence of the current recording
@@ -312,7 +313,7 @@ impl<T: Send + Sync> traits::RecorderBasicTrait for Recorder<T> {
         self.record_task.clone()
     }
 
-    fn danmu_storage(&self) -> Arc<RwLock<Option<DanmuStorage>>> {
+    fn danmu_storage(&self) -> Arc<RwLock<Option<DanmuWriter>>> {
         self.danmu_storage.clone()
     }
 

@@ -285,7 +285,7 @@ impl RecorderTrait for BiliRecorder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::danmu::DanmuStorage;
+    use crate::danmu::DanmuWriter;
     use crate::events::RecorderEvent;
     use std::sync::atomic::Ordering;
 
@@ -432,8 +432,14 @@ mod tests {
         tokio::fs::create_dir_all(recorder.storage.local_root())
             .await
             .unwrap();
-        *recorder.danmu_storage.write().await =
-            DanmuStorage::new(&recorder.storage.local_root().join("events.jsonl")).await;
+        *recorder.danmu_storage.write().await = Some(
+            DanmuWriter::from_storage(
+                &recording_storage::RecordingStorage::local(recorder.storage.local_root()),
+                "events.jsonl",
+            )
+            .await
+            .unwrap(),
+        );
         assert!(recorder.danmu_storage.read().await.is_some());
 
         recorder.reset_recording().await;

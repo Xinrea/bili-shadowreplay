@@ -253,6 +253,7 @@ impl Connection {
             .map_err(protocol_error)?;
         self.record_started = true;
         let enabled = Arc::new(AtomicBool::new(true));
+        let trace = crate::startup::RecordingTrace::new("rtmp", &recorder.room_id, &live_id);
         let flv = FlvRecorder::new(
             source,
             None,
@@ -262,7 +263,8 @@ impl Connection {
             recorder.event_channel.clone(),
             live_id,
         )
-        .with_read_timeout(IO_TIMEOUT);
+        .with_read_timeout(IO_TIMEOUT)
+        .with_trace(trace);
         self.recording = Some(Recording {
             writer: None,
             enabled,

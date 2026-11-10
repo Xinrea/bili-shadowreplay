@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { invoke } from "../invoker";
   import type { Config, RecorderStatus, RecorderRow, StorageConfig } from "../interface";
-  import { storageBackend } from "../recording-storage";
+  import { storageBackend, storageBackendSupported } from "../recording-storage";
   import StorageBackendSelect from "./StorageBackendSelect.svelte";
 
   let { status, onchanged, disabled = false }: {
@@ -35,8 +35,8 @@
     error = "";
     saved = "";
     const id = choice === null ? storage.default_backend : choice;
-    if (storageBackend(storage, id)?.type !== "local") {
-      error = "请选择已配置的本地存储。不会自动改用其他存储。";
+    if (!storageBackendSupported(storageBackend(storage, id))) {
+      error = "请选择已配置的存储。不会自动改用其他存储。";
       return;
     }
     saving = true;

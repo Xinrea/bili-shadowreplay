@@ -23,6 +23,25 @@ jobs:
       # Runs every scripts/tests/*.test.mjs, so new test files need no CI change.
       - run: yarn test
 
+  catalog:
+    name: Recording catalog tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.99.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: recording-catalog
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo test --manifest-path src-tauri/Cargo.toml -p recording_catalog --locked
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml -p recording_catalog --all-targets --locked -- -D warnings
+
   test:
     name: Run Tests
     runs-on: ubuntu-24.04
@@ -49,8 +68,8 @@ jobs:
         with:
           packages: fonts-wqy-microhei libclang-dev ninja-build python3 libicu-dev libpng-dev libexpat1-dev libjpeg-dev
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust 1.99.0
+        uses: dtolnay/rust-toolchain@1.99.0
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
@@ -73,5 +92,14 @@ jobs:
         working-directory: src-tauri
         run: |
           cargo test --package recorder --tests
+        env:
+          RUST_BACKTRACE: 1
+
+      - name: Run application catalog migration tests
+        working-directory: src-tauri
+        # These live in the application binary, so --workspace --lib omits them.
+        run: |
+          cargo test --package bili-shadowreplay --no-default-features --features headless database::catalog --locked
+          cargo test --package bili-shadowreplay --no-default-features --features headless storage_migration_tests --locked
         env:
           RUST_BACKTRACE: 1

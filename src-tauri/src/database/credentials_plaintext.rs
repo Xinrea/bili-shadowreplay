@@ -9,7 +9,15 @@ impl CredentialCipher {
         Ok(Self)
     }
 
-    pub async fn load(_pool: &sqlx::SqlitePool) -> io::Result<Self> {
+    pub async fn load(pool: &sqlx::SqlitePool) -> io::Result<Self> {
+        if !super::storage::encrypted_storage_credentials(pool)
+            .await
+            .map_err(io::Error::other)?
+            .is_empty()
+        {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                "Database contains encrypted storage credentials; enable the credential-encryption feature"));
+        }
         Self::new(&[])
     }
 

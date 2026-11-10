@@ -24,9 +24,10 @@ RUN yarn build
 
 # Build Rust backend. cargo-chef keeps third-party dependencies in a separate
 # Docker layer, so application source changes do not force a full rebuild.
-FROM rust:1.90-slim-trixie AS rust-base
+FROM rust:1.99.0-slim-trixie AS rust-base
 
 WORKDIR /app/src-tauri
+COPY rust-toolchain.toml /app/rust-toolchain.toml
 
 # Install required system dependencies
 RUN apt-get update && apt-get install -y \

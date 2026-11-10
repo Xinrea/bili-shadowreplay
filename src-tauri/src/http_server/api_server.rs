@@ -60,7 +60,7 @@ use crate::{
         },
         utils::{
             console_log, decode_data_url, get_disk_info, list_folder, sanitize_filename_advanced,
-            DiskInfo,
+            StoragePoolInfo,
         },
         video::{
             batch_import_external_videos, cancel, clip_range, clip_video, delete_video,
@@ -232,6 +232,24 @@ async fn handler_get_config(
         .await
         .map_err(|_| ApiError::from("Failed to get config"))?;
     Ok(Json(ApiResponse::success(config)))
+}
+
+#[derive(Deserialize)]
+struct CatalogStatusRequest {
+    refresh: Option<bool>,
+}
+
+async fn handler_get_storage_catalog_status(
+    state: axum::extract::State<State>,
+    param: Option<Json<CatalogStatusRequest>>,
+) -> Result<Json<ApiResponse<Vec<crate::database::catalog::runtime::Status>>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        crate::handlers::config::get_storage_catalog_status(
+            state.0,
+            param.and_then(|param| param.refresh),
+        )
+        .await?,
+    )))
 }
 
 #[derive(Debug, Deserialize)]
@@ -696,6 +714,7 @@ async fn handler_add_recorder(
 struct StorageConfigRequest {
     storage: StorageConfig,
     expected: StorageConfig,
+    credentials: Option<std::collections::HashMap<String, recording_storage::S3Credentials>>,
 }
 
 #[cfg(test)]
@@ -763,7 +782,7 @@ async fn handler_set_storage_config(
     Json(param): Json<StorageConfigRequest>,
 ) -> Result<Json<ApiResponse<StorageConfig>>, ApiError> {
     Ok(Json(ApiResponse::success(
-        set_storage_config(state.0, param.storage, param.expected).await?,
+        set_storage_config(state.0, param.storage, param.expected, param.credentials).await?,
     )))
 }
 
@@ -2454,10 +2473,8 @@ struct ConsoleLogRequest {
     message: String,
 }
 
-async fn handler_get_disk_info(
-    state: axum::extract::State<State>,
-) -> Result<Json<ApiResponse<DiskInfo>>, ApiError> {
-    let disk_info = get_disk_info(state.0)
+async fn handler_get_disk_info() -> Result<Json<ApiResponse<Vec<StoragePoolInfo>>>, ApiError> {
+    let disk_info = get_disk_info()
         .await
         .map_err(|_| "Failed to get disk info")?;
     Ok(Json(ApiResponse::success(disk_info)))
@@ -3069,6 +3086,10 @@ pub async fn start_api_server(state: State) {
     app = app
         // Config commands
         .route("/api/get_config", post(handler_get_config))
+        .route(
+            "/api/get_storage_catalog_status",
+            post(handler_get_storage_catalog_status),
+        )
         .route(
             "/api/get_mcp_server_status",
             post(handler_get_mcp_server_status),

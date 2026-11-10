@@ -3,17 +3,17 @@
   import { formatSize } from "../lib/size-format";
 
   import { get_static_url, invoke } from "../lib/invoker";
-  import type { RecorderList, DiskInfo } from "../lib/interface";
+  import type { RecorderList } from "../lib/interface";
   import type { RecordItem } from "../lib/db";
   import { archiveFilesAvailable, archiveStorageReason } from "../lib/recording-storage";
   import ArchiveStorageBadge from "../lib/components/ArchiveStorageBadge.svelte";
+  import DiskUsagePanel from "../lib/components/DiskUsagePanel.svelte";
   import { onMount } from "svelte";
   import PageTitlebar from "../lib/components/PageTitlebar.svelte";
   import { scale } from "svelte/transition";
   import {
     CalendarCheck,
     Clock,
-    Database,
     HardDrive,
     Play,
     RefreshCw,
@@ -26,12 +26,6 @@
     count: 0,
     recorders: [],
   };
-
-  let disk_info: DiskInfo = $state({
-    disk: "",
-    total: 0,
-    free: 0,
-  });
 
   let total = $state(0);
   let online = $state(0);
@@ -56,8 +50,6 @@
 
     disk_usage = await get_archive_disk_usage();
 
-    // get disk info
-    disk_info = await invoke("get_disk_info");
     account_count = await get_account_count();
 
     // get total length
@@ -240,8 +232,8 @@
 >
   <div class="space-y-6">
     <!-- Stats Grid -->
-    <div class="grid grid-cols-3 gap-4">
-      <!-- Cache Size -->
+    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
+      <!-- Recording assets across all backends, not local disk usage. -->
       <div class="ui-card p-4 transition-colors hover:border-line-strong">
         <div class="flex items-center gap-3">
           <div
@@ -250,39 +242,10 @@
             <HardDrive class="h-5 w-5" />
           </div>
           <div class="min-w-0">
-            <p class="text-[12px] text-fg-muted">缓存占用</p>
+            <p class="text-[12px] text-fg-muted">录播总大小</p>
             <p class="text-[20px] font-semibold leading-tight text-fg tabular-nums">
               {formatSize(disk_usage)}
             </p>
-          </div>
-        </div>
-      </div>
-
-      <div class="ui-card p-4 transition-colors hover:border-line-strong">
-        <div class="flex items-center gap-3">
-          <div
-            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-[9px] bg-warning-soft text-warning-fg"
-          >
-            <Database class="h-5 w-5" />
-          </div>
-          <div class="min-w-0 flex-1">
-            <div class="flex items-baseline justify-between gap-2">
-              <p class="text-[12px] text-fg-muted">磁盘使用</p>
-              <p class="text-[11px] text-fg-faint tabular-nums">
-                {formatSize(disk_info.free)}剩余
-              </p>
-            </div>
-            <p class="text-[20px] font-semibold leading-tight text-fg tabular-nums">
-              {formatSize(disk_info.total - disk_info.free)}
-            </p>
-            <div class="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-sunken">
-              <div
-                class="h-full rounded-full bg-warning"
-                style="width: {((disk_info.total - disk_info.free) /
-                  disk_info.total) *
-                  100}%"
-              ></div>
-            </div>
           </div>
         </div>
       </div>
@@ -357,6 +320,8 @@
         </div>
       </div>
     </div>
+
+    <DiskUsagePanel />
 
     <!-- Recent Recordings -->
     <div class="space-y-3">

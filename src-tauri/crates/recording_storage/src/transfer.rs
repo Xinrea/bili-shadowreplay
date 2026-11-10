@@ -219,6 +219,47 @@ fn dir_identity(path: &Path) -> io::Result<Identity> {
     identity(path, &m)
 }
 
+/// Validate a local endpoint and return its durable identity plus free space.
+/// Object transfers pin this identity in their journal across retries.
+pub fn local_transfer_root(root: &Path) -> io::Result<(String, u64)> {
+    checked_path(root)?;
+    let root = root.canonicalize()?;
+    let identity = dir_identity(&root)?;
+    Ok((
+        serde_json::to_string(&(root.clone(), identity)).map_err(io::Error::other)?,
+        fs2::available_space(root)?,
+    ))
+}
+
+pub(crate) fn local_file_revision(path: &Path) -> io::Result<String> {
+    checked_path(
+        path.parent()
+            .ok_or_else(|| invalid("object has no parent"))?,
+    )?;
+    let metadata = required_metadata(path)?;
+    if !metadata.is_file() {
+        return Err(invalid("transfer object is not a regular file"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.nlink() != 1 {
+            return Err(invalid("hardlinked objects are not transferable"));
+        }
+    }
+    serde_json::to_string(&file_identity(path, &metadata)?).map_err(io::Error::other)
+}
+
+pub(crate) fn sync_directory(path: &Path) -> io::Result<()> {
+    // Repeat ancestor barriers on retries, including mkdirs acknowledged before
+    // a crash. The namespace may be several levels below an existing root.
+    checked_path(path)?;
+    for parent in path.ancestors() {
+        sync_dir(parent)?;
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 fn sync_dir(path: &Path) -> io::Result<()> {
     #[cfg(test)]

@@ -446,7 +446,10 @@ impl RecorderManager {
                         }
                     };
                     let room_id = recorder.room_info.room_id.clone();
-                    log::info!("Record start: {recorder:?}");
+                    log::info!(
+                        "[{}][{}][{}] RecordStart received (video startup not yet confirmed): storage={:?}",
+                        platform.as_str(), room_id, recorder.live_id, recorder.storage_id
+                    );
                     if let Err(error) = self
                         .archive_storage
                         .confirm_recording_start(
@@ -486,10 +489,18 @@ impl RecorderManager {
                     duration_secs,
                     cached_size_bytes,
                 } => {
-                    let _ = self
+                    if let Err(error) = self
                         .db
                         .update_record_delta(&live_id, duration_secs, cached_size_bytes)
-                        .await;
+                        .await
+                    {
+                        log::error!("Recording metadata could not be persisted; stopping {live_id}: {error}");
+                        if let Ok((platform, room)) = self.db.record_scope(&live_id).await {
+                            if let Ok(platform) = platform.parse::<PlatformType>() {
+                                self.discard_unpersisted_recorder(platform, &room).await;
+                            }
+                        }
+                    }
                 }
                 RecorderEvent::RecordEnd { recorder } => {
                     self.db.notify_change(DataChange::Recorders);
@@ -513,10 +524,11 @@ impl RecorderManager {
                         Ok(r) => r,
                         Err(e) => {
                             log::error!("Record not found in db: {recorder:?}, err={e:?}");
+                            let _ = self.db.finish_catalog_recording(&live_id).await;
                             continue;
                         }
                     };
-                    if record.size == 0 {
+                    if record.size == 0 && record.storage_available {
                         match PlatformType::from_str(&record.platform) {
                             Ok(platform) => {
                                 if let Err(error) =
@@ -529,6 +541,11 @@ impl RecorderManager {
                             }
                             Err(error) => log::error!("Invalid recording platform: {error}"),
                         }
+                    }
+                    if let Err(error) = self.db.finish_catalog_recording(&live_id).await {
+                        log::error!(
+                            "Failed to finish catalog recording session {live_id}: {error}"
+                        );
                     }
                 }
                 RecorderEvent::ProgressUpdate { .. }
@@ -653,6 +670,14 @@ impl RecorderManager {
     async fn monitor_recorders(&self) {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
         loop {
+            if self
+                .db
+                .catalog_startup_blocked
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                interval.tick().await;
+                continue;
+            }
             // get a list of recorders in db, if not created yet, create them
             let recorders = match self.db.get_recorders().await {
                 Ok(recorders) => recorders,
@@ -1732,10 +1757,14 @@ impl RecorderManager {
                 });
             }
         }
-        self.recording_storage(platform, room_id, live_id)
-            .await?
-            .remove_all()
-            .await?;
+        let assets = self.recording_storage(platform, room_id, live_id).await?;
+        if let Some(catalogs) = self.db.catalogs.get() {
+            catalogs.begin_delete(live_id).await?;
+        }
+        assets.remove_all().await?;
+        if let Some(catalogs) = self.db.catalogs.get() {
+            catalogs.finish_delete(live_id).await?;
+        }
         let to_delete = self.db.remove_record(live_id).await?;
         self.archive_storage
             .forget_recording(platform.as_str(), room_id, live_id)
@@ -2797,6 +2826,7 @@ mod archive_storage_tests {
             "archive".into(),
             crate::config::RecordingBackendConfig {
                 kind: "local".into(),
+                s3: None,
                 root: dir.path().join("archive").to_string_lossy().into_owned(),
             },
         );

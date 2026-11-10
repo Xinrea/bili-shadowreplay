@@ -96,8 +96,8 @@ jobs:
         id: release_info
         run: node scripts/updater-manifest.mjs release-info
 
-      - name: install Rust stable
-        uses: dtolnay/rust-toolchain@stable # Set this to dtolnay/rust-toolchain@nightly
+      - name: Install Rust 1.99.0
+        uses: dtolnay/rust-toolchain@1.99.0
         with:
           # Those targets are only used on macos runners so it's in an `if` to slightly speed up windows and linux builds.
           targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}

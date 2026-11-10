@@ -32,8 +32,8 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust 1.99.0
+        uses: dtolnay/rust-toolchain@1.99.0
         with:
           components: rustfmt
 
@@ -69,6 +69,7 @@ jobs:
           filters: |
             rust:
               - 'src-tauri/**'
+              - 'rust-toolchain.toml'
               - 'public/icon.svg'
               - 'package.json'
               - '.pre-commit-config.yaml'
@@ -111,8 +112,8 @@ jobs:
         with:
           packages: libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf fonts-wqy-microhei libclang-dev ninja-build python3 libicu-dev libpng-dev libexpat1-dev libjpeg-dev
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust 1.99.0
+        uses: dtolnay/rust-toolchain@1.99.0
         with:
           components: clippy
 

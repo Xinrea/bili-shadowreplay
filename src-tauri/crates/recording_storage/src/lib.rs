@@ -13,12 +13,16 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::Mutex;
 
 mod logs;
+mod object_transfer;
 mod relocation;
+mod s3;
 mod transfer;
 pub use logs::LOG_CHUNK_BYTES;
+pub use object_transfer::{ObjectTransfer, ObjectTransferManifest};
+pub use s3::{S3Backend, S3Config, S3Credentials};
 pub use transfer::{
-    is_cross_device_error, LocalTransfer, RenameManifest, TransferDirectory, TransferFile,
-    TransferManifest,
+    is_cross_device_error, local_transfer_root, LocalTransfer, RenameManifest, TransferDirectory,
+    TransferFile, TransferManifest,
 };
 
 fn invalid_key() -> io::Error {
@@ -83,6 +87,22 @@ pub trait StorageBackend: Send + Sync {
     async fn read_range(&self, key: &str, range: std::ops::Range<u64>) -> io::Result<Vec<u8>>;
     /// Publish a complete replacement, never a partial object.
     async fn write(&self, key: &str, bytes: &[u8]) -> io::Result<()>;
+    /// Transfer primitives: reject existing targets and use bounded file I/O.
+    /// Local backends provide atomic no-clobber; S3 uses existence preflight
+    /// under the application's single-writer transfer gate, not distributed CAS.
+    /// Unsupported by default so custom backends never silently overwrite data.
+    async fn create(&self, _key: &str, _bytes: &[u8]) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+    async fn create_from_file(&self, _key: &str, _file: &Path) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+    async fn download_to_file(&self, _key: &str, _file: &Path) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+    async fn transfer_revision(&self, _key: &str) -> io::Result<String> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
     /// Removing a missing key succeeds.
     async fn remove(&self, key: &str) -> io::Result<()>;
     async fn stat(&self, key: &str) -> io::Result<ObjectMetadata>;
@@ -210,6 +230,52 @@ impl StorageBackend for LocalBackend {
 
     async fn write(&self, key: &str, bytes: &[u8]) -> io::Result<()> {
         atomic_write(self.path(key)?, bytes.to_vec()).await
+    }
+
+    async fn create(&self, key: &str, bytes: &[u8]) -> io::Result<()> {
+        let path = self.path(key)?;
+        let bytes = bytes.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let parent = path.parent().ok_or_else(invalid_key)?;
+            std::fs::create_dir_all(parent)?;
+            let mut file = tempfile::NamedTempFile::new_in(parent)?;
+            file.write_all(&bytes)?;
+            file.as_file().sync_all()?;
+            file.persist_noclobber(&path).map_err(|error| error.error)?;
+            transfer::sync_directory(parent)
+        })
+        .await
+        .map_err(io::Error::other)?
+    }
+
+    async fn create_from_file(&self, key: &str, file: &Path) -> io::Result<()> {
+        let path = self.path(key)?;
+        let source = tokio::fs::File::open(file).await?;
+        // Move the open source handle into the blocking task, retaining the
+        // bytes even if the staging pathname disappears during shutdown.
+        let mut source = source.into_std().await;
+        tokio::task::spawn_blocking(move || {
+            let parent = path.parent().ok_or_else(invalid_key)?;
+            std::fs::create_dir_all(parent)?;
+            let mut staged = tempfile::NamedTempFile::new_in(parent)?;
+            std::io::copy(&mut source, &mut staged)?;
+            staged.as_file().sync_all()?;
+            staged
+                .persist_noclobber(&path)
+                .map_err(|error| error.error)?;
+            transfer::sync_directory(parent)
+        })
+        .await
+        .map_err(io::Error::other)?
+    }
+
+    async fn download_to_file(&self, key: &str, file: &Path) -> io::Result<()> {
+        tokio::fs::copy(self.path(key)?, file).await?;
+        Ok(())
+    }
+
+    async fn transfer_revision(&self, key: &str) -> io::Result<String> {
+        transfer::local_file_revision(&self.path(key)?)
     }
 
     async fn remove(&self, key: &str) -> io::Result<()> {
@@ -647,6 +713,22 @@ impl StorageBackend for ScopedBackend {
         self.backend.write(&self.key(key)?, bytes).await
     }
 
+    async fn create(&self, key: &str, bytes: &[u8]) -> io::Result<()> {
+        self.backend.create(&self.key(key)?, bytes).await
+    }
+
+    async fn create_from_file(&self, key: &str, file: &Path) -> io::Result<()> {
+        self.backend.create_from_file(&self.key(key)?, file).await
+    }
+
+    async fn download_to_file(&self, key: &str, file: &Path) -> io::Result<()> {
+        self.backend.download_to_file(&self.key(key)?, file).await
+    }
+
+    async fn transfer_revision(&self, key: &str) -> io::Result<String> {
+        self.backend.transfer_revision(&self.key(key)?).await
+    }
+
     async fn remove(&self, key: &str) -> io::Result<()> {
         self.backend.remove(&self.key(key)?).await
     }
@@ -839,6 +921,27 @@ impl RecordingStorage {
 
     pub fn workspace(&self) -> &LocalWorkspace {
         &self.workspace
+    }
+
+    /// Track an asynchronous log producer, including its final buffered writes
+    /// after the caller is cancelled. Stop/drop the producer before calling
+    /// `RecordingStore::flush_logs`; the drain waits for the entire task.
+    pub fn spawn_log_task<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        let lock = Arc::new(Mutex::new(()));
+        let guard = lock.clone().try_lock_owned().expect("new log task lock");
+        {
+            let mut pending = self.pending_logs.lock().unwrap_or_else(|p| p.into_inner());
+            pending.retain(|entry| entry.strong_count() != 0);
+            pending.push(Arc::downgrade(&lock));
+        }
+        tokio::spawn(async move {
+            let _guard = guard;
+            future.await
+        })
     }
 
     pub async fn open_log(&self, key: &str) -> io::Result<AppendLog> {

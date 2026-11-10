@@ -2,6 +2,7 @@
 name = "recorder"
 version = "0.1.0"
 edition = "2021"
+rust-version.workspace = true
 
 [lib]
 name = "recorder"
@@ -11,7 +12,7 @@ path = "src/lib.rs"
 danmu_stream = { path = "../danmu_stream" }
 ffmpeg_utils = { path = "../ffmpeg_utils" }
 recording_storage = { workspace = true }
-async-trait = "0.1.89"
+async-trait = { workspace = true }
 rand = { workspace = true }
 chrono = "0.4.42"
 tokio = { version = "1.48.0", features = ["net", "io-util", "sync", "time", "rt"] }

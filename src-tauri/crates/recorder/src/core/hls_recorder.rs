@@ -16,6 +16,7 @@ use tokio::sync::{Mutex, RwLock};
 use crate::core::playlist::{playlist_content_preview, HlsPlaylist};
 use crate::core::{Codec, Format};
 use crate::errors::RecorderError;
+use crate::startup::RecordingTrace;
 use crate::timeline::{
     append_skipped_ad_range_to_storage, load_skipped_ad_ranges_from_storage, AdTimeRange,
 };
@@ -75,6 +76,7 @@ pub struct HlsRecorder {
     fmp4_init: Arc<RwLock<Option<Fmp4Init>>>,
     ad_ranges: Arc<Mutex<Vec<AdTimeRange>>>,
     skipped_ad_ranges: Arc<Mutex<Vec<AdTimeRange>>>,
+    trace: RecordingTrace,
 }
 
 /// Stored copy of an HLS fMP4 initialization section.
@@ -351,8 +353,37 @@ impl HlsRecorder {
         enabled: Arc<AtomicBool>,
         variant_selection: HlsVariantSelection,
     ) -> Result<Self, RecorderError> {
+        let trace = RecordingTrace::new("hls", &room_id, &stream.id);
+        Self::new_traced(
+            room_id,
+            stream,
+            client,
+            cookies,
+            event_channel,
+            work_dir,
+            enabled,
+            variant_selection,
+            trace,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn new_traced(
+        room_id: String,
+        stream: Arc<HlsStream>,
+        client: reqwest::Client,
+        cookies: Option<String>,
+        event_channel: impl Into<crate::events::RecorderEventSender>,
+        work_dir: impl Into<RecordingStorage>,
+        enabled: Arc<AtomicBool>,
+        variant_selection: HlsVariantSelection,
+        trace: RecordingTrace,
+    ) -> Result<Self, RecorderError> {
         let storage = work_dir.into();
-        storage.prepare().await?;
+        trace
+            .stage("hls_storage_prepare", storage.prepare())
+            .await?;
 
         // set user agent
         let user_agent =
@@ -368,11 +399,15 @@ impl HlsRecorder {
             headers.insert("cookie", crate::utils::header_value("cookie", &cookies)?);
         }
 
-        let sequence_bytes = match storage.read(".sequence").await {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(error) => return Err(error.into()),
-        };
+        let sequence_bytes = trace
+            .stage("hls_sequence_read", async {
+                match storage.read(".sequence").await {
+                    Ok(bytes) => Ok(bytes),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+                    Err(error) => Err(error),
+                }
+            })
+            .await?;
         let sequence_buf = String::from_utf8(sequence_bytes)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
         let trimmed = sequence_buf.trim();
@@ -380,10 +415,18 @@ impl HlsRecorder {
 
         // If the file is newly created / empty, normalize it to "0"
         if trimmed.is_empty() {
-            persist_sequence(&storage, 0).await?;
+            trace
+                .stage("hls_sequence_initialize", persist_sequence(&storage, 0))
+                .await?;
         }
 
-        let skipped_ad_ranges = match load_skipped_ad_ranges_from_storage(&storage).await {
+        let skipped_ad_ranges = match trace
+            .stage(
+                "hls_ad_ranges_load",
+                load_skipped_ad_ranges_from_storage(&storage),
+            )
+            .await
+        {
             Ok(ranges) => ranges,
             Err(error) => {
                 log::warn!("Failed to load skipped Twitch ad ranges: {error}");
@@ -391,12 +434,25 @@ impl HlsRecorder {
             }
         };
 
-        let mut playlist = HlsPlaylist::from_storage(storage.clone(), PLAYLIST_FILE_NAME).await?;
-        playlist.reopen().await?;
+        let mut playlist = trace
+            .stage(
+                "hls_playlist_restore",
+                HlsPlaylist::from_storage(storage.clone(), PLAYLIST_FILE_NAME),
+            )
+            .await?;
+        trace
+            .stage("hls_playlist_reopen", playlist.reopen())
+            .await?;
+        log::info!(
+            "{trace} HLS checkpoint restored: sequence={sequence} existing_segments={}",
+            playlist.playlist.segments.len()
+        );
         // fMP4 media segments are not self-describing. When resuming the same
         // archive, reuse the last `#EXT-X-MAP` so later segments can still be
         // probed before the source re-announces the init URI.
-        let fmp4_init = restore_fmp4_init(&storage, &playlist).await?;
+        let fmp4_init = trace
+            .stage("hls_init_restore", restore_fmp4_init(&storage, &playlist))
+            .await?;
         // A resumed archive must retain the media shape of its last playable
         // segment; otherwise the first ad segment after a restart could become
         // the new baseline and cause the actual stream to be skipped.
@@ -405,12 +461,16 @@ impl HlsRecorder {
             .await
             .map(|segment| segment.uri.clone());
         let pre_metadata = if let Some(last_segment_uri) = last_segment_uri {
-            let metadata = probe_stored_segment(
-                &storage,
-                &last_segment_uri,
-                fmp4_init.as_ref().map(|init| init.local_uri.as_str()),
-            )
-            .await;
+            let metadata = trace
+                .stage(
+                    "hls_previous_segment_probe",
+                    probe_stored_segment(
+                        &storage,
+                        &last_segment_uri,
+                        fmp4_init.as_ref().map(|init| init.local_uri.as_str()),
+                    ),
+                )
+                .await;
             match metadata {
                 Ok(metadata) if !metadata.seems_corrupted() => Some(metadata),
                 // A backend outage must not reset the archive's media baseline.
@@ -441,6 +501,7 @@ impl HlsRecorder {
             fmp4_init: Arc::new(RwLock::new(fmp4_init)),
             ad_ranges: Arc::new(Mutex::new(Vec::new())),
             skipped_ad_ranges: Arc::new(Mutex::new(skipped_ad_ranges)),
+            trace,
             sequence_write: Arc::new(Mutex::new(())),
         })
     }
@@ -470,7 +531,7 @@ impl HlsRecorder {
                         return Err(e);
                     }
                     RecorderError::StreamExpired { .. } => {
-                        log::error!("[{}]Stream expired", self.room_id);
+                        log::info!("{} HLS stream requires renewal", self.trace);
                         return Err(e);
                     }
                     _ => {
@@ -1073,6 +1134,7 @@ impl HlsRecorder {
                 duration_delta += duration_secs;
                 size_delta += size;
                 self.update_sequence(segment_sequence).await?;
+                self.trace.media_committed("hls_repaired_segment");
                 // This is garbage collection, not part of publishing the repair.
                 // A transient delete failure must not make the next attempt
                 // append the same fragment again.
@@ -1108,6 +1170,7 @@ impl HlsRecorder {
             duration_delta += duration_secs;
             size_delta += size;
             self.update_sequence(segment_sequence).await?;
+            self.trace.media_committed("hls_segment");
             self.updated_at
                 .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
             updated = true;
@@ -1734,7 +1797,9 @@ mod tests {
             LocalWorkspace::new(&workspace),
         );
         let (recorder, _) = native_probe_recorder_in_storage(&server, storage.clone()).await;
+        assert!(!recorder.trace.has_media());
         recorder.update_entries().await.unwrap();
+        assert!(recorder.trace.has_media());
         let archive = recorder.playlist.lock().await.playlist.clone();
         assert_eq!(archive.segments.len(), 1);
         assert!((archive.segments[0].duration - 0.8).abs() < 1e-6);
@@ -1752,6 +1817,10 @@ mod tests {
         assert_eq!(metadata.video_codec, "h264");
         assert_eq!(resumed.sequence.load(Ordering::Relaxed), 2);
         resumed.update_entries().await.unwrap();
+        assert!(
+            !resumed.trace.has_media(),
+            "restoring/re-reading old segments is not new media"
+        );
         assert_eq!(resumed.playlist.lock().await.playlist.segments.len(), 1);
         assert!(!workspace.exists());
         server.verify().await;

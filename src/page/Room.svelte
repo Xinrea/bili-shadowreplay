@@ -32,7 +32,7 @@
   import RoomStatusModal from "../lib/components/RoomStatusModal.svelte";
   import RoomArchiveModal from "../lib/components/RoomArchiveModal.svelte";
   import StorageBackendSelect from "../lib/components/StorageBackendSelect.svelte";
-  import { storageBackend } from "../lib/recording-storage";
+  import { storageBackend, storageBackendSupported } from "../lib/recording-storage";
   import { onMount } from "svelte";
   import { registerCommands } from "../lib/stores/commands";
 
@@ -335,8 +335,8 @@
     if (creatingRoom || storageLoading || !addStorage || storageError) return;
     addError = "";
     const storageId = addStorageId === null ? addStorage.default_backend : addStorageId;
-    if (storageBackend(addStorage, storageId)?.type !== "local") {
-      addError = "请选择已配置的本地录制存储。不会自动改用其他存储。";
+    if (!storageBackendSupported(storageBackend(addStorage, storageId))) {
+      addError = "请选择已配置的录制存储。不会自动改用其他存储。";
       return;
     }
     const room_input = room_id.trim();

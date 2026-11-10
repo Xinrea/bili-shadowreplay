@@ -5,6 +5,37 @@ object, log, media-repair, range-read, listing and deletion operations go throug
 `StorageBackend`; only `LocalBackend` implements persistent filesystem I/O.
 Backend selection does not require a persistent local replica.
 
+## S3-compatible storage
+
+`S3Backend::new(&S3Config, &S3Credentials)` uses the `object_store` S3 client for AWS SigV4,
+HTTP/TLS, retries and service pagination. Configure a pre-existing bucket,
+region, optional HTTP(S) endpoint, optional object prefix and path-style access.
+Only general-purpose buckets with lexically ordered ListObjectsV2 are supported.
+Credentials are supplied explicitly by the caller; the backend never reads
+environment credentials or AWS profiles. The application accepts credentials in
+its storage settings, persists them separately using its credential cipher, and
+never returns them through the configuration API. `S3Credentials` redacts Debug
+output. Clients hold a credential snapshot; recreate them after rotation.
+
+Custom endpoints are service origins. Path-style uses `endpoint/bucket/key`;
+virtual-hosted access derives `bucket.endpoint/key`. An already bucket-qualified
+DNS endpoint is accepted without adding the bucket twice. IP endpoints require
+path-style; unqualified bucket-specific CNAMEs are not supported. Empty endpoints
+retain the SDK's AWS defaults. Media and catalog clients share this conversion
+without rewriting persisted endpoint identities.
+
+Bounded GETs check both response metadata and streamed chunks. Range reads use
+HEAD plus a conditional ranged GET to retain EOF semantics without downloading
+whole segments or racing object replacement. Listings include the exact prefix
+object and its descendants, never similarly named siblings. PUT replaces one
+complete object (no multipart uploads; respect the service's single-PUT limit).
+The existing chunked logs, materialization and scoped deletion work unchanged.
+Do not use overlapping prefixes for independent backends.
+
+Normal tests include a local HTTP protocol fixture. For the opt-in RustFS test
+and local Docker Compose setup, see
+[`docs/development/backend/recording-storage.md`](../../../docs/development/backend/recording-storage.md#用-rustfs-本地验证).
+
 ## Backend contract
 
 - `write` atomically replaces one object and acknowledges only after it is
@@ -69,6 +100,31 @@ writes. There is no implicit media-dependency expansion or permanent local cache
 `LocalWorkspace`, `workspace()`, `local_root()`, and path-taking constructors remain
 explicit legacy adapters. Do not use them to discover/read persistent assets for
 a recorder with an arbitrary backend.
+
+## Journal-driven object transfer
+
+`ObjectTransfer` scopes a source and destination `RecordingStorage` to a single
+archive. Persist its `ObjectTransferManifest` and a fresh token before `copy`;
+commit the application's archive binding before `cleanup_source`; persist the
+terminal phase before `finish`. Local-to-local rename/copy stays on `LocalTransfer`.
+
+The object manifest pins endpoint/root identity, namespace, every key's length,
+SHA-256 and source revision. `.recording-transfer.json` is a reserved destination
+ownership marker. Unowned nonempty targets are rejected, including identical
+files. Retry reuses verified objects and never overwrites a conflicting key.
+Cleanup verifies the complete target and remaining source before any removal.
+Finalizing retries only remove the marker, not recreated source data.
+
+The backend's `create`, `create_from_file`, `download_to_file` and
+`transfer_revision` methods are opt-in transfer capabilities; default implementations
+return `Unsupported`. Local publication uses a synced no-clobber tempfile. S3
+publication checks target absence, then uses an SDK-signed ordinary streaming PUT
+under the application's single-writer transfer gate, with a 5 GiB single-PUT
+limit. This is not distributed no-clobber. No multipart or server-side copy is required. A private system-temp
+directory holds one object at a time; ensure it has sufficient free space.
+S3 revisions use ETags/version IDs; local revisions use filesystem identity and
+timestamps. Stop independent external writers: portable S3 deletion cannot be
+made atomic with a prior multi-object validation.
 
 ## Journal-driven local transfer
 

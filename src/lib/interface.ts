@@ -447,9 +447,30 @@ export function default_profile(): Profile {
   };
 }
 
+export interface S3StorageConfig {
+  endpoint: string;
+  bucket: string;
+  region: string;
+  prefix: string;
+  path_style: boolean;
+}
+
+export interface S3Credentials {
+  access_key_id: string;
+  secret_access_key: string;
+  session_token: string;
+}
+
+export interface RecordingBackendConfig {
+  type: string;
+  root: string;
+  s3?: S3StorageConfig;
+}
+
 export interface StorageConfig {
   default_backend: string;
-  backends: Record<string, { type: string; root: string }>;
+  backends: Record<string, RecordingBackendConfig>;
+  credential_revisions?: Record<string, string>;
 }
 
 export interface Config {
@@ -508,7 +529,10 @@ export interface AutoGenerateConfig {
 }
 
 export interface DiskInfo {
-  disk: string;
+  /** Proven shared-capacity identity, or a mount-scoped fallback. Not a backend ID. */
+  id: string;
+  name: string;
+  mount_points: string[];
   total: number;
   free: number;
 }

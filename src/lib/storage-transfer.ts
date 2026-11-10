@@ -1,6 +1,6 @@
 import type { TaskRow } from "./db";
 import type { StorageConfig } from "./interface";
-import { storageBackend } from "./recording-storage";
+import { storageBackend, storageBackendSupported } from "./recording-storage";
 
 export interface StorageTransferPlan {
   source_backend_id: string;
@@ -8,12 +8,12 @@ export interface StorageTransferPlan {
   recording_count: number;
   total_bytes: number;
   required_bytes: number;
-  available_bytes: number;
+  available_bytes: number | null;
   cleanup_count: number;
   can_transfer: boolean;
   blockers: string[];
   /** Root-level prediction; EXDEV can require a checked copy fallback at execution. */
-  transfer_mode: "rename" | "copy" | "mixed";
+  transfer_mode: "rename" | "copy" | "mixed" | "object";
 }
 
 export interface StorageTransferResult {
@@ -26,8 +26,8 @@ export interface StorageTransferResult {
 export function transferSelectionError(storage: StorageConfig, source: string, target: string): string {
   if (!source || !target) return "请选择来源和目标存储。";
   if (source === target) return "来源和目标不能是同一存储。";
-  if (storageBackend(storage, source)?.type !== "local" || storageBackend(storage, target)?.type !== "local") {
-    return "请选择两个已配置的本地存储；缺失或不受支持的存储不能转移。";
+  if (!storageBackendSupported(storageBackend(storage, source)) || !storageBackendSupported(storageBackend(storage, target))) {
+    return "请选择两个已配置的本地或 S3 存储；缺失或不受支持的存储不能转移。";
   }
   return "";
 }
@@ -37,6 +37,7 @@ export function transferModeLabel(mode: StorageTransferPlan["transfer_mode"]): s
     case "rename": return "同文件系统，优先快速移动";
     case "mixed": return "快速移动与复制";
     case "copy": return "复制并校验后清理来源";
+    case "object": return "逐对象复制并校验后清理来源";
   }
 }
 

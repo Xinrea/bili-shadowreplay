@@ -24,6 +24,30 @@ pub async fn get_config(state: state_type!()) -> Result<Config, ()> {
     Ok(config)
 }
 
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_storage_catalog_status(
+    state: state_type!(),
+    refresh: Option<bool>,
+) -> Result<Vec<crate::database::catalog::runtime::Status>, String> {
+    // An active recording/transfer may legitimately defer a refresh. Preserve
+    // its last status rather than stopping it for a settings-page health check.
+    if refresh.unwrap_or(false) {
+        if let Err(error) = state
+            .recorder_manager
+            .archive_storage()
+            .refresh_catalogs(true)
+            .await
+        {
+            log::debug!("Storage catalog refresh deferred: {error}");
+        }
+    }
+    state
+        .db
+        .catalog_status()
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// Show the settings in the main window, scrolled to the option `target`.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn request_settings(state: state_type!(), target: Option<String>) -> Result<(), String> {
@@ -170,17 +194,27 @@ pub async fn set_storage_config(
     state: state_type!(),
     storage: StorageConfig,
     expected: StorageConfig,
+    credentials: Option<std::collections::HashMap<String, recording_storage::S3Credentials>>,
 ) -> Result<StorageConfig, String> {
     #[cfg(feature = "headless")]
     if state.readonly {
         return Err("只读模式不能修改录制存储设置".into());
     }
-    state
-        .recorder_manager
-        .archive_storage()
-        .replace_configuration_if_current(storage, &expected)
-        .await
-        .map_err(|error| error.to_string())
+    let registry = state.recorder_manager.archive_storage().clone();
+    // Retain the configuration gate through catalog detach/attach even if the
+    // HTTP client disconnects or the desktop invocation is abandoned.
+    tokio::spawn(async move {
+        registry
+            .replace_configuration_with_credentials(
+                storage,
+                &expected,
+                &credentials.unwrap_or_default(),
+            )
+            .await
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[cfg(all(test, feature = "headless"))]
@@ -194,6 +228,87 @@ mod storage_settings_tests {
     use crate::webhook::poster::{WebhookConfig, WebhookPoster};
     use std::sync::Arc;
     use tokio::sync::RwLock;
+
+    #[tokio::test]
+    #[ignore = "requires RustFS and explicit S3_TEST_* credentials for the test harness"]
+    async fn live_s3_settings_save_and_reload() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = fixture(directory.path()).await;
+        let initial = get_config(state.clone()).await.unwrap().storage;
+        let mut next = initial.clone();
+        next.backends.insert(
+            "rustfs".into(),
+            RecordingBackendConfig {
+                kind: "s3".into(),
+                root: String::new(),
+                s3: Some(recording_storage::S3Config {
+                    endpoint: std::env::var("S3_TEST_ENDPOINT").expect("set S3_TEST_ENDPOINT"),
+                    bucket: std::env::var("S3_TEST_BUCKET").expect("set S3_TEST_BUCKET"),
+                    region: "us-east-1".into(),
+                    prefix: format!("settings-test-{}", uuid::Uuid::new_v4()),
+                    path_style: true,
+                }),
+            },
+        );
+        next.default_backend = "rustfs".into();
+        let credentials = recording_storage::S3Credentials {
+            access_key_id: std::env::var("S3_TEST_ACCESS_KEY_ID")
+                .expect("set S3_TEST_ACCESS_KEY_ID"),
+            secret_access_key: std::env::var("S3_TEST_SECRET_ACCESS_KEY")
+                .expect("set S3_TEST_SECRET_ACCESS_KEY"),
+            session_token: String::new(),
+        };
+        let response = set_storage_config(
+            state.clone(),
+            next,
+            initial,
+            Some(std::collections::HashMap::from([(
+                "rustfs".into(),
+                credentials.clone(),
+            )])),
+        )
+        .await
+        .unwrap();
+        let public = serde_json::to_string(&get_config(state.clone()).await.unwrap()).unwrap();
+        assert!(!public.contains(&credentials.secret_access_key));
+        assert!(!public.contains(&credentials.access_key_id));
+        assert!(
+            !std::fs::read_to_string(directory.path().join("config.toml"))
+                .unwrap()
+                .contains(&credentials.secret_access_key)
+        );
+        assert!(response.credential_revisions.contains_key("rustfs"));
+        let store = state
+            .recorder_manager
+            .archive_storage()
+            .selected_store(None)
+            .await
+            .unwrap();
+        let recording = store.recording("bilibili", "test", "live").unwrap();
+        recording.prepare().await.unwrap();
+        recording.write("segment.ts", b"0123456789").await.unwrap();
+        recording
+            .open_log("events.jsonl")
+            .await
+            .unwrap()
+            .append(b"first\n")
+            .await
+            .unwrap();
+        // Resolve through a fresh registry, whose only credential source is the DB.
+        let reopened =
+            crate::archive_storage::ArchiveStorage::new(state.db.clone(), state.config.clone());
+        let restored = reopened
+            .recording("bilibili", "test", "live")
+            .await
+            .unwrap();
+        assert_eq!(
+            restored.read_range("segment.ts", 3..7).await.unwrap(),
+            b"3456"
+        );
+        assert_eq!(restored.read_log("events.jsonl").await.unwrap(), b"first\n");
+        restored.remove_all().await.unwrap();
+        assert!(restored.list("", None, 10).await.unwrap().keys.is_empty());
+    }
 
     async fn fixture(directory: &std::path::Path) -> State {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -297,6 +412,7 @@ mod storage_settings_tests {
             "archive".into(),
             RecordingBackendConfig {
                 kind: "local".into(),
+                s3: None,
                 root: directory
                     .path()
                     .join("archive")
@@ -309,7 +425,8 @@ mod storage_settings_tests {
             set_storage_config(
                 state.clone(),
                 storage.clone(),
-                get_config(state.clone()).await.unwrap().storage
+                get_config(state.clone()).await.unwrap().storage,
+                None,
             )
             .await
             .unwrap(),
@@ -351,13 +468,15 @@ mod storage_settings_tests {
         let initial = state.config.read().await.storage.clone();
         let mut invalid = initial.clone();
         invalid.backends.get_mut("default").unwrap().root = "another-root".into();
-        assert!(set_storage_config(state.clone(), invalid, initial.clone())
-            .await
-            .is_err());
+        assert!(
+            set_storage_config(state.clone(), invalid, initial.clone(), None)
+                .await
+                .is_err()
+        );
         let mut readonly = state.clone();
         readonly.readonly = true;
         assert!(
-            set_storage_config(readonly, initial.clone(), initial.clone())
+            set_storage_config(readonly, initial.clone(), initial.clone(), None)
                 .await
                 .is_err()
         );
@@ -366,6 +485,7 @@ mod storage_settings_tests {
             "new".into(),
             RecordingBackendConfig {
                 kind: "local".into(),
+                s3: None,
                 root: directory.path().join("new").to_string_lossy().into_owned(),
             },
         );
@@ -375,6 +495,7 @@ mod storage_settings_tests {
             state.clone(),
             proposed.clone(),
             get_config(state.clone()).await.unwrap().storage,
+            None,
         )
         .await
         .unwrap();
@@ -391,6 +512,7 @@ mod storage_settings_tests {
             "second".into(),
             RecordingBackendConfig {
                 kind: "local".into(),
+                s3: None,
                 root: directory
                     .path()
                     .join("second")
@@ -398,10 +520,10 @@ mod storage_settings_tests {
                     .into_owned(),
             },
         );
-        set_storage_config(state.clone(), changed.clone(), original.clone())
+        set_storage_config(state.clone(), changed.clone(), original.clone(), None)
             .await
             .unwrap();
-        let error = set_storage_config(state.clone(), original.clone(), original)
+        let error = set_storage_config(state.clone(), original.clone(), original, None)
             .await
             .unwrap_err();
         assert!(error.contains("configuration changed"));
@@ -417,6 +539,7 @@ mod storage_settings_tests {
             "archive".into(),
             RecordingBackendConfig {
                 kind: "local".into(),
+                s3: None,
                 root: directory
                     .path()
                     .join("archive")
@@ -428,6 +551,7 @@ mod storage_settings_tests {
             state.clone(),
             storage,
             get_config(state.clone()).await.unwrap().storage,
+            None,
         )
         .await
         .unwrap();

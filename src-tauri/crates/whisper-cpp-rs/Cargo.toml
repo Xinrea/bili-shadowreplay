@@ -2,6 +2,7 @@
 name = "whisper-cpp-rs"
 version = "0.1.0"
 edition = "2021"
+rust-version.workspace = true
 description = "Minimal Rust binding for whisper.cpp with GPU acceleration support"
 
 [features]

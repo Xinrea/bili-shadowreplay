@@ -9,6 +9,12 @@ use tokio::{
     sync::RwLock,
 };
 
+#[cfg(test)]
+pub(crate) mod writer_tests;
+
+mod batch;
+pub use batch::DanmuWriter;
+
 /// Live event types surfaced by the preview (danmu list + floating overlay).
 /// New displayable event kinds are added here and picked up end to end.
 pub const PREVIEW_EVENT_TYPES: &[&str] = &["danmu", "super_chat"];
@@ -35,9 +41,17 @@ impl DanmuEntry {
     }
 }
 
+fn event_line(event: &LiveEvent) -> io::Result<Vec<u8>> {
+    let mut line = serde_json::to_vec(event)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "serialize live event failed"))?;
+    line.push(b'\n');
+    Ok(line)
+}
+
+/// Explicit history-backed compatibility API; not used to start live recording.
 pub struct DanmuStorage {
     cache: RwLock<Vec<LiveEvent>>,
-    log: AppendLog,
+    writer: AppendLog,
 }
 
 impl DanmuStorage {
@@ -68,10 +82,12 @@ impl DanmuStorage {
             Err(error) => return Err(error),
         };
         let preload_cache = Self::parse_events(&contents).await;
-        let log = storage.open_log(key).await?;
+        // Keep the explicit compatibility API durable-on-return. Only the live
+        // recording writer batches, so offline callers need no new lifecycle.
+        let writer = storage.open_log(key).await?;
         Ok(DanmuStorage {
             cache: RwLock::new(preload_cache),
-            log,
+            writer,
         })
     }
 
@@ -81,8 +97,24 @@ impl DanmuStorage {
         storage: &RecordingStorage,
         key: &str,
     ) -> io::Result<Vec<DanmuEntry>> {
-        let contents = storage.read_log(key).await?;
-        Ok(Self::entries(&Self::parse_events(&contents).await, 0))
+        let started = std::time::Instant::now();
+        log::debug!(
+            "Reading event history: storage={:?} key={key}",
+            storage.identity()
+        );
+        let contents = match storage.read_log(key).await {
+            Ok(contents) => contents,
+            Err(error) => {
+                log::warn!("Event history read failed: storage={:?} key={key} duration_ms={} error_kind={:?}",
+                    storage.identity(), started.elapsed().as_millis(), error.kind());
+                return Err(error);
+            }
+        };
+        let events = Self::parse_events(&contents).await;
+        let entries = Self::entries(&events, 0);
+        log::debug!("Event history loaded: storage={:?} key={key} bytes={} events={} preview_entries={} duration_ms={}",
+            storage.identity(), contents.len(), events.len(), entries.len(), started.elapsed().as_millis());
+        Ok(entries)
     }
 
     async fn parse_events(contents: &[u8]) -> Vec<LiveEvent> {
@@ -116,14 +148,7 @@ impl DanmuStorage {
     }
 
     pub async fn add_event(&self, event: LiveEvent) -> Result<(), std::io::Error> {
-        let Ok(mut line) = serde_json::to_string(&event) else {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "serialize live event failed",
-            ));
-        };
-        line.push('\n');
-        self.log.append(line.as_bytes()).await?;
+        self.writer.append(&event_line(&event)?).await?;
         self.cache.write().await.push(event);
         Ok(())
     }

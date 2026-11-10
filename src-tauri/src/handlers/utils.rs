@@ -100,34 +100,19 @@ pub fn show_in_folder(path: String) {
     }
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
 pub struct DiskInfo {
     pub(crate) disk: String,
     total: u64,
     pub free: u64,
 }
 
-#[cfg_attr(feature = "gui", tauri::command)]
-pub async fn get_disk_info(state: state_type!()) -> Result<DiskInfo, ()> {
-    // Recording capacity belongs to the selected persistence backend, not the
-    // OS temp filesystem. Remote/unknown backends have no local disk capacity.
-    let mut root = {
-        let config = state.config.read().await;
-        let backend = config
-            .storage
-            .backends
-            .get(&config.storage.default_backend)
-            .filter(|backend| backend.kind == "local" && !backend.root.is_empty())
-            .ok_or(())?;
-        PathBuf::from(&backend.root)
-    };
-    if root.is_relative() {
-        let cwd = std::env::current_dir()
-            .map_err(|e| log::error!("Failed to get current directory: {e}"))?;
-        root = cwd.join(root);
-    }
+mod disk_info;
+pub use disk_info::StoragePoolInfo;
 
-    get_disk_info_inner(root).await
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_disk_info() -> Result<Vec<StoragePoolInfo>, ()> {
+    disk_info::local_storage_pools().await
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -141,6 +126,8 @@ pub async fn console_log(_state: state_type!(), level: &str, message: &str) -> R
     Ok(())
 }
 
+/// Capacity of a specific output/work directory for write preflights. Unlike
+/// dashboard telemetry, this must continue resolving the target filesystem.
 pub async fn get_disk_info_inner(target: PathBuf) -> Result<DiskInfo, ()> {
     #[cfg(target_os = "linux")]
     {
@@ -681,12 +668,32 @@ mod tests {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
 mod disk_info_tests {
     use super::*;
+    #[cfg(target_os = "macos")]
     use std::ffi::{CStr, CString};
+    #[cfg(target_os = "macos")]
     use std::os::unix::ffi::OsStrExt;
 
+    #[tokio::test]
+    async fn host_disk_info_requires_no_storage_configuration() {
+        let disks = get_disk_info().await.unwrap();
+        assert!(disks
+            .windows(2)
+            .all(|pair| pair[0].mount_points[0] < pair[1].mount_points[0]));
+        assert!(disks.iter().all(|disk| !disk.id.is_empty()
+            && !disk.name.is_empty()
+            && !disk.mount_points.is_empty()
+            && disk.total > 0
+            && disk.free <= disk.total));
+        // Also verifies the same array shape returned by desktop and HTTP.
+        let value = serde_json::to_value(&disks).unwrap();
+        assert!(value.is_array());
+        println!("Local disk snapshot: {value}");
+    }
+
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn disk_info_reads_the_file_system_of_a_folder_to_be() {
         let directory = tempfile::tempdir().unwrap();

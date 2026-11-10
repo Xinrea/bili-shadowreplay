@@ -40,6 +40,16 @@ impl CredentialCipher {
                 .fetch_one(pool)
                 .await
                 .map_err(io::Error::other)?;
+                let storage_encrypted = !super::storage::encrypted_storage_credentials(pool)
+                    .await
+                    .map_err(io::Error::other)?
+                    .is_empty();
+                if storage_encrypted {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "The encryption key for your saved storage credentials is missing. Restore access to the original keychain; clearing account login information will not repair it.",
+                    ));
+                }
                 if encrypted {
                     return Err(io::Error::new(
                         io::ErrorKind::NotFound,
@@ -57,6 +67,15 @@ impl CredentialCipher {
         };
         let cipher = Self::new(&key)?;
         cipher.validate_accounts(pool).await?;
+        for value in super::storage::encrypted_storage_credentials(pool)
+            .await
+            .map_err(io::Error::other)?
+        {
+            cipher.decrypt(&value).map_err(|_| io::Error::new(
+                io::ErrorKind::InvalidData,
+                "The keychain cannot decrypt your saved storage credentials. Restore access to the original keychain.",
+            ))?;
+        }
         Ok(cipher)
     }
 

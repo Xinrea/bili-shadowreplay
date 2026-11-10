@@ -114,6 +114,25 @@ impl Database {
             storage_available: false,
             storage_unavailable_reason: None,
         };
+        if let Some(catalogs) = self.catalogs.get() {
+            let alias = self
+                .recording_storage_id(platform.as_str(), room_id, live_id)
+                .await?
+                .ok_or_else(|| DatabaseError::Catalog("Recording has no storage binding".into()))?;
+            let result = catalogs
+                .create(alias, super::catalog::legacy_record(record, None)?)
+                .await;
+            self.catalog_write_result(live_id, result).await?;
+            sqlx::query(
+                "INSERT OR REPLACE INTO catalog_active_recordings(live_id,storage_uuid) \
+                SELECT live_id,storage_uuid FROM catalog_record_links WHERE live_id=?",
+            )
+            .bind(live_id)
+            .execute(&self.pool)
+            .await?;
+            self.notify_change(DataChange::Records);
+            return self.get_record(room_id, live_id).await;
+        }
         if let Err(e) = sqlx::query("INSERT INTO records (live_id, room_id, title, length, size, cover, created_at, platform, parent_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)").bind(record.live_id.clone())
             .bind(&record.room_id).bind(&record.title).bind(0).bind(0).bind(&record.cover).bind(&record.created_at).bind(platform.as_str().to_string()).bind(parent_id).execute(&self.pool).await {
                 // if the record already exists, return the existing record
@@ -133,6 +152,12 @@ impl Database {
                 .bind(live_id)
                 .fetch_one(&self.pool)
                 .await?;
+        if let Some(catalogs) = self.catalogs.get() {
+            let result = catalogs.delete(live_id.to_owned()).await;
+            self.catalog_write_result(live_id, result).await?;
+            self.notify_change(DataChange::Records);
+            return Ok(to_delete);
+        }
         sqlx::query(
             "DELETE FROM record_summaries WHERE platform = $1 AND room_id = $2 AND live_id = $3",
         )
@@ -156,6 +181,15 @@ impl Database {
         size: u64,
     ) -> Result<(), DatabaseError> {
         let size = i64::try_from(size).map_err(|_| DatabaseError::NumberExceedI64Range)?;
+        if let Some(catalogs) = self.catalogs.get() {
+            let result = catalogs
+                .update(
+                    live_id.into(),
+                    super::catalog::runtime::Change::Delta(length, size as u64),
+                )
+                .await;
+            return self.catalog_write_result(live_id, result).await;
+        }
         sqlx::query("UPDATE records SET length = length + $1, size = size + $2 WHERE live_id = $3")
             .bind(length)
             .bind(size)
@@ -171,6 +205,15 @@ impl Database {
         live_id: &str,
         parent_id: &str,
     ) -> Result<(), DatabaseError> {
+        if let Some(catalogs) = self.catalogs.get() {
+            let result = catalogs
+                .update(
+                    live_id.into(),
+                    super::catalog::runtime::Change::Parent(parent_id.into()),
+                )
+                .await;
+            return self.catalog_write_result(live_id, result).await;
+        }
         sqlx::query("UPDATE records SET parent_id = $1 WHERE live_id = $2")
             .bind(parent_id)
             .bind(live_id)
@@ -185,6 +228,15 @@ impl Database {
         live_id: &str,
         cover: Option<String>,
     ) -> Result<(), DatabaseError> {
+        if let Some(catalogs) = self.catalogs.get() {
+            let result = catalogs
+                .update(
+                    live_id.into(),
+                    super::catalog::runtime::Change::Cover(cover),
+                )
+                .await;
+            return self.catalog_write_result(live_id, result).await;
+        }
         sqlx::query("UPDATE records SET cover = $1 WHERE live_id = $2")
             .bind(cover)
             .bind(live_id)
@@ -195,17 +247,21 @@ impl Database {
     }
 
     pub async fn get_total_length(&self) -> Result<f64, DatabaseError> {
-        let result: (f64,) = sqlx::query_as("SELECT SUM(length) FROM records;")
-            .fetch_one(&self.pool)
-            .await?;
+        self.ensure_storage_schema().await?;
+        let result: (f64,) =
+            sqlx::query_as("SELECT COALESCE(SUM(length),0.0) FROM recording_records;")
+                .fetch_one(&self.pool)
+                .await?;
         Ok(result.0)
     }
 
     pub async fn get_today_record_count(&self) -> Result<i64, DatabaseError> {
-        let result: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM records WHERE created_at >= $1;")
-            .bind(Utc::now().format("%Y-%m-%d 00:00:00").to_string())
-            .fetch_one(&self.pool)
-            .await?;
+        self.ensure_storage_schema().await?;
+        let result: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM recording_records WHERE created_at >= $1;")
+                .bind(Utc::now().format("%Y-%m-%d 00:00:00").to_string())
+                .fetch_one(&self.pool)
+                .await?;
         Ok(result.0)
     }
 
@@ -237,7 +293,8 @@ impl Database {
     }
 
     pub async fn get_record_disk_usage(&self) -> Result<i64, DatabaseError> {
-        let result: (i64,) = sqlx::query_as("SELECT SUM(size) FROM records;")
+        self.ensure_storage_schema().await?;
+        let result: (i64,) = sqlx::query_as("SELECT COALESCE(SUM(size),0) FROM recording_records;")
             .fetch_one(&self.pool)
             .await?;
         Ok(result.0)

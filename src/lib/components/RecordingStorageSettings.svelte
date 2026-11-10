@@ -3,8 +3,9 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { invoke, TAURI_ENV } from "../invoker";
   import type { Config, StorageConfig } from "../interface";
-  import { storageBackend, storageBackendEntries } from "../recording-storage";
+  import { storageBackend, storageBackendEntries, storageBackendSupported, storageBackendLocation } from "../recording-storage";
   import StorageTransferSettings from "./StorageTransferSettings.svelte";
+  import S3CredentialFields from "./S3CredentialFields.svelte";
   import { Check, FolderOpen, HardDrive, Plus, Trash2, X } from "lucide-svelte";
   import { trapFocus } from "../focus-trap";
   import { pageVisibility } from "../page-visibility";
@@ -16,6 +17,16 @@
   let defaultId = $state<string | null>("");
   let newId = $state("");
   let newRoot = $state("");
+  let newType = $state("local");
+  let s3Endpoint = $state("");
+  let s3Bucket = $state("");
+  let s3Region = $state("us-east-1");
+  let s3Prefix = $state("");
+  let s3PathStyle = $state(true);
+  let s3AccessKeyId = $state("");
+  let s3SecretAccessKey = $state("");
+  let s3SessionToken = $state("");
+  let editingCredentials = $state<string | null>(null);
   let loading = $state(true);
   let saving = $state(false);
   let error = $state("");
@@ -27,6 +38,16 @@
   let view = $state<"locations" | "transfer">("locations");
   let showAdd = $state(false);
   let newIdInput = $state<HTMLInputElement>();
+  let catalogStatuses = $state<Record<string, { ready: boolean; writable: boolean; error: string | null }>>({});
+
+  async function loadCatalogStatus(refresh = false) {
+    try {
+      const statuses = await invoke<Array<{ alias: string; ready: boolean; writable: boolean; error: string | null }>>("get_storage_catalog_status", { refresh });
+      catalogStatuses = Array.isArray(statuses) ? Object.fromEntries(statuses.map(status => [status.alias, status])) : {};
+    } catch {
+      catalogStatuses = {};
+    }
+  }
 
   function mountToViewport(node: HTMLElement) {
     // PageView's containment otherwise limits fixed dialogs to the page column.
@@ -44,6 +65,8 @@
 
   async function openAdd() {
     if (saving || browsing || transferBusy) return;
+    editingCredentials = null;
+    clearCredentials();
     showAdd = true;
     removingId = null;
     error = "";
@@ -62,13 +85,61 @@
     if (!saving && !browsing && !transferStarting) onclose();
   }
 
+  function clearCredentials() {
+    s3AccessKeyId = "";
+    s3SecretAccessKey = "";
+    s3SessionToken = "";
+  }
+
+  function editCredentials(id: string) {
+    if (saving || browsing || transferBusy) return;
+    showAdd = false;
+    removingId = null;
+    clearCredentials();
+    editingCredentials = id;
+    error = "";
+    saved = "";
+  }
+
+  function cancelCredentials() {
+    editingCredentials = null;
+    clearCredentials();
+  }
+
+  async function saveCredentials() {
+    if (!storage || !editingCredentials || saving || browsing || transferBusy) return;
+    if (!s3AccessKeyId.trim() || !s3SecretAccessKey.trim()) {
+      error = "请填写 Access Key ID 和 Secret Access Key。";
+      return;
+    }
+    saving = true;
+    error = "";
+    saved = "";
+    try {
+      storage = await invoke<StorageConfig>("set_storage_config", {
+        storage, expected: storage,
+        credentials: { [editingCredentials]: {
+          access_key_id: s3AccessKeyId.trim(), secret_access_key: s3SecretAccessKey, session_token: s3SessionToken,
+        } },
+      });
+      cancelCredentials();
+      void loadCatalogStatus();
+      saved = "S3 凭证已更新，无需重启应用。";
+    } catch (e) {
+      error = `凭证保存失败：${String(e)}。若配置已被修改，请重新加载后再操作。`;
+    } finally {
+      saving = false;
+    }
+  }
+
   function handleKeydown(event: KeyboardEvent) {
     if (event.key !== "Escape" || !pageVisible() || event.defaultPrevented || event.isComposing) return;
     event.preventDefault();
     event.stopImmediatePropagation();
     if (saving || browsing || transferStarting) return;
     if (removingId !== null) removingId = null;
-    else if (showAdd && view === "locations") showAdd = false;
+    else if (editingCredentials !== null && view === "locations") cancelCredentials();
+    else if (showAdd && view === "locations") { showAdd = false; clearCredentials(); }
     else close();
   }
 
@@ -79,9 +150,11 @@
     error = "";
     saved = "";
     removingId = null;
+    cancelCredentials();
     try {
       storage = (await invoke<Config>("get_config")).storage;
       defaultId = storage.default_backend;
+      await loadCatalogStatus(true);
     } catch (e) {
       error = `录制存储加载失败：${String(e)}`;
     } finally {
@@ -95,25 +168,39 @@
     saved = "";
     const id = newId.trim();
     const root = newRoot.trim();
-    if (add && (!id || !root || storageBackend(storage, id))) {
-      error = "请输入未使用的存储 ID 和服务器上的目录路径。";
+    if (add && (!id || storageBackend(storage, id) || (newType === "local" ? !root : !s3Bucket.trim() || !s3Region.trim() || !s3AccessKeyId.trim() || !s3SecretAccessKey.trim()))) {
+      error = "请输入未使用的存储 ID，并填写目录路径或 S3 必填配置。";
       return;
     }
     const next: StorageConfig = {
       default_backend: add ? storage.default_backend : defaultId ?? "",
-      backends: { ...storage.backends, ...(add ? { [id]: { type: "local", root } } : {}) },
+      backends: { ...storage.backends, ...(add ? { [id]: newType === "local" ? { type: "local", root } : {
+        type: "s3", root: "", s3: {
+          endpoint: s3Endpoint.trim(), bucket: s3Bucket.trim(), region: s3Region.trim(),
+          prefix: s3Prefix.trim(), path_style: s3PathStyle,
+        },
+      } } : {}) },
     };
-    if (storageBackend(next, next.default_backend)?.type !== "local") {
-      error = "请选择已配置的本地存储作为默认存储。";
+    if (!storageBackendSupported(storageBackend(next, next.default_backend))) {
+      error = "请选择已配置的存储作为默认存储。";
       return;
     }
     saving = true;
     try {
       // Compare-and-swap prevents a stale full replacement deleting another client's backend.
-      storage = await invoke<StorageConfig>("set_storage_config", { storage: next, expected: storage });
+      storage = await invoke<StorageConfig>("set_storage_config", {
+        storage: next, expected: storage,
+        ...(add && newType === "s3" ? { credentials: { [id]: {
+          access_key_id: s3AccessKeyId.trim(), secret_access_key: s3SecretAccessKey, session_token: s3SessionToken,
+        } } } : {}),
+      });
       defaultId = storage.default_backend;
-      if (add) { newId = ""; newRoot = ""; showAdd = false; }
-      saved = add ? "本地存储已添加。" : "默认录制存储已保存。";
+      if (add) {
+        newId = ""; newRoot = ""; s3Endpoint = ""; s3Bucket = ""; s3Prefix = "";
+        s3Region = "us-east-1"; s3PathStyle = true; clearCredentials(); showAdd = false;
+      }
+      void loadCatalogStatus();
+      saved = add ? "存储配置已添加，目录状态见下方。" : "默认录制存储已保存。";
     } catch (e) {
       error = `录制存储保存失败：${String(e)}。若配置已被修改，请重新加载后再操作。`;
     } finally {
@@ -140,7 +227,9 @@
       });
       defaultId = storage.default_backend;
       removingId = null;
-      saved = `存储 ${id} 的配置已从数据库移除。文件和录播记录未删除。`;
+      if (editingCredentials === id) cancelCredentials();
+      void loadCatalogStatus();
+      saved = `存储 ${id} 已卸载，对应录播已从列表隐藏。存储上的文件和目录数据库未删除。`;
     } catch (e) {
       error = `移除存储配置失败：${String(e)}。未确认移除成功，请刷新核实后重试。`;
     } finally {
@@ -193,6 +282,7 @@
       {#if loading}
         <p class="py-10 text-center text-[12px] text-fg-muted" role="status">正在加载存储位置…</p>
       {:else if storage}
+        <p class="ui-hint">同一存储请只用一个 BSR 实例写入；切换机器前先停止原实例。</p>
         <div hidden={view !== "locations"} inert={view !== "locations"}>
           <div class="mb-4 flex items-start justify-between gap-4">
             <div class="min-w-0">
@@ -206,14 +296,21 @@
           {#if showAdd}
             <form class="mb-4 space-y-3 rounded-[8px] border border-line-strong bg-sunken/50 p-4" onsubmit={(event) => { event.preventDefault(); void save(true); }}>
               <div class="flex items-center justify-between gap-3">
-                <h4 class="text-[13px] font-medium">添加本地存储</h4>
-                <span class="text-[11px] text-fg-muted">本地目录</span>
+                <h4 class="text-[13px] font-medium">添加存储</h4>
               </div>
               <fieldset class="min-w-0 space-y-3" disabled={saving || browsing || transferBusy}>
+                <div>
+                  <label for="new-storage-type" class="ui-label mb-1 block">存储类型</label>
+                  <select id="new-storage-type" class="ui-input w-full" bind:value={newType}>
+                    <option value="local">本地目录</option>
+                    <option value="s3">S3 兼容对象存储</option>
+                  </select>
+                </div>
                 <div>
                   <label for="new-storage-id" class="ui-label mb-1 block">存储名称（ID）</label>
                   <input id="new-storage-id" bind:this={newIdInput} class="ui-input w-full" bind:value={newId} placeholder="例如 archive-disk" />
                 </div>
+                {#if newType === "local"}
                 <div>
                   <label for="new-storage-root" class="ui-label mb-1 block">目录路径</label>
                   <div class="flex gap-2">
@@ -222,9 +319,33 @@
                   </div>
                   <p class="ui-hint mt-1">{TAURI_ENV ? "名称和目录保存后不可修改；换位置时请添加新的存储。" : "填写服务器上的目录，而不是浏览器所在机器的路径。名称和目录保存后不可修改。"}</p>
                 </div>
+                {:else}
+                  <div>
+                    <label for="s3-endpoint" class="ui-label mb-1 block">Endpoint</label>
+                    <input id="s3-endpoint" class="ui-input w-full" bind:value={s3Endpoint} placeholder="留空使用 AWS；RustFS：http://127.0.0.1:9000" />
+                    <p class="ui-hint mt-1">填写服务地址，不带 bucket 路径；关闭 path-style 时会自动将 bucket 加到域名前。生产环境请使用 HTTPS。</p>
+                  </div>
+                  <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div>
+                      <label for="s3-bucket" class="ui-label mb-1 block">Bucket</label>
+                      <input id="s3-bucket" class="ui-input w-full" bind:value={s3Bucket} placeholder="已创建的 bucket" />
+                    </div>
+                    <div>
+                      <label for="s3-region" class="ui-label mb-1 block">Region</label>
+                      <input id="s3-region" class="ui-input w-full" bind:value={s3Region} />
+                    </div>
+                  </div>
+                  <div>
+                    <label for="s3-prefix" class="ui-label mb-1 block">对象前缀（可选）</label>
+                    <input id="s3-prefix" class="ui-input w-full" bind:value={s3Prefix} placeholder="例如 shadowreplay，不带首尾 /" />
+                  </div>
+                  <S3CredentialFields idPrefix="new-s3" bind:accessKeyId={s3AccessKeyId} bind:secretAccessKey={s3SecretAccessKey} bind:sessionToken={s3SessionToken} />
+                  <label class="flex items-center gap-2 text-[12px]"><input type="checkbox" bind:checked={s3PathStyle} />使用 path-style（RustFS / MinIO）</label>
+                  <p class="ui-hint">存储位置保存后不可修改，凭证可单独更新；换 bucket 或前缀时请添加新存储，再通过录播转移搬迁。</p>
+                {/if}
                 <div class="flex justify-end gap-2">
-                  <button type="button" class="ui-btn ui-btn-ghost" onclick={() => showAdd = false}>取消</button>
-                  <button type="submit" class="ui-btn ui-btn-primary" disabled={!newId.trim() || !newRoot.trim()}>{saving ? "正在添加…" : "添加存储"}</button>
+                  <button type="button" class="ui-btn ui-btn-ghost" onclick={() => { showAdd = false; clearCredentials(); }}>取消</button>
+                  <button type="submit" class="ui-btn ui-btn-primary" disabled={!newId.trim() || (newType === "local" ? !newRoot.trim() : !s3Bucket.trim() || !s3Region.trim() || !s3AccessKeyId.trim() || !s3SecretAccessKey.trim())}>{saving ? "正在添加…" : "添加存储"}</button>
                 </div>
               </fieldset>
             </form>
@@ -239,13 +360,25 @@
                       <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
                         <span class="break-all text-[13px] font-medium text-fg">{id}</span>
                         {#if id === storage.default_backend}<span class="inline-flex items-center gap-1 text-[11px] text-accent-fg"><Check class="h-3 w-3" />默认</span>{/if}
-                        <span class="text-[11px] text-fg-muted">{backend.type === "local" ? "本地目录" : "暂不支持"}</span>
+                        <span class="text-[11px] text-fg-muted">{backend.type === "local" ? "本地目录" : backend.type === "s3" ? "S3" : "暂不支持"}</span>
                       </div>
-                      <p class="mt-1 select-text break-all text-[12px] leading-relaxed text-fg-muted">{backend.root}</p>
+                      <p class="mt-1 select-text break-all text-[12px] leading-relaxed text-fg-muted">{storageBackendLocation(backend)}</p>
+                      {#if catalogStatuses[id]}
+                        <p class="mt-1 text-[12px] leading-relaxed" class:text-danger-fg={!catalogStatuses[id].ready} class:text-fg-muted={catalogStatuses[id].ready}>
+                          {catalogStatuses[id].ready ? (catalogStatuses[id].writable ? "已连接" : "只读：本机存储正在使用或应用处于只读模式") : catalogStatuses[id].error || "目录暂不可用"}
+                        </p>
+                      {:else}
+                        <p class="mt-1 text-[12px] text-fg-muted">目录状态暂不可用；如有旧转移未完成，请完成后重启应用进行迁移。</p>
+                      {/if}
                     </div>
                     <div class="storage-actions flex shrink-0 items-center gap-1" role="group" aria-label={`${id} 的存储操作`}>
+                      {#if backend.type === "s3"}
+                        <button class="ui-btn ui-btn-ghost ui-btn-sm" disabled={saving || browsing || transferBusy} onclick={() => editCredentials(id)}>
+                          {storage.credential_revisions?.[id] ? "更新凭证" : "填写凭证"}
+                        </button>
+                      {/if}
                       {#if id !== storage.default_backend}
-                        <button class="ui-btn ui-btn-ghost ui-btn-sm" disabled={saving || browsing || transferBusy || backend.type !== "local"} onclick={() => setDefault(id)}>
+                        <button class="ui-btn ui-btn-ghost ui-btn-sm" disabled={saving || browsing || transferBusy || !storageBackendSupported(backend)} onclick={() => setDefault(id)}>
                           <Check class="h-3.5 w-3.5" />设为默认
                         </button>
                       {/if}
@@ -258,11 +391,24 @@
                     </div>
                   </div>
                 </div>
+                {#if editingCredentials === id}
+                  <form class="mt-3 space-y-3 rounded-[8px] border border-line-strong p-3" onsubmit={(event) => { event.preventDefault(); void saveCredentials(); }}>
+                    <h4 class="text-[13px] font-medium">{id} 的 S3 凭证</h4>
+                    <fieldset class="space-y-3" disabled={saving || browsing || transferBusy}>
+                      <S3CredentialFields idPrefix="edit-s3" bind:accessKeyId={s3AccessKeyId} bind:secretAccessKey={s3SecretAccessKey} bind:sessionToken={s3SessionToken} />
+                      <p class="ui-hint">更新不改变已有录播的位置。如果此存储正在录制，请先停止录制再更新。</p>
+                      <div class="flex justify-end gap-2">
+                        <button type="button" class="ui-btn ui-btn-ghost" onclick={cancelCredentials}>取消</button>
+                        <button type="submit" class="ui-btn ui-btn-primary" disabled={!s3AccessKeyId.trim() || !s3SecretAccessKey.trim()}>{saving ? "保存中…" : "保存凭证"}</button>
+                      </div>
+                    </fieldset>
+                  </form>
+                {/if}
                 {#if removingId === id}
                   <div class="mt-3 space-y-2 rounded-[8px] border border-danger/30 bg-danger-soft p-3" role="group" aria-label={`确认移除存储 ${id}`}>
                     <p class="text-[13px] font-medium text-danger-fg">移除 {id}？</p>
-                    <p class="text-[12px] leading-relaxed text-fg-secondary">文件和录播记录会保留，但这些录播将无法预览或剪辑。需要继续使用的录播，请先转移。</p>
-                    <p class="text-[12px] leading-relaxed text-danger-fg">此 ID 无法重新添加，移除后不能恢复配置。直播间的存储偏好不会自动切换。</p>
+                    <p class="text-[12px] leading-relaxed text-fg-secondary">对应录播将从列表隐藏，存储上的文件和目录数据库不会删除。重新添加同一目录或 S3 bucket/prefix 后会恢复。</p>
+                    <p class="text-[12px] leading-relaxed text-fg-secondary">存储名称可以复用。直播间仍绑定原存储，不会因同名存储被添加而自动切换。</p>
                     <div class="flex justify-end gap-2">
                       <button class="ui-btn ui-btn-ghost ui-btn-sm" disabled={saving} onclick={() => removingId = null}>取消</button>
                       <button class="ui-btn ui-btn-sm ui-btn-danger" disabled={saving || browsing || transferBusy} onclick={() => removeBackend(id)}>确认移除</button>

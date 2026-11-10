@@ -19,6 +19,9 @@ type ArchiveReaders = std::sync::Mutex<HashMap<String, std::sync::Weak<RwLock<()
 mod transfer;
 pub use transfer::StorageTransferPreview;
 
+#[path = "archive_storage/catalog.rs"]
+mod catalog;
+
 struct RecordingLease {
     _mutation: tokio::sync::OwnedMutexGuard<()>,
 }
@@ -34,6 +37,9 @@ pub struct ArchiveStorage {
     transfer_gate: Arc<tokio::sync::Mutex<()>>,
     pending_transfers: std::sync::Mutex<BTreeSet<String>>,
     readers: ArchiveReaders,
+    catalog_started: std::sync::atomic::AtomicBool,
+    catalog_readonly: std::sync::atomic::AtomicBool,
+    catalog_startup_deferred: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     transfer_available_bytes: std::sync::Mutex<Option<u64>>,
     #[cfg(test)]
@@ -78,6 +84,12 @@ impl RecordingResolver for ResolveRecording {
             .identity()
             .expect("resolved stores have an identity")
             .to_owned();
+        if let Some(runtime) = self.storage.db.catalogs.get() {
+            runtime
+                .validate_recording(&id, platform, room_id, live_id)
+                .await
+                .map_err(database_error)?;
+        }
         self.storage
             .db
             .bind_recording_storage(platform, room_id, live_id, &id)
@@ -147,6 +159,9 @@ impl ArchiveStorage {
             transfer_gate: Arc::new(tokio::sync::Mutex::new(())),
             pending_transfers: std::sync::Mutex::new(BTreeSet::new()),
             readers: ArchiveReaders::default(),
+            catalog_started: std::sync::atomic::AtomicBool::new(false),
+            catalog_readonly: std::sync::atomic::AtomicBool::new(false),
+            catalog_startup_deferred: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             transfer_available_bytes: std::sync::Mutex::new(None),
             #[cfg(test)]
@@ -195,18 +210,7 @@ impl ArchiveStorage {
         validate_component(&storage.default_backend)?;
         for (id, definition) in &mut storage.backends {
             validate_component(id)?;
-            if definition.kind != "local" || definition.root.trim().is_empty() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("backend {id} requires type local and a nonempty root"),
-                ));
-            }
-            definition.root = std::path::absolute(&definition.root)?
-                .to_str()
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "storage root is not UTF-8")
-                })?
-                .to_owned();
+            *definition = definition.normalized()?;
         }
         Ok(storage)
     }
@@ -223,10 +227,21 @@ impl ArchiveStorage {
             .await
     }
 
+    #[cfg(test)]
     pub async fn replace_configuration_if_current(
         &self,
         storage: StorageConfig,
         expected: &StorageConfig,
+    ) -> io::Result<StorageConfig> {
+        self.replace_configuration_with_credentials(storage, expected, &HashMap::new())
+            .await
+    }
+
+    pub async fn replace_configuration_with_credentials(
+        &self,
+        storage: StorageConfig,
+        expected: &StorageConfig,
+        credentials: &HashMap<String, recording_storage::S3Credentials>,
     ) -> io::Result<StorageConfig> {
         self.initialize().await?;
         let next = Self::normalize_config(storage)?;
@@ -241,6 +256,20 @@ impl ArchiveStorage {
             ));
         }
         self.validate_config(&current, &next).await?;
+        if self
+            .catalog_started
+            .load(std::sync::atomic::Ordering::Acquire)
+            && self.db.catalogs.get().is_none()
+            && current
+                .backends
+                .keys()
+                .any(|id| !next.backends.contains_key(id))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "请先完成旧版本转移并重启应用，再卸载存储",
+            ));
+        }
         for journal in self
             .db
             .storage_transfer_journals()
@@ -261,24 +290,50 @@ impl ArchiveStorage {
             for (id, leases) in active.iter_mut() {
                 leases.retain(|lease| lease.strong_count() > 0);
                 if current.backends.contains_key(id)
-                    && !next.backends.contains_key(id)
+                    && (!next.backends.contains_key(id) || credentials.contains_key(id))
                     && !leases.is_empty()
                 {
                     return Err(io::Error::new(
                         io::ErrorKind::WouldBlock,
                         format!(
-                            "storage backend {id} is in use by a recording; stop it before removal"
+                            "storage backend {id} is in use by a recording; stop it before removal or credential update"
                         ),
                     ));
                 }
             }
         }
+        if self.db.catalogs.get().is_some() {
+            for id in current.backends.keys() {
+                if (!next.backends.contains_key(id) || credentials.contains_key(id))
+                    && self.backend_in_use(id).await?
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "存储仍有录播处理任务，请结束后再卸载或更新凭证",
+                    ));
+                }
+            }
+        }
         self.db
-            .replace_storage_config(&next)
+            .replace_storage_config(&next, credentials)
             .await
             .map_err(database_error)?;
-        self.config.write().await.storage = next.clone();
-        Ok(next)
+        let saved = self.db.storage_config().await.map_err(database_error)?;
+        self.config.write().await.storage = saved.clone();
+        if let Some(runtime) = self.db.catalogs.get() {
+            for id in current.backends.keys() {
+                if !saved.backends.contains_key(id) || credentials.contains_key(id) {
+                    runtime.detach(id).await.map_err(database_error)?;
+                }
+            }
+        }
+        if self
+            .catalog_started
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            self.reconcile_catalogs(false).await?;
+        }
+        Ok(saved)
     }
 
     pub fn recording_writer(self: &Arc<Self>) -> RecordingStore {
@@ -300,30 +355,21 @@ impl ArchiveStorage {
         let registered = self.registered.read().await;
         for (id, definition) in &next.backends {
             validate_component(id)?;
+            if self
+                .catalog_started
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                catalog::validate_catalog_namespace(id, next)?;
+            }
             if registered.contains_key(id) {
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
                     format!("storage ID {id} is already registered"),
                 ));
             }
-            if definition.kind != "local" {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    format!("unsupported recording storage type: {}", definition.kind),
-                ));
-            }
-            if definition.root.trim().is_empty() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("recording storage backend {id} has an empty root"),
-                ));
-            }
-            let root = std::path::absolute(&definition.root)?;
-            let location = root.to_str().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "storage root is not UTF-8")
-            })?;
+            let location = definition.location()?;
             self.db
-                .validate_storage_backend(id, "local", location)
+                .validate_storage_backend(id, &definition.kind, &location)
                 .await
                 .map_err(database_error)?;
         }
@@ -349,6 +395,15 @@ impl ArchiveStorage {
         room_id: &str,
         live_id: &str,
     ) -> io::Result<tokio::sync::OwnedMutexGuard<()>> {
+        let _configuration = self
+            .configuration_gate
+            .try_read()
+            .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "存储设置正在更新"))?;
+        if let Some(runtime) = self.db.catalogs.get() {
+            runtime
+                .check_mutation(platform, room_id, live_id)
+                .map_err(database_error)?;
+        }
         let key = format!("{platform}/{room_id}/{live_id}");
         let pending = self
             .pending_transfers
@@ -449,29 +504,31 @@ impl ArchiveStorage {
                 format!("recording storage backend {id} is not configured or registered"),
             )
         })?;
-        if definition.kind != "local" {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                format!("unsupported recording storage type: {}", definition.kind),
-            ));
-        }
-        if definition.root.trim().is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("recording storage backend {id} has an empty root"),
-            ));
-        }
         // Absolute paths also detect accidental reassignment of relative roots
         // when the process is launched with a different working directory.
-        let root = std::path::absolute(&definition.root)?;
-        let location = root.to_str().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "storage root is not UTF-8")
-        })?;
+        let definition = definition.normalized()?;
+        let location = definition.location()?;
         self.db
-            .remember_storage_backend(id, "local", location)
+            .remember_storage_backend(id, &definition.kind, &location)
             .await
             .map_err(database_error)?;
-        Ok(RecordingStore::local(root).with_identity(id))
+        let store = match &definition.s3 {
+            Some(s3) => RecordingStore::with_backend(
+                Arc::new(recording_storage::S3Backend::new(
+                    s3,
+                    &self
+                        .db
+                        .storage_credentials(id)
+                        .await
+                        .map_err(database_error)?,
+                )?),
+                // Compatibility path only; all normal asset processing uses
+                // explicit LocalAssets leases, never a persistent local replica.
+                std::env::temp_dir().join("shadowreplay-s3").join(id),
+            ),
+            None => RecordingStore::local(&definition.root),
+        };
+        Ok(store.with_identity(id))
     }
 
     pub async fn recorder_store(
@@ -496,6 +553,9 @@ impl ArchiveStorage {
             Some(id) => id.to_owned(),
             None => self.configuration().await?.default_backend,
         };
+        if let Some(runtime) = self.db.catalogs.get() {
+            runtime.writable(&id).await.map_err(database_error)?;
+        }
         Ok(self
             .store(&id)
             .await?
@@ -512,6 +572,7 @@ impl ArchiveStorage {
         live_id: &str,
     ) -> io::Result<RecordingStorage> {
         self.initialize().await?;
+        let _configuration = self.configuration_gate.read().await;
         // Fail fast even for a queued transfer. Awaiting here could deadlock a
         // caller that already owns a read lease and resolves another scope;
         // the queued writer must drain that original lease before admitting it.
@@ -538,8 +599,17 @@ impl ArchiveStorage {
         self.initialize().await?;
         let id = match id {
             Some(id) => id,
+            None if self.db.catalogs.get().is_some() => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "录播不在已挂载的目录中",
+                ));
+            }
             None => self.db.legacy_storage_id().await.map_err(database_error)?,
         };
+        if let Some(runtime) = self.db.catalogs.get() {
+            runtime.readable(&id).await.map_err(database_error)?;
+        }
         self.store(&id)
             .await?
             .with_lease(Arc::new(read_lease))
@@ -659,6 +729,174 @@ mod tests {
     use crate::database::credentials::CredentialCipher;
     use crate::events::EventBus;
 
+    #[tokio::test]
+    async fn s3_settings_keep_secrets_separate_and_allow_safe_credential_rotation() {
+        let (directory, storage) = fixture().await;
+        let storage = Arc::new(storage);
+        let (_, pool) = database(&directory.path().join("test.db")).await;
+        let initial = storage.configuration().await.unwrap();
+        let mut next = initial.clone();
+        let definition = RecordingBackendConfig {
+            kind: "s3".into(),
+            root: String::new(),
+            s3: Some(recording_storage::S3Config {
+                endpoint: "http://localhost:9000/".into(),
+                bucket: "recordings".into(),
+                region: "us-east-1".into(),
+                prefix: "archive".into(),
+                path_style: true,
+            }),
+        };
+        next.backends.insert("remote".into(), definition);
+        next.default_backend = "remote".into();
+        assert!(storage.replace_configuration(next.clone()).await.is_err());
+        assert_eq!(
+            storage.configuration().await.unwrap(),
+            initial,
+            "failed save must not reserve an ID"
+        );
+        let mut credentials = HashMap::from([(
+            "remote".to_owned(),
+            recording_storage::S3Credentials {
+                access_key_id: "test-access".into(),
+                secret_access_key: "test-secret".into(),
+                session_token: "test-token".into(),
+            },
+        )]);
+        let saved = storage
+            .replace_configuration_with_credentials(next, &initial, &credentials)
+            .await
+            .unwrap();
+        let public_json = serde_json::to_string(&saved).unwrap();
+        assert!(!public_json.contains("test-access"));
+        assert!(!public_json.contains("test-secret"));
+        assert!(!public_json.contains("test-token"));
+        let (encoded, encrypted): (String, bool) = sqlx::query_as(
+            "SELECT credentials, encrypted FROM recording_storage_credentials WHERE storage_id = 'remote'",
+        ).fetch_one(&pool).await.unwrap();
+        assert_eq!(encrypted, CredentialCipher::ENCRYPTED);
+        if encrypted {
+            assert!(!encoded.contains("test-secret"));
+            assert!(CredentialCipher::new(&[1; 32])
+                .unwrap()
+                .decrypt(&encoded)
+                .is_err());
+        }
+        assert_eq!(
+            saved.backends["remote"].s3.as_ref().unwrap().endpoint,
+            "http://localhost:9000"
+        );
+        let reopened = ArchiveStorage::new(storage.db.clone(), storage.config.clone());
+        assert_eq!(reopened.configuration().await.unwrap(), saved);
+        assert_eq!(
+            reopened
+                .selected_store(Some("remote"))
+                .await
+                .unwrap()
+                .identity(),
+            Some("remote")
+        );
+        assert_eq!(
+            reopened
+                .db
+                .storage_credentials("remote")
+                .await
+                .unwrap()
+                .secret_access_key,
+            "test-secret"
+        );
+        assert_eq!(
+            storage.replace_configuration(saved.clone()).await.unwrap(),
+            saved,
+            "ordinary config writes preserve credentials"
+        );
+        let mut changed = saved.clone();
+        changed
+            .backends
+            .get_mut("remote")
+            .unwrap()
+            .s3
+            .as_mut()
+            .unwrap()
+            .bucket = "another-bucket".into();
+        assert!(storage.replace_configuration(changed).await.is_err());
+        assert_eq!(storage.configuration().await.unwrap(), saved);
+        assert!(storage
+            .preview_storage_transfer("one", "remote")
+            .await
+            .is_err());
+        // Updates do not redirect the namespace; blank token explicitly clears it.
+        credentials.get_mut("remote").unwrap().secret_access_key = "rotated-secret".into();
+        credentials.get_mut("remote").unwrap().session_token.clear();
+        let active = storage
+            .recording_writer()
+            .resolve_recording("bilibili", "remote-room", "active")
+            .await
+            .unwrap();
+        assert_eq!(active.identity(), Some("remote"));
+        assert!(storage
+            .replace_configuration_with_credentials(saved.clone(), &saved, &credentials)
+            .await
+            .is_err());
+        drop(active);
+        let rotated = storage
+            .replace_configuration_with_credentials(saved.clone(), &saved, &credentials)
+            .await
+            .unwrap();
+        assert_eq!(rotated.backends, saved.backends);
+        assert_ne!(rotated.credential_revisions, saved.credential_revisions);
+        assert!(storage
+            .replace_configuration_with_credentials(saved.clone(), &saved, &credentials)
+            .await
+            .is_err());
+        assert_eq!(
+            storage
+                .db
+                .storage_credentials("remote")
+                .await
+                .unwrap()
+                .secret_access_key,
+            "rotated-secret"
+        );
+        assert!(storage
+            .db
+            .storage_credentials("remote")
+            .await
+            .unwrap()
+            .session_token
+            .is_empty());
+
+        storage
+            .db
+            .bind_recording_storage("bilibili", "123", "remote-live", "remote")
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO records (platform, room_id, live_id) VALUES ('bilibili', '123', 'remote-live')")
+            .execute(&pool).await.unwrap();
+        let available: bool = sqlx::query_scalar(
+            "SELECT storage_available FROM recording_records WHERE live_id = 'remote-live'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            available,
+            "availability is configuration presence, not a network health check"
+        );
+        let mut removed = rotated;
+        removed.default_backend = "one".into();
+        removed.backends.remove("remote");
+        storage.replace_configuration(removed).await.unwrap();
+        let row: (String, bool) = sqlx::query_as("SELECT storage_backend_id, storage_available FROM recording_records WHERE live_id = 'remote-live'")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(row, ("remote".into(), false));
+        assert!(storage.db.storage_credentials("remote").await.is_err());
+        assert!(storage
+            .recording("bilibili", "123", "remote-live")
+            .await
+            .is_err());
+    }
+
     pub(super) async fn database(path: &std::path::Path) -> (Arc<Database>, sqlx::SqlitePool) {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(2)
@@ -706,6 +944,7 @@ mod tests {
                 id.into(),
                 RecordingBackendConfig {
                     kind: "local".into(),
+                    s3: None,
                     root: dir.path().join(id).to_string_lossy().into_owned(),
                 },
             );
@@ -886,6 +1125,7 @@ mod tests {
             "named".into(),
             RecordingBackendConfig {
                 kind: "local".into(),
+                s3: None,
                 root: directory
                     .path()
                     .join("named")
@@ -1267,6 +1507,7 @@ mod tests {
             "new".into(),
             RecordingBackendConfig {
                 kind: "local".into(),
+                s3: None,
                 root: dir.path().join("first").to_string_lossy().into_owned(),
             },
         );
@@ -1320,6 +1561,7 @@ mod tests {
             "adapter".into(),
             RecordingBackendConfig {
                 kind: "local".into(),
+                s3: None,
                 root: "/adapter".into(),
             },
         );

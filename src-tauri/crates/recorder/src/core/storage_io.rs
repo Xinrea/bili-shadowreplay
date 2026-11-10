@@ -12,6 +12,7 @@ use std::{
     time::Duration,
 };
 
+use crate::startup::RecordingTrace;
 use ffmpeg_utils::HlsObjectStore;
 use recording_storage::RecordingStorage;
 
@@ -21,6 +22,8 @@ pub(super) struct NativeHlsStorage {
     storage: RecordingStorage,
     runtime: tokio::runtime::Handle,
     first_error: Mutex<Option<io::Error>>,
+    trace: Option<RecordingTrace>,
+    first_media_key: Mutex<Option<String>>,
 }
 
 impl NativeHlsStorage {
@@ -29,7 +32,14 @@ impl NativeHlsStorage {
             storage,
             runtime: tokio::runtime::Handle::current(),
             first_error: Mutex::new(None),
+            trace: None,
+            first_media_key: Mutex::new(None),
         }
+    }
+
+    pub(super) fn with_trace(mut self, trace: RecordingTrace) -> Self {
+        self.trace = Some(trace);
+        self
     }
 
     /// Keep typed backend errors for recorder callers; the FFI layer only sees
@@ -93,7 +103,33 @@ impl HlsObjectStore for NativeHlsStorage {
     }
 
     fn write(&self, key: &str, bytes: &[u8], cancelled: &AtomicBool) -> io::Result<()> {
-        self.remember(self.wait(cancelled, self.storage.write(key, bytes)), false)
+        self.remember(self.wait(cancelled, self.storage.write(key, bytes)), false)?;
+        if let Some(trace) = &self.trace {
+            if !trace.has_media() {
+                let mut first = self
+                    .first_media_key
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                if first.is_none()
+                    && !bytes.is_empty()
+                    && (key.ends_with(".ts") || key.ends_with(".m4s"))
+                {
+                    *first = Some(key.to_owned());
+                }
+                if key == "playlist.m3u8" {
+                    if let Ok((_, playlist)) = m3u8_rs::parse_media_playlist(bytes) {
+                        if first
+                            .as_ref()
+                            .is_some_and(|key| playlist.segments.iter().any(|s| &s.uri == key))
+                        {
+                            trace.media_committed("flv_segment");
+                            *first = None;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     fn max_object_bytes(&self) -> usize {
@@ -106,6 +142,47 @@ mod tests {
     use super::*;
     use recording_storage::{LocalWorkspace, ObjectMetadata, StorageBackend};
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn first_media_requires_new_bytes_and_successful_referencing_playlist() {
+        let root = tempfile::tempdir().unwrap();
+        let trace = RecordingTrace::new("test", "room", "live");
+        let adapter = Arc::new(
+            NativeHlsStorage::new(RecordingStorage::local(root.path())).with_trace(trace.clone()),
+        );
+        let worker = adapter.clone();
+        tokio::task::spawn_blocking(move || {
+            let cancelled = AtomicBool::new(false);
+            let old_playlist = b"#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nold.ts\n";
+            worker
+                .write("playlist.m3u8", old_playlist, &cancelled)
+                .unwrap();
+            assert!(!trace.has_media(), "old media must not report recovery");
+            worker
+                .write("new.ts", b"new media bytes", &cancelled)
+                .unwrap();
+            assert!(
+                !trace.has_media(),
+                "object alone is not playable publication"
+            );
+            worker
+                .write("playlist.m3u8", old_playlist, &cancelled)
+                .unwrap();
+            assert!(!trace.has_media());
+            let new_playlist = b"#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nnew.ts\n";
+            // Cancellation must not report a successful publication.
+            assert!(worker
+                .write("playlist.m3u8", new_playlist, &AtomicBool::new(true))
+                .is_err());
+            assert!(!trace.has_media());
+            worker
+                .write("playlist.m3u8", new_playlist, &cancelled)
+                .unwrap();
+            assert!(trace.has_media());
+        })
+        .await
+        .unwrap();
+    }
 
     struct Pending {
         started: Arc<tokio::sync::Notify>,

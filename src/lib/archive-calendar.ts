@@ -3,7 +3,7 @@ import type { RecordItem } from "./db";
 const HOUR = 3_600_000;
 // Reserve room for the viewport and ticks near JavaScript's date limits.
 const DATE_LIMIT = 8.64e15 - 366 * 24 * HOUR;
-export const ARCHIVE_CALENDAR_SPANS = [6, 12, 24, 72, 168, 720] as const;
+export const ARCHIVE_CALENDAR_SPANS = [1, 2, 4, 8] as const;
 
 export interface ArchiveCalendarEvent {
   archive: RecordItem;

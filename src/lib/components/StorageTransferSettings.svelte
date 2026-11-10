@@ -1,17 +1,38 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
-  import { ArrowRight, Check, CircleAlert, Loader2 } from "lucide-svelte";
+  import { ArrowRight, Check, CircleAlert, Loader2, X } from "lucide-svelte";
   import type { StorageConfig } from "../interface";
   import type { TaskRow } from "../db";
   import { invoke } from "../invoker";
   import { createStateRefresh, watchStateChanges } from "../state-refresh";
   import { describeTask, isActiveTaskStatus } from "../task-progress";
   import { openTaskCenter } from "../stores/tasks";
+  import { trapFocus } from "../focus-trap";
   import { storageBackendEntries, storageBackendSupported, storageBackendLocation } from "../recording-storage";
   import {
     transferBytes, transferModeLabel, transferResult, transferSelectionError, transferStatus,
     type StorageTransferPlan,
   } from "../storage-transfer";
+
+  const DISMISSED_KEY = "storage-transfer-dismissed";
+
+  function readDismissed(): ReadonlySet<string> {
+    try {
+      if (typeof localStorage === "undefined") return new Set();
+      const stored = JSON.parse(localStorage.getItem(DISMISSED_KEY) || "[]");
+      return new Set(Array.isArray(stored) ? stored.filter((id): id is string => typeof id === "string") : []);
+    } catch {
+      return new Set();
+    }
+  }
+
+  function prettyMetadata(raw: string): string {
+    try {
+      return JSON.stringify(JSON.parse(raw), null, 2);
+    } catch {
+      return raw;
+    }
+  }
 
   let {
     storage, disabled = false, busy = $bindable(true), starting = $bindable(false),
@@ -36,6 +57,8 @@
   let disposed = false;
   let scanRequest = 0;
   let taskRevision = 0;
+  let detailTask = $state<TaskRow | null>(null);
+  let dismissed = $state<ReadonlySet<string>>(readDismissed());
 
   const selectionKey = $derived(JSON.stringify([sourceId, targetId, storage, disabled]));
   const selectionError = $derived(transferSelectionError(storage, sourceId, targetId));
@@ -44,8 +67,10 @@
     currentPlan.blockers.length === 0 && currentPlan.recording_count + currentPlan.cleanup_count > 0 && confirmed);
   const activeTransfer = $derived(tasks.some(task => isActiveTaskStatus(task.status)));
   const step = $derived(currentPlan?.can_transfer && currentPlan.blockers.length === 0 ? 3 : scanning || currentPlan ? 2 : 1);
+  // Completed transfers live in the task center; failures stay inline until dismissed.
   const shownTasks = $derived(tasks.some(task => isActiveTaskStatus(task.status))
-    ? tasks.filter(task => isActiveTaskStatus(task.status)) : tasks.slice(0, 1));
+    ? tasks.filter(task => isActiveTaskStatus(task.status))
+    : tasks.filter(task => (task.status === "failed" || task.status === "error") && !dismissed.has(task.id)));
   const taskRefresh = createStateRefresh(loadTasks);
 
   function invalidatePlan() {
@@ -66,6 +91,20 @@
 
   function updateBusy() {
     busy = starting || !tasksKnown || tasks.some(task => isActiveTaskStatus(task.status));
+  }
+
+  function dismissTask(id: string) {
+    const ids = [...dismissed, id].slice(-50);
+    dismissed = new Set(ids);
+    try { localStorage.setItem(DISMISSED_KEY, JSON.stringify(ids)); } catch { /* still hidden this session */ }
+    if (detailTask?.id === id) detailTask = null;
+  }
+
+  function handleDetailKeydown(event: KeyboardEvent) {
+    if (!detailTask || event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    detailTask = null;
   }
 
   async function loadTasks() {
@@ -180,11 +219,9 @@
   });
 </script>
 
-<section class="space-y-4" aria-labelledby="storage-transfer-title">
-  <div>
-    <h3 id="storage-transfer-title" class="text-[13px] font-medium text-fg">转移已有录播</h3>
-    <p class="mt-1 text-[12px] leading-relaxed text-fg-muted">把已有录播移到另一个位置，不改变后续录制的默认存储。</p>
-  </div>
+<svelte:window onkeydowncapture={handleDetailKeydown} />
+
+<section class="space-y-4" aria-label="录播转移">
   {#if !tasksKnown && !tasksError}
     <p class="flex items-center gap-2 py-6 text-[12px] text-fg-muted" role="status"><Loader2 class="h-4 w-4 animate-spin motion-reduce:animate-none" />正在检查转移任务…</p>
   {/if}
@@ -197,8 +234,14 @@
   {#each shownTasks as task (task.id)}
     {@const result = transferResult(task)}
     {@const failed = task.status === "failed" || task.status === "error"}
-    <div class="rounded-[8px] border border-line bg-sunken/40 p-4" aria-live="polite">
-      <div class="flex items-start gap-3">
+    <div class="relative rounded-[8px] border border-line bg-sunken/40 p-4" aria-live="polite">
+      {#if !isActiveTaskStatus(task.status)}
+        <button type="button" class="absolute right-2 top-2 inline-flex h-6 w-6 items-center justify-center rounded-[6px] text-fg-muted transition-colors hover:bg-control-hover hover:text-fg"
+          title="忽略这次转移结果" aria-label={`忽略转移结果：${describeTask(task) || task.id}`} onclick={() => dismissTask(task.id)}>
+          <X class="h-3.5 w-3.5" />
+        </button>
+      {/if}
+      <div class="flex items-start gap-3" class:pr-7={!isActiveTaskStatus(task.status)}>
         {#if isActiveTaskStatus(task.status)}<Loader2 class="mt-0.5 h-4 w-4 shrink-0 animate-spin text-accent-fg motion-reduce:animate-none" />
         {:else if failed}<CircleAlert class="mt-0.5 h-4 w-4 shrink-0 text-warning-fg" />
         {:else}<Check class="mt-0.5 h-4 w-4 shrink-0 text-success-fg" />{/if}
@@ -225,7 +268,11 @@
           {/if}
           <div class="flex flex-wrap gap-2">
             {#if failed}<button class="ui-btn ui-btn-sm" type="button" disabled={disabled || busy || scanning} onclick={() => retryTask(task)}>重新检查这次转移</button>{/if}
-            <button class="ui-btn ui-btn-ghost ui-btn-sm" type="button" onclick={() => openTaskCenter(task.id)}>任务详情</button>
+            {#if isActiveTaskStatus(task.status)}
+              <button class="ui-btn ui-btn-ghost ui-btn-sm" type="button" onclick={() => openTaskCenter(task.id)}>在任务中心查看</button>
+            {:else}
+              <button class="ui-btn ui-btn-ghost ui-btn-sm" type="button" onclick={() => detailTask = task}>任务详情</button>
+            {/if}
           </div>
         </div>
       </div>
@@ -330,6 +377,50 @@
   {#if starting}<p class="ui-hint" role="status">正在提交转移，请稍候…</p>{/if}
   {#if error}<p class="whitespace-pre-wrap text-[12px] text-danger-fg" role="alert">{error}</p>{/if}
 </section>
+
+{#if detailTask}
+  {@const detailResult = transferResult(detailTask)}
+  <div class="fixed inset-0 z-[1300] flex items-center justify-center p-4">
+    <button type="button" class="absolute inset-0 cursor-default bg-black/50 backdrop-blur-sm" aria-label="关闭任务详情" onclick={() => detailTask = null}></button>
+    <div role="dialog" aria-modal="true" aria-labelledby="transfer-task-detail-title" tabindex="-1" use:trapFocus
+      class="relative flex max-h-[min(560px,85vh)] w-[520px] max-w-full flex-col overflow-hidden rounded-[12px] border border-line bg-surface text-fg shadow-2xl">
+      <div class="flex h-[46px] shrink-0 items-center justify-between gap-3 border-b border-line px-[18px]">
+        <h3 id="transfer-task-detail-title" class="text-[14px] font-semibold">转移任务详情</h3>
+        <button class="ui-btn ui-btn-ghost ui-btn-sm ui-btn-icon" type="button" aria-label="关闭任务详情" onclick={() => detailTask = null}><X class="h-4 w-4" /></button>
+      </div>
+      <div class="ui-modal-body custom-scrollbar-light space-y-4">
+        <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-[12px]">
+          <dt class="text-fg-muted">路线</dt><dd class="select-text break-all text-fg">{describeTask(detailTask) || "—"}</dd>
+          <dt class="text-fg-muted">状态</dt><dd class="text-fg">{transferStatus(detailTask.status)}</dd>
+          <dt class="text-fg-muted">创建时间</dt><dd class="tabular-nums text-fg">{new Date(detailTask.created_at).toLocaleString()}</dd>
+          <dt class="text-fg-muted">任务 ID</dt><dd class="select-text break-all font-mono text-[11px] text-fg-secondary">{detailTask.id}</dd>
+        </dl>
+        {#if detailTask.message}
+          <div>
+            <p class="text-[11px] text-fg-muted">消息</p>
+            <p class="mt-1 select-text whitespace-pre-wrap break-words text-[12px] leading-relaxed text-fg-secondary">{detailTask.message}</p>
+          </div>
+        {/if}
+        {#if detailResult}
+          <div>
+            <p class="text-[11px] text-fg-muted">结果</p>
+            <dl class="mt-1 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-[12px]">
+              <dt class="text-fg-muted">已转移录播</dt><dd class="tabular-nums text-fg-secondary">{detailResult.transferred_recordings} 条</dd>
+              <dt class="text-fg-muted">已清理来源</dt><dd class="tabular-nums text-fg-secondary">{detailResult.cleaned_recordings} 条</dd>
+              {#if detailResult.failed_recording}<dt class="text-fg-muted">停止于</dt><dd class="select-text break-all text-fg-secondary">{detailResult.failed_recording}</dd>{/if}
+            </dl>
+            {#if detailResult.error}<p class="mt-1 select-text whitespace-pre-wrap break-words text-[12px] text-danger-fg">{detailResult.error}</p>{/if}
+          </div>
+        {/if}
+        <details>
+          <summary class="cursor-pointer text-[11px] text-fg-muted hover:text-fg">原始元数据</summary>
+          <pre class="custom-scrollbar-light mt-2 max-h-48 overflow-auto rounded-[6px] bg-sunken p-2 font-mono text-[11px] leading-relaxed text-fg-secondary">{prettyMetadata(detailTask.metadata)}</pre>
+        </details>
+      </div>
+      <div class="ui-modal-footer"><button class="ui-btn" type="button" onclick={() => detailTask = null}>关闭</button></div>
+    </div>
+  </div>
+{/if}
 
 <style>
   .transfer-route { display: grid; grid-template-columns: minmax(0, 1fr) 16px minmax(0, 1fr); gap: 16px; }

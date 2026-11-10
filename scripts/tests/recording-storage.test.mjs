@@ -102,8 +102,9 @@ test("storage rows group default/remove actions and leave transfers to the trans
   assert.match(source, /class="ui-badge tabular-nums"/);
   assert.match(source, /aria-label=\{`\$\{Object.keys\(storage.backends\).length\} 个存储位置`\}/);
   const group = source.match(/<div class="storage-actions[\s\S]*?<\/div>/)[0];
-  assert.match(group, /<Check[^>]*\/>设为默认/);
   assert.match(group, /<Trash2[^>]*\/>移除/);
+  assert.doesNotMatch(group, /setDefault/, "default switch belongs beside the name, not the action group");
+  assert.match(source, /group-hover:opacity-100[\s\S]{0,200}?onclick=\{\(\) => setDefault\(id\)\}/);
   assert.doesNotMatch(source, /openTransfer|转移录播|ArrowRightLeft/);
 });
 

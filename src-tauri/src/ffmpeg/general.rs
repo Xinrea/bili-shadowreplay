@@ -272,7 +272,7 @@ fn ensure_output_folder(output_path: &Path) -> Result<&Path, String> {
 /// re-encode them through the concat filter.
 ///
 /// This path is for already-muxed files (e.g. whole playlists), not copy-trimmed
-/// clip ranges. Copy-trimmed MP4s must go through [`concat_videos_with_transition`]
+/// clip ranges. Copy-trimmed MP4s must go through [`concat_videos_with_settings`]
 /// so edit lists are applied.
 pub async fn concat_videos(
     reporter: Option<&impl ProgressReporterTrait>,
@@ -606,16 +606,6 @@ async fn encode_filter_concat(
 
 /// Concatenate videos with optional transition effects. Joining several
 /// re-encodes them, targeting `bitrate` (kbps) when given.
-pub async fn concat_videos_with_transition(
-    reporter: Option<&impl ProgressReporterTrait>,
-    videos: &[PathBuf],
-    output_path: &Path,
-    transition: Option<&str>,
-    bitrate: Option<NonZeroU32>,
-) -> Result<(), String> {
-    concat_videos_with_settings(reporter, videos, output_path, transition, bitrate, None).await
-}
-
 pub async fn concat_videos_with_settings(
     reporter: Option<&impl ProgressReporterTrait>,
     videos: &[PathBuf],
@@ -966,7 +956,7 @@ mod transition_filter_tests {
 
 #[cfg(test)]
 mod concat_videos_tests {
-    use super::{concat_videos, concat_videos_with_transition, ffmpeg_command, random_filename};
+    use super::{concat_videos, concat_videos_with_settings, ffmpeg_command, random_filename};
     use ffmpeg_utils::ffprobe_command;
     use std::path::Path;
 
@@ -1128,11 +1118,12 @@ mod concat_videos_tests {
         create_test_video(&video2_path, 3).await.unwrap();
         create_test_video(&video3_path, 3).await.unwrap();
 
-        let result = concat_videos_with_transition(
+        let result = concat_videos_with_settings(
             None::<&crate::progress::progress_reporter::ProgressReporter>,
             &[video1_path, video2_path, video3_path],
             &output_path,
             Some("fade"),
+            None,
             None,
         )
         .await;
@@ -1292,10 +1283,11 @@ mod concat_videos_tests {
         .await
         .unwrap();
 
-        let result = concat_videos_with_transition(
+        let result = concat_videos_with_settings(
             None::<&crate::progress::progress_reporter::ProgressReporter>,
             &[clip0_path, clip1_path],
             &output_path,
+            None,
             None,
             None,
         )
@@ -1385,10 +1377,11 @@ mod concat_videos_tests {
             .await
             .unwrap();
 
-        let result = concat_videos_with_transition(
+        let result = concat_videos_with_settings(
             None::<&crate::progress::progress_reporter::ProgressReporter>,
             &[video1_path, video2_path],
             &output_path,
+            None,
             None,
             None,
         )
@@ -1425,11 +1418,12 @@ mod concat_videos_tests {
             .await
             .unwrap();
 
-        let result = concat_videos_with_transition(
+        let result = concat_videos_with_settings(
             None::<&crate::progress::progress_reporter::ProgressReporter>,
             &[video1_path, video2_path],
             &output_path,
             Some("fade"),
+            None,
             None,
         )
         .await;

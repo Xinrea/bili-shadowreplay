@@ -335,10 +335,10 @@ mod tests {
             WebhookPoster::new(WebhookConfig::default()).unwrap(),
         ));
         let room = "shared-room";
-        db.add_recorder(PlatformType::BiliBili, room, "{}")
+        db.add_recorder_with_storage(PlatformType::BiliBili, room, "{}", None)
             .await
             .unwrap();
-        db.add_recorder(PlatformType::Douyin, room, "{}")
+        db.add_recorder_with_storage(PlatformType::Douyin, room, "{}", None)
             .await
             .unwrap();
         for (platform, live) in [

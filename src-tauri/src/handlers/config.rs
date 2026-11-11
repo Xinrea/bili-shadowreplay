@@ -557,7 +557,12 @@ mod storage_settings_tests {
         .unwrap();
         state
             .db
-            .add_recorder(recorder::platforms::PlatformType::BiliBili, "room", "")
+            .add_recorder_with_storage(
+                recorder::platforms::PlatformType::BiliBili,
+                "room",
+                "",
+                None,
+            )
             .await
             .unwrap();
         let row = crate::handlers::recorder::set_recorder_storage(

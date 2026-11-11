@@ -1406,7 +1406,7 @@ impl RecorderManager {
     }
 
     /// Cut `params.ranges` into `clip_file`, returning it with the recording
-    /// ranges it covers (see [`crate::ffmpeg::playlist::clip_multiple_from_playlist`]).
+    /// ranges it covers (see [`crate::ffmpeg::playlist::clip_multiple_with_settings`]).
     pub async fn clip_range(
         &self,
         reporter: Option<&ProgressReporter>,
@@ -2822,7 +2822,7 @@ mod archive_storage_tests {
         let manager = manager(directory.path()).await;
         manager
             .db
-            .add_recorder(PlatformType::Rtmp, "rtmp-obs", "{}")
+            .add_recorder_with_storage(PlatformType::Rtmp, "rtmp-obs", "{}", None)
             .await
             .unwrap();
         let recorder = RtmpRecorder::new(
@@ -3245,7 +3245,7 @@ mod archive_storage_tests {
             .unwrap();
         manager
             .db
-            .add_recorder(PlatformType::Douyu, "room", "kept")
+            .add_recorder_with_storage(PlatformType::Douyu, "room", "kept", None)
             .await
             .unwrap();
         let removed = archive(&manager, PlatformType::BiliBili, "old", "first").await;
@@ -3297,7 +3297,7 @@ mod archive_storage_tests {
         // monitor reached it: the row and the removal mark are both gone.
         manager
             .db
-            .add_recorder(PlatformType::Douyu, "room", "")
+            .add_recorder_with_storage(PlatformType::Douyu, "room", "", None)
             .await
             .unwrap();
         manager

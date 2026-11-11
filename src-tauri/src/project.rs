@@ -543,10 +543,6 @@ impl Timeline {
             .collect()
     }
 
-    pub fn has_visible_overlays(&self) -> bool {
-        !self.placed_overlays().is_empty()
-    }
-
     /// Bring the backend's own edits of a saved timeline into this one, which
     /// is being edited. Between `base`, the saved timeline the editor last
     /// knew, and `saved`, the saved one now, the backend may switch danmaku,
@@ -819,12 +815,6 @@ impl Timeline {
             }
         }
         Ok(())
-    }
-
-    /// Even an untouched material must be encoded: its source codec and bitrate
-    /// cannot be assumed to match the requested output settings.
-    pub fn single_full_material(&self, _material_duration: f64) -> Option<i64> {
-        None
     }
 
     /// Identifies an export: a different hash means the output is stale.
@@ -1145,7 +1135,6 @@ mod tests {
             Timeline::parse(r#"{"clips":[{"id":"a","material_id":1,"start":0,"end":30}]}"#)
                 .unwrap();
         assert_eq!(edited.render_settings, RenderSettings::default());
-        assert_eq!(edited.single_full_material(30.0), None);
         let base = edited.clone();
         let mut saved = base.clone();
         saved.render_settings = RenderSettings {
@@ -1158,7 +1147,6 @@ mod tests {
         edited.merge_saved_edits(&base, &saved);
         assert_eq!(edited.clips[0].end, 20.0);
         assert_eq!(edited.render_settings, saved.render_settings);
-        assert_eq!(saved.single_full_material(30.0), None);
         assert_ne!(base.render_hash(""), saved.render_hash(""));
         assert_eq!(Timeline::parse(&saved.to_json()).unwrap(), saved);
         saved.render_settings.bitrate_kbps = 100_001;
@@ -1242,23 +1230,6 @@ mod tests {
                 .collect();
             assert_eq!(after, shifted, "moved by {moved} frames");
         }
-    }
-
-    #[test]
-    fn even_an_untouched_single_material_requires_encoding() {
-        let mut timeline = Timeline::from_materials(&[(7, 30.0)]);
-        assert_eq!(timeline.single_full_material(30.0), None);
-        timeline.danmu = true;
-        assert_eq!(timeline.single_full_material(30.0), None);
-        timeline.danmu = false;
-        let clip_id = timeline.clips[0].id.clone();
-        timeline.set_clip_subtitles(&clip_id, vec![(1.0, 2.0, "hi".into())]);
-        assert_eq!(timeline.single_full_material(30.0), None);
-        let trimmed = Timeline {
-            clips: vec![clip("a", 7, 1.0, 30.0)],
-            ..Timeline::default()
-        };
-        assert_eq!(trimmed.single_full_material(30.0), None);
     }
 
     #[test]
@@ -1440,10 +1411,10 @@ mod tests {
         );
         assert_eq!(timeline.main_duration(), 15.0);
         assert_eq!(timeline.duration(), 23.0);
-        assert!(timeline.has_visible_overlays());
-        assert!(
-            !with_tracks(vec![vec![text_overlay("x", "missing", 0.0, 1.0)]]).has_visible_overlays()
-        );
+        assert!(spans(&with_tracks(vec![vec![text_overlay(
+            "x", "missing", 0.0, 1.0
+        )]]))
+        .is_empty());
     }
 
     #[test]
@@ -1467,16 +1438,7 @@ mod tests {
     }
 
     #[test]
-    fn overlays_need_rendering_and_video_overlays_valid_ranges() {
-        let mut timeline = Timeline::from_materials(&[(7, 30.0)]);
-        let clip_id = timeline.clips[0].id.clone();
-        timeline.tracks = vec![OverlayTrack {
-            id: "t".into(),
-            kind: None,
-            items: vec![text_overlay("x", &clip_id, 1.0, 2.0)],
-        }];
-        assert_eq!(timeline.single_full_material(30.0), None);
-
+    fn video_overlays_require_valid_ranges() {
         let mut video = with_tracks(vec![vec![video_overlay("v", "a", 10.0, 3)]]);
         assert!(video.validate(|_| Some(30.0), |_| None).is_ok());
         // Shows 1-4 of material 3, which is only 3.2 s long.
@@ -1686,18 +1648,7 @@ mod tests {
     }
 
     #[test]
-    fn audio_needs_rendering_and_valid_ranges_and_volumes() {
-        let mut timeline = Timeline::from_materials(&[(7, 30.0)]);
-        timeline.clips[0].volume = 0.5;
-        assert_eq!(timeline.single_full_material(30.0), None);
-        timeline.clips[0].volume = 1.0;
-        let clip_id = timeline.clips[0].id.clone();
-        timeline.audio_tracks = vec![AudioTrack {
-            id: "t".into(),
-            items: vec![music("x", &clip_id, 1.0, 2.0)],
-        }];
-        assert_eq!(timeline.single_full_material(30.0), None);
-
+    fn audio_requires_valid_ranges_and_volumes() {
         let materials = |_| Some(30.0);
         let audio = with_audio(vec![vec![music("x", "a", 10.0, 3.0)]]);
         assert!(audio.validate(materials, |_| Some(4.0)).is_ok());

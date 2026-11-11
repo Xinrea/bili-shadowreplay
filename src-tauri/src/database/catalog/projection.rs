@@ -9,22 +9,6 @@ pub struct CatalogMount {
     pub epoch: Uuid,
 }
 
-#[derive(Debug, Serialize)]
-pub struct ProjectedRecord {
-    pub storage_uuid: Uuid,
-    pub backend_id: String,
-    pub online: bool,
-    pub error: Option<String>,
-    pub entry: CatalogEntry,
-}
-
-#[derive(Debug, Default, PartialEq, sqlx::FromRow, Serialize)]
-pub struct CatalogTotals {
-    pub count: i64,
-    pub length: f64,
-    pub size: i64,
-}
-
 impl Database {
     pub async fn mount_catalog(
         &self,
@@ -51,38 +35,6 @@ impl Database {
         Ok(mount)
     }
 
-    pub async fn unmount_catalog(&self, mount: &CatalogMount) -> Result<(), DatabaseError> {
-        let changed = sqlx::query(
-            "DELETE FROM catalog_mounts WHERE alias = ? AND storage_uuid = ? AND epoch = ?",
-        )
-        .bind(&mount.alias)
-        .bind(mount.storage_uuid.to_string())
-        .bind(mount.epoch.to_string())
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
-        if changed != 1 {
-            return Err(error("Catalog mount changed"));
-        }
-        // Cached rows may remain, but every public query joins current mounts.
-        // No remote writes, no recording deletion, no permanently reserved alias.
-        Ok(())
-    }
-
-    pub async fn mark_catalog_offline(
-        &self,
-        mount: &CatalogMount,
-        reason: &str,
-    ) -> Result<(), DatabaseError> {
-        let changed = sqlx::query("UPDATE catalog_mounts SET online = 0, error = ? WHERE alias = ? AND storage_uuid = ? AND epoch = ?")
-            .bind(reason).bind(&mount.alias).bind(mount.storage_uuid.to_string()).bind(mount.epoch.to_string())
-            .execute(&self.pool).await?.rows_affected();
-        if changed != 1 {
-            return Err(error("Catalog mount changed"));
-        }
-        Ok(())
-    }
-
     /// Build under a new generation, then atomically swap the active pointer.
     /// EOF is required. Errors/cancellation never publish a partial/empty scan.
     pub async fn rebuild_catalog_projection(
@@ -107,42 +59,6 @@ impl Database {
             cleanup?;
             Ok(())
         }).await.map_err(error)?
-    }
-
-    pub async fn catalog_records(
-        &self,
-        offset: i64,
-        limit: i64,
-    ) -> Result<Vec<ProjectedRecord>, DatabaseError> {
-        if offset < 0 || !(1..=1000).contains(&limit) {
-            return Err(error("Invalid catalog page"));
-        }
-        let rows: Vec<(String, String, bool, Option<String>, String)> = sqlx::query_as(
-            "SELECT e.storage_uuid, m.alias, m.online, m.error, e.entry FROM catalog_projection_entries e \
-             JOIN catalog_projection_heads h ON h.storage_uuid = e.storage_uuid AND h.generation = e.generation \
-             JOIN catalog_mounts m ON m.storage_uuid = e.storage_uuid \
-             ORDER BY e.created_at_ms DESC, e.storage_uuid, e.recording_uuid LIMIT ? OFFSET ?",
-        ).bind(limit).bind(offset).fetch_all(&self.pool).await?;
-        rows.into_iter()
-            .map(|(storage_uuid, backend_id, online, error_message, entry)| {
-                Ok(ProjectedRecord {
-                    storage_uuid: storage_uuid.parse().map_err(error)?,
-                    backend_id,
-                    online,
-                    error: error_message,
-                    entry: from_json(&entry)?,
-                })
-            })
-            .collect()
-    }
-
-    pub async fn catalog_totals(&self) -> Result<CatalogTotals, DatabaseError> {
-        Ok(sqlx::query_as(
-            "SELECT COUNT(*) AS count, COALESCE(SUM(e.length), 0.0) AS length, COALESCE(SUM(e.size), 0) AS size \
-             FROM catalog_projection_entries e \
-             JOIN catalog_projection_heads h ON h.storage_uuid = e.storage_uuid AND h.generation = e.generation \
-             JOIN catalog_mounts m ON m.storage_uuid = e.storage_uuid",
-        ).fetch_one(&self.pool).await?)
     }
 }
 

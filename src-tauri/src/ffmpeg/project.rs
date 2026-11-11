@@ -1579,13 +1579,6 @@ async fn join_segments<R: ProgressReporterTrait>(
     Ok(())
 }
 
-pub async fn render_project<R: ProgressReporterTrait>(
-    reporter: &R,
-    job: ProjectRender<'_>,
-) -> Result<(), String> {
-    render_project_with_resources(reporter, job, Vec::new()).await
-}
-
 /// Keep caller-created assets alive through all segment workers and renderers.
 pub async fn render_project_with_resources<R: ProgressReporterTrait>(
     reporter: &R,
@@ -3570,7 +3563,7 @@ mod tests {
             volume: 1.0,
         };
         // The timeline allows a clip to end a little after its file.
-        render_project(
+        render_project_with_resources(
             &NoopReporter,
             ProjectRender {
                 clips: vec![clip(&red, 2.4, true), clip(&blue, 2.0, false)],
@@ -3584,6 +3577,7 @@ mod tests {
                 output: &output,
                 segment_cache: None,
             },
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -3668,7 +3662,7 @@ mod tests {
             .await;
         }
         let output = directory.path().join("out.mp4");
-        render_project(
+        render_project_with_resources(
             &NoopReporter,
             ProjectRender {
                 clips: vec![
@@ -3710,6 +3704,7 @@ mod tests {
                 output: &output,
                 segment_cache: None,
             },
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -3787,7 +3782,7 @@ mod tests {
                 volume: 1.0,
             })
             .collect();
-        render_project(
+        render_project_with_resources(
             &NoopReporter,
             ProjectRender {
                 clips,
@@ -3801,6 +3796,7 @@ mod tests {
                 output: &output,
                 segment_cache: None,
             },
+            Vec::new(),
         )
         .await
         .unwrap();

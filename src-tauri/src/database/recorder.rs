@@ -23,16 +23,6 @@ pub struct RecorderRow {
 
 // recorders
 impl Database {
-    pub async fn add_recorder(
-        &self,
-        platform: PlatformType,
-        room_id: &str,
-        extra: &str,
-    ) -> Result<RecorderRow, DatabaseError> {
-        self.add_recorder_with_storage(platform, room_id, extra, None)
-            .await
-    }
-
     pub async fn add_recorder_with_storage(
         &self,
         platform: PlatformType,
@@ -269,7 +259,7 @@ mod tests {
     async fn storage_selection_defaults_and_updates_are_scoped_to_exact_recorder() {
         let db = database().await;
         let inherited = db
-            .add_recorder(PlatformType::BiliBili, "123", "")
+            .add_recorder_with_storage(PlatformType::BiliBili, "123", "", None)
             .await
             .unwrap();
         assert_eq!(inherited.storage_backend_id, None);
@@ -321,10 +311,10 @@ mod tests {
     #[tokio::test]
     async fn platform_room_removal_preserves_other_archives_and_bindings() {
         let db = database().await;
-        db.add_recorder(PlatformType::BiliBili, "123", "")
+        db.add_recorder_with_storage(PlatformType::BiliBili, "123", "", None)
             .await
             .unwrap();
-        db.add_recorder(PlatformType::Douyin, "456", "")
+        db.add_recorder_with_storage(PlatformType::Douyin, "456", "", None)
             .await
             .unwrap();
         for (platform, room, live) in [
@@ -391,7 +381,7 @@ mod tests {
     #[tokio::test]
     async fn platform_room_removal_rolls_back_on_related_delete_error() {
         let db = database().await;
-        db.add_recorder(PlatformType::BiliBili, "123", "")
+        db.add_recorder_with_storage(PlatformType::BiliBili, "123", "", None)
             .await
             .unwrap();
         db.add_record(PlatformType::BiliBili, "live", "live", "123", "title", None)
@@ -418,10 +408,10 @@ mod tests {
     #[tokio::test]
     async fn same_room_number_on_two_platforms_is_kept_and_removed_independently() {
         let db = database().await;
-        db.add_recorder(PlatformType::BiliBili, "6", "bili")
+        db.add_recorder_with_storage(PlatformType::BiliBili, "6", "bili", None)
             .await
             .unwrap();
-        db.add_recorder(PlatformType::Douyu, "6", "douyu")
+        db.add_recorder_with_storage(PlatformType::Douyu, "6", "douyu", None)
             .await
             .unwrap();
         let rows = db.get_recorders().await.unwrap();

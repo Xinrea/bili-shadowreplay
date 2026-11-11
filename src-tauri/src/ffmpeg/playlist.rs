@@ -17,26 +17,6 @@ use super::Range;
 /// applies those edit lists before joining. A single range is only remuxed,
 /// so it is returned as asked for the caller to measure. The join targets
 /// `bitrate` (kbps) when given.
-pub async fn clip_multiple_from_playlist(
-    reporter: Option<&impl ProgressReporterTrait>,
-    playlist_path: &Path,
-    output_path: &Path,
-    ranges: &[Range],
-    transition: Option<&str>,
-    bitrate: Option<NonZeroU32>,
-) -> Result<Vec<Range>, String> {
-    clip_multiple_with_settings(
-        reporter,
-        playlist_path,
-        output_path,
-        ranges,
-        transition,
-        bitrate,
-        None,
-    )
-    .await
-}
-
 pub async fn clip_multiple_with_settings(
     reporter: Option<&impl ProgressReporterTrait>,
     playlist_path: &Path,
@@ -675,11 +655,12 @@ seg-3.mp4
                 end: 24.2,
             },
         ];
-        let covered = clip_multiple_from_playlist(
+        let covered = clip_multiple_with_settings(
             None::<&crate::progress::progress_reporter::ProgressReporter>,
             &playlist,
             &output,
             &ranges,
+            None,
             None,
             None,
         )

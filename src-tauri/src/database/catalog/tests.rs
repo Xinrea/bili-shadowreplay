@@ -1,4 +1,4 @@
-use super::projection::CatalogTotals;
+use super::projection::CatalogMount;
 use super::*;
 use crate::{
     config::{RecordingBackendConfig, StorageConfig},
@@ -8,6 +8,51 @@ use crate::{
 use recorder::platforms::PlatformType;
 use recording_catalog::{object_store::memory::InMemory, CatalogLocation};
 use std::{collections::HashMap, sync::Arc};
+
+async fn unmount_catalog(db: &Database, mount: &CatalogMount) -> Result<(), DatabaseError> {
+    let changed = sqlx::query(
+        "DELETE FROM catalog_mounts WHERE alias = ? AND storage_uuid = ? AND epoch = ?",
+    )
+    .bind(&mount.alias)
+    .bind(mount.storage_uuid.to_string())
+    .bind(mount.epoch.to_string())
+    .execute(&db.pool)
+    .await?
+    .rows_affected();
+    if changed != 1 {
+        return Err(error("Catalog mount changed"));
+    }
+    Ok(())
+}
+
+async fn projected_records(db: &Database, offset: i64, limit: i64) -> Vec<(String, CatalogEntry)> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT m.alias, e.entry FROM catalog_projection_entries e \
+         JOIN catalog_projection_heads h ON h.storage_uuid = e.storage_uuid AND h.generation = e.generation \
+         JOIN catalog_mounts m ON m.storage_uuid = e.storage_uuid \
+         ORDER BY e.created_at_ms DESC, e.storage_uuid, e.recording_uuid LIMIT ? OFFSET ?",
+    )
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    rows.into_iter()
+        .map(|(backend_id, entry)| (backend_id, from_json(&entry).unwrap()))
+        .collect()
+}
+
+async fn projected_totals(db: &Database) -> (i64, f64, i64) {
+    sqlx::query_as(
+        "SELECT COUNT(*) AS count, COALESCE(SUM(e.length), 0.0) AS length, COALESCE(SUM(e.size), 0) AS size \
+         FROM catalog_projection_entries e \
+         JOIN catalog_projection_heads h ON h.storage_uuid = e.storage_uuid AND h.generation = e.generation \
+         JOIN catalog_mounts m ON m.storage_uuid = e.storage_uuid",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap()
+}
 
 async fn database() -> Database {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -261,34 +306,21 @@ async fn projection_aggregates_by_uuid_and_unmount_never_deletes_content() {
     db.rebuild_catalog_projection(mb.clone(), b.scan().await.unwrap())
         .await
         .unwrap();
-    assert_eq!(
-        db.catalog_totals().await.unwrap(),
-        CatalogTotals {
-            count: 2,
-            length: 3.0,
-            size: 84
-        }
-    );
-    assert_eq!(db.catalog_records(0, 1).await.unwrap().len(), 1);
-    assert_eq!(db.catalog_records(1, 1).await.unwrap().len(), 1);
+    assert_eq!(projected_totals(&db).await, (2, 3.0, 84));
+    assert_eq!(projected_records(&db, 0, 1).await.len(), 1);
+    assert_eq!(projected_records(&db, 1, 1).await.len(), 1);
     let stale_scan = a.scan().await.unwrap();
-    db.unmount_catalog(&ma).await.unwrap();
-    assert_eq!(db.catalog_records(0, 10).await.unwrap().len(), 1);
+    unmount_catalog(&db, &ma).await.unwrap();
+    assert_eq!(projected_records(&db, 0, 10).await.len(), 1);
     assert!(a.get(record.recording_id).await.unwrap().is_some());
-    db.mark_catalog_offline(&mb, "S3 unavailable")
-        .await
-        .unwrap();
-    let cached = db.catalog_records(0, 10).await.unwrap();
-    assert!(!cached[0].online);
-    assert_eq!(cached[0].error.as_deref(), Some("S3 unavailable"));
-    db.unmount_catalog(&mb).await.unwrap();
-    assert_eq!(db.catalog_totals().await.unwrap(), CatalogTotals::default());
+    unmount_catalog(&db, &mb).await.unwrap();
+    assert_eq!(projected_totals(&db).await, (0, 0.0, 0));
     let remounted = db
         .mount_catalog("b", a.identity().storage_uuid)
         .await
         .unwrap();
     assert_eq!(
-        db.catalog_records(0, 10).await.unwrap().len(),
+        projected_records(&db, 0, 10).await.len(),
         1,
         "cache restored by UUID under new alias"
     );
@@ -296,17 +328,15 @@ async fn projection_aggregates_by_uuid_and_unmount_never_deletes_content() {
         .rebuild_catalog_projection(ma.clone(), stale_scan)
         .await
         .is_err());
-    assert!(db.mark_catalog_offline(&ma, "stale error").await.is_err());
     assert!(
-        db.unmount_catalog(&mb).await.is_err(),
+        unmount_catalog(&db, &mb).await.is_err(),
         "old alias incarnation cannot remove new mount"
     );
     db.rebuild_catalog_projection(remounted, a.scan().await.unwrap())
         .await
         .unwrap();
-    let cached = db.catalog_records(0, 10).await.unwrap();
-    assert!(cached[0].online);
-    assert_eq!(cached[0].backend_id, "b");
+    let cached = projected_records(&db, 0, 10).await;
+    assert_eq!(cached[0].0, "b");
     a.close().await.unwrap();
     b.close().await.unwrap();
 }
@@ -333,9 +363,9 @@ async fn failed_refresh_keeps_last_complete_generation_then_recovers() {
         .rebuild_catalog_projection(mount.clone(), writer.scan().await.unwrap())
         .await
         .is_err());
-    let rows = db.catalog_records(0, 1000).await.unwrap();
+    let rows = projected_records(&db, 0, 1000).await;
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].entry, old);
+    assert_eq!(rows[0].1, old);
     let staged: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM catalog_projection_entries")
         .fetch_one(&db.pool)
         .await
@@ -351,8 +381,8 @@ async fn failed_refresh_keeps_last_complete_generation_then_recovers() {
         .rebuild_catalog_projection(mount.clone(), writer.scan().await.unwrap())
         .await
         .is_err());
-    assert_eq!(db.catalog_records(0, 1000).await.unwrap()[0].entry, old);
-    assert_eq!(db.catalog_totals().await.unwrap().count, 1);
+    assert_eq!(projected_records(&db, 0, 1000).await[0].1, old);
+    assert_eq!(projected_totals(&db).await.0, 1);
     sqlx::raw_sql("DROP TRIGGER reject_projection_publish")
         .execute(&db.pool)
         .await
@@ -364,7 +394,7 @@ async fn failed_refresh_keeps_last_complete_generation_then_recovers() {
     db.rebuild_catalog_projection(mount.clone(), writer.scan().await.unwrap())
         .await
         .unwrap();
-    assert_eq!(db.catalog_totals().await.unwrap().count, 130);
+    assert_eq!(projected_totals(&db).await.0, 130);
     for entry in writer.list(None, 1000).await.unwrap().entries {
         writer
             .delete(entry.record.recording_id, entry.revision)
@@ -375,8 +405,8 @@ async fn failed_refresh_keeps_last_complete_generation_then_recovers() {
         .await
         .unwrap();
     assert_eq!(
-        db.catalog_totals().await.unwrap(),
-        CatalogTotals::default(),
+        projected_totals(&db).await,
+        (0, 0.0, 0),
         "verified empty catalog replaces old cache"
     );
     writer.close().await.unwrap();
@@ -409,7 +439,7 @@ async fn old_scans_cannot_resurrect_a_newer_deletion() {
         .rebuild_catalog_projection(mount, old_scan)
         .await
         .is_err());
-    assert_eq!(db.catalog_totals().await.unwrap(), CatalogTotals::default());
+    assert_eq!(projected_totals(&db).await, (0, 0.0, 0));
     writer.close().await.unwrap();
 }
 
@@ -510,9 +540,9 @@ async fn rustfs_catalog_import_projection_and_remount() {
     db.rebuild_catalog_projection(mount.clone(), reader.scan().await.unwrap())
         .await
         .unwrap();
-    assert_eq!(db.catalog_totals().await.unwrap().count, 1);
-    db.unmount_catalog(&mount).await.unwrap();
-    assert_eq!(db.catalog_totals().await.unwrap().count, 0);
+    assert_eq!(projected_totals(&db).await.0, 1);
+    unmount_catalog(&db, &mount).await.unwrap();
+    assert_eq!(projected_totals(&db).await.0, 0);
     assert!(reader
         .get(imported.record.recording_id)
         .await
@@ -529,10 +559,7 @@ async fn rustfs_catalog_import_projection_and_remount() {
         .rebuild_catalog_projection(mount, reader.scan().await.unwrap())
         .await
         .unwrap();
-    assert_eq!(
-        restored.catalog_records(0, 10).await.unwrap()[0].entry,
-        imported
-    );
+    assert_eq!(projected_records(&restored, 0, 10).await[0].1, imported);
     reader.close().await.unwrap();
 
     let writer = location.open_writer(false).await.unwrap();

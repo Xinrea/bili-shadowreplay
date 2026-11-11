@@ -576,7 +576,9 @@ impl RecorderManager {
                         Payload::Room(recorder.clone()),
                     );
                     let _ = self.webhook_poster.post_event(&event).await;
-                    // check record in db, if length is 0, delete it
+                    // Drop an archive that never committed media. Recorders must
+                    // publish RecordUpdate for stored segments before RecordEnd;
+                    // a failed playlist pass can still have a non-zero size.
                     let room_id = recorder.room_info.room_id.clone();
                     let record = match self.db.get_record(&room_id, &live_id).await {
                         Ok(r) => r,

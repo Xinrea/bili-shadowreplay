@@ -1057,6 +1057,34 @@ impl HlsRecorder {
     }
 
     async fn update_entries(&self) -> Result<(), RecorderError> {
+        let mut duration_delta = 0.0;
+        let mut size_delta = 0;
+        let mut updated = false;
+        let result = self
+            .update_entries_pass(&mut duration_delta, &mut size_delta, &mut updated)
+            .await;
+        // Segments are already in the playlist before a later download, probe,
+        // or resolution change can fail the pass. RecordEnd removes an archive
+        // whose database size is still zero, so publish this progress first.
+        if updated {
+            let _ = self
+                .event_channel
+                .send(RecorderEvent::RecordUpdate {
+                    live_id: self.stream.id.clone(),
+                    duration_secs: duration_delta,
+                    cached_size_bytes: size_delta,
+                })
+                .await;
+        }
+        result
+    }
+
+    async fn update_entries_pass(
+        &self,
+        duration_delta: &mut f64,
+        size_delta: &mut u64,
+        updated: &mut bool,
+    ) -> Result<(), RecorderError> {
         let media_playlist = self.query_media_playlist().await?;
         let selected_stream = self
             .selected_stream
@@ -1070,9 +1098,6 @@ impl HlsRecorder {
         let last_sequence = self.sequence.load(Ordering::Relaxed);
         let ad_ranges = self.ad_ranges_for_playlist(&media_playlist).await;
         let mut last_metadata = self.pre_metadata.read().await.clone();
-        let mut updated = false;
-        let mut duration_delta = 0.0;
-        let mut size_delta = 0;
         for (i, segment) in media_playlist.segments.iter().enumerate() {
             let segment_sequence = playlist_sequence + i as u64;
             if segment_sequence <= last_sequence {
@@ -1131,8 +1156,11 @@ impl HlsRecorder {
                     .await?;
                 playlist.append_last_segment(segment.clone()).await?;
 
-                duration_delta += duration_secs;
-                size_delta += size;
+                *duration_delta += duration_secs;
+                *size_delta += size;
+                // The repaired media is in the playlist even if persisting the
+                // sequence fails; that failure must not look like an empty archive.
+                *updated = true;
                 self.update_sequence(segment_sequence).await?;
                 self.trace.media_committed("hls_repaired_segment");
                 // This is garbage collection, not part of publishing the repair.
@@ -1143,7 +1171,6 @@ impl HlsRecorder {
                 }
                 self.updated_at
                     .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
-                updated = true;
                 continue;
             }
 
@@ -1167,13 +1194,15 @@ impl HlsRecorder {
 
             self.playlist.lock().await.add_segment(new_segment).await?;
 
-            duration_delta += duration_secs;
-            size_delta += size;
+            *duration_delta += duration_secs;
+            *size_delta += size;
+            // Commit the progress flag before the sequence write. A failure
+            // there leaves a playable playlist entry that RecordEnd must keep.
+            *updated = true;
             self.update_sequence(segment_sequence).await?;
             self.trace.media_committed("hls_segment");
             self.updated_at
                 .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
-            updated = true;
         }
 
         // Source playlist may not be updated for a long time, check if it's timeout
@@ -1182,17 +1211,6 @@ impl HlsRecorder {
             < current_time
         {
             return Err(RecorderError::UpdateTimeout);
-        }
-
-        if updated {
-            let _ = self
-                .event_channel
-                .send(RecorderEvent::RecordUpdate {
-                    live_id: self.stream.id.clone(),
-                    duration_secs: duration_delta,
-                    cached_size_bytes: size_delta,
-                })
-                .await;
         }
 
         if self.stream.is_expired() {
@@ -2025,7 +2043,7 @@ mod tests {
                     .mount(&server)
                     .await;
             }
-            let (recorder, _directory, _events) = native_probe_recorder(&server).await;
+            let (recorder, _directory, mut events) = native_probe_recorder(&server).await;
 
             assert!(
                 matches!(
@@ -2034,8 +2052,26 @@ mod tests {
                 ),
                 "{changed} must start a new recording instead of joining incompatible packets"
             );
-            assert_eq!(recorder.playlist.lock().await.playlist.segments.len(), 1);
+            let archive = recorder.playlist.lock().await.playlist.clone();
+            assert_eq!(archive.segments.len(), 1);
             assert_eq!(recorder.sequence.load(Ordering::Relaxed), 1);
+            // The first segment is already stored. RecordEnd deletes archives
+            // whose database size is still 0, so this failure must publish it.
+            match events.try_recv().unwrap() {
+                RecorderEvent::RecordUpdate {
+                    duration_secs,
+                    cached_size_bytes,
+                    ..
+                } => {
+                    let stored = f64::from(archive.segments[0].duration);
+                    assert!(
+                        (duration_secs - stored).abs() < 1e-4,
+                        "published {duration_secs}, playlist {stored}"
+                    );
+                    assert!(cached_size_bytes > 0);
+                }
+                event => panic!("expected progress for the kept segment, got {event:?}"),
+            }
             server.verify().await;
             drop(recorder);
         }

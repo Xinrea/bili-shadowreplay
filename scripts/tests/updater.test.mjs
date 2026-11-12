@@ -140,8 +140,19 @@ function manifest(target) {
     : target.startsWith("linux") ? "bili-shadowreplay_2.25.0_amd64.AppImage"
     : `bili-shadowreplay-${target.endsWith("cuda") ? "cuda" : "cpu"}_2.25.0_x64-setup.exe`;
   return createManifest({ artifacts: [`/bundle/${name}`, `/bundle/${name}.sig`],
-    target, version: "2.25.0", repository: "Xinrea/bili-shadowreplay", readSignature: () => "signed\n" });
+    target, version: "2.25.0", repository: "powerlive-io/bili-shadowreplay", readSignature: () => "signed\n" });
 }
+
+test("desktop updater and release assets use the organization repository", async () => {
+  const config = JSON.parse(await readFile(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
+  assert.deepEqual(config.plugins.updater.endpoints, [
+    "https://github.com/powerlive-io/bili-shadowreplay/releases/latest/download/latest.json",
+  ]);
+  const result = mergeManifests(targets.map(manifest));
+  for (const platform of Object.values(result.platforms)) {
+    assert.ok(platform.url.startsWith("https://github.com/powerlive-io/bili-shadowreplay/releases/download/v2.25.0/"));
+  }
+});
 
 test("release manifests preserve macOS architecture suffixes and isolate CPU/CUDA installers", () => {
   const result = mergeManifests(targets.map(manifest));

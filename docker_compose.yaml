@@ -1,6 +1,6 @@
 services:
     Bilibili_ShadowReplay:
-        image: ghcr.io/xinrea/bili-shadowreplay:latest
+        image: ghcr.io/powerlive-io/bili-shadowreplay:latest
         container_name: Bili_ShadowReplay
         restart: unless-stopped
         devices:

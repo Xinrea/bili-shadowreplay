@@ -5,7 +5,7 @@
 首次克隆请包含 Whisper 子模块：
 
 ```bash
-git clone --recurse-submodules https://github.com/Xinrea/bili-shadowreplay.git
+git clone --recurse-submodules https://github.com/powerlive-io/bili-shadowreplay.git
 cd bili-shadowreplay
 ```
 

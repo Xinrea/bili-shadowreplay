@@ -12,7 +12,7 @@ export default withMermaid({
       { text: "Home", link: "/" },
       {
         text: "Releases",
-        link: "https://github.com/Xinrea/bili-shadowreplay/releases",
+        link: "https://github.com/powerlive-io/bili-shadowreplay/releases",
       },
     ],
 
@@ -104,7 +104,7 @@ export default withMermaid({
             items: [
               {
                 text: "DeepWiki",
-                link: "https://deepwiki.com/Xinrea/bili-shadowreplay",
+                link: "https://deepwiki.com/powerlive-io/bili-shadowreplay",
               },
             ],
           },
@@ -113,7 +113,7 @@ export default withMermaid({
     ],
 
     socialLinks: [
-      { icon: "github", link: "https://github.com/Xinrea/bili-shadowreplay" },
+      { icon: "github", link: "https://github.com/powerlive-io/bili-shadowreplay" },
     ],
   },
 });

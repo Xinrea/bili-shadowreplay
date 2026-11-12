@@ -2,7 +2,7 @@
 
 ## 一、在哪里反馈问题？
 
-你可以前往 [Github Issues](https://github.com/Xinrea/bili-shadowreplay/issues/new?template=bug_report.md) 提交问题，或是加入[反馈交流群](https://qm.qq.com/q/v4lrE6gyum)。
+你可以前往 [Github Issues](https://github.com/powerlive-io/bili-shadowreplay/issues/new?template=bug_report.yml) 提交问题，或是加入[反馈交流群](https://qm.qq.com/q/v4lrE6gyum)。
 
 1. 在提交问题前，请先阅读其它常见问题，确保你的问题已有解答；
 2. 其次，请确保你的程序已更新到最新版本；

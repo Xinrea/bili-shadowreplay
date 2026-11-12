@@ -58,7 +58,7 @@ yarn tauri build
 
 默认的速度优先导出先用一个小样本实际渲染、编码和解码检查蓝色底图与半透明红色叠层，成功后自动选择 Vulkan；设备或编码器不支持时在启动前选择现有 CPU 合成路径。质量优先保留已有编码策略；明确不符合受支持 SDR 范围（BT.709 色域、BT.709/sRGB 传递曲线）的源在启动前选择 CPU 合成。执行中的错误不会静默重跑。CPU 与 Vulkan 分片使用不同缓存身份。Windows 与 macOS 默认包含 Vulkan 渲染后端；macOS 通过下述 VideoToolbox 适配器编码，Linux 保留已有路径。
 
-需要匹配的 FFmpeg 9 开发 SDK、Vulkan Video 编码器与驱动。FFmpeg 9.0.2 有已知的 Vulkan 编码器退出图片视图清理问题；源码回补及校验说明见 [`scripts/ffmpeg-sdk-patches`](https://github.com/Xinrea/bili-shadowreplay/tree/main/scripts/ffmpeg-sdk-patches)。升级 SDK 后应执行原生 GPU 回归和 Vulkan validation，功能测试不能替代驱动层验证。
+需要匹配的 FFmpeg 9 开发 SDK、Vulkan Video 编码器与驱动。FFmpeg 9.0.2 有已知的 Vulkan 编码器退出图片视图清理问题；源码回补及校验说明见 [`scripts/ffmpeg-sdk-patches`](https://github.com/powerlive-io/bili-shadowreplay/tree/main/scripts/ffmpeg-sdk-patches)。升级 SDK 后应执行原生 GPU 回归和 Vulkan validation，功能测试不能替代驱动层验证。
 
 ## macOS：MoltenVK 渲染与 VideoToolbox 编码
 

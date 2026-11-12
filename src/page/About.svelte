@@ -22,7 +22,7 @@
   // get releases from github api
   async function loadReleases(signal: AbortSignal) {
     try {
-      const response = await fetch("https://api.github.com/repos/Xinrea/bili-shadowreplay/releases", { signal });
+      const response = await fetch("https://api.github.com/repos/powerlive-io/bili-shadowreplay/releases", { signal });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       const stableReleases = data.filter((release) => !release.prerelease && !release.draft);
@@ -176,7 +176,7 @@
               {$updateStatus.phase === "check-error" ? "暂时无法检查更新，请稍后重试。" : $updateStatus.phase === "restart-required" ? "更新已安装，请重试重启或手动重启应用。" : "更新失败，请重试或前往发布页下载安装。"}
             </p>
             <p class="break-words text-[11px] text-fg-faint">{$updateStatus.error}</p>
-            <button class="text-[12px] text-accent-fg hover:underline" onclick={() => open("https://github.com/Xinrea/bili-shadowreplay/releases/latest")}>前往发布页</button>
+            <button class="text-[12px] text-accent-fg hover:underline" onclick={() => open("https://github.com/powerlive-io/bili-shadowreplay/releases/latest")}>前往发布页</button>
           {/if}
         {:else if $hasNewVersion}
           <p class="text-[12px] text-accent-fg">发现新版本 {$latestVersion}，请更新服务端部署。</p>

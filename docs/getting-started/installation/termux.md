@@ -29,7 +29,7 @@ mkdir -p "$HOME/bsr"/{data,cache,output}
 proot-distro install \
   --name bili-shadowreplay \
   --architecture linux/arm64 \
-  ghcr.io/xinrea/bili-shadowreplay:latest
+  ghcr.io/powerlive-io/bili-shadowreplay:latest
 ```
 
 `proot-distro` 会根据镜像清单拉取 ARM64 版本，不会在手机上模拟 x86。

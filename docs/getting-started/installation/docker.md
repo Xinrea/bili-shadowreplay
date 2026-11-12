@@ -11,11 +11,11 @@ BiliBili ShadowReplay 提供了服务端部署的能力，提供 Web 控制界�
 
 ```bash
 # 拉取最新版本
-docker pull ghcr.io/xinrea/bili-shadowreplay:latest
+docker pull ghcr.io/powerlive-io/bili-shadowreplay:latest
 # 拉取指定版本
-docker pull ghcr.io/xinrea/bili-shadowreplay:2.5.0
+docker pull ghcr.io/powerlive-io/bili-shadowreplay:2.5.0
 # 速度太慢？从镜像源拉取
-docker pull ghcr.nju.edu.cn/xinrea/bili-shadowreplay:latest
+docker pull ghcr.nju.edu.cn/powerlive-io/bili-shadowreplay:latest
 ```
 
 ## 镜像使用
@@ -30,7 +30,7 @@ sudo docker run -it -d\
     -v $OUTPUT_DIR:/app/output \
     -v $WHISPER_MODEL:/app/whisper_model.bin \
     --name bili-shadowreplay \
-    ghcr.io/xinrea/bili-shadowreplay:latest
+    ghcr.io/powerlive-io/bili-shadowreplay:latest
 ```
 
 其中：

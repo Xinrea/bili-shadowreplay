@@ -10,8 +10,8 @@ import SceneSubtitles from "./scenes/SceneSubtitles.vue";
 import SceneUpload from "./scenes/SceneUpload.vue";
 import "./mock.css";
 
-const RELEASES = "https://github.com/Xinrea/bili-shadowreplay/releases";
-const REPO = "https://github.com/Xinrea/bili-shadowreplay";
+const RELEASES = "https://github.com/powerlive-io/bili-shadowreplay/releases";
+const REPO = "https://github.com/powerlive-io/bili-shadowreplay";
 
 /** The workflow, in order: each step plays its own scripted window. */
 const steps: { title: string; text: string; scene: Component }[] = [
@@ -197,7 +197,7 @@ const dockerCommand = `docker run -d -p 3000:3000 \\
   -v $CACHE_DIR:/app/cache \\
   -v $OUTPUT_DIR:/app/output \\
   --name bili-shadowreplay \\
-  ghcr.io/xinrea/bili-shadowreplay:latest`;
+  ghcr.io/powerlive-io/bili-shadowreplay:latest`;
 
 const copied = shallowRef(false);
 async function copyDocker() {

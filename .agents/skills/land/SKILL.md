@@ -23,7 +23,7 @@ a genuine blocker, an unsafe scope, an ambiguous conflict, or a failed required 
 
 ## Project facts and constraints
 
-- The repository is `Xinrea/bili-shadowreplay`.
+- The repository is `powerlive-io/bili-shadowreplay`.
 - `origin` is the publication remote. The default and pull-request base branch is
   `main`.
 - There is no repository pull-request template or documented CLA, signing requirement,
@@ -42,7 +42,7 @@ a genuine blocker, an unsafe scope, an ambiguous conflict, or a failed required 
 1. Confirm that this skill was invoked for an explicit landing request. If it was
    invoked for any other purpose, stop without changing Git state.
 2. Resolve the repository root with `git rev-parse --show-toplevel` and work there.
-   Confirm that `origin` exists and points to the intended `Xinrea/bili-shadowreplay`
+   Confirm that `origin` exists and points to the intended `powerlive-io/bili-shadowreplay`
    repository. Confirm the GitHub CLI is authenticated with `gh auth status`; do not
    expose its token output. Stop if authentication or the remote is unavailable.
 3. Inspect `git status --short --branch`, the staged diff, the unstaged diff, and the
@@ -162,7 +162,7 @@ environment failure whose impact cannot be assessed.
 
    ```sh
    gh pr create \
-     --repo Xinrea/bili-shadowreplay \
+     --repo powerlive-io/bili-shadowreplay \
      --base main \
      --head <branch> \
      --title "<title>" \

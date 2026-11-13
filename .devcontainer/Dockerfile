@@ -34,4 +34,6 @@ RUN curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
     --default-toolchain 1.99.0 --profile minimal --component rustfmt --component clippy
 ENV PATH=${PATH}:/home/${CONTAINER_USER}/.cargo/bin
 
+RUN cargo install kache --locked --version 2.1.1
+
 CMD [ "/bin/bash" ]

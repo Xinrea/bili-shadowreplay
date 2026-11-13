@@ -70,12 +70,14 @@ jobs:
             rust:
               - 'src-tauri/**'
               - 'rust-toolchain.toml'
+              - '.cargo/config.toml'
               - 'public/icon.svg'
               - 'package.json'
               - '.pre-commit-config.yaml'
               - '.github/workflows/lint.yml'
               - '.github/actions/apt-install/**'
               - '.github/actions/setup-ffmpeg/**'
+              - '.github/actions/setup-kache/**'
 
   clippy-test:
     needs: changes
@@ -119,6 +121,11 @@ jobs:
         uses: dtolnay/rust-toolchain@1.99.0
         with:
           components: clippy
+
+      - name: Setup Rust compiler cache
+        uses: ./.github/actions/setup-kache
+        with:
+          key: linux-system-skia-ffmpeg9
 
       - name: Cache Rust dependencies
         id: rust-cache

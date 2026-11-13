@@ -110,6 +110,11 @@ jobs:
         # The helper defaults to Vulkan and sets SKIA_BINARIES_URL.
         run: node scripts/prepare-windows-skia.mjs "${{ runner.temp }}/skia-binaries"
 
+      - name: Setup Rust compiler cache
+        uses: ./.github/actions/setup-kache
+        with:
+          key: release-${{ matrix.target || matrix.features || 'native' }}
+
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:

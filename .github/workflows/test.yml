@@ -34,6 +34,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.99.0
         with:
           components: clippy
+      - uses: ./.github/actions/setup-kache
+        with:
+          key: recording-catalog
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
@@ -73,6 +76,11 @@ jobs:
 
       - name: Setup Rust 1.99.0
         uses: dtolnay/rust-toolchain@1.99.0
+
+      - name: Setup Rust compiler cache
+        uses: ./.github/actions/setup-kache
+        with:
+          key: linux-system-skia-ffmpeg9
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2

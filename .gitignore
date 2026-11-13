@@ -45,6 +45,9 @@ docs/next-env.d.ts
 *.debug.map
 
 .cargo
+!/.cargo/
+/.cargo/*
+!/.cargo/config.toml
 
 # local dev script
 start-dev-cuda.ps1

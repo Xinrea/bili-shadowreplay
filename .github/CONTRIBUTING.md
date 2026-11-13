@@ -15,6 +15,29 @@ cd bili-shadowreplay
 安装 rustup 后，在仓库内运行 `rustc --version` 会自动选用或安装该版本，不修改全局默认工具链。
 CI、Docker 和 Dev Container 使用同一版本；各 workspace crate 的最低 Rust 版本统一为 1.99。
 
+### Rust 编译缓存（kache）
+
+首次开发先安装项目固定的 **kache 2.1.1**（需要已安装 Node 和 Rust）：
+
+```bash
+node scripts/install-kache.mjs
+# 也可以运行 yarn setup:kache
+kache doctor --probe
+```
+
+安装器通过 `cargo install --locked` 安装同版本的客户端和 `kache-engine`，安装时临时禁用 wrapper，避免尚未安装 kache 就调用它。确保 Cargo 的 bin 目录在 `PATH` 中（Unix 默认 `~/.cargo/bin`，Windows 默认 `%USERPROFILE%\.cargo\bin`；设置 `CARGO_HOME` 时使用其 `bin` 子目录）。也可以按 [官方安装说明](https://github.com/kunobi-ninja/kache#install) 安装该版本的预编译包，必须同时保留客户端和引擎。
+
+仓库的 `.cargo/config.toml` 已设置 `build.rustc-wrapper = "kache"`。在仓库根目录或 `src-tauri` 中运行 `cargo build/test/clippy`、pre-commit 和 `yarn tauri dev/build` 都会使用缓存，无需全局 `kache init` 或设置 `BILI_SCCACHE`。若 shell 中已有 `RUSTC_WRAPPER`，它会覆盖仓库配置；移除旧的 sccache 环境变量即可启用 kache。缓存默认放在用户缓存目录，兼容的编译结果可在不同 worktree 间复用，不必共享 `target`。
+
+```bash
+kache stats
+kache explain
+```
+
+临时排查编译问题时，可以禁用 wrapper：Unix 使用 `RUSTC_WRAPPER= yarn tauri dev`；PowerShell 使用 `$env:RUSTC_WRAPPER=""` 后执行构建，结束后用 `Remove-Item Env:RUSTC_WRAPPER` 恢复默认配置。
+
+GitHub Actions 的测试、Clippy 和桌面发布任务通过 `setup-kache` 安装相同版本，保留 `rust-cache` 用于 Cargo 构建目录和昂贵的原生依赖。kache 的本地存储按构建类型分组，每组上限 1 GiB；PR 只恢复缓存，main 和版本标签构建保存缓存，统计显示在 Job Summary 中。无需新增 Secrets。Docker 镜像构建和 Dev Container 也已安装相同版本；Docker 继续通过 cargo-chef 和镜像构建缓存复用依赖层。
+
 ### MacOS
 
 准备 Rust、Node/Yarn 和 Xcode Command Line Tools 后，在仓库目录运行：

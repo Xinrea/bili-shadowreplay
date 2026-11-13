@@ -1,6 +1,7 @@
 import { defineConfig, defineDocs } from 'fumadocs-mdx/config';
 import rehypeRaw from 'rehype-raw';
 import { remarkDocs } from './lib/remark-docs';
+import { headingSlug } from './lib/heading-slug';
 
 export const docs = defineDocs({
   dir: '.',
@@ -14,6 +15,7 @@ export const docs = defineDocs({
 
 export default defineConfig({
   mdxOptions: {
+    remarkHeadingOptions: { slug: headingSlug },
     rehypeCodeOptions: {
       themes: { light: 'github-light', dark: 'github-dark' },
       transformers: [{

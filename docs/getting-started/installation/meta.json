@@ -1,0 +1,8 @@
+{
+  "title": "安装准备",
+  "pages": [
+    "desktop",
+    "docker",
+    "termux"
+  ]
+}

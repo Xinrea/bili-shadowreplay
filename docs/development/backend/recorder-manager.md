@@ -1,4 +1,7 @@
-# 录制管理器 (Recorder Manager)
+---
+title: "录制管理器 (Recorder Manager)"
+---
+
 
 ## 概述
 

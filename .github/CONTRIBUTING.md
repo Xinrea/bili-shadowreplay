@@ -71,3 +71,27 @@ export SDKROOT=$(xcrun --sdk macosx --show-sdk-path) && export CMAKE_OSX_DEPLOYM
 ### 3. CUDA arch 错误
 
 配置环境变量 `CMAKE_CUDA_ARCHITECTURES`，可以参考 Workflows 中的配置。
+
+## 文档站开发
+
+文档站使用 Fumadocs、Next.js 静态导出和独立的 `docs/yarn.lock`，需要 Node.js 22。文档依赖与桌面端的 Svelte/Tailwind 3 依赖分开安装：
+
+```bash
+yarn --cwd docs install --frozen-lockfile
+yarn docs:dev
+```
+
+文档源文件保留在 `docs/getting-started/`、`docs/usage/`、`docs/development/`；新增页面需要填写 `title` frontmatter，并在对应的 `meta.json` 中安排导航顺序。Markdown 中可以继续使用相对 `.md` 链接、Mermaid 代码块和 HTML 视频。`docs/TESTING.md` 也会发布到文档站。
+
+首页原有的 Vue 交互演示位于 `docs/home/`，在构建时预渲染，浏览器中只挂载到独立的首页容器。启动开发服务时会先生成首页资源；修改首页组件后，执行 `yarn --cwd docs home:build` 并刷新页面。
+
+发布前验证：
+
+```bash
+yarn docs:build
+yarn docs:check
+yarn --cwd docs test:export
+yarn docs:preview
+```
+
+`docs/out/` 是完整静态产物，包含页面、客户端搜索索引、图片、视频和首页演示。Pages 工作流会在 PR 上验证构建，合入 `main` 后部署到 `https://bsr.powerlive.io`。使用 GitHub Actions 部署时，自定义域名需要同时在仓库 Settings → Pages 设置；`docs/public/CNAME` 仅记录预期域名，不能代替该设置。DNS 的 `bsr` CNAME 应指向 `powerlive-io.github.io`。

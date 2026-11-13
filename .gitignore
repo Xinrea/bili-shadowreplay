@@ -35,8 +35,11 @@ src-tauri/tests/audio/*.srt
 
 .env
 
-docs/.vitepress/cache
-docs/.vitepress/dist
+docs/.next/
+docs/.source/
+docs/out/
+docs/tsconfig.tsbuildinfo
+docs/next-env.d.ts
 
 *.debug.js
 *.debug.map
@@ -48,3 +51,7 @@ start-dev-cuda.ps1
 
 # Local updater signing key (never commit the private key).
 .updater/
+
+# Generated documentation homepage island
+docs/.home/
+docs/public/home/

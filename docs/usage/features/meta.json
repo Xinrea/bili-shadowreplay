@@ -1,0 +1,12 @@
+{
+  "title": "功能说明",
+  "pages": [
+    "workflow",
+    "room",
+    "clip",
+    "subtitle",
+    "danmaku",
+    "webhook",
+    "mcp"
+  ]
+}

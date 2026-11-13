@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, type Component } from "vue";
-import { withBase } from "vitepress";
 import Icon from "./Icon.vue";
 import PlatformIcon from "./PlatformIcon.vue";
 import SceneRooms from "./scenes/SceneRooms.vue";
@@ -231,7 +230,7 @@ async function copyDocker() {
       <div class="wrap hero-grid">
         <div class="title-box">
           <h1 class="headline">
-            <img class="logo" :src="withBase('/images/icon.svg')" alt="" />
+            <img class="logo" :src="'/images/icon.svg'" alt="" />
             <span class="name">
               <span class="name-top">BiliBili</span>
               <span class="name-main">ShadowReplay</span>
@@ -247,7 +246,7 @@ async function copyDocker() {
             <a class="btn primary" :href="RELEASES" target="_blank" rel="noreferrer">
               <Icon name="download" :size="16" />下载桌面版
             </a>
-            <a class="btn" :href="withBase('/getting-started/installation/desktop')">阅读文档</a>
+            <a class="btn" :href="'/getting-started/installation/desktop'">阅读文档</a>
           </div>
           <p class="fine">开源免费，支持 Windows、macOS、Linux，也可以用 Docker 部署。</p>
         </div>
@@ -331,7 +330,7 @@ async function copyDocker() {
         <div class="extras-intro">
           <h2>录播之外</h2>
           <p>从录制到投稿之间的琐事，都可以交给它。</p>
-          <a :href="withBase('/usage/features/workflow')">查看完整功能说明</a>
+          <a :href="'/usage/features/workflow'">查看完整功能说明</a>
         </div>
         <ul class="extras-list">
           <li v-for="item in extras" :key="item.title">
@@ -350,14 +349,14 @@ async function copyDocker() {
           <p>在 GitHub Releases 下载对应系统的安装包。</p>
           <ul class="os-list">
             <li><b>Windows</b><span>Nvidia GPU 加速版与 CPU 版可选</span></li>
-            <li><b>macOS</b><span>内置 Metal GPU 加速，需先安装 FFmpeg</span></li>
+            <li><b>macOS</b><span>内置 Metal GPU 加速，安装包已包含媒体运行库</span></li>
             <li><b>Linux</b><span>使用 CPU 识别字幕</span></li>
           </ul>
           <div class="actions">
             <a class="btn primary" :href="RELEASES" target="_blank" rel="noreferrer">
               <Icon name="download" :size="16" />前往下载
             </a>
-            <a class="btn" :href="withBase('/getting-started/installation/desktop')">安装说明</a>
+            <a class="btn" :href="'/getting-started/installation/desktop'">安装说明</a>
           </div>
         </div>
         <div class="install-card">
@@ -369,7 +368,7 @@ async function copyDocker() {
               <Icon :name="copied ? 'check' : 'copy'" :size="14" />{{ copied ? "已复制" : "复制" }}
             </button>
           </div>
-          <a class="text-link" :href="withBase('/getting-started/installation/docker')">Docker 部署说明</a>
+          <a class="text-link" :href="'/getting-started/installation/docker'">Docker 部署说明</a>
         </div>
       </div>
     </section>
@@ -377,7 +376,7 @@ async function copyDocker() {
     <footer class="foot">
       <div class="wrap foot-row">
         <span class="brand">
-          <img :src="withBase('/images/icon.svg')" alt="" width="20" height="20" />
+          <img :src="'/images/icon.svg'" alt="" width="20" height="20" />
           BiliBili ShadowReplay
         </span>
         <span class="foot-links">
@@ -1053,22 +1052,5 @@ a:focus-visible {
   .comment {
     display: none;
   }
-}
-</style>
-
-<style>
-/* The home page sets its own background; extend it behind the nav and past the footer. */
-:root:has(.sr-home) {
-  --vp-c-bg: #f3f5f8;
-  --vp-nav-bg-color: #f3f5f8;
-}
-
-.dark:has(.sr-home) {
-  --vp-c-bg: #0e1219;
-  --vp-nav-bg-color: #0e1219;
-}
-
-.VPHome:has(.sr-home) {
-  margin-bottom: 0 !important;
 }
 </style>

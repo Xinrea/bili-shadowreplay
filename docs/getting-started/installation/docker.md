@@ -1,4 +1,7 @@
-# Docker 部署
+---
+title: "Docker 部署"
+---
+
 
 BiliBili ShadowReplay 提供了服务端部署的能力，提供 Web 控制界面，可以用于在服务器等无图形界面环境下部署使用。
 

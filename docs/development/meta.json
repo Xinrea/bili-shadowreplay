@@ -1,0 +1,11 @@
+{
+  "title": "开发文档",
+  "pages": [
+    "architecture",
+    "frontend",
+    "backend",
+    "platforms",
+    "native-overlay",
+    "updater"
+  ]
+}

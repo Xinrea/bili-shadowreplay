@@ -1,0 +1,9 @@
+{
+  "title": "配置使用",
+  "pages": [
+    "account",
+    "ffmpeg",
+    "whisper",
+    "llm"
+  ]
+}

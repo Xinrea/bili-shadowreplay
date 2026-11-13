@@ -1,0 +1,13 @@
+@import 'tailwindcss';
+@import 'fumadocs-ui/css/neutral.css';
+@import 'fumadocs-ui/css/preset.css';
+
+@theme {
+  --font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Segoe UI", sans-serif;
+}
+
+:root { --color-fd-primary: #0066d6; }
+.dark { --color-fd-primary: #65c2ff; }
+body { font-family: var(--font-sans); }
+.prose { line-height: 1.85; }
+.prose video { width: 100%; border-radius: 10px; }

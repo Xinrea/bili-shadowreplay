@@ -379,7 +379,7 @@
               <div class="flex items-center justify-end gap-3">
                 {#if selectedPlatform !== "bilibili"}
                   <a
-                    href="https://bsr.xinrea.cn/getting-started/config/account.html"
+                    href="https://bsr.powerlive.io/getting-started/config/account.html"
                     class="text-[12px] text-accent-fg hover:underline"
                     target="_blank"
                     rel="noopener noreferrer"

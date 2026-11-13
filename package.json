@@ -17,11 +17,12 @@
     "test:updater": "node --experimental-vm-modules --test scripts/tests/updater.test.mjs",
     "test:subtitle": "node --experimental-vm-modules --test scripts/tests/subtitle-ass.test.mjs",
     "tauri": "node scripts/tauri.mjs",
-    "docs:dev": "vitepress dev docs",
-    "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs",
+    "docs:dev": "yarn --cwd docs run dev",
+    "docs:build": "yarn --cwd docs run build",
+    "docs:preview": "yarn --cwd docs run preview",
     "bump": "node scripts/bump.cjs",
-    "version": "node scripts/bump.cjs && git add src-tauri/Cargo.toml src-tauri/Cargo.lock"
+    "version": "node scripts/bump.cjs && git add src-tauri/Cargo.toml src-tauri/Cargo.lock",
+    "docs:check": "yarn --cwd docs run check"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.6.2",
@@ -53,7 +54,6 @@
     "flowbite": "^2.5.1",
     "flowbite-svelte": "^0.46.16",
     "flowbite-svelte-icons": "^1.6.1",
-    "mermaid": "^11.16.1",
     "postcss": "^8.5.23",
     "svelte": "^5.57.0",
     "svelte-check": "^4.7.6",
@@ -62,9 +62,7 @@
     "ts-node": "^10.9.1",
     "tslib": "^2.4.1",
     "typescript": "^5.5.0",
-    "vite": "^7.3.7",
-    "vitepress": "^1.6.3",
-    "vitepress-plugin-mermaid": "^2.0.17"
+    "vite": "^7.3.7"
   },
   "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
 }

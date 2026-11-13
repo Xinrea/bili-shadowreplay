@@ -1,4 +1,7 @@
-# LLM 配置
+---
+title: "LLM 配置"
+---
+
 
 ![LLM](/images/model_config.png)
 

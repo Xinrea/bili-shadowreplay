@@ -1,4 +1,7 @@
-# FFmpeg 配置
+---
+title: "FFmpeg 配置"
+---
+
 
 FFmpeg 是一个开源的音视频处理工具，支持多种格式的音视频编解码、转码、剪辑、合并等操作。
 在本项目中，元数据、音频时间信息和 HLS 分片探测，以及波形、转写用完整 WAV、30 秒 WAV 分块、范围 WAV 提取、素材和 PowerLive 的 Opus 编码、编辑器预览 FLAC 分块、音频库导入、MP3 导出、缩略图、视频提帧、FLV 到 HLS 的录制，以及单输入视频转封装、素材转码和复制／编码裁剪，通过 `ffmpeg-next` 直接链接 `libavformat`、`libavcodec`、`libavutil`、`libswresample` 和 `libavfilter`。跨输入滤镜拼接、项目合成及 SRT 字幕和弹幕画面合成也使用共享的原生滤镜图和编码管线。正常运行不启动 `ffmpeg`、`ffprobe` 或 `ffplay` 进程；部分开发回归测试可用匹配 SDK 的 CLI 作独立对照。

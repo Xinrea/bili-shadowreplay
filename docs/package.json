@@ -1,0 +1,46 @@
+{
+  "name": "bsr-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --webpack",
+    "build": "next build --webpack",
+    "preview": "serve out",
+    "check": "fumadocs-mdx && tsc --noEmit",
+    "postinstall": "fumadocs-mdx",
+    "home:build": "node scripts/build-home.mjs",
+    "predev": "yarn home:build",
+    "prebuild": "yarn home:build",
+    "test:export": "node scripts/check-export.mjs"
+  },
+  "dependencies": {
+    "fumadocs-core": "16.19.0",
+    "fumadocs-ui": "16.19.0",
+    "fumadocs-mdx": "15.6.1",
+    "next": "16.4.6",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "mermaid": "^11.16.1",
+    "lucide-react": "^0.577.0",
+    "next-themes": "^0.4.6",
+    "vue": "^3.5.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.0",
+    "tailwindcss": "^4.3.0",
+    "@types/mdx": "^2.0.13",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "typescript": "^5.9.0",
+    "serve": "^14.2.4",
+    "rehype-raw": "^7.0.0",
+    "unist-util-visit": "^5.0.0",
+    "@types/mdast": "^4.0.4",
+    "vite": "^7.3.7",
+    "@vitejs/plugin-vue": "^6.0.0",
+    "@vue/server-renderer": "^3.5.0",
+    "parse5": "^8.1.1"
+  },
+  "packageManager": "yarn@1.22.22"
+}

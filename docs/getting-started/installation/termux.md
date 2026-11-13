@@ -1,4 +1,7 @@
-# Termux 部署
+---
+title: "Termux 部署"
+---
+
 
 BiliBili ShadowReplay 的 headless 模式提供 `linux/arm64` 容器镜像，可以在
 64 位 ARM Android 设备上通过 Termux 和 `proot-distro` 运行。此方案不需要

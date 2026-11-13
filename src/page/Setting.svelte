@@ -701,7 +701,7 @@
                   </h3>
                   <p class="ui-hint mt-0.5">
                     设置 Webhook URL，用于接收事件通知，见<a
-                      href="https://bsr.xinrea.cn/usage/features/webhook.html"
+                      href="https://bsr.powerlive.io/usage/features/webhook.html"
                       class="text-accent-fg hover:underline"
                       target="_blank">Webhook 文档</a
                     >
@@ -889,7 +889,7 @@
                 >{mcpUrl}</code>
                 <p class="ui-hint">
                   服务仅监听 BSR 所在机器的 127.0.0.1。外部客户端负责操作确认；BSR 只读模式下仅提供查询工具。见<a
-                    href="https://bsr.xinrea.cn/usage/features/mcp.html"
+                    href="https://bsr.powerlive.io/usage/features/mcp.html"
                     class="text-accent-fg hover:underline"
                     target="_blank"
                     rel="noreferrer">MCP 使用文档</a

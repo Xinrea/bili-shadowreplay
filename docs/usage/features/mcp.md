@@ -1,4 +1,7 @@
-# MCP Server
+---
+title: "MCP Server"
+---
+
 
 BSR 提供 MCP Server，让支持 MCP 的外部 Agent 完成从录播到投稿草稿的流程：查询直播间和录播、根据字幕和弹幕挑选时间点、切出素材、把素材编排成切片，并为素材或切片创建投稿草稿。投稿草稿由用户在 BSR 的投稿页检查后自行发布，MCP 不会发布视频。服务采用 [MCP Streamable HTTP 传输](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#streamable-http)，支持协议版本 `2025-11-25`、`2025-06-18` 和 `2025-03-26`。
 

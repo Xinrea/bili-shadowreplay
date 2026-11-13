@@ -1,0 +1,9 @@
+{
+  "title": "后端开发",
+  "pages": [
+    "recorder-manager",
+    "recording-storage",
+    "recording-catalog",
+    "database"
+  ]
+}

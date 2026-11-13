@@ -1,4 +1,7 @@
-# Whisper 配置
+---
+title: "Whisper 配置"
+---
+
 
 要使用 AI 字幕识别功能，需要在设置页面配置 Whisper。目前可以选择使用本地运行 Whisper 模型，或是使用在线的 Whisper 服务（通常需要付费获取 API Key）。
 

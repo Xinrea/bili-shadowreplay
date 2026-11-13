@@ -6,7 +6,7 @@
   import { registerCommands } from "../lib/stores/commands";
   import FeedbackModal from "../lib/components/FeedbackModal.svelte";
 
-  const DOCS_URL = "https://bsr.xinrea.cn/";
+  const DOCS_URL = "https://bsr.powerlive.io/";
   const COMMUNITY_URL = "https://qm.qq.com/q/v4lrE6gyum";
 
   let version = `v${__APP_VERSION__}`;

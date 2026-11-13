@@ -233,7 +233,7 @@ jobs:
         with:
           tagName: ${{ steps.release_info.outputs.tag }}
           releaseName: "BiliBili ShadowReplay v__VERSION__"
-          releaseBody: "> [!NOTE]\n> 如果你是第一次下载安装，请参考 [安装准备](https://bsr.xinrea.cn/getting-started/installation/desktop.html) 选择合适的版本。\n> macOS 桌面版最低支持 macOS 15.8.1，Intel 和 Apple Silicon 版本均适用。\n> Linux 桌面版最低支持 Ubuntu 24.04；Ubuntu 22.04 不再受支持，AppImage 同样需要兼容的系统运行库。\n> Changelog: https://github.com/${{ github.repository }}/compare/${{ steps.get_previous_tag.outputs.previous_tag }}...${{ steps.get_previous_tag.outputs.current_tag }}"
+          releaseBody: "> [!NOTE]\n> 如果你是第一次下载安装，请参考 [安装准备](https://bsr.powerlive.io/getting-started/installation/desktop.html) 选择合适的版本。\n> macOS 桌面版最低支持 macOS 15.8.1，Intel 和 Apple Silicon 版本均适用。\n> Linux 桌面版最低支持 Ubuntu 24.04；Ubuntu 22.04 不再受支持，AppImage 同样需要兼容的系统运行库。\n> Changelog: https://github.com/${{ github.repository }}/compare/${{ steps.get_previous_tag.outputs.previous_tag }}...${{ steps.get_previous_tag.outputs.current_tag }}"
           releaseDraft: true
           prerelease: ${{ steps.release_info.outputs.prerelease }}
           # Merge once after all builds to avoid CPU/CUDA collisions and upload races.

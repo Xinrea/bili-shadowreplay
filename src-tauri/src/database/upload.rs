@@ -102,6 +102,15 @@ impl Database {
         })
     }
 
+    pub async fn upload_file_in_use(&self, file: &str) -> Result<bool, DatabaseError> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM uploads WHERE source = 'file' AND file = ?)",
+        )
+        .bind(file)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     // Each update writes only its own columns. Edits of a draft only apply
     // while it is still a draft or failed, and its status only moves through
     // the posting job, so a save in flight cannot undo a claim to post it.

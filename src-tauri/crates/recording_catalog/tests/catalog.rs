@@ -22,6 +22,32 @@ fn record(live: &str, time: i64) -> CatalogRecord {
     }
 }
 
+#[tokio::test]
+async fn concurrent_initialization_keeps_one_identity_and_one_writer() {
+    let store = Arc::new(InMemory::new());
+    let first = CatalogLocation::object_store(store.clone());
+    let second = CatalogLocation::object_store(store);
+    let (a, b) = tokio::join!(first.open_writer(true), second.open_writer(true));
+    let (writer, error) = match (a, b) {
+        (Ok(writer), Err(error)) | (Err(error), Ok(writer)) => (writer, error),
+        _ => panic!("exactly one initializer must own the writer"),
+    };
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    assert_eq!(&first.identity().await.unwrap(), writer.identity());
+    assert_eq!(
+        first.identity().await.unwrap(),
+        second.identity().await.unwrap()
+    );
+    writer.close().await.unwrap();
+    second
+        .open_writer(false)
+        .await
+        .unwrap()
+        .close()
+        .await
+        .unwrap();
+}
+
 async fn contract(location: CatalogLocation) {
     assert_eq!(
         location.open_reader().await.err().unwrap().kind(),

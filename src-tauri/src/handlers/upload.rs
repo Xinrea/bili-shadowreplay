@@ -25,6 +25,8 @@ use crate::state_type;
 #[cfg(feature = "gui")]
 use tauri::State as TauriState;
 
+mod source;
+
 /// A file the static server serves under `base` (`output` or `cache`).
 #[derive(Debug, Clone, Serialize)]
 pub struct StaticFile {
@@ -69,6 +71,7 @@ fn upload_dir(id: i64) -> String {
 
 /// `path` as served by the static server, if it is inside one of its folders.
 async fn static_file(state: &State, path: &Path) -> Option<StaticFile> {
+    let path = path.canonicalize().ok()?;
     let roots = {
         let config = state.config.read().await;
         [
@@ -77,7 +80,7 @@ async fn static_file(state: &State, path: &Path) -> Option<StaticFile> {
         ]
     };
     roots.into_iter().find_map(|(base, root)| {
-        let relative = path.strip_prefix(root).ok()?;
+        let relative = path.strip_prefix(root.canonicalize().ok()?).ok()?;
         let relative = relative.to_string_lossy().replace('\\', "/");
         if base == "cache" && !crate::temp_storage::public_namespace(relative.split('/').next()?) {
             return None;
@@ -291,9 +294,11 @@ pub async fn create_upload(
         _ => return Err(format!("未知的投稿来源: {source}")),
     };
     let now = Local::now().to_rfc3339();
-    let mut upload = state
-        .db
-        .add_upload(&UploadRow {
+    let mut upload = source::save_draft(
+        state.db.clone(),
+        state.temp_storage.clone(),
+        output_dir(&state).await,
+        UploadRow {
             id: 0,
             source,
             source_id,
@@ -310,8 +315,9 @@ pub async fn create_upload(
             bvid: String::new(),
             created_at: now.clone(),
             updated_at: now,
-        })
-        .await?;
+        },
+    )
+    .await?;
     if upload.source == "file" {
         match capture_file_cover(&state, &upload).await {
             Ok(cover) => {
@@ -466,9 +472,11 @@ pub async fn update_upload_cover(
 /// Remove the record; a posted video stays on Bilibili.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn delete_upload(state: state_type!(), id: i64) -> Result<(), String> {
+    let upload = state.db.get_upload(id).await?;
     if !state.db.delete_upload(id).await? {
         return Err("投稿进行中，暂时无法删除".to_string());
     }
+    source::remove_owned_source(&state.db, &output_dir(&state).await, &upload).await?;
     let directory = output_dir(&state).await.join(upload_dir(id));
     if directory.exists() {
         if let Err(e) = tokio::fs::remove_dir_all(&directory).await {

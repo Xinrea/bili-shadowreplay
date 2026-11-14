@@ -459,6 +459,164 @@ async fn unavailable_catalog_preserves_cached_rows_and_rejects_writes() {
 }
 
 #[tokio::test]
+async fn stalled_remote_catalog_does_not_block_local_reads_or_recording_start() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::sync::Notify;
+    use tokio::time::{timeout, Duration};
+
+    for startup in [true, false] {
+        let (_root, db, storage, _) = fixture().await;
+        // The HTTP request stays pending until the assertions release it.
+        // No real remote service or timing-dependent network timeout is needed.
+        let stall = Arc::new(AtomicBool::new(startup));
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let app = axum::Router::new().fallback({
+            let stall = stall.clone();
+            let entered = entered.clone();
+            let release = release.clone();
+            move || {
+                let stall = stall.clone();
+                let entered = entered.clone();
+                let release = release.clone();
+                async move {
+                    if stall.load(Ordering::Acquire) {
+                        entered.notify_one();
+                        release.notified().await;
+                    }
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let expected = storage.configuration().await.unwrap();
+        let mut config = expected.clone();
+        config.backends.insert(
+            "remote".into(),
+            RecordingBackendConfig {
+                kind: "webdav".into(),
+                root: String::new(),
+                s3: None,
+                webdav: Some(recording_storage::WebDavConfig {
+                    endpoint: format!("http://{address}/dav/"),
+                    prefix: String::new(),
+                }),
+            },
+        );
+        storage
+            .replace_configuration_with_credentials(
+                config,
+                &expected,
+                &HashMap::from([(
+                    "remote".into(),
+                    recording_storage::WebDavCredentials {
+                        username: "test".into(),
+                        password: "test".into(),
+                    }
+                    .into(),
+                )]),
+            )
+            .await
+            .unwrap();
+        create(&db, &storage, "local", "a").await;
+        if !startup {
+            storage.start_catalogs(false).await.unwrap();
+            stall.store(true, Ordering::Release);
+        }
+        let refreshing = tokio::spawn({
+            let storage = storage.clone();
+            async move {
+                if startup {
+                    storage.start_catalogs(false).await
+                } else {
+                    storage.refresh_catalogs(true).await
+                }
+            }
+        });
+        timeout(Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if db
+                    .catalog_status()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .filter(|s| s.alias != "remote")
+                    .all(|s| s.ready)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            let recording = storage.recording("bilibili", "123", "local").await.unwrap();
+            assert_eq!(
+                recording.read("video.ts").await.unwrap(),
+                b"recording bytes"
+            );
+            let _mutation = storage
+                .try_lock_recording("bilibili", "123", "local")
+                .unwrap();
+            // Use the production resolver, not just selected_store(), so this
+            // exercises the configuration gate and the recording mutation lease.
+            let scope = storage
+                .recording_writer()
+                .resolve_recording("bilibili", "123", "new-local")
+                .await
+                .unwrap();
+            scope.prepare().await.unwrap();
+            db.add_record(
+                PlatformType::BiliBili,
+                "parent",
+                "new-local",
+                "123",
+                "new",
+                None,
+            )
+            .await
+            .unwrap();
+            scope
+                .write("video.ts", b"new local recording")
+                .await
+                .unwrap();
+            db.update_record_delta("new-local", 1.0, 19).await.unwrap();
+            db.finish_catalog_recording("new-local").await.unwrap();
+        })
+        .await
+        .expect("a remote scan must not stall local reads or recording startup");
+        assert!(!refreshing.is_finished());
+        assert!(storage.selected_store(Some("remote")).await.is_err());
+        // Configuration/credentials must still be stable until scans finish.
+        let current = storage.configuration().await.unwrap();
+        assert_eq!(
+            storage
+                .replace_configuration(current)
+                .await
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::WouldBlock,
+        );
+        release.notify_one();
+        timeout(Duration::from_secs(5), refreshing)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let statuses = db.catalog_status().await.unwrap();
+        assert!(statuses
+            .iter()
+            .filter(|s| s.alias != "remote")
+            .all(|s| s.ready));
+        assert!(!statuses.iter().find(|s| s.alias == "remote").unwrap().ready);
+        close(&db).await;
+        server.abort();
+    }
+}
+
+#[tokio::test]
 async fn pending_end_events_and_overlapping_namespaces_block_configuration_changes() {
     let (root, db, storage, _) = fixture().await;
     storage.start_catalogs(false).await.unwrap();

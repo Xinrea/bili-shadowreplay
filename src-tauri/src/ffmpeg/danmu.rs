@@ -25,8 +25,8 @@ use url::Url;
 use crate::{
     constants,
     danmu2ass::{
-        danmu_render_plan, image_height, Danmu2AssOptions, DanmuImage, DanmuRenderPlan, ImageDanmu,
-        PLAY_RES_Y,
+        danmu_render_plan_for_canvas, image_height, Danmu2AssOptions, DanmuCanvas, DanmuImage,
+        DanmuRenderPlan, ImageDanmu, PLAY_RES_Y,
     },
     progress::progress_reporter::ProgressReporterTrait,
 };
@@ -288,19 +288,25 @@ async fn danmu_plan(
     danmus: &[DanmuEntry],
     options: &Danmu2AssOptions,
     directory: &Path,
+    canvas: DanmuCanvas,
 ) -> Result<DanmuRenderPlan, String> {
     validate_options(options)?;
     let assets = prepare_images(danmus, directory).await;
-    Ok(danmu_render_plan(danmus, options, |entry| {
-        let emoji = entry.emoji_content.as_ref()?;
-        let path = assets.get(&image_url(emoji)?)?.clone();
-        let (width, height) = image_size(emoji, options.font_size);
-        Some(DanmuImage {
-            path,
-            width,
-            height,
-        })
-    }))
+    Ok(danmu_render_plan_for_canvas(
+        danmus,
+        options,
+        canvas,
+        |entry| {
+            let emoji = entry.emoji_content.as_ref()?;
+            let path = assets.get(&image_url(emoji)?)?.clone();
+            let (width, height) = image_size(emoji, options.font_size);
+            Some(DanmuImage {
+                path,
+                width,
+                height,
+            })
+        },
+    ))
 }
 
 /// Lay out the danmaku track into `danmu.ass` in `directory` and return the
@@ -311,11 +317,12 @@ pub(super) async fn prepare_danmu_layers<R: ProgressReporterTrait>(
     danmus: &[DanmuEntry],
     options: &Danmu2AssOptions,
     directory: &Path,
+    canvas: DanmuCanvas,
 ) -> Result<Vec<ImageDanmu>, String> {
     if let Some(reporter) = reporter {
         reporter.update("准备弹幕和表情图片中").await;
     }
-    let plan = danmu_plan(danmus, options, directory).await?;
+    let plan = danmu_plan(danmus, options, directory, canvas).await?;
     tokio::fs::write(directory.join("danmu.ass"), plan.ass)
         .await
         .map_err(|error| error.to_string())?;
@@ -342,6 +349,7 @@ pub async fn encode_video_danmu_with_settings<R: ProgressReporterTrait>(
     bitrate: Option<NonZeroU32>,
     settings: Option<&crate::project::RenderSettings>,
 ) -> Result<PathBuf, String> {
+    validate_options(options)?;
     if let Some(settings) = settings {
         settings.validate()?;
     }
@@ -354,7 +362,8 @@ pub async fn encode_video_danmu_with_settings<R: ProgressReporterTrait>(
     if let Some(reporter) = reporter {
         reporter.update("准备弹幕和表情图片中").await;
     }
-    let plan = danmu_plan(danmus, options, directory.path()).await?;
+    let canvas = DanmuCanvas::new(hwaccel::output_dimensions(file, settings).await?);
+    let plan = danmu_plan(danmus, options, directory.path(), canvas).await?;
     encode_danmu_plan(
         reporter,
         file,
@@ -437,7 +446,11 @@ async fn encode_danmu_plan<R: ProgressReporterTrait>(
                 text: plan.ass,
                 kind: native_overlay::SourceKind::Danmaku,
             }],
-            images: image_events(&plan.images, options.opacity),
+            images: image_events(
+                &plan.images,
+                options.opacity,
+                DanmuCanvas::new((width, height)),
+            ),
         },
         width,
         height,
@@ -534,6 +547,57 @@ pub(super) fn overlay_media_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::danmu2ass::danmu_render_plan;
+
+    #[test]
+    fn native_danmaku_pixels_keep_their_size_when_orientation_changes() {
+        fn bounds(width: u32, height: u32, canvas: DanmuCanvas) -> (usize, usize) {
+            let plan = danmu_render_plan_for_canvas(
+                &[entry(0, "MMMM")],
+                &Danmu2AssOptions::default(),
+                canvas,
+                |_| None,
+            );
+            let mut renderer = native_overlay::Renderer::new(
+                width,
+                height,
+                native_overlay::RenderInput {
+                    documents: vec![native_overlay::AssSource {
+                        text: plan.ass,
+                        kind: native_overlay::SourceKind::Danmaku,
+                    }],
+                    images: vec![],
+                },
+                vec![],
+            )
+            .unwrap();
+            let frame = renderer.frame(5.0).unwrap();
+            let (mut left, mut top, mut right, mut bottom) = (usize::MAX, usize::MAX, 0, 0);
+            for (index, pixel) in frame.chunks_exact(4).enumerate() {
+                if pixel[3] > 0 {
+                    let (x, y) = (index % width as usize, index / width as usize);
+                    left = left.min(x);
+                    right = right.max(x);
+                    top = top.min(y);
+                    bottom = bottom.max(y);
+                }
+            }
+            assert_ne!(left, usize::MAX, "danmaku must be visible");
+            (right - left + 1, bottom - top + 1)
+        }
+        let landscape = bounds(640, 360, DanmuCanvas::new((640, 360)));
+        let portrait = bounds(360, 640, DanmuCanvas::new((360, 640)));
+        assert!(
+            landscape.0.abs_diff(portrait.0) <= 1,
+            "{landscape:?} vs {portrait:?}"
+        );
+        assert_eq!(landscape.1, portrait.1);
+        let old_portrait = bounds(360, 640, DanmuCanvas::default());
+        assert!(
+            portrait.1 > old_portrait.1,
+            "the old landscape canvas shrank portrait glyphs"
+        );
+    }
 
     #[tokio::test]
     async fn native_image_normalization_works_without_a_cli_and_keeps_prior_output_on_error() {

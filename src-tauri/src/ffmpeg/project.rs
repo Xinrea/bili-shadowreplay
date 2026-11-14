@@ -1097,6 +1097,7 @@ impl Render<'_> {
             input.images = image_events(
                 &segment_danmaku(&danmaku.images, start, end),
                 self.job.danmu_options.opacity,
+                crate::danmu2ass::DanmuCanvas::new(self.canvas),
             );
         }
         if input.documents.is_empty() && input.images.is_empty() {
@@ -1743,6 +1744,7 @@ async fn render_with_pipeline_and_resources<R: ProgressReporterTrait>(
             &job.danmus,
             &job.danmu_options,
             &directory,
+            crate::danmu2ass::DanmuCanvas::new(canvas),
         )
         .await?;
         let document = tokio::fs::read_to_string(directory.join("danmu.ass"))

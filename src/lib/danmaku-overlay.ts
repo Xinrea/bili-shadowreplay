@@ -41,12 +41,12 @@ export function watchDanmakuStyle() {
 
 /**
  * A danmaku in the room's default look, bold and outlined, in the font, size
- * and opacity burned into videos, scaled to a player `height` high.
+ * and opacity burned into videos, scaled to the player's short edge.
  */
-export function createDanmakuNode(record: DanmuEntry, style: Danmu2AssOptions, height: number) {
+export function createDanmakuNode(record: DanmuEntry, style: Danmu2AssOptions, width: number, height: number) {
   const danmaku = document.createElement("p");
   danmaku.style.color = "white";
-  danmaku.style.fontSize = `${danmakuFontSize(style.font_size, height)}px`;
+  danmaku.style.fontSize = `${danmakuFontSize(style.font_size, width, height)}px`;
   danmaku.style.opacity = `${style.opacity}`;
   danmaku.style.fontFamily = "'Microsoft YaHei', 微软雅黑, sans-serif";
   danmaku.style.fontWeight = "bold";
@@ -179,7 +179,7 @@ export function attachRecordedDanmaku(
       const place = createPlacer(space, clock, container, { at, keep: true });
       floating.add(createSuperChatCard(entry), place, { keep: true, follow: true });
     } else {
-      const { node, dispose } = createDanmakuNode(entry, style(), overlay.clientHeight);
+      const { node, dispose } = createDanmakuNode(entry, style(), overlay.clientWidth, overlay.clientHeight);
       floating.add(node, createPlacer(space, clock, container, { at }), { dispose, follow: true });
     }
   }

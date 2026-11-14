@@ -36,8 +36,8 @@ default_backend = "default"
 type = "local"
 root = "./cache"
 
-# Add S3-compatible backends and credentials through recording storage settings.
-# S3 credentials are not read from the application environment.
+# Add S3-compatible or WebDAV backends and credentials through recording storage settings.
+# Remote storage credentials are not read from the application environment.
 # Never put credential values in this file.
 
 # [storage.backends.archive]

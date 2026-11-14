@@ -53,6 +53,7 @@ async function settingsFixture({ mount = false, overrides = {} } = {}) {
   let persisted = config();
   const state = await handlers("lib/components/RecordingStorageSettings.svelte", {
     storage: config(), defaultId: "local", newId: "", newRoot: "",
+    webdavEndpoint: "", webdavPrefix: "", webdavUsername: "", webdavPassword: "",
     newType: "local", s3Endpoint: "", s3Bucket: "", s3Region: "us-east-1",
     s3Prefix: "", s3PathStyle: true, s3AccessKeyId: "", s3SecretAccessKey: "", s3SessionToken: "", editingCredentials: null,
     loading: false, saving: false, browsing: false, error: "", saved: "", removingId: null, storageBackend,
@@ -705,4 +706,47 @@ test("generic desktop and HTTP invokers preserve storage wire keys and null over
     for (const { command, args } of operations) await module.namespace.invoke(command, args);
     assert.deepEqual(requests, operations);
   }
+});
+
+test("WebDAV settings keep credentials separate, preserve passwords and support rotation", async () => {
+  const { state, requests } = await settingsFixture();
+  state.newType = "webdav";
+  state.newId = "dav";
+  state.webdavEndpoint = " https://cloud.example/dav/ ";
+  state.webdavPrefix = " recordings ";
+  state.webdavUsername = " user ";
+  state.webdavPassword = " pass with spaces ";
+  await state.save(true);
+  assert.equal(requests.length, 1);
+  assert.deepEqual(requests[0].args.storage.backends.dav, {
+    type: "webdav", root: "", webdav: { endpoint: "https://cloud.example/dav/", prefix: "recordings" },
+  });
+  assert.deepEqual(requests[0].args.credentials, { dav: { username: "user", password: " pass with spaces " } });
+  assert.equal(state.webdavPassword, "");
+  assert.equal(storageBackendSupported(state.storage.backends.dav), true);
+  assert.equal(storageBackendLocation(state.storage.backends.dav), "https://cloud.example/dav/recordings");
+  state.editCredentials("dav");
+  state.webdavUsername = "rotated";
+  state.webdavPassword = "new-password";
+  await state.saveCredentials();
+  assert.deepEqual(requests[1].args.credentials, { dav: { username: "rotated", password: "new-password" } });
+  assert.equal(state.editingCredentials, null);
+  assert.equal(state.webdavPassword, "");
+  assert.match(state.saved, /WebDAV/);
+  await state.setDefault("dav");
+  assert.equal(requests[2].args.storage.default_backend, "dav");
+  assert.equal(requests[2].args.credentials, undefined);
+});
+
+test("WebDAV missing credentials do not submit and failed saves preserve the draft", async () => {
+  const { state, requests } = await settingsFixture();
+  state.newType = "webdav"; state.newId = "dav"; state.webdavEndpoint = "https://cloud.example/dav/";
+  await state.save(true);
+  assert.equal(requests.length, 0);
+  state.webdavUsername = "user"; state.webdavPassword = "password";
+  state.invoke = async () => { throw new Error("storage configuration changed"); };
+  await state.save(true);
+  assert.equal(state.webdavPassword, "password");
+  assert.match(state.error, /configuration changed/);
+  assert.equal(storageBackendSupported({ type: "webdav", root: "" }), false);
 });

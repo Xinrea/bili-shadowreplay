@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { assertMacosDeployment } from "./macos-deployment.mjs";
 
@@ -19,6 +19,93 @@ const digest = (file) => createHash("sha256").update(fs.readFileSync(file)).dige
 
 export function verifyArchive(file, expected = MOLTENVK.sha256) {
   if (digest(file) !== expected) throw new Error(`MoltenVK archive SHA-256 mismatch: ${file}`);
+}
+
+function curlDownload(url, file) {
+  let restarted = false;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const offset = fs.statSync(file).size;
+      console.log(`[native] ${offset ? `Resuming MoltenVK download from ${offset} bytes` : "Downloading MoltenVK"}`);
+      // Separate curl invocations resume from bytes received during the previous
+      // attempt. curl's own --retry can truncate back to its initial offset.
+      const status = execFileSync("curl", ["--fail", "--location", "--progress-bar", "--continue-at", "-",
+        "--connect-timeout", "15", "--speed-limit", "1024", "--speed-time", "60",
+        "--write-out", "%{http_code}", "--output", file, url], {
+        encoding: "utf8", stdio: ["ignore", "pipe", "inherit"],
+      }).trim();
+      // Some curl versions consider 416 a successfully completed resume. The
+      // archive was not complete (checked before downloading), so restart it.
+      if (status === "416") throw Object.assign(new Error("Server rejected resume range (HTTP 416)"), { status: 22, stdout: status });
+      return;
+    } catch (error) {
+      const status = String(error.stdout ?? "").trim();
+      if (!restarted && fs.statSync(file).size > 0
+          && ([33, 36].includes(error.status) || (error.status === 22 && status === "416"))) {
+        console.log("[native] Server cannot resume this download; restarting from zero once");
+        fs.truncateSync(file, 0);
+        restarted = true;
+        continue;
+      }
+      const transient = [5, 6, 7, 18, 28, 35, 52, 55, 56, 92].includes(error.status)
+        || (error.status === 22 && ["408", "429", "500", "502", "503", "504"].includes(status));
+      if (!transient || attempt >= 2) throw error;
+      console.log("[native] Download interrupted; retrying from the saved offset");
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000 * (attempt + 1));
+    }
+  }
+}
+
+export function downloadMoltenVkArchive(cache, archive = MOLTENVK, download = curlDownload) {
+  fs.mkdirSync(cache, { recursive: true });
+  const tar = path.join(cache, `MoltenVK-${archive.sha256}.tar`);
+  if (fs.existsSync(tar)) {
+    try { verifyArchive(tar, archive.sha256); return tar; }
+    catch { fs.rmSync(tar); }
+  }
+  const prefix = `.moltenvk-${archive.sha256}-`;
+  const token = randomUUID();
+  const partial = path.join(cache, `${prefix}${process.pid}-${token}.part`);
+  // Each launcher writes a private file. Only completed attempts or files left
+  // by exited processes are eligible for reuse, never another launcher's writer.
+  const candidates = fs.readdirSync(cache).filter(name => name.startsWith(prefix) && name.endsWith(".part"))
+    .flatMap(name => {
+      const pid = Number(name.slice(prefix.length).split("-")[0]);
+      if (!Number.isSafeInteger(pid) || pid < 0) return [];
+      if (pid) {
+        try { process.kill(pid, 0); return []; }
+        catch (error) { if (error.code !== "ESRCH") return []; }
+      }
+      const file = path.join(cache, name);
+      try { const stat = fs.lstatSync(file); return stat.isFile() ? [{ file, size: stat.size }] : []; }
+      catch (error) { if (error.code === "ENOENT") return []; throw error; }
+    }).sort((a, b) => b.size - a.size);
+  for (const candidate of candidates) {
+    try {
+      // Copy before unlinking: even an orphan curl cannot append to our file.
+      fs.copyFileSync(candidate.file, partial, fs.constants.COPYFILE_EXCL);
+      fs.rmSync(candidate.file, { force: true });
+      break;
+    } catch (error) { if (error.code !== "ENOENT") throw error; }
+  }
+  if (!fs.existsSync(partial)) fs.writeFileSync(partial, "", { flag: "wx" });
+  try {
+    // A process may have exited after receiving all bytes but before verifying.
+    if (digest(partial) !== archive.sha256) download(archive.url, partial);
+    try { verifyArchive(partial, archive.sha256); }
+    catch (error) { fs.rmSync(partial); throw error; }
+    fs.renameSync(partial, tar);
+    return tar;
+  } catch (error) {
+    if (fs.existsSync(partial)) {
+      if (fs.statSync(partial).size) {
+        const saved = path.join(cache, `${prefix}0-${token}.part`);
+        fs.renameSync(partial, saved);
+        console.error(`[native] Partial download saved; the next launch will resume: ${saved}`);
+      } else fs.rmSync(partial);
+    }
+    throw error;
+  }
 }
 
 // Respect explicit SDKs; otherwise prefer the complete Homebrew SDK over a
@@ -81,11 +168,8 @@ export function prepareMoltenVk(cache, { source, archive = MOLTENVK, download } 
     const prepared = path.join(work, "runtime");
     fs.mkdirSync(prepared);
     if (!source) {
-      const tar = path.join(work, "MoltenVK.tar");
-      console.log(`[native] Preparing MoltenVK ${MOLTENVK.version} (first run downloads the macOS runtime)`);
-      if (download) download(archive.url, tar);
-      else run("curl", ["--fail", "--location", "--retry", "2", "--connect-timeout", "15", "--max-time", "180", "--output", tar, archive.url]);
-      verifyArchive(tar, archive.sha256);
+      const tar = downloadMoltenVkArchive(cache, archive, download);
+      console.log("[native] MoltenVK archive verified; preparing the macOS runtime");
       // Extract only the two known files, after checking the pinned archive.
       run("tar", ["-xf", tar, "-C", work, archive.library, archive.license]);
       source = path.join(work, archive.library);

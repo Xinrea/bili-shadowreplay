@@ -51,6 +51,7 @@ async fn fixture() -> (
                     .unwrap()
                     .into(),
                 s3: None,
+                webdav: None,
             },
         );
     }
@@ -300,6 +301,7 @@ async fn production_catalog_writes_unmount_remount_and_alias_reuse() {
             kind: "local".into(),
             root: root.path().join("different").to_str().unwrap().into(),
             s3: None,
+            webdav: None,
         },
     );
     storage.replace_configuration(reused).await.unwrap();
@@ -468,6 +470,7 @@ async fn pending_end_events_and_overlapping_namespaces_block_configuration_chang
             kind: "local".into(),
             root: root.path().join("a/nested").to_str().unwrap().into(),
             s3: None,
+            webdav: None,
         },
     );
     assert!(storage.replace_configuration(overlapping).await.is_err());
@@ -589,6 +592,7 @@ async fn rustfs_production_catalog_transfers_all_directions_and_remounts() {
         config.backends.insert(
             alias.into(),
             RecordingBackendConfig {
+                webdav: None,
                 kind: "s3".into(),
                 root: String::new(),
                 s3: Some(recording_storage::S3Config {
@@ -603,8 +607,8 @@ async fn rustfs_production_catalog_transfers_all_directions_and_remounts() {
             config.clone(),
             &storage.configuration().await.unwrap(),
             &HashMap::from([
-                ("cloud1".into(), credentials.clone()),
-                ("cloud2".into(), credentials.clone()),
+                ("cloud1".into(), credentials.clone().into()),
+                ("cloud2".into(), credentials.clone().into()),
             ]),
         )
         .await
@@ -690,7 +694,7 @@ async fn rustfs_production_catalog_transfers_all_directions_and_remounts() {
                 .replace_configuration_with_credentials(
                     config.clone(),
                     &storage.configuration().await.unwrap(),
-                    &HashMap::from([("cloud1".into(), credentials.clone())]),
+                    &HashMap::from([("cloud1".into(), credentials.clone().into())]),
                 )
                 .await
                 .unwrap();

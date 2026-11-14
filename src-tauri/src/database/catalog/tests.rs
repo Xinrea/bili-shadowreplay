@@ -77,6 +77,7 @@ async fn database() -> Database {
                 kind: "local".into(),
                 root: "/legacy".into(),
                 s3: None,
+                webdav: None,
             },
         )]),
     })
@@ -506,6 +507,7 @@ async fn rustfs_catalog_import_projection_and_remount() {
     next.backends.insert(
         "remote".into(),
         RecordingBackendConfig {
+            webdav: None,
             kind: "s3".into(),
             root: String::new(),
             s3: Some(s3.clone()),
@@ -515,7 +517,7 @@ async fn rustfs_catalog_import_projection_and_remount() {
         .replace_configuration_with_credentials(
             next,
             &current,
-            &HashMap::from([("remote".into(), credentials.clone())]),
+            &HashMap::from([("remote".into(), credentials.clone().into())]),
         )
         .await
         .unwrap();

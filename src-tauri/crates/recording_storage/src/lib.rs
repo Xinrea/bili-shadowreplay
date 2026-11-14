@@ -12,12 +12,15 @@ use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::Mutex;
 
+mod credentials;
 mod local_publication;
 mod logs;
 mod object_transfer;
 mod relocation;
 mod s3;
 mod transfer;
+mod webdav;
+pub use credentials::StorageCredentials;
 pub use logs::LOG_CHUNK_BYTES;
 pub use object_transfer::{ObjectTransfer, ObjectTransferManifest};
 pub use s3::{S3Backend, S3Config, S3Credentials};
@@ -25,6 +28,7 @@ pub use transfer::{
     is_cross_device_error, local_transfer_root, LocalTransfer, RenameManifest, TransferDirectory,
     TransferFile, TransferManifest,
 };
+pub use webdav::{WebDavBackend, WebDavConfig, WebDavCredentials};
 
 fn invalid_key() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, "invalid recording object key")

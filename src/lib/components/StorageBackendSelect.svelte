@@ -24,7 +24,7 @@
     <option value={value} disabled>未知存储：{value || "未配置"}</option>
   {/if}
   {#each storageBackendEntries(storage) as [backendId, entry] (backendId)}
-    <option value={backendId} disabled={!storageBackendSupported(entry)}>{backendId}{!storageBackendSupported(entry) ? "（暂不支持）" : entry.type === "s3" ? "（S3）" : ""}</option>
+    <option value={backendId} disabled={!storageBackendSupported(entry)}>{backendId}{!storageBackendSupported(entry) ? "（暂不支持）" : entry.type === "s3" ? "（S3）" : entry.type === "webdav" ? "（WebDAV）" : ""}</option>
   {/each}
 </select>
 {#if backend}

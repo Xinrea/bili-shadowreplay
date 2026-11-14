@@ -463,7 +463,7 @@ test("both settings views stay mounted with hidden/inert so background recovery 
       .replace('("locations");', `("${view}");`);
     const component = new vm.SourceTextModule(compile(seeded, { generate: "server" }).js.code, { context });
     await component.link(async name => name === "./StorageTransferSettings.svelte" ? transfer
-      : name === "./S3CredentialFields.svelte" ? credentialFields
+      : (name === "./S3CredentialFields.svelte" || name === "./WebDavCredentialFields.svelte") ? credentialFields
       : dependency(name, dependencies));
     await component.evaluate();
     const body = render(component.namespace.default, { props: { onclose() {} } }).body;

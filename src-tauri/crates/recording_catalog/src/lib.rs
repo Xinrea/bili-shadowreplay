@@ -188,9 +188,73 @@ fn decode_document(bytes: &[u8], uuid: Uuid, key: &str) -> io::Result<Document> 
     Ok(doc)
 }
 
+// Both adapters retain bounded reads and revision checks during catalog scans.
+#[derive(Clone)]
+enum CatalogStore {
+    Objects(Arc<dyn ObjectStore>),
+    Recording(Arc<dyn recording_storage::StorageBackend>),
+}
+#[derive(PartialEq)]
+enum CatalogRevision {
+    Object(object_store::ObjectMeta),
+    Recording(String),
+}
+impl CatalogStore {
+    async fn read_bounded(&self, key: &str, max: usize) -> io::Result<Vec<u8>> {
+        match self {
+            Self::Objects(store) => read_bounded(store.as_ref(), key, max).await,
+            Self::Recording(store) => store.read_bounded(key, max).await,
+        }
+    }
+    async fn write(&self, key: &str, bytes: &[u8]) -> io::Result<()> {
+        match self {
+            Self::Objects(store) => {
+                store
+                    .put(
+                        &Path::parse(key).map_err(io::Error::other)?,
+                        bytes.to_vec().into(),
+                    )
+                    .await
+                    .map_err(store_error)?;
+                Ok(())
+            }
+            Self::Recording(store) => store.write(key, bytes).await,
+        }
+    }
+    async fn snapshot(&self, prefix: &str) -> io::Result<BTreeMap<String, CatalogRevision>> {
+        match self {
+            Self::Objects(store) => store
+                .list(Some(&Path::parse(prefix).map_err(io::Error::other)?))
+                .map_ok(|meta| (meta.location.to_string(), CatalogRevision::Object(meta)))
+                .try_collect()
+                .await
+                .map_err(store_error),
+            Self::Recording(store) => {
+                let mut result = BTreeMap::new();
+                let mut cursor = None;
+                loop {
+                    let page = store.list(prefix, cursor.as_deref(), 1000).await?;
+                    for key in page.keys {
+                        let revision = store.transfer_revision(&key).await?;
+                        result.insert(key, CatalogRevision::Recording(revision));
+                    }
+                    if page.next_cursor.is_none() {
+                        break;
+                    }
+                    if page.next_cursor <= cursor {
+                        return Err(invalid("catalog listing did not progress"));
+                    }
+                    cursor = page.next_cursor;
+                }
+                Ok(result)
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct CatalogLocation {
-    store: Arc<dyn ObjectStore>,
+    store: CatalogStore,
     local_root: Option<PathBuf>,
 }
 // Only an in-process guard. Never presented as a cross-machine lock.
@@ -215,18 +279,24 @@ impl CatalogLocation {
             .map_err(store_error)?
             .with_fsync(true);
         Ok(Self {
-            store: Arc::new(store),
+            store: CatalogStore::Objects(Arc::new(store)),
             local_root: Some(root),
         })
     }
     pub fn object_store(store: Arc<dyn ObjectStore>) -> Self {
         Self {
-            store,
+            store: CatalogStore::Objects(store),
+            local_root: None,
+        }
+    }
+    pub fn recording_backend(backend: Arc<dyn recording_storage::StorageBackend>) -> Self {
+        Self {
+            store: CatalogStore::Recording(backend),
             local_root: None,
         }
     }
     pub async fn identity(&self) -> io::Result<StorageIdentity> {
-        let bytes = read_bounded(self.store.as_ref(), IDENTITY_PATH, 4096).await?;
+        let bytes = self.store.read_bounded(IDENTITY_PATH, 4096).await?;
         let identity: StorageIdentity =
             serde_json::from_slice(&bytes).map_err(|_| invalid("invalid storage identity"))?;
         if identity.storage_uuid.is_nil() || identity.format_version != FORMAT_VERSION {
@@ -264,27 +334,16 @@ impl CatalogLocation {
             .await
             .map_err(io::Error::other)??;
         } else {
-            let result = self
-                .store
-                .put(
-                    &Path::parse(key).map_err(io::Error::other)?,
-                    bytes.clone().into(),
-                )
-                .await
-                .map_err(store_error);
+            let result = self.store.write(key, &bytes).await;
             if let Err(error) = result {
-                if read_bounded(self.store.as_ref(), key, max)
-                    .await
-                    .ok()
-                    .as_deref()
-                    == Some(bytes.as_slice())
+                if self.store.read_bounded(key, max).await.ok().as_deref() == Some(bytes.as_slice())
                 {
                     return Ok(());
                 }
                 return Err(error);
             }
         }
-        if read_bounded(self.store.as_ref(), key, max).await? != bytes {
+        if self.store.read_bounded(key, max).await? != bytes {
             return Err(invalid(
                 "catalog write verification failed; do not write from multiple instances",
             ));
@@ -334,16 +393,8 @@ impl CatalogLocation {
         let identity = match self.identity().await {
             Ok(identity) => identity,
             Err(error) if create && error.kind() == io::ErrorKind::NotFound => {
-                let existing = self
-                    .store
-                    .list(Some(&Path::from(".bsr")))
-                    .try_collect::<Vec<_>>()
-                    .await
-                    .map_err(store_error)?;
-                if existing
-                    .iter()
-                    .any(|o| o.location.as_ref() != ".bsr/writer.lock")
-                {
+                let existing = self.store.snapshot(".bsr").await?;
+                if existing.keys().any(|key| key != ".bsr/writer.lock") {
                     return Err(invalid("catalog contents exist without storage identity"));
                 }
                 let identity = StorageIdentity {
@@ -392,19 +443,12 @@ impl CatalogLocation {
         })
     }
     async fn load_documents(&self, uuid: Uuid) -> io::Result<BTreeMap<Uuid, Document>> {
-        let prefix = Path::from(RECORDS_PATH);
-        let before: BTreeMap<_, _> = self
-            .store
-            .list(Some(&prefix))
-            .map_ok(|m| (m.location.to_string(), m))
-            .try_collect()
-            .await
-            .map_err(store_error)?;
+        let before = self.store.snapshot(RECORDS_PATH).await?;
         let mut documents = BTreeMap::new();
         let mut namespaces = HashMap::new();
         for key in before.keys().filter(|key| key.ends_with("/recording.json")) {
             let doc = decode_document(
-                &read_bounded(self.store.as_ref(), key, MAX_RECORD_BYTES).await?,
+                &self.store.read_bounded(key, MAX_RECORD_BYTES).await?,
                 uuid,
                 key,
             )?;
@@ -420,13 +464,7 @@ impl CatalogLocation {
             }
             documents.insert(doc.entry.record.recording_id, doc);
         }
-        let after: BTreeMap<_, _> = self
-            .store
-            .list(Some(&prefix))
-            .map_ok(|m| (m.location.to_string(), m))
-            .try_collect()
-            .await
-            .map_err(store_error)?;
+        let after = self.store.snapshot(RECORDS_PATH).await?;
         if before != after {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,

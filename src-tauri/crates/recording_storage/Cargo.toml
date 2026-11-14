@@ -10,12 +10,15 @@ fs2 = "0.4"
 futures = "0.3"
 object_store = { version = "0.12.5", default-features = false, features = ["aws", "tls-webpki-roots"] }
 reqwest = { workspace = true, features = ["stream"] }
+percent-encoding = "2.3"
+roxmltree = "0.20"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tempfile = "3.20"
 tokio = { version = "1.48.0", features = ["fs", "io-util", "sync", "rt"] }
 url = "2.5"
+uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

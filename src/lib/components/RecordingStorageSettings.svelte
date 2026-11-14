@@ -5,6 +5,7 @@
   import type { Config, StorageConfig } from "../interface";
   import { storageBackend, storageBackendEntries, storageBackendSupported, storageBackendLocation } from "../recording-storage";
   import StorageTransferSettings from "./StorageTransferSettings.svelte";
+  import WebDavCredentialFields from "./WebDavCredentialFields.svelte";
   import S3CredentialFields from "./S3CredentialFields.svelte";
   import { Check, FolderOpen, HardDrive, ListChecks, Plus, Trash2, X } from "lucide-svelte";
   import { trapFocus } from "../focus-trap";
@@ -19,6 +20,10 @@
   let newId = $state("");
   let newRoot = $state("");
   let newType = $state("local");
+  let webdavEndpoint = $state("");
+  let webdavPrefix = $state("");
+  let webdavUsername = $state("");
+  let webdavPassword = $state("");
   let s3Endpoint = $state("");
   let s3Bucket = $state("");
   let s3Region = $state("us-east-1");
@@ -92,6 +97,8 @@
   }
 
   function clearCredentials() {
+    webdavUsername = "";
+    webdavPassword = "";
     s3AccessKeyId = "";
     s3SecretAccessKey = "";
     s3SessionToken = "";
@@ -114,8 +121,9 @@
 
   async function saveCredentials() {
     if (!storage || !editingCredentials || saving || browsing || transferBusy) return;
-    if (!s3AccessKeyId.trim() || !s3SecretAccessKey.trim()) {
-      error = "请填写 Access Key ID 和 Secret Access Key。";
+    const isWebdav = storageBackend(storage, editingCredentials)?.type === "webdav";
+    if (isWebdav ? !webdavUsername.trim() || !webdavPassword : !s3AccessKeyId.trim() || !s3SecretAccessKey.trim()) {
+      error = isWebdav ? "请填写 WebDAV 用户名和密码。" : "请填写 Access Key ID 和 Secret Access Key。";
       return;
     }
     saving = true;
@@ -124,13 +132,13 @@
     try {
       storage = await invoke<StorageConfig>("set_storage_config", {
         storage, expected: storage,
-        credentials: { [editingCredentials]: {
+        credentials: { [editingCredentials]: isWebdav ? { username: webdavUsername.trim(), password: webdavPassword } : {
           access_key_id: s3AccessKeyId.trim(), secret_access_key: s3SecretAccessKey, session_token: s3SessionToken,
         } },
       });
       cancelCredentials();
       void loadCatalogStatus();
-      saved = "S3 凭证已更新，无需重启应用。";
+      saved = `${isWebdav ? "WebDAV" : "S3"} 凭证已更新，无需重启应用。`;
     } catch (e) {
       error = `凭证保存失败：${String(e)}。若配置已被修改，请重新加载后再操作。`;
     } finally {
@@ -174,13 +182,15 @@
     saved = "";
     const id = newId.trim();
     const root = newRoot.trim();
-    if (add && (!id || storageBackend(storage, id) || (newType === "local" ? !root : !s3Bucket.trim() || !s3Region.trim() || !s3AccessKeyId.trim() || !s3SecretAccessKey.trim()))) {
-      error = "请输入未使用的存储 ID，并填写目录路径或 S3 必填配置。";
+    if (add && (!id || storageBackend(storage, id) || (newType === "local" ? !root : newType === "webdav" ? !webdavEndpoint.trim() || !webdavUsername.trim() || !webdavPassword : !s3Bucket.trim() || !s3Region.trim() || !s3AccessKeyId.trim() || !s3SecretAccessKey.trim()))) {
+      error = "请输入未使用的存储 ID，并填写所选存储的必填配置。";
       return;
     }
     const next: StorageConfig = {
       default_backend: add ? storage.default_backend : defaultId ?? "",
-      backends: { ...storage.backends, ...(add ? { [id]: newType === "local" ? { type: "local", root } : {
+      backends: { ...storage.backends, ...(add ? { [id]: newType === "local" ? { type: "local", root } : newType === "webdav" ? {
+        type: "webdav", root: "", webdav: { endpoint: webdavEndpoint.trim(), prefix: webdavPrefix.trim() },
+      } : {
         type: "s3", root: "", s3: {
           endpoint: s3Endpoint.trim(), bucket: s3Bucket.trim(), region: s3Region.trim(),
           prefix: s3Prefix.trim(), path_style: s3PathStyle,
@@ -196,12 +206,14 @@
       // Compare-and-swap prevents a stale full replacement deleting another client's backend.
       storage = await invoke<StorageConfig>("set_storage_config", {
         storage: next, expected: storage,
+        ...(add && newType === "webdav" ? { credentials: { [id]: { username: webdavUsername.trim(), password: webdavPassword } } } : {}),
         ...(add && newType === "s3" ? { credentials: { [id]: {
           access_key_id: s3AccessKeyId.trim(), secret_access_key: s3SecretAccessKey, session_token: s3SessionToken,
         } } } : {}),
       });
       defaultId = storage.default_backend;
       if (add) {
+        webdavEndpoint = ""; webdavPrefix = "";
         newId = ""; newRoot = ""; s3Endpoint = ""; s3Bucket = ""; s3Prefix = "";
         s3Region = "us-east-1"; s3PathStyle = true; clearCredentials(); showAdd = false;
       }
@@ -314,6 +326,7 @@
                   <select id="new-storage-type" class="ui-input w-full" bind:value={newType}>
                     <option value="local">本地目录</option>
                     <option value="s3">S3 兼容对象存储</option>
+                    <option value="webdav">WebDAV</option>
                   </select>
                 </div>
                 <div>
@@ -329,6 +342,18 @@
                   </div>
                   <p class="ui-hint mt-1">{TAURI_ENV ? "名称和目录保存后不可修改；换位置时请添加新的存储。" : "填写服务器上的目录，而不是浏览器所在机器的路径。名称和目录保存后不可修改。"}</p>
                 </div>
+                {:else if newType === "webdav"}
+                  <div>
+                    <label for="webdav-endpoint" class="ui-label mb-1 block">WebDAV 地址</label>
+                    <input id="webdav-endpoint" type="url" class="ui-input w-full" bind:value={webdavEndpoint} placeholder="https://cloud.example.com/remote.php/dav/files/user/" />
+                    <p class="ui-hint mt-1">填写完整的 WebDAV 目录地址。该目录须已存在；请使用 HTTPS 保护凭证。</p>
+                  </div>
+                  <div>
+                    <label for="webdav-prefix" class="ui-label mb-1 block">存储子目录（可选）</label>
+                    <input id="webdav-prefix" class="ui-input w-full" bind:value={webdavPrefix} placeholder="例如 shadowreplay，不带首尾 /" />
+                  </div>
+                  <WebDavCredentialFields idPrefix="new-webdav" bind:username={webdavUsername} bind:password={webdavPassword} />
+                  <p class="ui-hint">需要文件读写、目录枚举、MOVE 和 Range 支持。地址保存后不可修改，用户名和密码可单独更新。</p>
                 {:else}
                   <div>
                     <label for="s3-endpoint" class="ui-label mb-1 block">Endpoint</label>
@@ -355,7 +380,7 @@
                 {/if}
                 <div class="flex justify-end gap-2">
                   <button type="button" class="ui-btn ui-btn-ghost" onclick={() => { showAdd = false; clearCredentials(); }}>取消</button>
-                  <button type="submit" class="ui-btn ui-btn-primary" disabled={!newId.trim() || (newType === "local" ? !newRoot.trim() : !s3Bucket.trim() || !s3Region.trim() || !s3AccessKeyId.trim() || !s3SecretAccessKey.trim())}>{saving ? "正在添加…" : "添加存储"}</button>
+                  <button type="submit" class="ui-btn ui-btn-primary" disabled={!newId.trim() || (newType === "local" ? !newRoot.trim() : newType === "webdav" ? !webdavEndpoint.trim() || !webdavUsername.trim() || !webdavPassword : !s3Bucket.trim() || !s3Region.trim() || !s3AccessKeyId.trim() || !s3SecretAccessKey.trim())}>{saving ? "正在添加…" : "添加存储"}</button>
                 </div>
               </fieldset>
             </form>
@@ -401,13 +426,13 @@
                         {/if}
                       </div>
                     </td>
-                    <td class="whitespace-nowrap px-2 py-2.5 text-fg-muted">{backend.type === "local" ? "本地目录" : backend.type === "s3" ? "S3" : "暂不支持"}</td>
+                    <td class="whitespace-nowrap px-2 py-2.5 text-fg-muted">{backend.type === "local" ? "本地目录" : backend.type === "s3" ? "S3" : backend.type === "webdav" ? "WebDAV" : "暂不支持"}</td>
                     <td class="overflow-hidden px-2 py-2.5">
                       <span class="block select-text truncate text-fg-muted" title={storageBackendLocation(backend)}>{storageBackendLocation(backend)}</span>
                     </td>
                     <td class="whitespace-nowrap px-3 py-2.5">
                       <div class="storage-actions flex items-center justify-end gap-1" role="group" aria-label={`${id} 的存储操作`}>
-                        {#if backend.type === "s3"}
+                        {#if backend.type === "s3" || backend.type === "webdav"}
                           <button class="ui-btn ui-btn-ghost ui-btn-sm" disabled={saving || browsing || transferBusy} onclick={() => editCredentials(id)}>
                             {storage.credential_revisions?.[id] ? "更新凭证" : "填写凭证"}
                           </button>
@@ -425,13 +450,17 @@
                     <tr class="bg-sunken/40">
                       <td colspan="5" class="px-3 pb-3 pt-1.5">
                         <form class="space-y-3 rounded-[8px] border border-line-strong bg-surface p-3" onsubmit={(event) => { event.preventDefault(); void saveCredentials(); }}>
-                          <h4 class="text-[13px] font-medium">{id} 的 S3 凭证</h4>
+                          <h4 class="text-[13px] font-medium">{id} 的 {backend.type === "webdav" ? "WebDAV" : "S3"} 凭证</h4>
                           <fieldset class="space-y-3" disabled={saving || browsing || transferBusy}>
-                            <S3CredentialFields idPrefix="edit-s3" bind:accessKeyId={s3AccessKeyId} bind:secretAccessKey={s3SecretAccessKey} bind:sessionToken={s3SessionToken} />
+                            {#if backend.type === "webdav"}
+                              <WebDavCredentialFields idPrefix="edit-webdav" bind:username={webdavUsername} bind:password={webdavPassword} />
+                            {:else}
+                              <S3CredentialFields idPrefix="edit-s3" bind:accessKeyId={s3AccessKeyId} bind:secretAccessKey={s3SecretAccessKey} bind:sessionToken={s3SessionToken} />
+                            {/if}
                             <p class="ui-hint">更新不改变已有录播的位置。如果此存储正在录制，请先停止录制再更新。</p>
                             <div class="flex justify-end gap-2">
                               <button type="button" class="ui-btn ui-btn-ghost" onclick={cancelCredentials}>取消</button>
-                              <button type="submit" class="ui-btn ui-btn-primary" disabled={!s3AccessKeyId.trim() || !s3SecretAccessKey.trim()}>{saving ? "正在保存…" : "保存凭证"}</button>
+                              <button type="submit" class="ui-btn ui-btn-primary" disabled={backend.type === "webdav" ? !webdavUsername.trim() || !webdavPassword : !s3AccessKeyId.trim() || !s3SecretAccessKey.trim()}>{saving ? "正在保存…" : "保存凭证"}</button>
                             </div>
                           </fieldset>
                         </form>
@@ -443,7 +472,7 @@
                       <td colspan="5" class="px-3 pb-3 pt-1.5">
                         <div class="space-y-2 rounded-[8px] border border-danger/30 bg-danger-soft p-3" role="group" aria-label={`确认移除存储 ${id}`}>
                           <p class="text-[13px] font-medium text-danger-fg">移除 {id}？</p>
-                          <p class="text-[12px] leading-relaxed text-fg-secondary">对应录播将从列表隐藏，存储上的文件和目录数据库不会删除。重新添加同一目录或 S3 bucket/prefix 后会恢复。</p>
+                          <p class="text-[12px] leading-relaxed text-fg-secondary">对应录播将从列表隐藏，存储上的文件和目录数据库不会删除。重新添加同一本地目录、S3 bucket/prefix 或 WebDAV 目录后会恢复。</p>
                           <p class="text-[12px] leading-relaxed text-fg-secondary">存储名称可以复用。直播间仍绑定原存储，不会因同名存储被添加而自动切换。</p>
                           <div class="flex justify-end gap-2">
                             <button class="ui-btn ui-btn-ghost ui-btn-sm" disabled={saving} onclick={() => removingId = null}>取消</button>

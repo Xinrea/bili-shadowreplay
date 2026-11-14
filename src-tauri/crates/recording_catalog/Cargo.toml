@@ -8,6 +8,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+recording_storage = { workspace = true }
 fs2 = "0.4"
 futures = "0.3"
 object_store = { version = "=0.14.2", features = ["aws"] }
@@ -21,3 +22,6 @@ uuid = { version = "1", features = ["v4", "serde"] }
 [dev-dependencies]
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "process"] }
+axum = "0.7"
+percent-encoding = "2.3"
+url = "2.5"

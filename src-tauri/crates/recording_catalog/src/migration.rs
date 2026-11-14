@@ -76,7 +76,7 @@ impl ImportState {
 }
 impl CatalogLocation {
     pub(super) async fn load_import(&self) -> io::Result<Option<ImportState>> {
-        match read_bounded(self.store.as_ref(), IMPORT_PATH, MAX_IMPORT_BYTES).await {
+        match self.store.read_bounded(IMPORT_PATH, MAX_IMPORT_BYTES).await {
             Ok(bytes) => {
                 let state: ImportState = serde_json::from_slice(&bytes)
                     .map_err(|_| invalid("invalid import journal"))?;

@@ -350,6 +350,7 @@ fn image_coordinates_and_sizes_share_the_scheduler_scale() {
             top: 36.0,
         }],
         0.8,
+        crate::danmu2ass::DanmuCanvas::default(),
     );
     let event = &events[0];
     assert_eq!(event.from, (1920.0, 54.0));
@@ -357,4 +358,32 @@ fn image_coordinates_and_sizes_share_the_scheduler_scale() {
     assert_eq!((event.width, event.height), (81.0, 54.0));
     assert_eq!((event.start, event.end), (1.0, 9.0));
     assert_eq!(event.opacity, 0.8);
+}
+
+#[test]
+fn portrait_image_mapping_keeps_the_same_pixel_size_as_landscape() {
+    let images = [ImageDanmu {
+        image: crate::danmu2ass::DanmuImage {
+            path: "emoji.png".into(),
+            width: 54.0,
+            height: 36.0,
+        },
+        start: 1.0,
+        end: 9.0,
+        from: 754.0,
+        to: -54.0,
+        top: 36.0,
+    }];
+    for (width, height) in [(1920, 1080), (1080, 1920), (1080, 1080)] {
+        let events = image_events(
+            &images,
+            0.8,
+            crate::danmu2ass::DanmuCanvas::new((width, height)),
+        );
+        let event = &events[0];
+        // The image API maps each axis from its normalized 1920x1080 space.
+        assert_eq!(event.width * width as f32 / 1920.0, 81.0);
+        assert_eq!(event.height * height as f32 / 1080.0, 54.0);
+        assert_eq!(event.from.1 * height as f32 / 1080.0, 54.0);
+    }
 }

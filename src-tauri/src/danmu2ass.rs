@@ -6,14 +6,50 @@ use std::{collections::VecDeque, path::PathBuf};
 // (https://s1.hdslb.com/bfs/live-pkg/danmaku/danmaku-v2.js: the roll mode,
 // its space manager and `getBaseDmDuration`; the room's render queue), with
 // the room player's default settings: the whole screen, normal density and
-// speed, no top offset. The video is laid out as a full-screen 1080p player,
-// in its CSS pixels.
+// speed, no top offset. Layout uses a 1080-pixel short edge, independent of
+// orientation; ASS uses a 720-unit short edge with the same aspect ratio.
 
 pub const PLAY_RES_Y: f64 = 720.0;
 const CONTAINER_WIDTH: f64 = 1920.0;
 const CONTAINER_HEIGHT: f64 = 1080.0;
 /// Play-resolution units per container pixel.
 const PX: f64 = PLAY_RES_Y / CONTAINER_HEIGHT;
+
+/// Match the output aspect ratio without changing the meaning of font size.
+#[derive(Clone, Copy)]
+pub struct DanmuCanvas {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl DanmuCanvas {
+    pub fn new((width, height): (u32, u32)) -> Self {
+        let scale = PLAY_RES_Y / f64::from(width.min(height).max(1));
+        Self {
+            width: (f64::from(width) * scale).round().max(1.0) as u32,
+            height: (f64::from(height) * scale).round().max(1.0) as u32,
+        }
+    }
+
+    fn container_width(self) -> f64 {
+        f64::from(self.width) / PX
+    }
+
+    fn container_height(self) -> f64 {
+        f64::from(self.height) / PX
+    }
+
+    fn entry_x(self) -> f64 {
+        self.container_width() + 1.0 + SAFE_RIGHT
+    }
+}
+
+impl Default for DanmuCanvas {
+    fn default() -> Self {
+        Self::new((CONTAINER_WIDTH as u32, CONTAINER_HEIGHT as u32))
+    }
+}
+
 /// The em of 微软雅黑 within the line box an ASS font size sets (its
 /// unitsPerEm over winAscent + winDescent). Common CJK fallbacks (PingFang,
 /// Noto Sans CJK) have a smaller em, so glyphs never outgrow the layout.
@@ -25,6 +61,7 @@ const LINE_HEIGHT: f64 = 1.125;
 const SAFE_RIGHT: f64 = 50.0;
 const SAFE_LEFT: f64 = 50.0;
 /// The left edge of a message as it enters.
+#[cfg(test)]
 const ENTRY_X: f64 = CONTAINER_WIDTH + 1.0 + SAFE_RIGHT;
 /// Seconds a message must stay behind the one ahead of it in its row, at
 /// normal density.
@@ -95,6 +132,15 @@ pub fn danmu_render_plan(
     options: &Danmu2AssOptions,
     resolve_image: impl Fn(&DanmuEntry) -> Option<DanmuImage>,
 ) -> DanmuRenderPlan {
+    danmu_render_plan_for_canvas(danmus, options, DanmuCanvas::default(), resolve_image)
+}
+
+pub fn danmu_render_plan_for_canvas(
+    danmus: &[DanmuEntry],
+    options: &Danmu2AssOptions,
+    canvas: DanmuCanvas,
+    resolve_image: impl Fn(&DanmuEntry) -> Option<DanmuImage>,
+) -> DanmuRenderPlan {
     // Exclude SC and other preview-only events. Sort after clip/transition time
     // remapping, which can interleave messages from adjacent source ranges.
     let mut danmus: Vec<_> = danmus
@@ -118,8 +164,8 @@ pub fn danmu_render_plan(
 Title: Bilibili Danmaku
 ScriptType: v4.00+
 Collisions: Normal
-PlayResX: 1280
-PlayResY: 720
+PlayResX: {res_x}
+PlayResY: {res_y}
 Timer: 10.0000
 
 [V4+ Styles]
@@ -129,12 +175,21 @@ Style: Default,微软雅黑,{},&H{}FFFFFF,&H{}FFFFFF,&H{}000000,&H{}000000,-1,0,
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 ",
-        font_size, alpha_hex, alpha_hex, alpha_hex, alpha_hex
+        font_size,
+        alpha_hex,
+        alpha_hex,
+        alpha_hex,
+        alpha_hex,
+        res_x = canvas.width,
+        res_y = canvas.height,
     );
 
     let em = font_size * FONT_EM / PX;
     let line_height = (LINE_HEIGHT * em).ceil();
-    let mut space = Space::default();
+    let mut space = Space {
+        canvas,
+        ..Space::default()
+    };
     let mut events = Vec::new();
     let mut images = Vec::new();
     let arrivals = danmus
@@ -148,12 +203,15 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             .as_ref()
             .map(|image| (image.width / PX, image.height / PX))
             .unwrap_or_else(|| (text_width(text, em), line_height));
-        let flight = Flight::new(now, width);
+        let flight = Flight::for_canvas(now, width, canvas);
         let Some(top) = space.place(now, &flight, height) else {
             continue;
         };
         let (start, end) = (now, now + flight.duration);
-        let (from, to) = (ENTRY_X * PX, (ENTRY_X - flight.travel) * PX);
+        let (from, to) = (
+            canvas.entry_x() * PX,
+            (canvas.entry_x() - flight.travel) * PX,
+        );
         if let Some(image) = image {
             images.push(ImageDanmu {
                 image,
@@ -351,15 +409,21 @@ struct Flight {
 }
 
 impl Flight {
+    #[cfg(test)]
     fn new(now: f64, width: f64) -> Self {
-        let speed = (CONTAINER_WIDTH + width) / base_duration(width, CONTAINER_WIDTH);
-        let travel = (ENTRY_X + width + SAFE_LEFT).ceil();
+        Self::for_canvas(now, width, DanmuCanvas::default())
+    }
+
+    fn for_canvas(now: f64, width: f64, canvas: DanmuCanvas) -> Self {
+        let container = canvas.container_width();
+        let speed = (container + width) / base_duration(width, container);
+        let travel = (canvas.entry_x() + width + SAFE_LEFT).ceil();
         Self {
             width,
             speed,
             travel,
             duration: (travel / speed * 100.0).ceil() / 100.0,
-            middle: now + ENTRY_X / speed,
+            middle: now + canvas.entry_x() / speed,
         }
     }
 }
@@ -385,6 +449,7 @@ impl Placed {
 #[derive(Default)]
 struct Space {
     placed: Vec<Placed>,
+    canvas: DanmuCanvas,
 }
 
 impl Space {
@@ -395,7 +460,7 @@ impl Space {
     /// those.
     fn place(&mut self, now: f64, flight: &Flight, height: f64) -> Option<f64> {
         self.placed.retain(|other| other.end > now);
-        let limit = CONTAINER_HEIGHT + 1.0;
+        let limit = self.canvas.container_height() + 1.0;
         let (mut top, mut bottom) = (0.0, height);
         let mut found = None;
         for (index, other) in self.placed.iter().enumerate() {
@@ -412,7 +477,9 @@ impl Space {
                 }
                 continue;
             }
-            if ENTRY_X > other.x(now) + other.width && flight.middle > other.end + FOLLOW_GAP {
+            if self.canvas.entry_x() > other.x(now) + other.width
+                && flight.middle > other.end + FOLLOW_GAP
+            {
                 if bottom <= other.bottom && !self.overlaps(index + 1, top, bottom) {
                     found = Some(top);
                     break;
@@ -486,6 +553,58 @@ mod tests {
                 (text.to_string(), args[0], args[2], args[1])
             })
             .collect()
+    }
+
+    #[test]
+    fn orientation_preserves_font_image_and_row_sizes() {
+        let entries = [entry(0, "[emoji]"), entry(0, "hello"), entry(0, "world")];
+        let options = Danmu2AssOptions::default();
+        for (width, height) in [(1920, 1080), (1280, 720), (960, 540), (1080, 1080)] {
+            let landscape = DanmuCanvas::new((width, height));
+            let portrait = DanmuCanvas::new((height, width));
+            let plan = |canvas| {
+                danmu_render_plan_for_canvas(&entries, &options, canvas, |entry| {
+                    (entry.content == "[emoji]").then(image)
+                })
+            };
+            let a = plan(landscape);
+            let b = plan(portrait);
+            assert!(b.ass.contains(&format!(
+                "PlayResX: {}\nPlayResY: {}",
+                portrait.width, portrait.height
+            )));
+            assert!(a.ass.contains("Style: Default,微软雅黑,36,"));
+            assert!(b.ass.contains("Style: Default,微软雅黑,36,"));
+            let scale_a = (f64::from(width) / f64::from(landscape.width))
+                .min(f64::from(height) / f64::from(landscape.height));
+            let scale_b = (f64::from(height) / f64::from(portrait.width))
+                .min(f64::from(width) / f64::from(portrait.height));
+            assert_eq!(scale_a, scale_b);
+            assert_eq!(
+                a.images[0].image.height * scale_a,
+                b.images[0].image.height * scale_b
+            );
+            for (a, b) in moves(&a.ass).iter().zip(moves(&b.ass)) {
+                assert_eq!(a.3 * scale_a, b.3 * scale_b);
+                assert!(b.1 > f64::from(portrait.width));
+                assert!(b.2 < 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn portrait_uses_its_full_height_without_changing_row_spacing() {
+        let canvas = DanmuCanvas::new((1080, 1920));
+        let mut space = Space {
+            canvas,
+            ..Space::default()
+        };
+        let flight = Flight::for_canvas(0.0, 200.0, canvas);
+        // The legacy landscape canvas could fit only 22 rows of this height.
+        for row in 0..40 {
+            assert_eq!(space.place(0.0, &flight, 47.0), Some(f64::from(row * 48)));
+        }
+        assert_eq!(space.place(0.0, &flight, 47.0), None);
     }
 
     #[test]

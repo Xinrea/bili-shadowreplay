@@ -10,10 +10,7 @@ use std::{
 };
 
 use super::runner::{run_native_media_with_sources, ProgressMode};
-use crate::{
-    danmu2ass::{ImageDanmu, PLAY_RES_Y},
-    progress::progress_reporter::ProgressReporterTrait,
-};
+use crate::{danmu2ass::ImageDanmu, progress::progress_reporter::ProgressReporterTrait};
 use ffmpeg_utils::{
     MediaBindings, MediaInput, MediaJobResult, MediaPlan, RawVideoAlpha, RawVideoCancelHandle,
     RawVideoFrame, RawVideoSpec, RawVideoStats,
@@ -297,20 +294,25 @@ async fn run_overlay_inner<R: ProgressReporterTrait>(
     Ok((output, stats))
 }
 
-/// The scheduler uses 1280x720-style ASS coordinates; the native image API uses
+/// The scheduler uses an aspect-matched ASS canvas; the native image API uses
 /// normalized 1920x1080 coordinates, regardless of output frame dimensions.
-pub fn image_events(images: &[ImageDanmu], opacity: f64) -> Vec<native_overlay::ImageEvent> {
-    let scale = 1080.0 / PLAY_RES_Y;
+pub fn image_events(
+    images: &[ImageDanmu],
+    opacity: f64,
+    canvas: crate::danmu2ass::DanmuCanvas,
+) -> Vec<native_overlay::ImageEvent> {
+    let sx = 1920.0 / f64::from(canvas.width);
+    let sy = 1080.0 / f64::from(canvas.height);
     images
         .iter()
         .map(|event| native_overlay::ImageEvent {
             path: event.image.path.clone(),
             start: event.start,
             end: event.end,
-            from: ((event.from * scale) as f32, (event.top * scale) as f32),
-            to: ((event.to * scale) as f32, (event.top * scale) as f32),
-            width: (event.image.width * scale) as f32,
-            height: (event.image.height * scale) as f32,
+            from: ((event.from * sx) as f32, (event.top * sy) as f32),
+            to: ((event.to * sx) as f32, (event.top * sy) as f32),
+            width: (event.image.width * sx) as f32,
+            height: (event.image.height * sy) as f32,
             opacity: opacity as f32,
         })
         .collect()

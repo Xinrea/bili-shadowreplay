@@ -1250,6 +1250,8 @@ impl ExportSource<'_> {
         extra.push('\0');
         extra.push_str(self.subtitle_ass.as_deref().unwrap_or_default());
         if self.timeline.danmu {
+            // Regenerate uploads burned with the old fixed landscape canvas.
+            extra.push_str("danmaku-short-edge-v1\n");
             extra.push_str(&serde_json::to_string(&self.danmu_options).unwrap_or_default());
         }
         // The same overlays can look different, as with fonts installed since.
@@ -2379,6 +2381,17 @@ mod tests {
         assert_eq!(
             plain.render_hash(hwaccel::RenderPipeline::cpu("libx265")),
             timeline.render_hash(&extra)
+        );
+        let mut with_danmaku = source(Vec::new());
+        with_danmaku.timeline.danmu = true;
+        let legacy_danmaku = format!(
+            "{extra}{}",
+            serde_json::to_string(&with_danmaku.danmu_options).unwrap()
+        );
+        assert_ne!(
+            with_danmaku.render_hash(hwaccel::RenderPipeline::cpu("libx265")),
+            with_danmaku.timeline.render_hash(&legacy_danmaku),
+            "uploads with the old landscape danmaku canvas must be regenerated"
         );
         // A previously cached complete upload can have a landscape canvas for
         // rotated portrait media. Both rendering backends must regenerate it.

@@ -47,16 +47,16 @@ export function baseDuration(width: number, container: number): number {
  * danmaku are laid out with (see danmu2ass.rs).
  */
 const FONT_EM = 2048 / 2703;
-/** Burned danmaku sizes are in units of a video this high. */
-const PLAY_RES_Y = 720;
+/** Burned danmaku use a 720-unit short edge, regardless of orientation. */
+const PLAY_RES_SHORT_EDGE = 720;
 
 /**
- * The CSS font size, in a player `height` high, of danmaku styled `fontSize`:
- * the size they are burned at, in a video shown that high. The default, 36,
- * is about Bilibili's in a full-screen 1080p player.
+ * Match the burned size using the player's short edge. Swapping width and
+ * height must not change text, image or row sizes. The default, 36, is about
+ * Bilibili's in a full-screen 1080p player.
  */
-export function danmakuFontSize(fontSize: number, height: number): number {
-  return (fontSize * FONT_EM * height) / PLAY_RES_Y;
+export function danmakuFontSize(fontSize: number, width: number, height: number): number {
+  return (fontSize * FONT_EM * Math.min(width, height)) / PLAY_RES_SHORT_EDGE;
 }
 
 /** Where a message flies: its left edge moves `travel` leftwards from `entryX` in `duration`. */

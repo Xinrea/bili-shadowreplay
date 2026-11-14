@@ -925,7 +925,7 @@ ${mediaPlaylistUrl}`;
     }
 
     function danmu_handler(record: DanmuEntry, timing: Timing) {
-      const { node, dispose } = createDanmakuNode(record, danmuStyle.get(), overlay.clientHeight);
+      const { node, dispose } = createDanmakuNode(record, danmuStyle.get(), overlay.clientWidth, overlay.clientHeight);
       floating.add(node, placer(timing, false), { dispose, follow: timing.space === recordedSpace });
     }
 

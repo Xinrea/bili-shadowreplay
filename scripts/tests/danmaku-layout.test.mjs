@@ -45,10 +45,22 @@ test("crossing time follows Bilibili's steps for the player's width", async () =
 test("font size is the burned size, scaled to the player", async () => {
   const api = await loadModule();
   // The burned em of the default 36 at 1080p: close to Bilibili's 42.26 px.
-  const fullHd = api.danmakuFontSize(36, 1080);
+  const fullHd = api.danmakuFontSize(36, 1920, 1080);
   assert.ok(Math.abs(fullHd - 40.91) < 0.01, fullHd);
-  assert.ok(Math.abs(api.danmakuFontSize(36, 540) - fullHd / 2) < 1e-9);
-  assert.ok(Math.abs(api.danmakuFontSize(48, 1080) - (fullHd * 48) / 36) < 1e-9);
+  assert.ok(Math.abs(api.danmakuFontSize(36, 960, 540) - fullHd / 2) < 1e-9);
+  assert.ok(Math.abs(api.danmakuFontSize(48, 1920, 1080) - (fullHd * 48) / 36) < 1e-9);
+});
+
+test("orientation does not change font or image/row size at the same short edge", async () => {
+  const api = await loadModule();
+  for (const size of [12, 36, 48, 72]) {
+    for (const [width, height] of [[1920, 1080], [1280, 720], [960, 540], [1080, 1080]]) {
+      const landscape = api.danmakuFontSize(size, width, height);
+      const portrait = api.danmakuFontSize(size, height, width);
+      assert.equal(portrait, landscape);
+      assert.equal(portrait * api.LINE_HEIGHT, landscape * api.LINE_HEIGHT);
+    }
+  }
 });
 
 test("messages enter and leave beyond the player", async () => {

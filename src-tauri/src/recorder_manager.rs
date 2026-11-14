@@ -47,6 +47,9 @@ use tauri_plugin_notification::NotificationExt;
 use thiserror::Error;
 use tokio::sync::RwLock;
 
+#[path = "recorder_manager/empty_recording.rs"]
+mod empty_recording;
+
 #[cfg(not(feature = "headless"))]
 use tauri::AppHandle;
 
@@ -576,9 +579,9 @@ impl RecorderManager {
                         Payload::Room(recorder.clone()),
                     );
                     let _ = self.webhook_poster.post_event(&event).await;
-                    // Drop an archive that never committed media. Recorders must
-                    // publish RecordUpdate for stored segments before RecordEnd;
-                    // a failed playlist pass can still have a non-zero size.
+                    // A zero DB size is only a cleanup candidate: progress reads
+                    // can fail after media publication. Verify the assets under
+                    // the deletion lock before removing anything.
                     let room_id = recorder.room_info.room_id.clone();
                     let record = match self.db.get_record(&room_id, &live_id).await {
                         Ok(r) => r,
@@ -591,8 +594,9 @@ impl RecorderManager {
                     if record.size == 0 && record.storage_available {
                         match PlatformType::from_str(&record.platform) {
                             Ok(platform) => {
-                                if let Err(error) =
-                                    self.delete_archive(platform, &room_id, &live_id).await
+                                if let Err(error) = self
+                                    .delete_archive_inner(platform, &room_id, &live_id, true)
+                                    .await
                                 {
                                     log::error!(
                                         "Failed to remove empty recording {live_id}: {error}"
@@ -1095,6 +1099,9 @@ impl RecorderManager {
                     recorders.remove(&id);
                 }
             }
+            // insert_recorder holds to_remove before taking recorders. Never
+            // wait for that lock while retaining the map's write guard.
+            drop(recorders);
             manager.to_remove.write().await.remove(&id);
             manager.db.notify_change(DataChange::Recorders);
         });
@@ -1871,6 +1878,20 @@ impl RecorderManager {
         room_id: &str,
         live_id: &str,
     ) -> Result<RecordRow, RecorderManagerError> {
+        self.delete_archive_inner(platform, room_id, live_id, false)
+            .await?
+            .ok_or_else(|| DatabaseError::NotFound.into())
+    }
+
+    /// Automatic cleanup may leave an uncertain/nonempty archive in place.
+    /// Explicit user deletion still uses the same checks and deletion protocol.
+    async fn delete_archive_inner(
+        &self,
+        platform: PlatformType,
+        room_id: &str,
+        live_id: &str,
+        require_empty: bool,
+    ) -> Result<Option<RecordRow>, RecorderManagerError> {
         self.archive_storage.initialize().await?;
         let _mutation =
             self.archive_storage
@@ -1888,6 +1909,11 @@ impl RecorderManager {
             }
         }
         let assets = self.recording_storage(platform, room_id, live_id).await?;
+        if require_empty && (record.size != 0 || !empty_recording::confirmed_empty(&assets).await?)
+        {
+            log::warn!("Preserving recording {room_id}:{live_id}: assets do not confirm an empty recording");
+            return Ok(None);
+        }
         if let Some(catalogs) = self.db.catalogs.get() {
             catalogs.begin_delete(live_id).await?;
         }
@@ -1899,7 +1925,7 @@ impl RecorderManager {
         self.archive_storage
             .forget_recording(platform.as_str(), room_id, live_id)
             .await?;
-        Ok(to_delete)
+        Ok(Some(to_delete))
     }
 
     pub async fn delete_archives(

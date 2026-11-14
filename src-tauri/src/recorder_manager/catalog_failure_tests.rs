@@ -83,6 +83,378 @@ impl Drop for Stopped {
 }
 
 #[tokio::test]
+async fn failed_recording_cleanup_releases_map_before_waiting_for_removal_marker() {
+    let directory = tempfile::tempdir().unwrap();
+    let (manager, rx) = manager(directory.path()).await;
+    let consumer = manager.clone();
+    let events = tokio::spawn(async move { consumer.handle_events(rx).await });
+
+    // Let the actual abort path drain its events, but park its final map write.
+    let map_reader = manager.recorders.read().await;
+    manager
+        .abort_failed_recording(PlatformType::BiliBili, "room", "failed")
+        .await;
+    // This is the guard insert_recorder retains while waiting to insert.
+    let removing = manager.to_remove.read().await;
+    assert!(removing.contains("bilibili:room"));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        // Tokio's writer preference makes try_read fail once cleanup is queued.
+        while manager.recorders.try_read().is_ok() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(map_reader);
+
+    // Cleanup gets the map first. It must release it even while our insertion
+    // guard prevents removal-marker cleanup; otherwise this is a lock cycle.
+    let map_writer = tokio::time::timeout(Duration::from_secs(5), manager.recorders.write())
+        .await
+        .expect("failed-recording cleanup must not deadlock recorder insertion");
+    drop(map_writer);
+    drop(removing);
+    let markers = tokio::time::timeout(Duration::from_secs(5), manager.to_remove.read())
+        .await
+        .unwrap();
+    assert!(!markers.contains("bilibili:room"));
+    events.abort();
+    let _ = events.await;
+}
+
+async fn zero_size_record(manager: &RecorderManager, live: &str) -> RecordingStorage {
+    let storage = manager
+        .archive_storage
+        .selected_store(Some("default"))
+        .await
+        .unwrap()
+        .recording("bilibili", "room", live)
+        .unwrap();
+    storage.prepare().await.unwrap();
+    manager
+        .db
+        .add_record(
+            PlatformType::BiliBili,
+            "parent",
+            live,
+            "room",
+            "Title",
+            None,
+        )
+        .await
+        .unwrap();
+    storage
+}
+
+async fn end_recording(manager: &RecorderManager, live: &str) {
+    manager
+        .event_tx
+        .send(RecorderEvent::RecordEnd {
+            recorder: RecorderInfo {
+                room_info: RoomInfo {
+                    platform: "bilibili".into(),
+                    room_id: "room".into(),
+                    ..Default::default()
+                },
+                user_info: UserInfo::default(),
+                platform_live_id: "parent".into(),
+                live_id: live.into(),
+                recording: false,
+                enabled: true,
+                storage_id: Some("default".into()),
+            },
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        manager.event_tx.drain_recording(live),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+}
+
+#[tokio::test]
+async fn record_end_only_deletes_confirmed_empty_archives() {
+    let directory = tempfile::tempdir().unwrap();
+    let (manager, rx) = manager(directory.path()).await;
+    let consumer = manager.clone();
+    let events = tokio::spawn(async move { consumer.handle_events(rx).await });
+    for (live, key, bytes) in [
+        ("empty", "events.jsonl", b"".as_slice()),
+        ("orphan", "segment.ts", b"unreported media".as_slice()),
+        ("events", "events.jsonl", b"recoverable events".as_slice()),
+        ("legacy", "entries.log", b"damaged legacy log".as_slice()),
+        (
+            "unknown",
+            "future-format.bin",
+            b"preserve unknown assets".as_slice(),
+        ),
+        ("corrupt", "playlist.m3u8", b"invalid playlist".as_slice()),
+        (
+            "referenced",
+            "playlist.m3u8",
+            b"#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nmissing.ts\n".as_slice(),
+        ),
+    ] {
+        let storage = zero_size_record(&manager, live).await;
+        storage
+            .write("playlist.m3u8", b"#EXTM3U\n#EXT-X-TARGETDURATION:4\n")
+            .await
+            .unwrap();
+        storage.write("cover.jpg", b"setup cover").await.unwrap();
+        storage.write(".sequence", b"0").await.unwrap();
+        storage.write(key, bytes).await.unwrap();
+        end_recording(&manager, live).await;
+        assert!(!manager
+            .db
+            .catalog_recording_active("default")
+            .await
+            .unwrap());
+        if live == "empty" {
+            assert!(manager.db.get_record("room", live).await.is_err());
+            assert!(storage.list("", None, 10).await.unwrap().keys.is_empty());
+        } else {
+            assert_eq!(manager.db.get_record("room", live).await.unwrap().size, 0);
+            assert_eq!(storage.read(key).await.unwrap(), bytes);
+            // Only automatic cleanup is conservative; explicit deletion works.
+            manager
+                .delete_archive(PlatformType::BiliBili, "room", live)
+                .await
+                .unwrap();
+            assert!(storage.list("", None, 10).await.unwrap().keys.is_empty());
+        }
+    }
+    events.abort();
+    let _ = events.await;
+}
+
+struct FailingBackend {
+    local: recording_storage::LocalBackend,
+    media_stat: bool,
+    listing: bool,
+    playlist_read: bool,
+}
+
+#[async_trait::async_trait]
+impl recording_storage::StorageBackend for FailingBackend {
+    async fn read_range(&self, key: &str, range: std::ops::Range<u64>) -> std::io::Result<Vec<u8>> {
+        self.local.read_range(key, range).await
+    }
+
+    async fn list(
+        &self,
+        prefix: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> std::io::Result<recording_storage::ObjectPage> {
+        if self.listing {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        self.local.list(prefix, cursor, limit).await
+    }
+
+    async fn read(&self, key: &str) -> std::io::Result<Vec<u8>> {
+        self.local.read(key).await
+    }
+
+    async fn read_bounded(&self, key: &str, max: usize) -> std::io::Result<Vec<u8>> {
+        if self.playlist_read && key == "playlist.m3u8" {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        self.local.read_bounded(key, max).await
+    }
+
+    async fn write(&self, key: &str, bytes: &[u8]) -> std::io::Result<()> {
+        self.local.write(key, bytes).await
+    }
+
+    async fn remove(&self, key: &str) -> std::io::Result<()> {
+        self.local.remove(key).await
+    }
+
+    async fn stat(&self, key: &str) -> std::io::Result<recording_storage::ObjectMetadata> {
+        if self.media_stat && key.ends_with(".ts") {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        self.local.stat(key).await
+    }
+}
+
+#[tokio::test]
+async fn record_end_cleans_only_verified_empty_object_logs() {
+    let directory = tempfile::tempdir().unwrap();
+    let (manager, rx) = manager(directory.path()).await;
+    let consumer = manager.clone();
+    let events = tokio::spawn(async move { consumer.handle_events(rx).await });
+    for live in [
+        "empty-object-log",
+        "committed-log",
+        "orphan-chunk",
+        "empty-orphan-chunk",
+        "orphan-without-head",
+        "invalid-head",
+        "missing-chunk",
+        "legacy-base",
+        "media",
+    ] {
+        let storage = zero_size_record(&manager, live).await;
+        let root = directory.path().join("cache/bilibili/room").join(live);
+        // This adapter leaves open_log/append_log at their object-only defaults,
+        // exactly like S3/WebDAV; LocalBackend's optimized log would miss the bug.
+        let objects = RecordingStorage::with_backend(
+            Arc::new(FailingBackend {
+                local: recording_storage::LocalBackend::new(&root),
+                media_stat: false,
+                listing: false,
+                playlist_read: false,
+            }),
+            recording_storage::LocalWorkspace::new(&root),
+        );
+        let writer = recorder::danmu::DanmuWriter::from_storage(&objects, "events.jsonl")
+            .await
+            .unwrap();
+        writer.close().await.unwrap();
+        let head = objects
+            .empty_log_head("events.jsonl")
+            .await
+            .unwrap()
+            .unwrap();
+        let chunk = format!(
+            "{}/00000000000000000000",
+            head.strip_suffix("/head").unwrap()
+        );
+        let (key, bytes) = match live {
+            "committed-log" => {
+                objects
+                    .open_log("events.jsonl")
+                    .await
+                    .unwrap()
+                    .append(b"event\n")
+                    .await
+                    .unwrap();
+                (chunk, b"event\n".to_vec())
+            }
+            "orphan-chunk" => (chunk, b"uncommitted event".to_vec()),
+            "empty-orphan-chunk" => (chunk, Vec::new()),
+            "orphan-without-head" => {
+                objects.remove(&head).await.unwrap();
+                (chunk, Vec::new())
+            }
+            "invalid-head" => (head, vec![0; 7]),
+            "missing-chunk" => (head, 1u64.to_le_bytes().to_vec()),
+            "legacy-base" => ("events.jsonl".into(), b"legacy event".to_vec()),
+            "media" => ("segment.ts".into(), b"unreported media".to_vec()),
+            _ => (head, 0u64.to_le_bytes().to_vec()),
+        };
+        objects.write(&key, &bytes).await.unwrap();
+        objects
+            .write("playlist.m3u8", b"#EXTM3U\n#EXT-X-TARGETDURATION:4\n")
+            .await
+            .unwrap();
+        end_recording(&manager, live).await;
+        if live == "empty-object-log" {
+            assert!(manager.db.get_record("room", live).await.is_err());
+            assert!(storage.list("", None, 10).await.unwrap().keys.is_empty());
+        } else {
+            assert_eq!(manager.db.get_record("room", live).await.unwrap().size, 0);
+            assert_eq!(storage.read(&key).await.unwrap(), bytes);
+        }
+    }
+    events.abort();
+    let _ = events.await;
+}
+
+#[tokio::test]
+async fn empty_recording_probe_propagates_storage_failures() {
+    let directory = tempfile::tempdir().unwrap();
+    let storage = RecordingStorage::local(directory.path());
+    storage
+        .write("playlist.m3u8", b"#EXTM3U\n#EXT-X-TARGETDURATION:4\n")
+        .await
+        .unwrap();
+    storage.write("segment.ts", b"media").await.unwrap();
+    for (media_stat, listing, playlist_read) in [
+        (true, false, false),
+        (false, true, false),
+        (false, false, true),
+    ] {
+        let failing = RecordingStorage::with_backend(
+            Arc::new(FailingBackend {
+                local: recording_storage::LocalBackend::new(directory.path()),
+                media_stat,
+                listing,
+                playlist_read,
+            }),
+            recording_storage::LocalWorkspace::new(directory.path()),
+        );
+        assert!(empty_recording::confirmed_empty(&failing).await.is_err());
+        assert_eq!(storage.read("segment.ts").await.unwrap(), b"media");
+    }
+}
+
+#[tokio::test]
+async fn record_end_preserves_native_media_when_progress_stat_fails() {
+    let directory = tempfile::tempdir().unwrap();
+    let (manager, rx) = manager(directory.path()).await;
+    let live = "failed-stat";
+    let storage = zero_size_record(&manager, live).await;
+    let root = directory.path().join("cache/bilibili/room").join(live);
+    let failing = RecordingStorage::with_backend(
+        Arc::new(FailingBackend {
+            local: recording_storage::LocalBackend::new(&root),
+            media_stat: true,
+            listing: false,
+            playlist_read: false,
+        }),
+        recording_storage::LocalWorkspace::new(&root),
+    );
+    let recorder = recorder::core::flv_recorder::FlvRecorder::new(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("crates/ffmpeg_utils/src/hls/fixtures/live.flv")
+            .to_string_lossy()
+            .into_owned(),
+        None,
+        Vec::new(),
+        failing,
+        Arc::new(AtomicBool::new(true)),
+        manager.event_tx.clone(),
+        live.into(),
+    );
+    assert!(matches!(
+        recorder.start().await,
+        Err(RecorderError::IoError(_))
+    ));
+    let bytes = storage.read("playlist.m3u8").await.unwrap();
+    let (_, playlist) = m3u8_rs::parse_media_playlist(&bytes).unwrap();
+    assert!(!playlist.segments.is_empty());
+    let consumer = manager.clone();
+    let events = tokio::spawn(async move { consumer.handle_events(rx).await });
+    end_recording(&manager, live).await;
+    let record = manager.db.get_record("room", live).await.unwrap();
+    assert_eq!(record.size, 0, "failed stat did not report media progress");
+    assert!(record.storage_available);
+    assert!(!manager
+        .db
+        .catalog_recording_active("default")
+        .await
+        .unwrap());
+    assert_eq!(storage.read("playlist.m3u8").await.unwrap(), bytes);
+    for segment in playlist.segments {
+        assert!(!storage.read(&segment.uri).await.unwrap().is_empty());
+    }
+    manager
+        .archive_storage
+        .refresh_catalogs(true)
+        .await
+        .unwrap();
+    assert!(manager.db.get_record("room", live).await.is_ok());
+    events.abort();
+    let _ = events.await;
+}
+
+#[tokio::test]
 async fn failed_catalog_update_retires_aborted_attempts_and_reconnects_without_restart() {
     for next_attempt_queued in [false, true] {
         let directory = tempfile::tempdir().unwrap();

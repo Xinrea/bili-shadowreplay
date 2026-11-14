@@ -16,6 +16,11 @@ const row = (live_id, storage_available = true) => ({
 });
 const plain = value => JSON.parse(JSON.stringify(value));
 async function handlers(path, state) {
+  state = {
+    storageLoading: false, storageError: "",
+    getStorageInitializationStatus: async () => ({ loading: false, error: null }),
+    ...state,
+  };
   const source = await read(path);
   const script = source.match(/<script lang="ts">([\s\S]*?)<\/script>/)[1];
   const parsed = ts.createSourceFile("component.ts", script, ts.ScriptTarget.Latest, true);
@@ -218,3 +223,94 @@ test("dashboard refresh reopens exhausted pagination when new rows displace old 
   await state.update_summary();
   assert.equal(state.recent_records[0].live_id, "after-empty");
 });
+
+test("dashboard leaves recording sections loading while local room/account data is available", async () => {
+  const requests = [];
+  let initializing = true;
+  const state = await handlers("page/Summary.svelte", {
+    summary: {}, total: 0, online: 0, disk_usage: 0, account_count: 0,
+    total_length: 0, today_record_count: 0, offset: 0, hasMore: true,
+    hasNewRecords: false, loading: false, RECORDS_PER_PAGE: 5, recent_records: [],
+    getStorageInitializationStatus: async () => ({ loading: initializing, error: null }),
+    get_static_url: async () => "/cover",
+    invoke: async command => {
+      requests.push(command);
+      if (command === "get_recorder_list") return { count: 2, recorders: [{ room_info: { status: true } }] };
+      if (command === "get_account_count") return 3;
+      if (command === "get_recent_record") return [row("ready")];
+      return 60;
+    },
+  });
+  await state.update_summary();
+  await state.loadMoreRecords();
+  assert.equal(state.storageLoading, true);
+  assert.equal(state.total, 2);
+  assert.equal(state.account_count, 3);
+  assert.deepEqual(requests, ["get_recorder_list", "get_account_count"]);
+
+  initializing = false;
+  await state.update_summary();
+  assert.equal(state.storageLoading, false);
+  assert.equal(state.recent_records[0].live_id, "ready");
+  assert.equal(state.disk_usage, 60);
+});
+
+test("a failed dashboard record fetch releases loading and permits the next refresh", async () => {
+  const state = await handlers("page/Summary.svelte", {
+    loading: false, hasMore: true, hasNewRecords: false, offset: 0,
+    RECORDS_PER_PAGE: 5, recent_records: [],
+    invoke: async () => { throw new Error("offline"); },
+    get_static_url: async () => "/cover",
+  });
+  await assert.rejects(state.loadMoreRecords(), /offline/);
+  assert.equal(state.loading, false);
+  state.invoke = async () => [row("retry")];
+  await state.loadMoreRecords();
+  assert.equal(state.loading, false);
+  assert.equal(state.recent_records[0].live_id, "retry");
+});
+
+for (const [path, refresh] of [
+  ["page/Archive.svelte", "fetchArchives"],
+  ["lib/components/RoomArchiveModal.svelte", "refreshArchives"],
+]) {
+  test(`${path} waits for initialization, refreshes when ready, and settles errors`, async () => {
+    let status = { loading: true, error: null };
+    let archiveReads = 0;
+    let release;
+    const state = await handlers(path, {
+      loading: true, loadError: "", disposed: false, archives: [], rooms: [],
+      room: { room_info: { platform: "bilibili", room_id: "room" } },
+      getStorageInitializationStatus: async () => status,
+      invoke: async () => ({ recorders: [{ room_info: {} }] }),
+      loadRoomArchives: async () => {
+        archiveReads++;
+        return await new Promise(resolve => { release = resolve; });
+      },
+    });
+    await state[refresh]();
+    assert.equal(state.loading, true, "loading must outlive the fast local status request");
+    assert.equal(archiveReads, 0);
+    assert.equal(state.archives.length, 0);
+
+    status = { loading: false, error: null };
+    const pending = state[refresh]();
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    assert.equal(state.loading, true, "keep loading through the actual archive snapshot");
+    release([row("loaded")]);
+    await pending;
+    assert.equal(state.loading, false);
+    assert.equal(state.archives[0].live_id, "loaded");
+
+    status = { loading: false, error: "catalog unavailable" };
+    await state[refresh]();
+    assert.equal(state.loading, false);
+    assert.match(state.loadError, /catalog unavailable/);
+    assert.equal(archiveReads, 1);
+
+    state.getStorageInitializationStatus = async () => { throw new Error("connection lost"); };
+    await state[refresh]();
+    assert.equal(state.loading, false);
+    assert.match(state.loadError, /connection lost/);
+  });
+}

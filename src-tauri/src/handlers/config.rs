@@ -25,13 +25,46 @@ pub async fn get_config(state: state_type!()) -> Result<Config, ()> {
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_storage_initialization_status(
+    state: state_type!(),
+) -> Result<StorageInitializationStatus, String> {
+    // Reading startup state must never wait for the storage configuration gate
+    // or perform remote I/O: the UI calls this while S3 is still connecting.
+    let error = state
+        .db
+        .catalog_startup_error
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    Ok(StorageInitializationStatus {
+        loading: error.is_none()
+            && state
+                .db
+                .catalog_startup_blocked
+                .load(std::sync::atomic::Ordering::Acquire),
+        error,
+    })
+}
+
+#[derive(serde::Serialize)]
+pub struct StorageInitializationStatus {
+    pub loading: bool,
+    pub error: Option<String>,
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_storage_catalog_status(
     state: state_type!(),
     refresh: Option<bool>,
 ) -> Result<Vec<crate::database::catalog::runtime::Status>, String> {
     // An active recording/transfer may legitimately defer a refresh. Preserve
     // its last status rather than stopping it for a settings-page health check.
-    if refresh.unwrap_or(false) {
+    if refresh.unwrap_or(false)
+        && !state
+            .db
+            .catalog_startup_blocked
+            .load(std::sync::atomic::Ordering::Acquire)
+    {
         if let Err(error) = state
             .recorder_manager
             .archive_storage()
@@ -196,6 +229,7 @@ pub async fn set_storage_config(
     expected: StorageConfig,
     credentials: Option<std::collections::HashMap<String, recording_storage::S3Credentials>>,
 ) -> Result<StorageConfig, String> {
+    state.db.ensure_catalog_startup_complete()?;
     #[cfg(feature = "headless")]
     if state.readonly {
         return Err("只读模式不能修改录制存储设置".into());
@@ -228,6 +262,81 @@ mod storage_settings_tests {
     use crate::webhook::poster::{WebhookConfig, WebhookPoster};
     use std::sync::Arc;
     use tokio::sync::RwLock;
+
+    #[tokio::test]
+    async fn initialization_status_stays_responsive_and_settles_success_or_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = fixture(directory.path()).await;
+        state
+            .db
+            .catalog_startup_blocked
+            .store(true, std::sync::atomic::Ordering::Release);
+        // Background initialization can be holding configuration locks during
+        // slow I/O; polling its status must still complete immediately.
+        let config_guard = state.config.write().await;
+        let status = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            get_storage_initialization_status(state.clone()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(status.loading);
+        assert!(status.error.is_none());
+        assert!(state.db.ensure_catalog_startup_complete().is_err());
+        let storage = config_guard.storage.clone();
+        let error = set_storage_config(state.clone(), storage.clone(), storage, None)
+            .await
+            .unwrap_err();
+        assert!(error.contains("元数据尚未就绪"));
+        let error = state
+            .recorder_manager
+            .add_recorder_with_selection(
+                &recorder::account::Account::default(),
+                recorder::platforms::PlatformType::Rtmp,
+                "startup",
+                "",
+                true,
+                Some(None),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("元数据尚未就绪"));
+        let error = crate::handlers::storage_transfer::start_storage_transfer(
+            state.clone(),
+            "default".into(),
+            "other".into(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("元数据尚未就绪"));
+
+        *state.db.catalog_startup_error.write().unwrap() = Some("catalog failed".into());
+        let status = get_storage_initialization_status(state.clone())
+            .await
+            .unwrap();
+        assert!(
+            !status.loading,
+            "a fatal startup error must end the spinner"
+        );
+        assert_eq!(status.error.as_deref(), Some("catalog failed"));
+        assert!(state
+            .db
+            .catalog_startup_blocked
+            .load(std::sync::atomic::Ordering::Acquire));
+
+        *state.db.catalog_startup_error.write().unwrap() = None;
+        state
+            .db
+            .catalog_startup_blocked
+            .store(false, std::sync::atomic::Ordering::Release);
+        let status = get_storage_initialization_status(state.clone())
+            .await
+            .unwrap();
+        assert!(!status.loading);
+        assert!(status.error.is_none());
+        assert!(state.db.ensure_catalog_startup_complete().is_ok());
+    }
 
     #[tokio::test]
     #[ignore = "requires RustFS and explicit S3_TEST_* credentials for the test harness"]

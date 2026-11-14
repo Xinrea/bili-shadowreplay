@@ -865,6 +865,7 @@ impl RecorderManager {
         selection: Option<Option<String>>,
         require_catalog: bool,
     ) -> Result<String, RecorderManagerError> {
+        self.db.ensure_catalog_startup_complete()?;
         let normalized_room_id = match platform {
             PlatformType::Twitch => recorder::platforms::twitch::api::normalize_channel(room_id)
                 .map_err(RecorderManagerError::RecorderError)?,
@@ -1108,6 +1109,7 @@ impl RecorderManager {
         platform: PlatformType,
         room_id: &str,
     ) -> Result<RecorderRow, RecorderManagerError> {
+        self.db.ensure_catalog_startup_complete()?;
         // Catalog entries stay visible when startup could not construct the
         // recorder (for example the platform account is missing). Those rooms
         // are not in the live map, but their archives are real and the room

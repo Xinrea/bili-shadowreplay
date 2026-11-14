@@ -262,6 +262,14 @@ struct RequestSettingsRequest {
     target: Option<String>,
 }
 
+async fn handler_get_storage_initialization_status(
+    state: axum::extract::State<State>,
+) -> Result<Json<ApiResponse<crate::handlers::config::StorageInitializationStatus>>, ApiError> {
+    Ok(Json(ApiResponse::success(
+        crate::handlers::config::get_storage_initialization_status(state.0).await?,
+    )))
+}
+
 async fn handler_request_settings(
     state: axum::extract::State<State>,
     Json(param): Json<RequestSettingsRequest>,
@@ -3112,6 +3120,10 @@ pub async fn start_api_server(state: State) {
     app = app
         // Config commands
         .route("/api/get_config", post(handler_get_config))
+        .route(
+            "/api/get_storage_initialization_status",
+            post(handler_get_storage_initialization_status),
+        )
         .route(
             "/api/get_storage_catalog_status",
             post(handler_get_storage_catalog_status),

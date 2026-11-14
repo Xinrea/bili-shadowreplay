@@ -29,6 +29,7 @@ pub struct Database {
     storage_initialized: tokio::sync::OnceCell<()>,
     pub(crate) catalogs: std::sync::OnceLock<std::sync::Arc<catalog::runtime::CatalogRuntime>>,
     pub(crate) catalog_startup_blocked: std::sync::atomic::AtomicBool,
+    pub(crate) catalog_startup_error: std::sync::RwLock<Option<String>>,
 }
 
 #[derive(Error, Debug)]
@@ -71,6 +72,20 @@ impl From<DatabaseError> for String {
 mod event_tests;
 
 impl Database {
+    /// The desktop accepts commands while legacy scans/cutover are running.
+    /// Keep user changes from starting a producer or changing its source then.
+    pub fn ensure_catalog_startup_complete(&self) -> Result<(), DatabaseError> {
+        if self
+            .catalog_startup_blocked
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(DatabaseError::Catalog(
+                "存储元数据尚未就绪，请稍后重试".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn notify_change(&self, change: DataChange) {
         self.events.publish(AppEvent::DataChanged(change));
     }
@@ -91,6 +106,7 @@ impl Database {
             storage_initialized: tokio::sync::OnceCell::new(),
             catalogs: std::sync::OnceLock::new(),
             catalog_startup_blocked: std::sync::atomic::AtomicBool::new(false),
+            catalog_startup_error: std::sync::RwLock::new(None),
         }
     }
 }

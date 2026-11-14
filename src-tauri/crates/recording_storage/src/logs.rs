@@ -19,6 +19,7 @@ use std::io;
 use crate::{validate_key, StorageBackend};
 
 pub const LOG_CHUNK_BYTES: usize = 64 * 1024;
+pub const LOG_METADATA_DIR: &str = ".recording-logs";
 const LOG_READ_CONCURRENCY: usize = 8;
 
 fn directory(key: &str) -> io::Result<String> {
@@ -39,7 +40,7 @@ fn directory(key: &str) -> io::Result<String> {
         .map(|part| std::str::from_utf8(part).expect("hex is ASCII"))
         .collect::<Vec<_>>()
         .join("/");
-    let directory = format!(".recording-logs/{components}/log");
+    let directory = format!("{LOG_METADATA_DIR}/{components}/log");
     Ok(if parent.is_empty() {
         directory
     } else {
@@ -81,6 +82,29 @@ pub(crate) async fn open<B: StorageBackend + ?Sized>(backend: &B, key: &str) -> 
             .await?;
     }
     Ok(())
+}
+
+pub(crate) async fn empty_head<B: StorageBackend + ?Sized>(
+    backend: &B,
+    key: &str,
+) -> io::Result<Option<String>> {
+    if count(backend, key).await? != Some(0) {
+        return Ok(None);
+    }
+    // A zero count does not rule out a legacy base or an interrupted append.
+    match backend.stat(key).await {
+        Ok(meta) if meta.size != 0 => return Ok(None),
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let directory = directory(key)?;
+    let head = format!("{directory}/head");
+    let page = backend.list(&directory, None, 2).await?;
+    if page.next_cursor.is_some() || page.keys != [head.clone()] {
+        return Ok(None);
+    }
+    Ok(Some(head))
 }
 
 pub(crate) async fn append<B: StorageBackend + ?Sized>(

@@ -283,6 +283,90 @@ impl recording_storage::StorageBackend for FailingBackend {
 }
 
 #[tokio::test]
+async fn record_end_cleans_only_verified_empty_object_logs() {
+    let directory = tempfile::tempdir().unwrap();
+    let (manager, rx) = manager(directory.path()).await;
+    let consumer = manager.clone();
+    let events = tokio::spawn(async move { consumer.handle_events(rx).await });
+    for live in [
+        "empty-object-log",
+        "committed-log",
+        "orphan-chunk",
+        "empty-orphan-chunk",
+        "orphan-without-head",
+        "invalid-head",
+        "missing-chunk",
+        "legacy-base",
+        "media",
+    ] {
+        let storage = zero_size_record(&manager, live).await;
+        let root = directory.path().join("cache/bilibili/room").join(live);
+        // This adapter leaves open_log/append_log at their object-only defaults,
+        // exactly like S3/WebDAV; LocalBackend's optimized log would miss the bug.
+        let objects = RecordingStorage::with_backend(
+            Arc::new(FailingBackend {
+                local: recording_storage::LocalBackend::new(&root),
+                media_stat: false,
+                listing: false,
+                playlist_read: false,
+            }),
+            recording_storage::LocalWorkspace::new(&root),
+        );
+        let writer = recorder::danmu::DanmuWriter::from_storage(&objects, "events.jsonl")
+            .await
+            .unwrap();
+        writer.close().await.unwrap();
+        let head = objects
+            .empty_log_head("events.jsonl")
+            .await
+            .unwrap()
+            .unwrap();
+        let chunk = format!(
+            "{}/00000000000000000000",
+            head.strip_suffix("/head").unwrap()
+        );
+        let (key, bytes) = match live {
+            "committed-log" => {
+                objects
+                    .open_log("events.jsonl")
+                    .await
+                    .unwrap()
+                    .append(b"event\n")
+                    .await
+                    .unwrap();
+                (chunk, b"event\n".to_vec())
+            }
+            "orphan-chunk" => (chunk, b"uncommitted event".to_vec()),
+            "empty-orphan-chunk" => (chunk, Vec::new()),
+            "orphan-without-head" => {
+                objects.remove(&head).await.unwrap();
+                (chunk, Vec::new())
+            }
+            "invalid-head" => (head, vec![0; 7]),
+            "missing-chunk" => (head, 1u64.to_le_bytes().to_vec()),
+            "legacy-base" => ("events.jsonl".into(), b"legacy event".to_vec()),
+            "media" => ("segment.ts".into(), b"unreported media".to_vec()),
+            _ => (head, 0u64.to_le_bytes().to_vec()),
+        };
+        objects.write(&key, &bytes).await.unwrap();
+        objects
+            .write("playlist.m3u8", b"#EXTM3U\n#EXT-X-TARGETDURATION:4\n")
+            .await
+            .unwrap();
+        end_recording(&manager, live).await;
+        if live == "empty-object-log" {
+            assert!(manager.db.get_record("room", live).await.is_err());
+            assert!(storage.list("", None, 10).await.unwrap().keys.is_empty());
+        } else {
+            assert_eq!(manager.db.get_record("room", live).await.unwrap().size, 0);
+            assert_eq!(storage.read(&key).await.unwrap(), bytes);
+        }
+    }
+    events.abort();
+    let _ = events.await;
+}
+
+#[tokio::test]
 async fn empty_recording_probe_propagates_storage_failures() {
     let directory = tempfile::tempdir().unwrap();
     let storage = RecordingStorage::local(directory.path());

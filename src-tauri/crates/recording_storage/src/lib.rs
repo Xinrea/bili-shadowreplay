@@ -21,7 +21,7 @@ mod s3;
 mod transfer;
 mod webdav;
 pub use credentials::StorageCredentials;
-pub use logs::LOG_CHUNK_BYTES;
+pub use logs::{LOG_CHUNK_BYTES, LOG_METADATA_DIR};
 pub use object_transfer::{ObjectTransfer, ObjectTransferManifest};
 pub use s3::{S3Backend, S3Config, S3Credentials};
 pub use transfer::{
@@ -1048,6 +1048,16 @@ impl RecordingStorage {
     pub async fn read_log(&self, key: &str) -> io::Result<Vec<u8>> {
         validate_key(key)?;
         self.backend.read_log(key).await
+    }
+
+    /// Return the only disposable metadata object of an empty object-format log.
+    /// Requires a valid zero-count head, no chunks (including uncommitted ones),
+    /// and an absent/empty legacy base. Local-format logs have no head.
+    /// Callers must exclude writers through inspection and cleanup, and still
+    /// inspect all other archive assets before deciding to delete the archive.
+    pub async fn empty_log_head(&self, key: &str) -> io::Result<Option<String>> {
+        validate_key(key)?;
+        logs::empty_head(self.backend.as_ref(), key).await
     }
 
     pub async fn log_exists(&self, key: &str) -> io::Result<bool> {

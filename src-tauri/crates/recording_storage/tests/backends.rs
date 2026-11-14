@@ -16,6 +16,7 @@ struct Memory {
     writes: Mutex<Vec<(String, usize)>>,
     fail_remove: Mutex<Option<String>>,
     fail_write: Mutex<Option<String>>,
+    fail_read: Mutex<Option<String>>,
     pause_next_write: std::sync::atomic::AtomicBool,
     started: tokio::sync::Notify,
     release: tokio::sync::Notify,
@@ -44,6 +45,9 @@ impl StorageBackend for Memory {
     }
 
     async fn read_bounded(&self, key: &str, max: usize) -> io::Result<Vec<u8>> {
+        if self.fail_read.lock().unwrap().as_deref() == Some(key) {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
         let objects = self.objects.lock().unwrap();
         let bytes = objects.get(key).ok_or(io::ErrorKind::NotFound)?;
         if bytes.len() > max {
@@ -113,6 +117,86 @@ impl StorageBackend for Memory {
         };
         Ok(ObjectPage { keys, next_cursor })
     }
+}
+
+#[tokio::test]
+async fn empty_log_head_requires_zero_count_without_base_or_orphan_chunks() {
+    let backend = Arc::new(Memory::default());
+    let directory = tempfile::tempdir().unwrap();
+    let storage =
+        RecordingStorage::with_backend(backend.clone(), LocalWorkspace::new(directory.path()));
+    for key in ["events.jsonl", "nested/events.jsonl"] {
+        assert!(storage.empty_log_head(key).await.unwrap().is_none());
+        let log = storage.open_log(key).await.unwrap();
+        let head = storage.empty_log_head(key).await.unwrap().unwrap();
+        assert_eq!(storage.read(&head).await.unwrap(), 0u64.to_le_bytes());
+        storage.write(key, b"legacy event").await.unwrap();
+        assert!(storage.empty_log_head(key).await.unwrap().is_none());
+        storage.write(key, b"").await.unwrap();
+        assert_eq!(
+            storage.empty_log_head(key).await.unwrap(),
+            Some(head.clone())
+        );
+
+        let chunk = format!(
+            "{}/00000000000000000000",
+            head.strip_suffix("/head").unwrap()
+        );
+        for bytes in [b"uncommitted event".as_slice(), b"".as_slice()] {
+            storage.write(&chunk, bytes).await.unwrap();
+            assert!(storage.empty_log_head(key).await.unwrap().is_none());
+            storage.remove(&chunk).await.unwrap();
+        }
+        log.append(b"committed event").await.unwrap();
+        assert!(storage.empty_log_head(key).await.unwrap().is_none());
+        storage.remove(&chunk).await.unwrap();
+        assert!(
+            storage.empty_log_head(key).await.unwrap().is_none(),
+            "a nonzero head with a missing chunk is not empty"
+        );
+    }
+    let local = RecordingStorage::local(directory.path());
+    local.open_log("events.jsonl").await.unwrap();
+    assert!(local
+        .empty_log_head("events.jsonl")
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn empty_log_head_propagates_invalid_metadata_and_read_failures() {
+    let backend = Arc::new(Memory::default());
+    let directory = tempfile::tempdir().unwrap();
+    let storage =
+        RecordingStorage::with_backend(backend.clone(), LocalWorkspace::new(directory.path()));
+    storage.open_log("events.jsonl").await.unwrap();
+    let head = storage
+        .empty_log_head("events.jsonl")
+        .await
+        .unwrap()
+        .unwrap();
+    for bytes in [vec![], vec![0; 7], vec![0; 9]] {
+        storage.write(&head, &bytes).await.unwrap();
+        assert_eq!(
+            storage
+                .empty_log_head("events.jsonl")
+                .await
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+    storage.write(&head, &0u64.to_le_bytes()).await.unwrap();
+    *backend.fail_read.lock().unwrap() = Some(head);
+    assert_eq!(
+        storage
+            .empty_log_head("events.jsonl")
+            .await
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::TimedOut
+    );
 }
 
 #[tokio::test]

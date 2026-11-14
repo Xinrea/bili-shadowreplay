@@ -1,8 +1,11 @@
 //! Conservative proof for automatic cleanup, not explicit user deletion.
-use recording_storage::RecordingStorage;
+use recording_storage::{RecordingStorage, LOG_METADATA_DIR};
 use std::io;
 
 pub(super) async fn confirmed_empty(storage: &RecordingStorage) -> io::Result<bool> {
+    // Remote logs create a nonempty head even before the first event. Ask the
+    // protocol owner to verify it rather than guessing from its physical size.
+    let empty_event_head = storage.empty_log_head("events.jsonl").await?;
     let mut cursor = None;
     let mut empty_playlist = false;
     loop {
@@ -11,6 +14,10 @@ pub(super) async fn confirmed_empty(storage: &RecordingStorage) -> io::Result<bo
             match key.as_str() {
                 // These are created during setup even before any media arrives.
                 "cover.jpg" | ".sequence" => {}
+                key if empty_event_head.as_deref() == Some(key) => {}
+                // Preserve every other log metadata/chunk object, even zero-byte
+                // orphan chunks or a different log whose head was not verified.
+                key if key.split('/').any(|part| part == LOG_METADATA_DIR) => return Ok(false),
                 "playlist.m3u8" => {
                     let bytes = storage.read_bounded(&key, 64 * 1024 * 1024).await?;
                     let (remaining, playlist) =

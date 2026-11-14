@@ -102,6 +102,46 @@ impl Database {
         })
     }
 
+    pub async fn upload_file_in_use(&self, file: &str) -> Result<bool, DatabaseError> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM uploads WHERE source = 'file' AND file = ?)",
+        )
+        .bind(file)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    /// Relocation is all-or-nothing and must not race a claim to post, deletion,
+    /// or a cover edit. Unrelated form edits do not invalidate the source snapshot.
+    pub async fn relocate_upload_sources(
+        &self,
+        rows: &[(UploadRow, UploadRow)],
+    ) -> Result<bool, DatabaseError> {
+        let mut tx = self.pool.begin().await?;
+        for (old, next) in rows {
+            let updated = sqlx::query(
+                "UPDATE uploads SET file=?,cover=?,cover43=? WHERE id=? AND source='file' \
+                 AND file=? AND cover=? AND cover43=? AND status NOT IN ('exporting','posting')",
+            )
+            .bind(&next.file)
+            .bind(&next.cover)
+            .bind(&next.cover43)
+            .bind(old.id)
+            .bind(&old.file)
+            .bind(&old.cover)
+            .bind(&old.cover43)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            if updated != 1 {
+                return Ok(false);
+            }
+        }
+        tx.commit().await?;
+        self.notify_change(DataChange::Uploads);
+        Ok(true)
+    }
+
     // Each update writes only its own columns. Edits of a draft only apply
     // while it is still a draft or failed, and its status only moves through
     // the posting job, so a save in flight cannot undo a claim to post it.

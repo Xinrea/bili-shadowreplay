@@ -134,24 +134,26 @@ impl FlvRecorder {
                 }
             }
         };
-        if let Some(error) = update_error {
-            return Err(error);
+        let result = match update_error.or_else(|| native_storage.take_error().map(Into::into)) {
+            Some(error) => Err(error),
+            None => result.map_err(RecorderError::FfmpegError),
+        };
+        // A later storage failure can leave committed segments before the first
+        // progress poll. Always account for those before RecordEnd, which uses
+        // the reported size to decide whether an archive is empty.
+        let updates = self.publish_updates(&mut processed_segments).await;
+        // Attempt both finalization steps even if one fails, without replacing
+        // the original recording error with a secondary cleanup error.
+        let close = async {
+            if self.storage.exists("playlist.m3u8").await? {
+                let mut playlist =
+                    HlsPlaylist::from_storage(self.storage.clone(), "playlist.m3u8").await?;
+                playlist.close().await?;
+            }
+            Ok(())
         }
-        if let Some(error) = native_storage.take_error() {
-            return Err(error.into());
-        }
-        // The native worker can finish before the first poll and also closes
-        // its pending final segment on a graceful stop. Account for it once.
-        self.publish_updates(&mut processed_segments).await?;
-        // A disconnected push source may report an I/O error after the native
-        // muxer has flushed its tail. Its replay must still be a closed VOD.
-        if self.storage.exists("playlist.m3u8").await? {
-            let mut playlist =
-                HlsPlaylist::from_storage(self.storage.clone(), "playlist.m3u8").await?;
-            playlist.close().await?;
-        }
-
-        result.map_err(RecorderError::FfmpegError)
+        .await;
+        result.and(updates).and(close)
     }
 
     async fn publish_updates(&self, processed_segments: &mut usize) -> Result<(), RecorderError> {
@@ -219,6 +221,8 @@ mod tests {
     struct MemoryBackend {
         objects: Mutex<HashMap<String, Vec<u8>>>,
         reject_segments: bool,
+        reject_after_first_segment: bool,
+        reject_close: bool,
     }
 
     #[async_trait::async_trait]
@@ -283,9 +287,18 @@ mod tests {
                 return Err(io::ErrorKind::PermissionDenied.into());
             }
             let mut objects = self.objects.lock().unwrap();
+            if self.reject_after_first_segment
+                && key.ends_with(".ts")
+                && objects.keys().any(|key| key.ends_with(".ts"))
+            {
+                return Err(io::ErrorKind::PermissionDenied.into());
+            }
             if key == "playlist.m3u8" {
                 let (_, playlist) = m3u8_rs::parse_media_playlist(bytes)
                     .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+                if self.reject_close && playlist.end_list {
+                    return Err(io::ErrorKind::ConnectionReset.into());
+                }
                 // Check EVERY snapshot at publication, not only the final VOD.
                 for segment in playlist.segments {
                     assert!(
@@ -398,6 +411,61 @@ mod tests {
         assert!(playlist.segments.is_empty());
         assert!(!workspace.exists());
         assert!(enabled.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn later_storage_failure_reports_committed_media_even_when_close_also_fails() {
+        for reject_close in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let backend = Arc::new(MemoryBackend {
+                reject_after_first_segment: true,
+                reject_close,
+                ..Default::default()
+            });
+            let storage =
+                RecordingStorage::with_backend(backend, LocalWorkspace::new(directory.path()));
+            let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../ffmpeg_utils/src/hls/fixtures/live.flv");
+            let (events, mut received) = broadcast::channel(16);
+            let recorder = FlvRecorder::new(
+                fixture.to_string_lossy().into_owned(),
+                None,
+                Vec::new(),
+                storage.clone(),
+                Arc::new(AtomicBool::new(true)),
+                events,
+                "partial-recording".into(),
+            );
+            assert!(matches!(
+                recorder.start().await,
+                Err(RecorderError::IoError(error))
+                    if error.kind() == io::ErrorKind::PermissionDenied
+            ));
+            let bytes = storage.read("playlist.m3u8").await.unwrap();
+            let (_, playlist) = m3u8_rs::parse_media_playlist(&bytes).unwrap();
+            assert_eq!(playlist.segments.len(), 1);
+            assert_eq!(playlist.end_list, !reject_close);
+            let expected_size = storage.size(&playlist.segments[0].uri).await.unwrap();
+            let mut reported_size = 0;
+            let mut reported_duration = 0.0;
+            while let Ok(event) = received.try_recv() {
+                if let RecorderEvent::RecordUpdate {
+                    cached_size_bytes,
+                    duration_secs,
+                    ..
+                } = event
+                {
+                    reported_size += cached_size_bytes;
+                    reported_duration += duration_secs;
+                }
+            }
+            assert!(expected_size > 0);
+            assert_eq!(
+                reported_size, expected_size,
+                "report committed bytes exactly once"
+            );
+            assert_eq!(reported_duration, f64::from(playlist.segments[0].duration));
+        }
     }
 
     #[tokio::test]

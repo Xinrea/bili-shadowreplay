@@ -357,9 +357,6 @@ impl CatalogLocation {
             .map_err(io::Error::other)?
     }
     async fn open_writer_inner(self, create: bool) -> io::Result<CatalogWriter> {
-        // Serialize first-time identity publication within this process too.
-        static OPEN_GATE: OnceLock<Mutex<()>> = OnceLock::new();
-        let _opening = OPEN_GATE.get_or_init(|| Mutex::new(())).lock().await;
         // Local ownership is released automatically when the process exits.
         let local_lock = if let Some(root) = &self.local_root {
             let root = root.clone();
@@ -393,16 +390,28 @@ impl CatalogLocation {
         let identity = match self.identity().await {
             Ok(identity) => identity,
             Err(error) if create && error.kind() == io::ErrorKind::NotFound => {
-                let existing = self.store.snapshot(".bsr").await?;
-                if existing.keys().any(|key| key != ".bsr/writer.lock") {
-                    return Err(invalid("catalog contents exist without storage identity"));
+                // Only first-time identity publication needs a process-wide
+                // gate. Reopening/scanning an existing remote catalog must not
+                // prevent unrelated stores from opening.
+                static OPEN_GATE: OnceLock<Mutex<()>> = OnceLock::new();
+                let _opening = OPEN_GATE.get_or_init(|| Mutex::new(())).lock().await;
+                // Another location may have initialized it while we waited.
+                match self.identity().await {
+                    Ok(identity) => identity,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        let existing = self.store.snapshot(".bsr").await?;
+                        if existing.keys().any(|key| key != ".bsr/writer.lock") {
+                            return Err(invalid("catalog contents exist without storage identity"));
+                        }
+                        let identity = StorageIdentity {
+                            format_version: FORMAT_VERSION,
+                            storage_uuid: Uuid::new_v4(),
+                        };
+                        self.write_json(IDENTITY_PATH, &identity, 4096).await?;
+                        identity
+                    }
+                    Err(error) => return Err(error),
                 }
-                let identity = StorageIdentity {
-                    format_version: FORMAT_VERSION,
-                    storage_uuid: Uuid::new_v4(),
-                };
-                self.write_json(IDENTITY_PATH, &identity, 4096).await?;
-                identity
             }
             Err(error) => return Err(error),
         };

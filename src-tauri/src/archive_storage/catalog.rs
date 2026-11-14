@@ -116,11 +116,11 @@ impl ArchiveStorage {
         {
             return Ok(());
         }
-        let _gate = self
+        let gate = self
             .configuration_gate
             .try_write()
             .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "存储正在使用中"))?;
-        self.reconcile_catalogs(force).await
+        self.reconcile_catalogs(force, gate).await
     }
 
     pub(super) async fn backend_in_use(&self, id: &str) -> io::Result<bool> {
@@ -154,7 +154,11 @@ impl ArchiveStorage {
         }))
     }
 
-    pub(super) async fn reconcile_catalogs(&self, force: bool) -> io::Result<()> {
+    pub(super) async fn reconcile_catalogs(
+        &self,
+        force: bool,
+        gate: tokio::sync::RwLockWriteGuard<'_, ()>,
+    ) -> io::Result<()> {
         if self
             .catalog_startup_deferred
             .load(std::sync::atomic::Ordering::Acquire)
@@ -187,6 +191,7 @@ impl ArchiveStorage {
                 runtime.detach(&id).await.map_err(database_error)?;
             }
         }
+        let mut reconnect = Vec::new();
         for id in config.backends.keys() {
             if self.backend_in_use(id).await? {
                 continue;
@@ -219,7 +224,20 @@ impl ArchiveStorage {
             {
                 continue;
             }
+            // While producers are excluded, revoke access to this backend.
+            // New recording IDs also fail writable() until attach succeeds.
+            self.db
+                .catalog_failed(id, "正在连接存储目录")
+                .await
+                .map_err(database_error)?;
             runtime.detach(id).await.map_err(database_error)?;
+            reconnect.push(id);
+        }
+        // Keep configuration/credentials stable, but do not exclude ordinary
+        // readers or new producers on OTHER backends during remote I/O.
+        // A second refresh/config replacement cannot race this read guard.
+        let _configuration = tokio::sync::RwLockWriteGuard::downgrade(gate);
+        let results = futures::future::join_all(reconnect.into_iter().map(|id| async move {
             if let Err(error) = self.attach_catalog(id).await {
                 self.db
                     .catalog_failed(id, &error.to_string())
@@ -227,6 +245,13 @@ impl ArchiveStorage {
                     .map_err(database_error)?;
                 log::warn!("Storage catalog {id} unavailable: {error}");
             }
+            Ok::<_, io::Error>(())
+        }))
+        .await;
+        // Join every scan before releasing configuration protection, including
+        // when persisting an error for one backend fails.
+        for result in results {
+            result?;
         }
         Ok(())
     }

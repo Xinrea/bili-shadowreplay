@@ -172,19 +172,78 @@ pub fn migrate_entry(entry: &Path, dst_root: &Path) -> std::io::Result<MigrateOu
         crate::handlers::utils::copy_dir_all(entry, &target)?;
         std::fs::remove_dir_all(entry)?;
     } else {
-        std::fs::copy(entry, &target)?;
+        // A failed cross-device copy must not leave a partial destination that
+        // a later retry would mistake for an already migrated clip.
+        let temporary = tempfile::NamedTempFile::new_in(dst_root)?;
+        std::fs::copy(entry, temporary.path())?;
+        temporary.as_file().sync_all()?;
+        temporary
+            .persist_noclobber(&target)
+            .map_err(|error| error.error)?;
         std::fs::remove_file(entry)?;
     }
 
     Ok(MigrateOutcome::Copied)
 }
 
-/// Migrate every entry in `plan` into `dst_root`.
-///
-/// Returns the number of entries actually moved. A failure on one entry aborts
-/// the run: entries already moved stay at the destination, and the rest stay at
-/// the source, so no data is lost either way.
-pub fn run_plan(plan: &MigrationPlan, dst_root: &Path) -> std::io::Result<usize> {
+/// Keep moves provisional until the caller has published the new output path.
+/// Rollback never moves entries that were skipped because a target existed.
+pub struct PendingMigration {
+    moved: Vec<(PathBuf, PathBuf)>,
+}
+
+impl PendingMigration {
+    pub fn commit(mut self) -> usize {
+        let count = self.moved.len();
+        self.moved.clear();
+        count
+    }
+
+    pub fn rollback(mut self) -> std::io::Result<()> {
+        self.restore()
+    }
+
+    fn restore(&mut self) -> std::io::Result<()> {
+        let mut errors = Vec::new();
+        for (original, current) in std::mem::take(&mut self.moved).into_iter().rev() {
+            let result = migrate_entry(&current, original.parent().expect("planned file parent"));
+            match result {
+                Ok(MigrateOutcome::Renamed | MigrateOutcome::Copied) => {}
+                Ok(MigrateOutcome::SkippedExists) => errors.push(format!(
+                    "{} already exists; preserved {}",
+                    original.display(),
+                    current.display()
+                )),
+                Err(error) => errors.push(format!(
+                    "{} -> {}: {error}",
+                    current.display(),
+                    original.display()
+                )),
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(format!(
+                "Output migration rollback failed: {}",
+                errors.join("; ")
+            )))
+        }
+    }
+}
+
+impl Drop for PendingMigration {
+    fn drop(&mut self) {
+        if let Err(error) = self.restore() {
+            log::error!("{error}");
+        }
+    }
+}
+
+/// Move every planned entry provisionally; explicitly commit only after path
+/// publication succeeds. Failure restores earlier moves instead of stranding
+/// filename-based material references under an unpublished output root.
+pub fn run_plan(plan: &MigrationPlan, dst_root: &Path) -> std::io::Result<PendingMigration> {
     if !plan.skipped.is_empty() {
         log::info!(
             "Leaving {} non-BSR entries in place: {:?}",
@@ -197,24 +256,25 @@ pub fn run_plan(plan: &MigrationPlan, dst_root: &Path) -> std::io::Result<usize>
         );
     }
 
-    let mut moved = 0;
+    let mut pending = PendingMigration { moved: Vec::new() };
     for entry in &plan.entries {
         match migrate_entry(entry, dst_root) {
             Ok(MigrateOutcome::SkippedExists) => {}
-            Ok(_) => moved += 1,
+            Ok(_) => pending.moved.push((
+                entry.clone(),
+                dst_root.join(entry.file_name().expect("planned file name")),
+            )),
             Err(e) => {
                 log::error!("Failed to migrate {}: {e}", entry.display());
+                if let Err(rollback) = pending.rollback() {
+                    return Err(std::io::Error::other(format!("{e}; {rollback}")));
+                }
                 return Err(e);
             }
         }
     }
 
-    log::info!(
-        "Migrated {moved}/{} entries to {}",
-        plan.entries.len(),
-        dst_root.display()
-    );
-    Ok(moved)
+    Ok(pending)
 }
 
 #[cfg(test)]
@@ -370,6 +430,26 @@ mod tests {
     }
 
     #[test]
+    fn uncommitted_output_moves_are_restored_without_touching_existing_targets() {
+        let src = TempDir::new("rollback_src");
+        let dst = TempDir::new("rollback_dst");
+        src.file("clip.mp4");
+        src.file("clip.srt");
+        src.file("existing.mp4");
+        let target = dst.file("existing.mp4");
+        std::fs::write(&target, b"unrelated target").unwrap();
+        let plan = plan_output_migration(&src.0, &dst.0);
+        let pending = run_plan(&plan, &dst.0).unwrap();
+        assert!(!src.0.join("clip.mp4").exists());
+        pending.rollback().unwrap();
+        assert!(src.0.join("clip.mp4").is_file());
+        assert!(src.0.join("clip.srt").is_file());
+        assert!(src.0.join("existing.mp4").is_file());
+        assert!(!dst.0.join("clip.mp4").exists());
+        assert_eq!(std::fs::read(target).unwrap(), b"unrelated target");
+    }
+
+    #[test]
     fn migrate_entry_moves_file_and_skips_existing() {
         let src = TempDir::new("move_src");
         let dst = TempDir::new("move_dst");
@@ -400,7 +480,7 @@ mod tests {
         src.file("我的视频.mp4");
 
         let plan = plan_cache_migration(&src.0, &dst.0);
-        let moved = run_plan(&plan, &dst.0).unwrap();
+        let moved = run_plan(&plan, &dst.0).unwrap().commit();
 
         assert_eq!(moved, 1);
         assert!(dst

@@ -1,5 +1,6 @@
 fail_fast: true
 
+# Keep commit-time checks to formatting and linting; cargo tests run in Actions.
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
@@ -32,17 +33,3 @@ repos:
         types: [rust]
         pass_filenames: false
         entry: cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --features headless
-
-      - id: cargo-test
-        name: cargo test
-        language: system
-        types: [rust]
-        pass_filenames: false
-        entry: cargo test --manifest-path src-tauri/Cargo.toml
-
-      - id: cargo-test-headless
-        name: cargo test headless
-        language: system
-        types: [rust]
-        pass_filenames: false
-        entry: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features headless

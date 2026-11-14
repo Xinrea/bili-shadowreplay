@@ -295,7 +295,7 @@ mod tests {
         };
         use tokio::sync::RwLock;
 
-        let (db, _) = database().await;
+        let (db, pool) = database().await;
         let root = tempfile::tempdir().unwrap();
         let output = root.path().join("output");
         let config = Arc::new(RwLock::new(
@@ -350,6 +350,93 @@ mod tests {
         assert!(cover.is_file());
         state.temp_storage = TempStorage::new().unwrap();
         assert!(!input.exists());
+        {
+            // Cover writes and posting claims must wait before reading any
+            // paths or changing a row while output relocation owns the gate.
+            let _change = output_change().await;
+            let deadline = std::time::Duration::from_millis(30);
+            assert!(tokio::time::timeout(
+                deadline,
+                super::super::update_upload_cover(
+                    state.clone(),
+                    created.upload.id,
+                    "invalid".into(),
+                    None,
+                )
+            )
+            .await
+            .is_err());
+            assert!(tokio::time::timeout(
+                deadline,
+                super::super::post_upload(
+                    state.clone(),
+                    "not-submitted".into(),
+                    created.upload.id,
+                    None,
+                    None,
+                )
+            )
+            .await
+            .is_err());
+        }
+        std::fs::write(output.join("clip.mp4"), b"original clip").unwrap();
+        std::fs::write(output.join("clip.srt"), b"original subtitle").unwrap();
+        let rejected_output = root.path().join("rejected-output");
+        // Exercise the complete setter, including the already moved clips.
+        sqlx::raw_sql("CREATE TRIGGER reject_relocation BEFORE UPDATE OF file ON uploads BEGIN SELECT RAISE(FAIL, 'injected'); END")
+            .execute(&pool).await.unwrap();
+        assert!(crate::handlers::config::set_output_path(
+            state.clone(),
+            rejected_output.to_string_lossy().into_owned(),
+        )
+        .await
+        .is_err());
+        sqlx::raw_sql("DROP TRIGGER reject_relocation")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(state.config.read().await.output, output.to_string_lossy());
+        assert_eq!(
+            state.db.get_upload(created.upload.id).await.unwrap().file,
+            created.upload.file
+        );
+        assert!(Path::new(&created.upload.file).is_file());
+        assert!(cover.is_file());
+        assert_eq!(
+            std::fs::read(output.join("clip.mp4")).unwrap(),
+            b"original clip"
+        );
+        assert_eq!(
+            std::fs::read(output.join("clip.srt")).unwrap(),
+            b"original subtitle"
+        );
+        assert!(!rejected_output.join("clip.mp4").exists());
+        assert!(!rejected_output.join("clip.srt").exists());
+        let saved_config = Config::load(
+            &root.path().join("config.toml"),
+            &root.path().join("cache"),
+            &output,
+        )
+        .unwrap();
+        assert_eq!(saved_config.output, output.to_string_lossy());
+        // A failed settings-file write must restore the same provisional moves.
+        let config_path = state.config.read().await.config_path.clone();
+        state.config.write().await.config_path = root
+            .path()
+            .join("missing/config.toml")
+            .to_string_lossy()
+            .into_owned();
+        assert!(crate::handlers::config::set_output_path(
+            state.clone(),
+            rejected_output.to_string_lossy().into_owned(),
+        )
+        .await
+        .is_err());
+        state.config.write().await.config_path = config_path;
+        assert!(output.join("clip.mp4").is_file());
+        assert!(output.join("clip.srt").is_file());
+        assert!(!rejected_output.join("clip.mp4").exists());
+        assert!(Path::new(&created.upload.file).is_file());
         let mut output = output;
         // Switching twice also exercises covers already relocated alongside
         // their source. Unrelated files in both output roots must survive.
@@ -367,6 +454,16 @@ mod tests {
             )
             .await
             .unwrap();
+            assert!(!output.join("clip.mp4").exists());
+            assert!(!output.join("clip.srt").exists());
+            assert_eq!(
+                std::fs::read(next_output.join("clip.mp4")).unwrap(),
+                b"original clip"
+            );
+            assert_eq!(
+                std::fs::read(next_output.join("clip.srt")).unwrap(),
+                b"original subtitle"
+            );
             assert!(!Path::new(&previous.file).exists());
             assert!(!cover.exists());
             let next = state.db.get_upload(created.upload.id).await.unwrap();

@@ -421,6 +421,7 @@ pub async fn update_upload_cover(
     cover: String,
     cover43: Option<String>,
 ) -> Result<UploadView, String> {
+    let _source_operation = source::source_operation().await;
     let previous = state.db.get_upload(id).await?;
     ensure_editable(&previous)?;
     // New files each time: an upload claimed for posting meanwhile keeps
@@ -500,6 +501,7 @@ pub async fn post_upload(
     subtitle_ass: Option<String>,
     overlays: Option<Vec<OverlayImage>>,
 ) -> Result<(), String> {
+    let _source_operation = source::source_operation().await;
     let upload = state.db.get_upload(id).await?;
     ensure_editable(&upload)?;
     ready_to_post(&upload)?;

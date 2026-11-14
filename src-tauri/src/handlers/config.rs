@@ -771,8 +771,7 @@ async fn set_output_path_inner(state: State, output_path: String) -> Result<(), 
         }
     };
 
-    log::info!("Output migration done: {moved} entries moved");
-    let old_sources = {
+    let publication = async {
         // Copies are complete before taking the config lock. Publish config
         // and DB paths without exposing a half-switched view to readers.
         let mut config = state.config.write().await;
@@ -789,8 +788,20 @@ async fn set_output_path_inner(state: State, output_path: String) -> Result<(), 
             }
         };
         *config = next;
-        previous
+        Ok::<_, String>(previous)
+    }
+    .await;
+    let old_sources = match publication {
+        Ok(previous) => previous,
+        Err(error) => {
+            moved
+                .rollback()
+                .map_err(|rollback| format!("{error}; {rollback}"))?;
+            return Err(error);
+        }
     };
+    let moved = moved.commit();
+    log::info!("Output migration done: {moved} entries moved");
     for upload in old_sources {
         crate::handlers::upload::source::remove_owned_source(
             &state.db,

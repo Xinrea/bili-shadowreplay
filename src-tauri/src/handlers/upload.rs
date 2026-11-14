@@ -25,7 +25,7 @@ use crate::state_type;
 #[cfg(feature = "gui")]
 use tauri::State as TauriState;
 
-mod source;
+pub(crate) mod source;
 
 /// A file the static server serves under `base` (`output` or `cache`).
 #[derive(Debug, Clone, Serialize)]
@@ -268,6 +268,7 @@ pub async fn create_upload(
     file: String,
     profile: serde_json::Value,
 ) -> Result<UploadView, String> {
+    let source_operation = source::source_operation().await;
     let (source_id, file, room_id) = match source.as_str() {
         "material" => {
             let material = state
@@ -316,6 +317,7 @@ pub async fn create_upload(
             created_at: now.clone(),
             updated_at: now,
         },
+        source_operation.clone(),
     )
     .await?;
     if upload.source == "file" {
@@ -472,6 +474,7 @@ pub async fn update_upload_cover(
 /// Remove the record; a posted video stays on Bilibili.
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn delete_upload(state: state_type!(), id: i64) -> Result<(), String> {
+    let _source_operation = source::source_operation().await;
     let upload = state.db.get_upload(id).await?;
     if !state.db.delete_upload(id).await? {
         return Err("投稿进行中，暂时无法删除".to_string());

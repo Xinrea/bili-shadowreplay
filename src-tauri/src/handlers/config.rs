@@ -713,6 +713,17 @@ mod storage_settings_tests {
 #[cfg_attr(feature = "gui", tauri::command)]
 #[allow(dead_code)]
 pub async fn set_output_path(state: state_type!(), output_path: String) -> Result<(), String> {
+    #[cfg(feature = "gui")]
+    let state = state.inner().clone();
+    // Once publication starts, request cancellation must not drop staged files
+    // after a database commit or leave output configuration half switched.
+    tokio::spawn(set_output_path_inner(state, output_path))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+async fn set_output_path_inner(state: State, output_path: String) -> Result<(), String> {
+    let _sources = crate::handlers::upload::source::output_change().await;
     // Read the old path and release the lock immediately: holding the write
     // lock across the migration would block every config reader for its whole
     // duration.
@@ -738,6 +749,12 @@ pub async fn set_output_path(state: state_type!(), output_path: String) -> Resul
         )
         .await?;
 
+    let sources = crate::handlers::upload::source::prepare_relocation(
+        &state.db,
+        old_output_path_obj,
+        new_output_path_obj,
+    )
+    .await?;
     // Only migrate clips and their sidecars, so pre-existing user files in the
     // old directory stay where they are.
     let plan =
@@ -755,7 +772,42 @@ pub async fn set_output_path(state: state_type!(), output_path: String) -> Resul
     };
 
     log::info!("Output migration done: {moved} entries moved");
-    state.config.write().await.set_output_path(&output_path);
+    let old_sources = {
+        // Copies are complete before taking the config lock. Publish config
+        // and DB paths without exposing a half-switched view to readers.
+        let mut config = state.config.write().await;
+        let mut next = config.clone();
+        next.output = output_path.clone();
+        next.try_save()?;
+        let previous = match sources.commit(&state.db).await {
+            Ok(previous) => previous,
+            Err(error) => {
+                config
+                    .try_save()
+                    .map_err(|restore| format!("{error}; 恢复原目录配置失败: {restore}"))?;
+                return Err(error);
+            }
+        };
+        *config = next;
+        previous
+    };
+    for upload in old_sources {
+        crate::handlers::upload::source::remove_owned_source(
+            &state.db,
+            old_output_path_obj,
+            &upload,
+        )
+        .await?;
+        let directory = old_output_path_obj.join(format!("uploads/{}", upload.id));
+        if let Err(error) = tokio::fs::remove_dir_all(&directory).await {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                log::warn!(
+                    "清理已迁移投稿的旧目录失败: {} - {error}",
+                    directory.display()
+                );
+            }
+        }
+    }
     state.db.new_message("切片目录切换", "切片切换完成").await?;
 
     Ok(())

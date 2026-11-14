@@ -1,10 +1,44 @@
 //! A saved web draft owns a durable copy, not a path into the HTTP session.
-use std::{path::Path, path::PathBuf, sync::Arc};
+use std::{
+    path::Path,
+    path::PathBuf,
+    sync::{Arc, LazyLock},
+};
+use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
 use crate::{database::upload::UploadRow, database::Database, temp_storage::TempStorage};
 
 fn source_root(output: &Path) -> PathBuf {
     output.join("uploads").join("sources")
+}
+
+// Source publication/deletion and output relocation must share one boundary:
+// a draft cannot publish an old-root path after a directory switch's snapshot.
+static SOURCE_OPERATIONS: LazyLock<Arc<RwLock<()>>> = LazyLock::new(|| Arc::new(RwLock::new(())));
+
+pub(super) async fn source_operation() -> Arc<OwnedRwLockReadGuard<()>> {
+    Arc::new(SOURCE_OPERATIONS.clone().read_owned().await)
+}
+
+pub(crate) async fn output_change() -> OwnedRwLockWriteGuard<()> {
+    SOURCE_OPERATIONS.clone().write_owned().await
+}
+
+fn copy_source(file: &Path, root: &Path) -> std::io::Result<(tempfile::TempDir, PathBuf)> {
+    std::fs::create_dir_all(root)?;
+    let directory = tempfile::Builder::new()
+        .prefix("source-")
+        .tempdir_in(root.canonicalize()?)?;
+    let target = directory.path().join(
+        file.file_name()
+            .ok_or_else(|| std::io::Error::other("投稿源文件没有文件名"))?,
+    );
+    std::fs::copy(file, &target)?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&target)?
+        .sync_all()?;
+    Ok((directory, target))
 }
 
 /// Copy before inserting the row, without holding a SQLite transaction over
@@ -15,8 +49,10 @@ pub(super) async fn save_draft(
     session: TempStorage,
     output: PathBuf,
     mut upload: UploadRow,
+    operation: Arc<OwnedRwLockReadGuard<()>>,
 ) -> Result<UploadRow, String> {
     tokio::spawn(async move {
+        let _operation = operation;
         let staged = if upload.source == "file" {
             let file = PathBuf::from(&upload.file);
             let root = source_root(&output);
@@ -30,20 +66,7 @@ pub(super) async fn save_draft(
                     // Desktop-selected user files remain external references.
                     return Ok(None);
                 }
-                std::fs::create_dir_all(&root)?;
-                let directory = tempfile::Builder::new()
-                    .prefix("source-")
-                    .tempdir_in(root.canonicalize()?)?;
-                let target = directory.path().join(
-                    file.file_name()
-                        .ok_or_else(|| std::io::Error::other("投稿源文件没有文件名"))?,
-                );
-                std::fs::copy(file, &target)?;
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .open(&target)?
-                    .sync_all()?;
-                Ok(Some((directory, target)))
+                copy_source(&file, &root).map(Some)
             })
             .await
             .map_err(|error| error.to_string())?
@@ -66,9 +89,111 @@ pub(super) async fn save_draft(
     .map_err(|error| format!("保存投稿草稿失败: {error}"))?
 }
 
+/// Copy first and keep originals until every row has been atomically rebound.
+/// The caller holds output_change() through config publication and cleanup.
+pub(crate) struct SourceRelocation {
+    staged: Vec<tempfile::TempDir>,
+    rows: Vec<(UploadRow, UploadRow)>,
+}
+
+pub(crate) async fn prepare_relocation(
+    db: &Database,
+    old_output: &Path,
+    new_output: &Path,
+) -> Result<SourceRelocation, String> {
+    let uploads = db.get_uploads().await?;
+    let old_output = old_output.to_path_buf();
+    let new_output = new_output.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<_, String> {
+        let mut relocation = SourceRelocation {
+            staged: Vec::new(),
+            rows: Vec::new(),
+        };
+        let old_root = match source_root(&old_output).canonicalize() {
+            Ok(root) => root,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(relocation),
+            Err(error) => return Err(error.to_string()),
+        };
+        for upload in uploads {
+            if upload.source != "file" {
+                continue;
+            }
+            let file = Path::new(&upload.file);
+            let Some(directory) = file.parent() else {
+                continue;
+            };
+            if directory.parent() != Some(old_root.as_path())
+                || !directory
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("source-"))
+            {
+                continue;
+            }
+            if upload.is_active() {
+                return Err("文件投稿进行中，请结束后再切换素材目录".into());
+            }
+            let (staged, target) = copy_source(file, &source_root(&new_output))
+                .map_err(|error| format!("迁移投稿源文件失败: {error}"))?;
+            let mut next = upload.clone();
+            next.file = target.to_string_lossy().into_owned();
+            // Upload covers also live below output. Copy only explicitly
+            // referenced assets, never an arbitrary pre-existing uploads tree.
+            for (cover, name) in [
+                (&mut next.cover, "cover.jpg"),
+                (&mut next.cover43, "cover43.jpg"),
+            ] {
+                if cover.is_empty() {
+                    continue;
+                }
+                recording_storage::validate_key(cover).map_err(|error| error.to_string())?;
+                let covers = staged.path().join("covers");
+                std::fs::create_dir_all(&covers).map_err(|error| error.to_string())?;
+                let target = covers.join(format!("{}-{name}", upload.id));
+                std::fs::copy(old_output.join(&*cover), &target)
+                    .map_err(|error| format!("迁移投稿封面失败: {error}"))?;
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&target)
+                    .and_then(|file| file.sync_all())
+                    .map_err(|error| error.to_string())?;
+                *cover = target
+                    .strip_prefix(
+                        new_output
+                            .canonicalize()
+                            .map_err(|error| error.to_string())?,
+                    )
+                    .map_err(|error| error.to_string())?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+            }
+            relocation.staged.push(staged);
+            relocation.rows.push((upload, next));
+        }
+        Ok(relocation)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+impl SourceRelocation {
+    pub(crate) async fn commit(self, db: &Database) -> Result<Vec<UploadRow>, String> {
+        if !db.relocate_upload_sources(&self.rows).await? {
+            return Err("投稿已发生变化，请重试素材目录切换".into());
+        }
+        for directory in self.staged {
+            let _ = directory.keep();
+        }
+        Ok(self
+            .rows
+            .into_iter()
+            .map(|(previous, _)| previous)
+            .collect())
+    }
+}
+
 /// Only remove this feature's private source directories, never a user-selected
 /// file. Preserve a source if an older/imported row still references it.
-pub(super) async fn remove_owned_source(
+pub(crate) async fn remove_owned_source(
     db: &Database,
     output: &Path,
     upload: &UploadRow,
@@ -103,6 +228,15 @@ pub(super) async fn remove_owned_source(
 mod tests {
     use super::*;
     use crate::{database::credentials::CredentialCipher, events::EventBus};
+
+    async fn save_draft(
+        db: Arc<Database>,
+        session: TempStorage,
+        output: PathBuf,
+        upload: UploadRow,
+    ) -> Result<UploadRow, String> {
+        super::save_draft(db, session, output, upload, source_operation().await).await
+    }
 
     async fn database() -> (Arc<Database>, sqlx::SqlitePool) {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -212,10 +346,35 @@ mod tests {
         .await
         .unwrap();
         assert!(!created.display_cover.is_empty());
-        let cover = output.join(&created.display_cover);
+        let mut cover = output.join(&created.display_cover);
         assert!(cover.is_file());
         state.temp_storage = TempStorage::new().unwrap();
         assert!(!input.exists());
+        let mut output = output;
+        // Switching twice also exercises covers already relocated alongside
+        // their source. Unrelated files in both output roots must survive.
+        for next_output in [
+            root.path().join("next-output"),
+            root.path().join("third-output"),
+        ] {
+            let previous = state.db.get_upload(created.upload.id).await.unwrap();
+            std::fs::create_dir_all(next_output.join("uploads/sources")).unwrap();
+            let unrelated = next_output.join("uploads/sources/user-file.txt");
+            std::fs::write(&unrelated, b"keep").unwrap();
+            crate::handlers::config::set_output_path(
+                state.clone(),
+                next_output.to_string_lossy().into_owned(),
+            )
+            .await
+            .unwrap();
+            assert!(!Path::new(&previous.file).exists());
+            assert!(!cover.exists());
+            let next = state.db.get_upload(created.upload.id).await.unwrap();
+            output = next_output;
+            cover = output.join(&next.cover);
+            assert!(cover.is_file());
+            assert_eq!(std::fs::read(unrelated).unwrap(), b"keep");
+        }
         let loaded = super::super::get_upload(state.clone(), created.upload.id)
             .await
             .unwrap();
@@ -231,6 +390,44 @@ mod tests {
             .unwrap();
         assert!(!Path::new(&loaded.upload.file).exists());
         assert!(!cover.exists());
+    }
+
+    #[tokio::test]
+    async fn relocation_conflict_rolls_back_rows_and_cleans_only_staged_copies() {
+        let (db, _) = database().await;
+        let output = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let session = TempStorage::new().unwrap();
+        let input = uploaded(&session);
+        let first = save_draft(
+            db.clone(),
+            session.clone(),
+            output.path().into(),
+            draft(&input),
+        )
+        .await
+        .unwrap();
+        let second = save_draft(db.clone(), session, output.path().into(), draft(&input))
+            .await
+            .unwrap();
+        let _operation = output_change().await;
+        let staged = prepare_relocation(&db, output.path(), target.path())
+            .await
+            .unwrap();
+        // Posting may claim a saved row during the copy. No partially rebound
+        // set of sources should be acknowledged, even if another row was first.
+        assert!(db.claim_upload(second.id, "later").await.unwrap());
+        assert!(staged.commit(&db).await.is_err());
+        for row in [&first, &second] {
+            assert_eq!(db.get_upload(row.id).await.unwrap().file, row.file);
+            assert_eq!(std::fs::read(&row.file).unwrap(), b"uploaded video");
+        }
+        assert_eq!(
+            std::fs::read_dir(source_root(target.path()))
+                .unwrap()
+                .count(),
+            0
+        );
     }
 
     #[tokio::test]

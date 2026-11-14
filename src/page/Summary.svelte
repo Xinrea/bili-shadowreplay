@@ -1,6 +1,8 @@
 <script lang="ts">
   import { createStateRefresh, watchStateChanges } from "../lib/state-refresh";
   import { formatSize } from "../lib/size-format";
+  import { createCacheGrowthEstimator } from "../lib/cache-growth";
+  import { pageVisibility } from "../lib/page-visibility";
 
   import { get_static_url, invoke } from "../lib/invoker";
   import type { RecorderList } from "../lib/interface";
@@ -14,6 +16,7 @@
   import {
     CalendarCheck,
     Clock,
+    Download,
     HardDrive,
     Play,
     RefreshCw,
@@ -30,6 +33,7 @@
   let total = $state(0);
   let online = $state(0);
   let disk_usage = $state(0);
+  let download_speed = $state<number | null>(null);
   let account_count = $state(0);
   let total_length = $state(0);
   let today_record_count = $state(0);
@@ -42,6 +46,35 @@
   const RECORDS_PER_PAGE = 5;
 
   const stateRefresh = createStateRefresh(update_summary);
+  const pageVisible = pageVisibility();
+
+  $effect(() => {
+    download_speed = null;
+    if (!pageVisible()) return;
+
+    let disposed = false;
+    const growth = createCacheGrowthEstimator();
+    const reset = () => { growth.reset(); download_speed = null; };
+    const refresh = createStateRefresh(async () => {
+      const size = await get_archive_disk_usage();
+      if (!disposed && document.visibilityState !== "hidden") {
+        download_speed = growth.sample(size, performance.now());
+      }
+    }, 0, (error) => {
+      if (!disposed) reset();
+      console.error("估算下载速度失败:", error);
+    });
+
+    // Sample independently so frequent recording events cannot skew the rate
+    // or cause the entire overview to reload every two seconds.
+    document.addEventListener("visibilitychange", reset);
+    const stop = watchStateChanges(refresh, [], 2000);
+    return () => {
+      disposed = true;
+      stop();
+      document.removeEventListener("visibilitychange", reset);
+    };
+  });
 
   async function update_summary() {
     summary = (await invoke("get_recorder_list")) as RecorderList;
@@ -232,7 +265,7 @@
 >
   <div class="space-y-6">
     <!-- Stats Grid -->
-    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
+    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
       <!-- Recording assets across all backends, not local disk usage. -->
       <div class="ui-card p-4 transition-colors hover:border-line-strong">
         <div class="flex items-center gap-3">
@@ -245,6 +278,32 @@
             <p class="text-[12px] text-fg-muted">录播总大小</p>
             <p class="text-[20px] font-semibold leading-tight text-fg tabular-nums">
               {formatSize(disk_usage)}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Estimated Download Speed -->
+      <div
+        class="ui-card p-4 transition-colors hover:border-line-strong"
+        title="根据最近 10 秒的录播缓存增长估算，每 2 秒更新"
+      >
+        <div class="flex items-center gap-3">
+          <div
+            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-[9px] bg-sky-500/15 text-sky-500"
+          >
+            <Download class="h-5 w-5" />
+          </div>
+          <div class="min-w-0">
+            <p class="text-[12px] text-fg-muted">下载速度（估算）</p>
+            <p class="flex items-baseline gap-1 text-[20px] font-semibold leading-tight text-fg tabular-nums">
+              {#if download_speed === null}
+                —
+              {:else}
+                {@const speed = formatSize(Math.round(download_speed)).split(" ")}
+                <span>{speed[0]}</span>
+                <span class="text-[12px] font-medium text-fg-muted">{speed[1]}/s</span>
+              {/if}
             </p>
           </div>
         </div>

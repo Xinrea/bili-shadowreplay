@@ -14,10 +14,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# The pre-commit hooks are split between two jobs: `format` runs the cheap
-# hooks on every change, and `clippy-test` runs the cargo clippy/test hooks
-# only when the Rust build inputs change. Each job skips the other's hooks, so
-# keep both SKIP lists in sync with `.pre-commit-config.yaml`.
+# `format` runs the cheap hooks on every change. `clippy-test` runs the Clippy
+# hooks and full cargo tests only when the Rust build inputs change. Tests run
+# directly in Actions, so local commits only run formatting and linting.
+# Keep both SKIP lists in sync with `.pre-commit-config.yaml`.
 jobs:
   format:
     runs-on: ubuntu-22.04
@@ -48,7 +48,7 @@ jobs:
 
       - name: Run pre-commit
         env:
-          SKIP: cargo-clippy,cargo-clippy-headless,cargo-test,cargo-test-headless
+          SKIP: cargo-clippy,cargo-clippy-headless
         run: pre-commit run --all-files --show-diff-on-failure
 
   changes:
@@ -63,7 +63,7 @@ jobs:
       - uses: dorny/paths-filter@v4
         id: filter
         with:
-          # Everything the cargo clippy/test hooks read. `public/icon.svg` is
+          # Everything cargo clippy/test reads. `public/icon.svg` is
           # pulled in by `include_str!` in `src-tauri/src/powerlive.rs`, and
           # `tauri.conf.json` reads its version from `package.json`.
           filters: |
@@ -165,3 +165,9 @@ jobs:
         env:
           SKIP: trailing-whitespace,end-of-file-fixer,cargo-fmt
         run: pre-commit run --all-files --show-diff-on-failure
+
+      - name: Run default-feature tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Run headless tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features headless

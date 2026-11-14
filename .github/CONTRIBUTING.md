@@ -38,6 +38,10 @@ kache explain
 
 GitHub Actions 的测试、Clippy 和桌面发布任务通过 `setup-kache` 安装相同版本，保留 `rust-cache` 用于 Cargo 构建目录和昂贵的原生依赖。kache 的本地存储按构建类型分组，每组上限 1 GiB；PR 只恢复缓存，main 和版本标签构建保存缓存，统计显示在 Job Summary 中。无需新增 Secrets。Docker 镜像构建和 Dev Container 也已安装相同版本；Docker 继续通过 cargo-chef 和镜像构建缓存复用依赖层。
 
+### 提交前检查与 CI
+
+pre-commit 只运行空白、文件结尾、Rust 格式检查和默认/headless 两套 Clippy lint，不运行测试。完整测试由 GitHub Actions 执行：`Lint` 工作流在 Rust 构建输入变化时运行默认/headless 两套 `cargo test`，推送到 `main` 时始终运行；`Tests` 工作流继续负责前端、workspace library 和 recorder 集成等测试。需要本地验证时，可按 [测试指南](../docs/TESTING.md) 手动运行相关测试。
+
 ### MacOS
 
 准备 Rust、Node/Yarn 和 Xcode Command Line Tools 后，在仓库目录运行：

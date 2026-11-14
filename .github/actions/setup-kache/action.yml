@@ -1,0 +1,24 @@
+name: Setup kache
+description: Install the pinned Rust compiler cache alongside the native dependency cache
+inputs:
+  key:
+    description: Build variant used to partition the compiler cache
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: kunobi-ninja/kache-action@v1
+      with:
+        version: v2.1.1
+        cache-key-prefix: kache-${{ inputs.key }}
+        cache-dir: ${{ runner.temp }}/kache
+        # Leave room for rust-cache and the FFmpeg/sherpa SDK caches.
+        max-size: 1GiB
+        save-cache: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+        # Keep reports in the job summary without posting PR comments.
+        pr-comment: false
+    - name: Verify kache compile and cache restore
+      shell: bash
+      run: |
+        kache --version
+        kache doctor --probe

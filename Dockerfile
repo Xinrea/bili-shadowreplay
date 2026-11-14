@@ -63,6 +63,8 @@ RUN apt-get update && apt-get install -y \
 ENV FORCE_SKIA_BUILD=1 SKIA_USE_SYSTEM_LIBRARIES=1 CC=clang CXX=clang++
 
 RUN cargo install cargo-chef --version 0.1.78 --locked
+RUN cargo install kache --locked --version 2.1.1
+ENV RUSTC_WRAPPER=kache
 
 FROM rust-base AS rust-planner
 

@@ -17,6 +17,7 @@
     "test:updater": "node --experimental-vm-modules --test scripts/tests/updater.test.mjs",
     "test:subtitle": "node --experimental-vm-modules --test scripts/tests/subtitle-ass.test.mjs",
     "tauri": "node scripts/tauri.mjs",
+    "setup:kache": "node scripts/install-kache.mjs",
     "docs:dev": "yarn --cwd docs run dev",
     "docs:build": "yarn --cwd docs run build",
     "docs:preview": "yarn --cwd docs run preview",

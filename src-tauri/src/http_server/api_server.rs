@@ -726,7 +726,7 @@ async fn handler_add_recorder(
 struct StorageConfigRequest {
     storage: StorageConfig,
     expected: StorageConfig,
-    credentials: Option<std::collections::HashMap<String, recording_storage::S3Credentials>>,
+    credentials: Option<std::collections::HashMap<String, recording_storage::StorageCredentials>>,
 }
 
 #[cfg(test)]

@@ -3060,6 +3060,7 @@ mod archive_storage_tests {
             crate::config::RecordingBackendConfig {
                 kind: "local".into(),
                 s3: None,
+                webdav: None,
                 root: dir.path().join("archive").to_string_lossy().into_owned(),
             },
         );

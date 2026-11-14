@@ -36,6 +36,29 @@ Normal tests include a local HTTP protocol fixture. For the opt-in RustFS test
 and local Docker Compose setup, see
 [`docs/development/backend/recording-storage.md`](../../../docs/development/backend/recording-storage.md#用-rustfs-本地验证).
 
+## WebDAV storage
+
+`WebDavBackend::new(&WebDavConfig, &WebDavCredentials)` accepts an existing
+HTTP(S) collection URL and an optional relative prefix. Credentials use Basic
+authentication and are supplied explicitly; prefer HTTPS. Nested collections are
+created with MKCOL. Media and the JSON catalog share this namespace.
+
+The server must support PROPFIND Depth 0/1, MKCOL, GET/HEAD, byte ranges, PUT,
+MOVE and DELETE. Publication uploads a random reserved `.webdav-upload-*`
+sibling, then uses MOVE to replace the final object. Creates use `Overwrite: F`.
+The server must implement atomic MOVE publication. Failed requests attempt to
+clean up temporary uploads; cancellation/process termination may leave hidden
+upload files, which are excluded from listings and transfers. Empty directories
+may remain after deletion. The caller must stop external writers.
+
+Listings recurse with Depth 1 and validate multistatus paths and property status;
+each XML response is limited to 8 MiB. Ranged reads reject ignored or malformed
+ranges, and bounded reads enforce limits on streamed chunks. Only same-path
+collection-slash PROPFIND redirects are accepted. Transfers stream one temporary
+local file at a time and use HEAD Content-Length plus ETag or Last-Modified for
+revision checks. Local HTTP fixtures cover publication failures, encoded names,
+logs, pagination, deletion, catalog reopen and bidirectional transfer.
+
 ## Backend contract
 
 - `write` atomically replaces one object and acknowledges only after it is

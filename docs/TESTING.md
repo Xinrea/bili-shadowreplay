@@ -458,7 +458,7 @@ For test infrastructure questions, open an issue.
 
 ## macOS 开发启动运行库
 
-`node --test scripts/tests/macos-runtime.test.mjs` 覆盖 SDK 显式配置、下载校验失败、运行库签名和 FFmpeg 裸文件名加载、离线缓存复用及损坏缓存拒绝。动态库加载测试仅在 macOS 执行，其余测试无需网络。完整开发启动验证应清除手工 `FFMPEG_DIR`、`PKG_CONFIG_PATH`、`BSR_VULKAN_LIBRARY`、`BSR_MOLTENVK_LIBRARY` 和 `DYLD_*` 配置，通过 `yarn tauri dev` 确认自动准备，并执行 GPU 导出探测；不要用此前测试目录里的运行库代替首次准备流程。
+`node --test scripts/tests/macos-runtime.test.mjs` 覆盖 SDK 显式配置、下载中断和进程退出后的续传、并发下载隔离、校验失败清理、运行库签名和 FFmpeg 裸文件名加载、离线缓存复用及损坏缓存拒绝。HTTP 测试通过本机临时服务验证 curl 的 Range 重试，以及不支持续传和 HTTP 416 时的恢复；不访问外网，需要允许监听回环地址。动态库加载测试仅在 macOS 执行。完整开发启动验证应清除手工 `FFMPEG_DIR`、`PKG_CONFIG_PATH`、`BSR_VULKAN_LIBRARY`、`BSR_MOLTENVK_LIBRARY` 和 `DYLD_*` 配置，通过 `yarn tauri dev` 确认自动准备，并执行 GPU 导出探测；不要用此前测试目录里的运行库代替首次准备流程。
 
 ## Windows 开发启动依赖
 

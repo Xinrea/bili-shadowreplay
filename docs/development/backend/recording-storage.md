@@ -3,11 +3,48 @@ title: "录制存储中间层"
 ---
 
 
-每个本地/S3 存储使用独立的 JSON 录播目录；主 SQLite 提供可重建的列表索引。启动迁移、单写者限制、挂载/卸载及目录转移协议见 [JSON 录播目录](./recording-catalog.md)。
+每个本地/S3/WebDAV 存储使用独立的 JSON 录播目录；主 SQLite 提供可重建的列表索引。启动迁移、单写者限制、挂载/卸载及目录转移协议见 [JSON 录播目录](./recording-catalog.md)。
 
-`recording_storage` 是录制资产的持久化边界。**每场录播独立绑定存储 backend，backend 配置保存在数据库中。** 媒体、播放列表、续录状态、封面、事件/广告日志、字幕，以及归档读取、列举、删除，都通过该场录播绑定的 backend。内置实现是 `LocalBackend` 和兼容 AWS S3 / RustFS / MinIO 的 `S3Backend`，也可以注入自定义对象后端。
+`recording_storage` 是录制资产的持久化边界。**每场录播独立绑定存储 backend，backend 配置保存在数据库中。** 媒体、播放列表、续录状态、封面、事件/广告日志、字幕，以及归档读取、列举、删除，都通过该场录播绑定的 backend。内置实现是 `LocalBackend` 和兼容 AWS S3 / RustFS / MinIO 的 `S3Backend`、`WebDavBackend`，也可以注入自定义对象后端。
 
-设置页的“录制存储 → 管理”弹窗支持新增、移除本地及 S3 后端、选择默认后端，以及本地 ↔ 本地、S3 ↔ 本地、S3 ↔ S3 的录播转移；房间设置只指定后续新录播的存储偏好，不决定历史归档的归属。剪辑、转写等需要本地文件的工具使用显式临时工作区，不把归档当成本地目录。素材及后续文件继续使用原 `output` 流程。
+设置页的“录制存储 → 管理”弹窗支持新增、移除本地、S3 及 WebDAV 后端、选择默认后端，以及这三种存储之间的录播转移；房间设置只指定后续新录播的存储偏好，不决定历史归档的归属。剪辑、转写等需要本地文件的工具使用显式临时工作区，不把归档当成本地目录。素材及后续文件继续使用原 `output` 流程。
+
+## WebDAV 存储
+
+在“设置 → 录制存储 → 管理 → 添加存储”中选择 **WebDAV**，填写：
+
+- **WebDAV 地址**：完整的已有目录 URL，例如 `https://cloud.example.com/remote.php/dav/files/user/`。支持 HTTP/HTTPS；使用 HTTPS 可保护 Basic 认证凭证。不能在 URL 中放用户名、密码、查询参数或片段。
+- **存储子目录**：可选的相对目录，例如 `shadowreplay`，不带首尾 `/`，不存在时自动创建。媒体和 `.bsr` JSON 录播目录使用同一子目录。
+- **用户名和密码 / 应用密码**：按现有存储凭证机制单独保存，不出现在配置响应、存储身份或 Debug 输出中；支持独立更新。地址或子目录改变时需添加新存储，再转移录播。
+
+服务需支持 Basic 认证、PROPFIND（Depth 0/1）、MKCOL、GET/HEAD、PUT、MOVE、DELETE 和 HTTP Range。转移及目录扫描需要 HEAD 返回 Content-Length，以及 ETag 或 Last-Modified。仅提供下载链接的服务不能作为 WebDAV 存储。
+
+写入先 PUT 到同目录的随机 `.webdav-upload-*` 临时文件，再 MOVE 到最终名称，避免读到上传中的内容。新增目标使用 `Overwrite: F`，已有文件不会被转移覆盖；服务须正确实现 MOVE 的原子发布语义。上传或 MOVE 失败会尝试删除临时文件，进程被强制终止时可能残留；这些保留名称不会参与播放、目录索引或转移，确认没有写入者后可在服务端清理。删除录播会删除文件，允许保留空目录。
+
+目录枚举逐层使用 Depth 1，不依赖服务支持 Depth infinity；单次 XML 响应限制为 8 MiB，超过时明确报错。客户端校验响应路径、属性状态、分页顺序和 Range 长度，不会将权限错误解释为文件不存在，也不会在服务忽略 Range 时下载整段媒体。只接受给目录补尾部 `/` 的同路径 PROPFIND 重定向，其他重定向会报错；请填写最终 WebDAV 地址。
+
+WebDAV 与本地、S3 共用录制、日志、回放、物化、删除及可恢复转移流程。一个命名空间只允许一个应用实例写入；不同存储不得配置相同或嵌套的 WebDAV 目录，服务端别名、符号链接等指向同一目录的情况仍需使用者避免。服务协议依据 [RFC 4918](https://www.rfc-editor.org/rfc/rfc4918)。
+
+协议回归测试使用临时的本地 HTTP 服务，无需真实账号：
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml -p recording_storage -p recording_catalog --locked
+node --experimental-vm-modules --test scripts/tests/recording-storage.test.mjs scripts/tests/storage-transfer.test.mjs
+```
+
+### 用 Docker 进行手动验证
+
+仓库提供独立的 `docker_compose.webdav.yaml`，使用 [rclone 官方镜像](https://rclone.org/install/#docker-installation) 在本机 `18080` 端口提供带 Basic 认证的 WebDAV。账号和密码通过环境变量或仓库外的 `--env-file` 提供：
+
+```sh
+export WEBDAV_USERNAME=shadowreplay
+export WEBDAV_PASSWORD='<自行设置测试密码>'
+docker compose -p shadowreplay-webdav-manual -f docker_compose.webdav.yaml up -d
+```
+
+本机应用中添加 WebDAV 存储，地址填 `http://127.0.0.1:18080/`，子目录可填 `recordings`，使用上述账号密码。可将它设为默认存储后录制、停止并回放，再与本地或 S3 存储双向转移。验证两个 WebDAV 存储之间的转移时，使用独立的同级子目录，例如 `recordings` 和 `archive`。
+
+数据保存在 Compose 的 `webdav-data` 命名卷中，停止或重建容器不删除录播。`WEBDAV_PORT` 可修改端口，`WEBDAV_IMAGE` 可固定镜像版本或 digest；服务默认只对本机开放。结束手动验证可运行 `docker stop shadowreplay-webdav-manual-webdav-1`，再次验证用 `docker start shadowreplay-webdav-manual-webdav-1`。
 
 ## 依赖与职责
 
@@ -24,6 +61,7 @@ flowchart TD
     L --> B
     B --> F["LocalBackend"]
     B --> S3["S3Backend：AWS S3 / RustFS / MinIO"]
+    B --> DAV["WebDavBackend：WebDAV"]
     N["ffmpeg-next：原生 HLS muxer"] --> I["自定义 AVIO / HlsObjectStore"]
     I --> A["NativeHlsStorage：同步到异步适配"]
     A --> R

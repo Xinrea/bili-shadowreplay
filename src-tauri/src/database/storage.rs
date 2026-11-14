@@ -3,7 +3,7 @@
 //! can pin the recorder's snapshot before the archive row is created.
 use super::{Database, DatabaseError};
 use crate::config::{RecordingBackendConfig, StorageConfig, DEFAULT_RECORDING_STORAGE_ID};
-use recording_storage::S3Credentials;
+use recording_storage::StorageCredentials;
 use std::collections::HashMap;
 
 pub const SCHEMA_SQL: &str = "
@@ -64,6 +64,25 @@ pub const S3_SCHEMA_SQL: &str = "
             (enabled.storage_id IS NOT NULL AND backend.kind IN ('local', 's3')) AS storage_available,
             CASE WHEN enabled.storage_id IS NULL THEN 'Storage backend is removed or unconfigured'
                  WHEN backend.kind NOT IN ('local', 's3') THEN 'Storage backend type is unavailable'
+                 ELSE NULL END AS storage_unavailable_reason
+        FROM records r
+        LEFT JOIN recording_storage_bindings binding
+          ON binding.platform = r.platform AND binding.room_id = r.room_id AND binding.live_id = r.live_id
+        LEFT JOIN recording_storage_configuration config ON config.singleton = 1
+        LEFT JOIN recording_storage_enabled enabled
+          ON enabled.storage_id = COALESCE(binding.storage_id, config.legacy_backend, 'default')
+        LEFT JOIN recording_storage_backends backend ON backend.storage_id = enabled.storage_id;
+";
+
+// Released migration 32 stays immutable; WebDAV gets its own migration.
+pub const WEBDAV_SCHEMA_SQL: &str = "
+    DROP VIEW IF EXISTS recording_records;
+    CREATE VIEW recording_records AS
+        SELECT r.*,
+            COALESCE(binding.storage_id, config.legacy_backend, 'default') AS storage_backend_id,
+            (enabled.storage_id IS NOT NULL AND backend.kind IN ('local', 's3', 'webdav')) AS storage_available,
+            CASE WHEN enabled.storage_id IS NULL THEN 'Storage backend is removed or unconfigured'
+                 WHEN backend.kind NOT IN ('local', 's3', 'webdav') THEN 'Storage backend type is unavailable'
                  ELSE NULL END AS storage_unavailable_reason
         FROM records r
         LEFT JOIN recording_storage_bindings binding
@@ -187,7 +206,7 @@ impl Database {
     pub async fn replace_storage_config(
         &self,
         next: &StorageConfig,
-        credentials: &HashMap<String, S3Credentials>,
+        credentials: &HashMap<String, StorageCredentials>,
     ) -> Result<(), DatabaseError> {
         self.ensure_storage_schema().await?;
         let mut tx = self.pool.begin().await?;
@@ -247,10 +266,10 @@ impl Database {
             if next
                 .backends
                 .get(id)
-                .is_none_or(|definition| definition.kind != "s3")
+                .is_none_or(|definition| definition.kind != credential.kind())
             {
                 return Err(DatabaseError::InvalidStorageConfig(
-                    "credentials require a configured S3 backend".into(),
+                    "credentials must match the configured storage type".into(),
                 ));
             }
             credential.validate()?;
@@ -263,15 +282,15 @@ impl Database {
                 .bind(uuid::Uuid::new_v4().to_string()).execute(&mut *tx).await?;
         }
         for (id, definition) in &next.backends {
-            if definition.kind == "s3" {
+            if matches!(definition.kind.as_str(), "s3" | "webdav") {
                 let saved: bool = sqlx::query_scalar(
                     "SELECT EXISTS(SELECT 1 FROM recording_storage_credentials WHERE storage_id = ?)",
                 ).bind(id).fetch_one(&mut *tx).await?;
                 // Legacy/bootstrap definitions can be repaired one at a time in
-                // settings. Never introduce a new S3 backend without credentials.
+                // settings. Never introduce a new remote backend without credentials.
                 if !saved && !existing.contains(id) {
                     return Err(DatabaseError::InvalidStorageConfig(format!(
-                        "S3 backend {id} requires credentials"
+                        "Storage backend {id} requires credentials"
                     )));
                 }
             }
@@ -285,13 +304,13 @@ impl Database {
         Ok(())
     }
 
-    pub async fn storage_credentials(&self, id: &str) -> Result<S3Credentials, DatabaseError> {
+    pub async fn storage_credentials(&self, id: &str) -> Result<StorageCredentials, DatabaseError> {
         self.ensure_storage_schema().await?;
         let (value, encrypted): (String, bool) = sqlx::query_as(
             "SELECT c.credentials, c.encrypted FROM recording_storage_credentials c \
              JOIN recording_storage_enabled e ON e.storage_id = c.storage_id WHERE c.storage_id = ?",
         ).bind(id).fetch_optional(&self.pool).await?
-            .ok_or_else(|| DatabaseError::InvalidStorageConfig(format!("S3 backend {id} requires credentials")))?;
+            .ok_or_else(|| DatabaseError::InvalidStorageConfig(format!("Storage backend {id} requires credentials")))?;
         if encrypted && !super::credentials::CredentialCipher::ENCRYPTED {
             return Err(DatabaseError::EncryptionRequired);
         }
@@ -300,8 +319,8 @@ impl Database {
         } else {
             value
         };
-        let credentials: S3Credentials = serde_json::from_str(&value).map_err(|_| {
-            DatabaseError::InvalidStorageConfig("invalid saved S3 credentials".into())
+        let credentials: StorageCredentials = serde_json::from_str(&value).map_err(|_| {
+            DatabaseError::InvalidStorageConfig("invalid saved storage credentials".into())
         })?;
         credentials.validate()?;
         Ok(credentials)
@@ -360,7 +379,7 @@ impl Database {
                 sqlx::raw_sql(SCHEMA_SQL).execute(&self.pool).await?;
                 sqlx::raw_sql(CONFIG_SCHEMA_SQL).execute(&self.pool).await?;
                 let mut tx = self.pool.begin().await?;
-                sqlx::query(S3_SCHEMA_SQL).execute(&mut *tx).await?;
+                sqlx::query(WEBDAV_SCHEMA_SQL).execute(&mut *tx).await?;
                 sqlx::query(CREDENTIALS_SCHEMA_SQL)
                     .execute(&mut *tx)
                     .await?;

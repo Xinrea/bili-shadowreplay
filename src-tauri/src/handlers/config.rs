@@ -227,7 +227,7 @@ pub async fn set_storage_config(
     state: state_type!(),
     storage: StorageConfig,
     expected: StorageConfig,
-    credentials: Option<std::collections::HashMap<String, recording_storage::S3Credentials>>,
+    credentials: Option<std::collections::HashMap<String, recording_storage::StorageCredentials>>,
 ) -> Result<StorageConfig, String> {
     state.db.ensure_catalog_startup_complete()?;
     #[cfg(feature = "headless")]
@@ -348,6 +348,7 @@ mod storage_settings_tests {
         next.backends.insert(
             "rustfs".into(),
             RecordingBackendConfig {
+                webdav: None,
                 kind: "s3".into(),
                 root: String::new(),
                 s3: Some(recording_storage::S3Config {
@@ -373,7 +374,7 @@ mod storage_settings_tests {
             initial,
             Some(std::collections::HashMap::from([(
                 "rustfs".into(),
-                credentials.clone(),
+                credentials.clone().into(),
             )])),
         )
         .await
@@ -522,6 +523,7 @@ mod storage_settings_tests {
             RecordingBackendConfig {
                 kind: "local".into(),
                 s3: None,
+                webdav: None,
                 root: directory
                     .path()
                     .join("archive")
@@ -595,6 +597,7 @@ mod storage_settings_tests {
             RecordingBackendConfig {
                 kind: "local".into(),
                 s3: None,
+                webdav: None,
                 root: directory.path().join("new").to_string_lossy().into_owned(),
             },
         );
@@ -622,6 +625,7 @@ mod storage_settings_tests {
             RecordingBackendConfig {
                 kind: "local".into(),
                 s3: None,
+                webdav: None,
                 root: directory
                     .path()
                     .join("second")
@@ -649,6 +653,7 @@ mod storage_settings_tests {
             RecordingBackendConfig {
                 kind: "local".into(),
                 s3: None,
+                webdav: None,
                 root: directory
                     .path()
                     .join("archive")

@@ -475,10 +475,21 @@ export interface S3Credentials {
   session_token: string;
 }
 
+export interface WebDavStorageConfig {
+  endpoint: string;
+  prefix: string;
+}
+
+export interface WebDavCredentials {
+  username: string;
+  password: string;
+}
+
 export interface RecordingBackendConfig {
   type: string;
   root: string;
   s3?: S3StorageConfig;
+  webdav?: WebDavStorageConfig;
 }
 
 export interface StorageConfig {

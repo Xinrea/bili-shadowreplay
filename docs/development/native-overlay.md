@@ -86,6 +86,8 @@ yarn tauri dev
 
 `yarn tauri dev/build/bundle` 会自动发现 Homebrew 的 `ffmpeg-full`，为子进程设置匹配的 SDK 环境；首次下载官方 MoltenVK 1.4.2 macOS 运行库，校验固定 SHA-256 后缓存到 `src-tauri/target/macos-runtime`。准备过程检查架构、最低系统版本和 Metal 纹理导出符号，并将副本的 install-name 调整为 FFmpeg 可加载的 `libvulkan.dylib` 后签名。后续启动复用经过校验的缓存，不再联网；无需手工安装 Vulkan SDK、MoltenVK 或设置动态库路径。下载失败或校验失败会在 Cargo 构建前报错，避免开发导出悄悄回退到 CPU。
 
+下载会实时显示进度，中断或超时后保留缓存目录中的 `.part` 文件；重试及下次启动从已有字节继续。并发启动使用各自的临时下载文件，不共用写入位置。已校验的压缩包也会保留，准备运行库失败后无需重新下载。连接超时为 15 秒，传输速度连续 60 秒低于 1 KiB/s 才因停滞中断，不再限制整个下载必须在 180 秒内完成。服务拒绝续传时会明确提示并尝试一次完整下载；SHA-256 不匹配的内容会删除，不能作为后续续传基础。
+
 Rust、Node/Yarn、Xcode Command Line Tools 和 FFmpeg 开发库仍是编译前提；启动器不会修改系统软件包。自定义 FFmpeg SDK 可以继续设置 `FFMPEG_DIR`；自定义 MoltenVK 可设置 `BSR_MOLTENVK_LIBRARY`，同样会准备独立副本，不修改原库。缺少 FFmpeg SDK 时会直接给出安装命令。直接调用 `cargo` 的独立测试仍需配置 SDK 与运行库环境。
 
 Skia 默认构建 `textlayout-vulkan`，无需新增 Cargo feature 开关。普通构建仍保留能力探测后的 CPU 回退；不支持的 SDR/HDR 输入和质量优先策略维持已有行为。

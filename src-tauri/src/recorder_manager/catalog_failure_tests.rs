@@ -30,6 +30,7 @@ async fn manager(dir: &Path) -> (RecorderManager, RecorderEventReceiver) {
             kind: "local".into(),
             root: dir.join("other").to_string_lossy().into_owned(),
             s3: None,
+            webdav: None,
         },
     );
     let config = Arc::new(RwLock::new(config));

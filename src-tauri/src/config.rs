@@ -88,6 +88,8 @@ pub struct RecordingBackendConfig {
     pub root: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub s3: Option<recording_storage::S3Config>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webdav: Option<recording_storage::WebDavConfig>,
 }
 
 impl RecordingBackendConfig {
@@ -95,7 +97,11 @@ impl RecordingBackendConfig {
     pub fn normalized(&self) -> io::Result<Self> {
         let mut value = self.clone();
         match value.kind.as_str() {
-            "local" if !value.root.trim().is_empty() && value.s3.is_none() => {
+            "local"
+                if !value.root.trim().is_empty()
+                    && value.s3.is_none()
+                    && value.webdav.is_none() =>
+            {
                 value.root = std::path::absolute(&value.root)?
                     .to_str()
                     .ok_or_else(|| {
@@ -103,7 +109,7 @@ impl RecordingBackendConfig {
                     })?
                     .to_owned();
             }
-            "s3" if value.root.is_empty() => {
+            "s3" if value.root.is_empty() && value.webdav.is_none() => {
                 value.s3 = Some(
                     value
                         .s3
@@ -111,6 +117,19 @@ impl RecordingBackendConfig {
                             io::Error::new(
                                 io::ErrorKind::InvalidInput,
                                 "S3 configuration is required",
+                            )
+                        })?
+                        .normalized()?,
+                );
+            }
+            "webdav" if value.root.is_empty() && value.s3.is_none() => {
+                value.webdav = Some(
+                    value
+                        .webdav
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "WebDAV configuration is required",
                             )
                         })?
                         .normalized()?,
@@ -128,6 +147,9 @@ impl RecordingBackendConfig {
 
     pub fn location(&self) -> io::Result<String> {
         let normalized = self.normalized()?;
+        if let Some(webdav) = normalized.webdav {
+            return serde_json::to_string(&webdav).map_err(io::Error::other);
+        }
         match normalized.s3 {
             Some(s3) => serde_json::to_string(&s3).map_err(io::Error::other),
             None => Ok(normalized.root),
@@ -135,18 +157,28 @@ impl RecordingBackendConfig {
     }
 
     pub fn from_location(kind: String, location: String) -> io::Result<Self> {
+        if kind == "webdav" {
+            return Ok(Self {
+                kind,
+                root: String::new(),
+                s3: None,
+                webdav: Some(serde_json::from_str(&location).map_err(io::Error::other)?),
+            });
+        }
         if kind == "s3" {
             let s3 = serde_json::from_str(&location).map_err(io::Error::other)?;
             Ok(Self {
                 kind,
                 root: String::new(),
                 s3: Some(s3),
+                webdav: None,
             })
         } else {
             Ok(Self {
                 kind,
                 root: location,
                 s3: None,
+                webdav: None,
             })
         }
     }
@@ -163,6 +195,7 @@ impl StorageConfig {
                     kind: "local".to_owned(),
                     root,
                     s3: None,
+                    webdav: None,
                 },
             )]),
         }
@@ -248,6 +281,7 @@ impl<'de> Deserialize<'de> for Config {
             let definition = RecordingBackendConfig {
                 kind: "local".into(),
                 s3: None,
+                webdav: None,
                 root,
             };
             if storage
@@ -650,6 +684,7 @@ mod recording_storage_tests {
                 kind: "local".into(),
                 root: "/mnt/archive".into(),
                 s3: None,
+                webdav: None,
             },
         );
         config.storage.default_backend = "archive".into();

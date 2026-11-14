@@ -241,7 +241,7 @@ impl ArchiveStorage {
         &self,
         storage: StorageConfig,
         expected: &StorageConfig,
-        credentials: &HashMap<String, recording_storage::S3Credentials>,
+        credentials: &HashMap<String, recording_storage::StorageCredentials>,
     ) -> io::Result<StorageConfig> {
         self.initialize().await?;
         let next = Self::normalize_config(storage)?;
@@ -512,21 +512,36 @@ impl ArchiveStorage {
             .remember_storage_backend(id, &definition.kind, &location)
             .await
             .map_err(database_error)?;
-        let store = match &definition.s3 {
-            Some(s3) => RecordingStore::with_backend(
-                Arc::new(recording_storage::S3Backend::new(
-                    s3,
-                    &self
-                        .db
-                        .storage_credentials(id)
-                        .await
-                        .map_err(database_error)?,
+        let store = if let Some(webdav) = &definition.webdav {
+            let credentials = self
+                .db
+                .storage_credentials(id)
+                .await
+                .map_err(database_error)?;
+            RecordingStore::with_backend(
+                Arc::new(recording_storage::WebDavBackend::new(
+                    webdav,
+                    credentials.webdav()?,
                 )?),
-                // Compatibility path only; all normal asset processing uses
-                // explicit LocalAssets leases, never a persistent local replica.
-                std::env::temp_dir().join("shadowreplay-s3").join(id),
-            ),
-            None => RecordingStore::local(&definition.root),
+                std::env::temp_dir().join("shadowreplay-webdav").join(id),
+            )
+        } else {
+            match &definition.s3 {
+                Some(s3) => RecordingStore::with_backend(
+                    Arc::new(recording_storage::S3Backend::new(
+                        s3,
+                        self.db
+                            .storage_credentials(id)
+                            .await
+                            .map_err(database_error)?
+                            .s3()?,
+                    )?),
+                    // Compatibility path only; all normal asset processing uses
+                    // explicit LocalAssets leases, never a persistent local replica.
+                    std::env::temp_dir().join("shadowreplay-s3").join(id),
+                ),
+                None => RecordingStore::local(&definition.root),
+            }
         };
         Ok(store.with_identity(id))
     }
@@ -730,6 +745,105 @@ mod tests {
     use crate::events::EventBus;
 
     #[tokio::test]
+    async fn webdav_settings_validate_credentials_round_trip_and_rotate_without_leaking_secrets() {
+        let (_directory, storage) = fixture().await;
+        let initial = storage.configuration().await.unwrap();
+        let mut next = initial.clone();
+        next.backends.insert(
+            "dav".into(),
+            RecordingBackendConfig {
+                kind: "webdav".into(),
+                root: String::new(),
+                s3: None,
+                webdav: Some(recording_storage::WebDavConfig {
+                    endpoint: "https://cloud.example/dav".into(),
+                    prefix: "recordings".into(),
+                }),
+            },
+        );
+        next.default_backend = "dav".into();
+        assert!(storage.replace_configuration(next.clone()).await.is_err());
+        assert_eq!(storage.configuration().await.unwrap(), initial);
+        let wrong = HashMap::from([(
+            "dav".into(),
+            recording_storage::S3Credentials {
+                access_key_id: "access".into(),
+                secret_access_key: "secret".into(),
+                session_token: String::new(),
+            }
+            .into(),
+        )]);
+        assert!(storage
+            .replace_configuration_with_credentials(next.clone(), &initial, &wrong)
+            .await
+            .is_err());
+        let credentials = HashMap::from([(
+            "dav".into(),
+            recording_storage::WebDavCredentials {
+                username: "private-user".into(),
+                password: " private-password ".into(),
+            }
+            .into(),
+        )]);
+        let saved = storage
+            .replace_configuration_with_credentials(next, &initial, &credentials)
+            .await
+            .unwrap();
+        assert_eq!(
+            saved.backends["dav"].webdav.as_ref().unwrap().endpoint,
+            "https://cloud.example/dav/"
+        );
+        let public = serde_json::to_string(&saved).unwrap();
+        assert!(!public.contains("private-user"));
+        assert!(!public.contains("private-password"));
+        let definition = &saved.backends["dav"];
+        assert_eq!(
+            RecordingBackendConfig::from_location("webdav".into(), definition.location().unwrap())
+                .unwrap(),
+            *definition
+        );
+        let reopened = ArchiveStorage::new(storage.db.clone(), storage.config.clone());
+        assert_eq!(reopened.configuration().await.unwrap(), saved);
+        assert_eq!(
+            reopened
+                .db
+                .storage_credentials("dav")
+                .await
+                .unwrap()
+                .webdav()
+                .unwrap()
+                .password,
+            " private-password "
+        );
+        assert_eq!(
+            reopened
+                .selected_store(Some("dav"))
+                .await
+                .unwrap()
+                .identity(),
+            Some("dav")
+        );
+        let credentials = HashMap::from([(
+            "dav".into(),
+            recording_storage::WebDavCredentials {
+                username: "rotated-user".into(),
+                password: "rotated-password".into(),
+            }
+            .into(),
+        )]);
+        let rotated = storage
+            .replace_configuration_with_credentials(saved.clone(), &saved, &credentials)
+            .await
+            .unwrap();
+        assert_ne!(rotated.credential_revisions, saved.credential_revisions);
+        assert_eq!(rotated.backends, saved.backends);
+        assert!(storage
+            .replace_configuration_with_credentials(saved.clone(), &saved, &credentials)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
     async fn s3_settings_keep_secrets_separate_and_allow_safe_credential_rotation() {
         let (directory, storage) = fixture().await;
         let storage = Arc::new(storage);
@@ -737,6 +851,7 @@ mod tests {
         let initial = storage.configuration().await.unwrap();
         let mut next = initial.clone();
         let definition = RecordingBackendConfig {
+            webdav: None,
             kind: "s3".into(),
             root: String::new(),
             s3: Some(recording_storage::S3Config {
@@ -761,7 +876,8 @@ mod tests {
                 access_key_id: "test-access".into(),
                 secret_access_key: "test-secret".into(),
                 session_token: "test-token".into(),
-            },
+            }
+            .into(),
         )]);
         let saved = storage
             .replace_configuration_with_credentials(next, &initial, &credentials)
@@ -802,6 +918,8 @@ mod tests {
                 .storage_credentials("remote")
                 .await
                 .unwrap()
+                .s3()
+                .unwrap()
                 .secret_access_key,
             "test-secret"
         );
@@ -826,8 +944,13 @@ mod tests {
             .await
             .is_err());
         // Updates do not redirect the namespace; blank token explicitly clears it.
-        credentials.get_mut("remote").unwrap().secret_access_key = "rotated-secret".into();
-        credentials.get_mut("remote").unwrap().session_token.clear();
+        let recording_storage::StorageCredentials::S3(credential) =
+            credentials.get_mut("remote").unwrap()
+        else {
+            panic!("expected S3 credentials")
+        };
+        credential.secret_access_key = "rotated-secret".into();
+        credential.session_token.clear();
         let active = storage
             .recording_writer()
             .resolve_recording("bilibili", "remote-room", "active")
@@ -855,6 +978,8 @@ mod tests {
                 .storage_credentials("remote")
                 .await
                 .unwrap()
+                .s3()
+                .unwrap()
                 .secret_access_key,
             "rotated-secret"
         );
@@ -862,6 +987,8 @@ mod tests {
             .db
             .storage_credentials("remote")
             .await
+            .unwrap()
+            .s3()
             .unwrap()
             .session_token
             .is_empty());
@@ -945,6 +1072,7 @@ mod tests {
                 RecordingBackendConfig {
                     kind: "local".into(),
                     s3: None,
+                    webdav: None,
                     root: dir.path().join(id).to_string_lossy().into_owned(),
                 },
             );
@@ -1126,6 +1254,7 @@ mod tests {
             RecordingBackendConfig {
                 kind: "local".into(),
                 s3: None,
+                webdav: None,
                 root: directory
                     .path()
                     .join("named")
@@ -1508,6 +1637,7 @@ mod tests {
             RecordingBackendConfig {
                 kind: "local".into(),
                 s3: None,
+                webdav: None,
                 root: dir.path().join("first").to_string_lossy().into_owned(),
             },
         );
@@ -1562,6 +1692,7 @@ mod tests {
             RecordingBackendConfig {
                 kind: "local".into(),
                 s3: None,
+                webdav: None,
                 root: "/adapter".into(),
             },
         );

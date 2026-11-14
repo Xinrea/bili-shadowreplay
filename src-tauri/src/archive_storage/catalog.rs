@@ -45,13 +45,18 @@ pub(super) fn validate_catalog_namespace(
                         || a.prefix.starts_with(&format!("{}/", b.prefix))
                         || b.prefix.starts_with(&format!("{}/", a.prefix)))
             }
-            (None, None) => {
+            (None, None) if selected.kind == "local" && other.kind == "local" => {
                 let a = resolved_root(std::path::Path::new(&selected.root))?;
                 let b = resolved_root(std::path::Path::new(&other.root))?;
                 a.starts_with(&b) || b.starts_with(&a)
             }
             _ => false,
         };
+        let overlap = overlap
+            || match (&selected.webdav, &other.webdav) {
+                (Some(a), Some(b)) => a.overlaps(b)?,
+                _ => false,
+            };
         if overlap {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -247,7 +252,7 @@ impl ArchiveStorage {
         let definition = self.configuration().await?.backends[id].clone();
         // Only a genuinely new local location may be initialized. A missing
         // known mount must not become an empty directory on a different disk.
-        if definition.s3.is_none() && expected.is_none() && !needs_import && !readonly {
+        if definition.kind == "local" && expected.is_none() && !needs_import && !readonly {
             tokio::fs::create_dir_all(&definition.root).await?;
         }
         let location = self.catalog_location(id).await?;
@@ -357,6 +362,16 @@ impl ArchiveStorage {
                 io::Error::new(io::ErrorKind::NotFound, "catalog backend is not configured")
             })?
             .normalized()?;
+        if let Some(webdav) = &definition.webdav {
+            let credentials = self
+                .db
+                .storage_credentials(id)
+                .await
+                .map_err(database_error)?;
+            return Ok(CatalogLocation::recording_backend(Arc::new(
+                recording_storage::WebDavBackend::new(webdav, credentials.webdav()?)?,
+            )));
+        }
         let Some(s3) = definition.s3 else {
             return CatalogLocation::local(definition.root);
         };
@@ -370,7 +385,7 @@ impl ArchiveStorage {
         let prefix = recording_catalog::object_store::path::Path::parse(&s3.prefix)
             .map_err(io::Error::other)?;
         Ok(CatalogLocation::object_store(Arc::new(PrefixStore::new(
-            catalog_s3(&s3, &credentials)?,
+            catalog_s3(&s3, credentials.s3()?)?,
             prefix,
         ))))
     }
@@ -410,6 +425,34 @@ mod endpoint_tests {
     use recording_catalog::object_store::{path::Path, signer::Signer};
 
     #[test]
+    fn webdav_overlap_uses_the_full_collection_and_does_not_treat_remote_roots_as_local() {
+        let mut config = crate::config::StorageConfig::local(
+            std::env::temp_dir().to_string_lossy().into_owned(),
+        );
+        let backend = |endpoint: &str, prefix: &str| crate::config::RecordingBackendConfig {
+            kind: "webdav".into(),
+            root: String::new(),
+            s3: None,
+            webdav: Some(recording_storage::WebDavConfig {
+                endpoint: endpoint.into(),
+                prefix: prefix.into(),
+            }),
+        };
+        config
+            .backends
+            .insert("dav".into(), backend("https://host/dav/", "app"));
+        validate_catalog_namespace("dav", &config).unwrap();
+        config
+            .backends
+            .insert("other".into(), backend("https://host/dav/app/", "nested"));
+        assert!(validate_catalog_namespace("dav", &config).is_err());
+        config
+            .backends
+            .insert("other".into(), backend("https://host/dav/", "app2"));
+        validate_catalog_namespace("dav", &config).unwrap();
+    }
+
+    #[test]
     fn bucket_qualified_endpoints_cannot_bypass_catalog_overlap_checks() {
         let a = recording_storage::S3Config {
             endpoint: "https://s3.oss-cn-shanghai.aliyuncs.com".into(),
@@ -436,6 +479,7 @@ mod endpoint_tests {
                             kind: "s3".into(),
                             root: String::new(),
                             s3: Some(s3),
+                            webdav: None,
                         },
                     )
                 })

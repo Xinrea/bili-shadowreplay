@@ -5,7 +5,125 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { ffmpegEnvironment, prepareMoltenVk, verifyArchive } from "../macos-runtime.mjs";
+import { once } from "node:events";
+import { Worker } from "node:worker_threads";
+import { downloadMoltenVkArchive, ffmpegEnvironment, prepareMoltenVk, verifyArchive } from "../macos-runtime.mjs";
+
+test("interrupted MoltenVK downloads retain their bytes and verified archives work offline", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bsr-resume-"));
+  const bytes = Buffer.from("complete fixture archive");
+  const archive = { url: "https://example.invalid/runtime.tar", sha256: createHash("sha256").update(bytes).digest("hex") };
+  try {
+    assert.throws(() => downloadMoltenVkArchive(directory, archive, (_url, file) => {
+      fs.writeFileSync(file, bytes.subarray(0, 8));
+      throw new Error("connection interrupted");
+    }), /connection interrupted/);
+    const partials = fs.readdirSync(directory);
+    assert.equal(partials.length, 1);
+    assert.deepEqual(fs.readFileSync(path.join(directory, partials[0])), bytes.subarray(0, 8));
+    const tar = downloadMoltenVkArchive(directory, archive, (_url, file) => {
+      assert.deepEqual(fs.readFileSync(file), bytes.subarray(0, 8));
+      fs.appendFileSync(file, bytes.subarray(8));
+    });
+    assert.deepEqual(fs.readFileSync(tar), bytes);
+    assert.deepEqual(fs.readdirSync(directory), [path.basename(tar)]);
+    assert.equal(downloadMoltenVkArchive(directory, archive, () => { throw new Error("offline"); }), tar);
+    fs.writeFileSync(tar, "corrupt cache");
+    assert.throws(() => downloadMoltenVkArchive(directory, archive, (_url, file) => {
+      assert.equal(fs.statSync(file).size, 0);
+      fs.writeFileSync(file, "corrupt response");
+    }), /SHA-256 mismatch/);
+    assert.deepEqual(fs.readdirSync(directory), [], "corrupt data must not poison the next resume");
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("MoltenVK resumes after process exit without touching a live launcher's download", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bsr-resume-exit-"));
+  const bytes = Buffer.from("complete fixture archive");
+  const archive = { url: "https://example.invalid/runtime.tar", sha256: createHash("sha256").update(bytes).digest("hex") };
+  try {
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import fs from 'node:fs';
+      import { downloadMoltenVkArchive } from ${JSON.stringify(new URL("../macos-runtime.mjs", import.meta.url).href)};
+      downloadMoltenVkArchive(process.argv[1], ${JSON.stringify(archive)}, (_url, file) => {
+        fs.writeFileSync(file, 'complete');
+        process.exit(23);
+      });
+    `, directory], { encoding: "utf8" });
+    assert.equal(result.status, 23, result.stderr);
+    const tar = downloadMoltenVkArchive(directory, archive, (_url, outer) => {
+      assert.equal(fs.readFileSync(outer, "utf8"), "complete");
+      downloadMoltenVkArchive(directory, archive, (_url, inner) => {
+        assert.notEqual(inner, outer);
+        assert.equal(fs.statSync(inner).size, 0, "an active writer cannot be used as a resume source");
+        fs.writeFileSync(inner, bytes);
+      });
+      assert.equal(fs.readFileSync(outer, "utf8"), "complete");
+      fs.appendFileSync(outer, bytes.subarray(8));
+    });
+    assert.deepEqual(fs.readFileSync(tar), bytes);
+    assert.deepEqual(fs.readdirSync(directory), [path.basename(tar)]);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("curl retries from received bytes and safely restarts when HTTP resume is unavailable", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bsr-curl-resume-"));
+  const bytes = "0123456789-complete-download";
+  const history = path.join(directory, "requests.json");
+  // A separate worker serves HTTP while the launcher is in execFileSync.
+  const worker = new Worker(`
+    const { parentPort, workerData } = require('node:worker_threads');
+    const http = require('node:http');
+    const fs = require('node:fs');
+    const requests = [];
+    const body = Buffer.from(workerData.bytes);
+    const server = http.createServer((req, res) => {
+      const range = req.headers.range || null;
+      requests.push([req.url, range]);
+      fs.writeFileSync(workerData.history, JSON.stringify(requests));
+      if (req.url === '/resume' && !range) {
+        res.writeHead(200, { 'Content-Length': body.length });
+        res.write(body.subarray(0, 8));
+        setTimeout(() => res.destroy(), 30);
+      } else if (req.url === '/out-of-range' && range) {
+        res.writeHead(416, { 'Content-Range': 'bytes */' + body.length });
+        res.end();
+      } else if (req.url === '/resume' && range) {
+        const offset = Number(range.match(/bytes=(\\d+)-/)[1]);
+        res.writeHead(206, { 'Content-Length': body.length - offset,
+          'Content-Range': 'bytes ' + offset + '-' + (body.length - 1) + '/' + body.length });
+        res.end(body.subarray(offset));
+      } else {
+        res.writeHead(200, { 'Content-Length': body.length });
+        res.end(body);
+      }
+    });
+    server.listen(0, '127.0.0.1', () => parentPort.postMessage(server.address().port));
+  `, { eval: true, workerData: { bytes, history } });
+  try {
+    const [port] = await once(worker, "message");
+    for (const route of ["resume", "no-range", "out-of-range"]) {
+      const cache = path.join(directory, route);
+      const archive = { url: `http://127.0.0.1:${port}/${route}`, sha256: createHash("sha256").update(bytes).digest("hex") };
+      if (route !== "resume") {
+        assert.throws(() => downloadMoltenVkArchive(cache, archive, (_url, file) => {
+          fs.writeFileSync(file, bytes.slice(0, 8));
+          throw new Error("interrupted");
+        }), /interrupted/);
+      }
+      const tar = downloadMoltenVkArchive(cache, archive);
+      assert.equal(fs.readFileSync(tar, "utf8"), bytes);
+    }
+    assert.deepEqual(JSON.parse(fs.readFileSync(history, "utf8")), [
+      ["/resume", null], ["/resume", "bytes=8-"],
+      ["/no-range", "bytes=8-"], ["/no-range", null],
+      ["/out-of-range", "bytes=8-"], ["/out-of-range", null],
+    ]);
+  } finally {
+    await worker.terminate();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("macOS SDK discovery preserves an explicit SDK and its pkg-config dependencies", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bsr-sdk with spaces-"));
@@ -97,7 +215,7 @@ int main(int argc, char **argv) {
       } };
       if (invalid) assert.throws(() => prepareMoltenVk(racingCache, racingOptions), /Invalid MoltenVK cache/);
       else assert.equal(prepareMoltenVk(racingCache, racingOptions), path.join(winner, "libvulkan.dylib"));
-      assert.deepEqual(fs.readdirSync(racingCache), [path.basename(winner)], "temporary preparation files are removed");
+      assert.deepEqual(fs.readdirSync(racingCache).sort(), [`MoltenVK-${sha256}.tar`, path.basename(winner)].sort(), "only verified archives and prepared runtimes remain");
     }
 
     fs.appendFileSync(downloaded, "corruption");

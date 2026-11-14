@@ -5936,14 +5936,18 @@ name = "recording_catalog"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
  "fs2",
  "futures",
  "object_store 0.14.2",
+ "percent-encoding",
+ "recording_storage",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "tokio",
+ "url",
  "uuid",
 ]
 
@@ -5957,13 +5961,16 @@ dependencies = [
  "futures",
  "libc",
  "object_store 0.12.5",
+ "percent-encoding",
  "reqwest 0.12.24",
+ "roxmltree",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "tokio",
  "url",
+ "uuid",
  "windows-sys 0.59.0",
 ]
 

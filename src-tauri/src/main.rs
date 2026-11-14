@@ -715,6 +715,12 @@ fn get_migrations() -> Vec<Migration> {
             sql: database::catalog::runtime::SCHEMA_SQL,
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 37,
+            description: "enable_webdav_recording_storage",
+            sql: database::storage::WEBDAV_SCHEMA_SQL,
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -748,6 +754,37 @@ mod storage_migration_tests {
     use super::*;
 
     #[tokio::test]
+    async fn webdav_upgrade_preserves_released_migration_checksums() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let released = get_migrations()
+            .into_iter()
+            .filter(|m| m.version <= 36)
+            .collect();
+        Migrator::new(MigrationList(released))
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+        Migrator::new(MigrationList(get_migrations()))
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+        let view: String =
+            sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE name = 'recording_records'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(view.contains("'webdav'"));
+    }
+
+    #[tokio::test]
     async fn released_database_upgrades_directly_to_final_storage_schema() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
@@ -779,7 +816,7 @@ mod storage_migration_tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(version, 36);
+        assert_eq!(version, 37);
         let legacy_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM records")
             .fetch_one(&pool)
             .await

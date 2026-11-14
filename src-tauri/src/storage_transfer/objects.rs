@@ -1,4 +1,4 @@
-//! Object-copy strategy for any route containing S3. Shares the local strategy's
+//! Object-copy strategy for any route containing remote storage. Shares the local strategy's
 //! DB phases, archive mutation locks, reader barriers and transfer reservation.
 //! The local rename/copy implementation is deliberately left intact.
 use super::*;
@@ -59,6 +59,14 @@ fn reject_overlap(
     source: &RecordingBackendConfig,
     target: &RecordingBackendConfig,
 ) -> io::Result<()> {
+    if let (Some(source), Some(target)) = (&source.webdav, &target.webdav) {
+        if source.overlaps(target)? {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "WebDAV 来源与目标命名空间相同或重叠",
+            ));
+        }
+    }
     if let (Some(source), Some(target)) = (&source.s3, &target.s3) {
         let contains = |parent: &str, child: &str| {
             parent.is_empty()
@@ -106,7 +114,7 @@ impl ArchiveStorage {
             config
                 .backends
                 .get(*id)
-                .is_some_and(|backend| backend.kind == "s3")
+                .is_some_and(|backend| matches!(backend.kind.as_str(), "s3" | "webdav"))
         }))
     }
 
@@ -144,11 +152,11 @@ impl ArchiveStorage {
                         .map_err(|error| io::Error::new(error.kind(), format!("本地存储 {id} 根目录不可用，请先创建目录并检查路径及符号链接：{error}")))?;
                     Some((root, identity))
                 }
-                "s3" => None,
+                "s3" | "webdav" => None,
                 _ => {
                     return Err(io::Error::new(
                         io::ErrorKind::Unsupported,
-                        "仅支持本地或 S3 存储之间转移",
+                        "仅支持本地、S3 或 WebDAV 存储之间转移",
                     ))
                 }
             };
@@ -481,6 +489,7 @@ mod tests {
     #[test]
     fn s3_prefix_policy_rejects_aliases_and_subtrees_but_allows_distinct_namespaces() {
         let backend = |prefix: &str, endpoint: &str| RecordingBackendConfig {
+            webdav: None,
             kind: "s3".into(),
             root: String::new(),
             s3: Some(recording_storage::S3Config {
@@ -723,6 +732,7 @@ mod tests {
             config.backends.insert(
                 id.into(),
                 RecordingBackendConfig {
+                    webdav: None,
                     kind: "s3".into(),
                     root: String::new(),
                     s3: Some(recording_storage::S3Config {
@@ -740,8 +750,8 @@ mod tests {
                 config.clone(),
                 &before,
                 &HashMap::from([
-                    ("cloud1".into(), credentials.clone()),
-                    ("cloud2".into(), credentials.clone()),
+                    ("cloud1".into(), credentials.clone().into()),
+                    ("cloud2".into(), credentials.clone().into()),
                 ]),
             )
             .await

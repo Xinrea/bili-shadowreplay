@@ -1,0 +1,22 @@
+# Optional local WebDAV test service, independent of the application compose file.
+# Supply test credentials through your shell or an external --env-file.
+services:
+  webdav:
+    image: ${WEBDAV_IMAGE:-rclone/rclone:latest}
+    command:
+      - serve
+      - webdav
+      - /data
+      - --addr=:8080
+      - --user=${WEBDAV_USERNAME:?Set WEBDAV_USERNAME}
+      - --pass=${WEBDAV_PASSWORD:?Set WEBDAV_PASSWORD}
+      - --vfs-cache-mode=off
+      - --dir-cache-time=1s
+      - --log-level=INFO
+    ports:
+      - "127.0.0.1:${WEBDAV_PORT:-18080}:8080"
+    volumes:
+      - webdav-data:/data
+
+volumes:
+  webdav-data:

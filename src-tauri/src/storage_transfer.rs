@@ -808,6 +808,7 @@ mod tests {
                 RecordingBackendConfig {
                     kind: "local".into(),
                     s3: None,
+                    webdav: None,
                     root: dir
                         .path()
                         .join(id)
@@ -2082,6 +2083,7 @@ mod tests {
             RecordingBackendConfig {
                 kind: "local".into(),
                 s3: None,
+                webdav: None,
                 root: dir.path().join("a/child").to_str().unwrap().into(),
             },
         );

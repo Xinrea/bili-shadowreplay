@@ -5,6 +5,7 @@
   import type { RecordItem } from "../lib/db";
   import type { RecorderInfo, RecorderList } from "../lib/interface";
   import { invoke } from "../lib/invoker";
+  import { getStorageInitializationStatus } from "../lib/storage-initialization";
   import { createStateRefresh, watchStateChanges } from "../lib/state-refresh";
   import { registerCommands } from "../lib/stores/commands";
   import ArchiveList from "../lib/components/ArchiveList.svelte";
@@ -18,7 +19,19 @@
 
   async function fetchArchives() {
     loading = true;
+    let initializing = false;
     try {
+      const status = await getStorageInitializationStatus();
+      if (disposed) return;
+      initializing = status.loading;
+      if (initializing) {
+        loadError = "";
+        return;
+      }
+      if (status.error) {
+        loadError = `存储元数据加载失败：${status.error}，请重启应用重试。`;
+        return;
+      }
       const recorders = await invoke<RecorderList>("get_recorder_list");
       const snapshots = await Promise.all(recorders.recorders.map((room) =>
         loadRoomArchives(room.room_info, () => !disposed)));
@@ -29,7 +42,7 @@
     } catch (error) {
       if (!disposed) loadError = `录播记录加载失败：${String(error)}`;
     } finally {
-      if (!disposed) loading = false;
+      if (!disposed) loading = initializing;
     }
   }
 

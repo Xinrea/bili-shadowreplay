@@ -23,16 +23,32 @@ await helper.link(() => { throw new Error("Unexpected runtime dependency"); });
 await helper.evaluate();
 const { storageBackend, storageBackendEntries, storageBackendSupported, storageBackendLocation } = helper.namespace;
 
-async function handlers(path, state) {
+async function handlers(path, state, { mount = false } = {}) {
   const source = await readFile(new URL(`../../src/${path}`, import.meta.url), "utf8");
   const script = source.match(/<script lang="ts">([\s\S]*?)<\/script>/)[1];
   const parsed = ts.createSourceFile("component.ts", script, ts.ScriptTarget.Latest, true);
   const functions = parsed.statements.filter(ts.isFunctionDeclaration);
-  vm.runInContext(transpile(functions.map(node => node.getText(parsed)).join("\n")), vm.createContext(state));
+  const context = vm.createContext(state);
+  vm.runInContext(transpile(functions.map(node => node.getText(parsed)).join("\n")), context);
+  if (mount) {
+    const runtime = new vm.SourceTextModule(transpile(await readFile(new URL("../../src/lib/state-refresh.ts", import.meta.url), "utf8")), { context });
+    await runtime.link(() => new vm.SyntheticModule(["listen"], function () {
+      this.setExport("listen", state.listen);
+    }, { context }));
+    await runtime.evaluate();
+    Object.assign(state, runtime.namespace);
+    for (const node of parsed.statements) {
+      const watcher = ts.isVariableStatement(node) && node.declarationList.declarations
+        .some(item => item.name.getText(parsed) === "catalogRefresh");
+      const mount = ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)
+        && node.expression.expression.getText(parsed) === "onMount";
+      if (watcher || mount) vm.runInContext(transpile(node.getText(parsed)), context);
+    }
+  }
   return state;
 }
 
-async function settingsFixture() {
+async function settingsFixture({ mount = false, overrides = {} } = {}) {
   const requests = [];
   let persisted = config();
   const state = await handlers("lib/components/RecordingStorageSettings.svelte", {
@@ -43,7 +59,7 @@ async function settingsFixture() {
     storageBackendSupported,
     transferBusy: false, transferStarting: false,
     view: "locations", showAdd: false,
-    catalogStatuses: {},
+    catalogStatuses: {}, catalogRequest: 0, disposed: false,
     tick: async () => {}, newIdInput: { focus() {} },
     invoke: async (command, args) => {
       if (command === "get_config") return { storage: plain(persisted) };
@@ -52,7 +68,8 @@ async function settingsFixture() {
       persisted = plain(args.storage);
       return plain(args.storage);
     },
-  });
+    ...overrides,
+  }, { mount });
   return { state, requests };
 }
 
@@ -66,7 +83,7 @@ test("storage settings open on demand in a focused modal instead of expanding th
   assert.match(modal, /use:trapFocus/);
   assert.match(modal, /class="ui-modal-body space-y-3"/);
   assert.match(modal, /w-\[800px\]/);
-  assert.match(modal, /onMount\(\(\) => \{ void load\(\); \}\)/);
+  assert.match(modal, /onMount\(\(\) => \{[\s\S]*?void load\(\);/);
 });
 
 test("viewport modal leaves page containment and removes its relocated node on destroy", async () => {
@@ -214,6 +231,87 @@ test("catalog status reads do not reconnect unless refresh is requested", async 
   await state.loadCatalogStatus(true);
   assert.deepEqual(plain(state.catalogStatuses), {});
   assert.deepEqual(plain(state.storage), before);
+});
+
+for (const status of [
+  { alias: "archive", ready: true, writable: true, error: null },
+  { alias: "archive", ready: false, writable: false, error: "S3 connection failed" },
+]) {
+  test(`an open storage dialog refreshes startup ${status.ready ? "success" : "failure"} without resetting edits`, async () => {
+    const events = new Map();
+    const timers = new Map();
+    const intervals = new Map();
+    const calls = [];
+    const initialReady = !status.ready;
+    let next = { ...status, ready: initialReady, writable: initialReady,
+      error: initialReady ? null : "正在连接存储目录" };
+    let cleanup;
+    let timerId = 0;
+    const settle = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
+    const { state } = await settingsFixture({ mount: true, overrides: {
+      console,
+      onMount: callback => { cleanup = callback(); },
+      listen: async (name, callback) => {
+        events.set(name, callback);
+        return () => events.delete(name);
+      },
+      document: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} },
+      window: { addEventListener() {}, removeEventListener() {} },
+      setTimeout: callback => { timers.set(++timerId, callback); return timerId; },
+      clearTimeout: id => timers.delete(id),
+      setInterval: callback => { intervals.set(++timerId, callback); return timerId; },
+      clearInterval: id => intervals.delete(id),
+      invoke: async (command, args) => {
+        calls.push({ command, args: args && plain(args) });
+        if (command === "get_config") return { storage: config() };
+        assert.equal(command, "get_storage_catalog_status");
+        return [{ ...next }];
+      },
+    } });
+    await settle();
+    assert.equal(state.catalogStatuses.archive.ready, initialReady);
+    assert.ok(events.has("records-changed"));
+    const configReads = calls.filter(call => call.command === "get_config").length;
+    state.newId = "keep this draft";
+    state.showAdd = true;
+    state.defaultId = "archive";
+    state.view = "transfer";
+    next = status;
+    events.get("records-changed")({ payload: null });
+    for (const callback of [...timers.values()]) callback();
+    timers.clear();
+    await settle();
+    assert.deepEqual(plain(state.catalogStatuses.archive), status);
+    assert.equal(calls.at(-1).args.refresh, false, "completion reads must not force another S3 scan");
+    assert.equal(calls.filter(call => call.command === "get_config").length, configReads);
+    assert.equal(state.newId, "keep this draft");
+    assert.equal(state.showAdd, true);
+    assert.equal(state.defaultId, "archive");
+    assert.equal(state.view, "transfer");
+    cleanup();
+    assert.equal(events.size, 0);
+    assert.equal(timers.size, 0);
+    assert.equal(intervals.size, 0);
+  });
+}
+
+test("older catalog responses and responses after closing cannot overwrite current status", async () => {
+  const { state } = await settingsFixture();
+  const pending = [];
+  state.invoke = () => new Promise((resolve, reject) => pending.push({ resolve, reject }));
+  const old = state.loadCatalogStatus(true);
+  const current = state.loadCatalogStatus();
+  const ready = [{ alias: "archive", ready: true, writable: true, error: null }];
+  pending[1].resolve(ready);
+  await current;
+  pending[0].resolve([{ ...ready[0], ready: false, error: "stale placeholder" }]);
+  await old;
+  assert.equal(state.catalogStatuses.archive.ready, true);
+  const closing = state.loadCatalogStatus();
+  state.disposed = true;
+  pending[2].reject(new Error("late failure"));
+  await closing;
+  assert.equal(state.catalogStatuses.archive.ready, true);
 });
 
 test("changing the default preserves all backend IDs and roots without moving recordings", async () => {

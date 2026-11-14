@@ -28,6 +28,7 @@ pub async fn start_storage_transfer(
     source_backend_id: String,
     target_backend_id: String,
 ) -> Result<TaskRow, String> {
+    state.db.ensure_catalog_startup_complete()?;
     #[cfg(feature = "headless")]
     if state.readonly {
         return Err("只读模式不能转移录制存储".into());

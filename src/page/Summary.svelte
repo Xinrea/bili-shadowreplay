@@ -5,6 +5,7 @@
   import { pageVisibility } from "../lib/page-visibility";
 
   import { get_static_url, invoke } from "../lib/invoker";
+  import { getStorageInitializationStatus } from "../lib/storage-initialization";
   import type { RecorderList } from "../lib/interface";
   import type { RecordItem } from "../lib/db";
   import { archiveFilesAvailable, archiveStorageReason } from "../lib/recording-storage";
@@ -18,6 +19,7 @@
     Clock,
     Download,
     HardDrive,
+    Loader2,
     Play,
     RefreshCw,
     Trash2,
@@ -40,17 +42,23 @@
   let recent_records: RecordItem[] = $state([]);
   let activeDropdown = $state(null);
   let loading = $state(false);
+  let storageLoading = $state(true);
+  let storageError = $state("");
   let offset = 0;
   let hasMore = $state(true);
   let hasNewRecords = $state(false);
   const RECORDS_PER_PAGE = 5;
 
-  const stateRefresh = createStateRefresh(update_summary);
+  const stateRefresh = createStateRefresh(update_summary, 200, (error) => {
+    storageLoading = false;
+    storageError = `总览数据加载失败：${String(error)}`;
+  });
   const pageVisible = pageVisibility();
 
   $effect(() => {
     download_speed = null;
     if (!pageVisible()) return;
+    if (storageLoading || storageError) return;
 
     let disposed = false;
     const growth = createCacheGrowthEstimator();
@@ -81,9 +89,14 @@
     total = summary.count;
     online = summary.recorders.filter((r) => r.room_info.status).length;
 
-    disk_usage = await get_archive_disk_usage();
-
     account_count = await get_account_count();
+
+    const status = await getStorageInitializationStatus();
+    storageLoading = status.loading;
+    storageError = status.error ? `存储元数据加载失败：${status.error}，请重启应用重试。` : "";
+    if (storageLoading || storageError) return;
+
+    disk_usage = await get_archive_disk_usage();
 
     // get total length
     total_length = await get_total_length();
@@ -101,13 +114,14 @@
         // A new recording can displace an old row even after pagination ended.
         limit: visibleCount + 1,
       });
-      hasMore = refreshed.length > visibleCount;
-      recent_records = await Promise.all(refreshed.slice(0, visibleCount).map(async (record) => ({
+      const records = await Promise.all(refreshed.slice(0, visibleCount).map(async (record) => ({
         ...record,
         cover: archiveFilesAvailable(record)
           ? await get_static_url("cache", `${record.platform}/${record.room_id}/${record.live_id}/cover.jpg`)
           : "",
       })));
+      hasMore = refreshed.length > visibleCount;
+      recent_records = records;
       offset = recent_records.length;
     } else {
       // Initial load, or new recordings after the previous list became empty.
@@ -117,37 +131,39 @@
   }
 
   async function loadMoreRecords() {
-    if (loading || (!hasMore && !hasNewRecords)) return;
+    if (storageLoading || storageError || loading || (!hasMore && !hasNewRecords)) return;
 
     loading = true;
-    const newRecords = (await invoke("get_recent_record", {
-      roomId: "",
-      offset: hasNewRecords ? 0 : offset,
-      limit: RECORDS_PER_PAGE,
-    })) as RecordItem[];
+    try {
+      const newRecords = (await invoke("get_recent_record", {
+        roomId: "",
+        offset: hasNewRecords ? 0 : offset,
+        limit: RECORDS_PER_PAGE,
+      })) as RecordItem[];
 
-    for (const record of newRecords) {
-      if (!archiveFilesAvailable(record)) { record.cover = ""; continue; }
-      record.cover = await get_static_url(
-        "cache",
-        `${record.platform}/${record.room_id}/${record.live_id}/cover.jpg`,
-      );
-    }
-
-    if (hasNewRecords) {
-      recent_records = newRecords;
-      offset = newRecords.length;
-      hasNewRecords = false;
-      hasMore = true;
-    } else {
-      if (newRecords.length < RECORDS_PER_PAGE) {
-        hasMore = false;
+      for (const record of newRecords) {
+        if (!archiveFilesAvailable(record)) { record.cover = ""; continue; }
+        record.cover = await get_static_url(
+          "cache",
+          `${record.platform}/${record.room_id}/${record.live_id}/cover.jpg`,
+        );
       }
-      recent_records = [...recent_records, ...newRecords];
-      offset += newRecords.length;
-    }
 
-    loading = false;
+      if (hasNewRecords) {
+        recent_records = newRecords;
+        offset = newRecords.length;
+        hasNewRecords = false;
+        hasMore = true;
+      } else {
+        if (newRecords.length < RECORDS_PER_PAGE) {
+          hasMore = false;
+        }
+        recent_records = [...recent_records, ...newRecords];
+        offset += newRecords.length;
+      }
+    } finally {
+      loading = false;
+    }
   }
 
   function handleScroll(event) {
@@ -246,12 +262,9 @@
   }
 
   async function refreshRecords() {
-    // Reset pagination
-    offset = 0;
-    hasMore = true;
-    recent_records = [];
-    // Load records from beginning
-    await loadMoreRecords();
+    // Retry initialization and refresh the visible window without discarding
+    // the last successful snapshot if a request fails again.
+    await stateRefresh.run();
   }
 </script>
 
@@ -264,6 +277,14 @@
   onscroll={handleScroll}
 >
   <div class="space-y-6">
+    {#if storageLoading}
+      <div role="status" class="flex items-center gap-2 text-[12px] text-fg-muted">
+        <Loader2 class="h-4 w-4 animate-spin motion-reduce:animate-none" />
+        正在加载存储元数据，录播记录和统计将自动更新…
+      </div>
+    {:else if storageError}
+      <div role="alert" class="rounded-[8px] bg-danger-soft p-3 text-[12px] text-danger-fg">{storageError}</div>
+    {/if}
     <!-- Stats Grid -->
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
       <!-- Recording assets across all backends, not local disk usage. -->
@@ -277,7 +298,7 @@
           <div class="min-w-0">
             <p class="text-[12px] text-fg-muted">录播总大小</p>
             <p class="text-[20px] font-semibold leading-tight text-fg tabular-nums">
-              {formatSize(disk_usage)}
+              {storageLoading ? "加载中…" : storageError ? "—" : formatSize(disk_usage)}
             </p>
           </div>
         </div>
@@ -354,7 +375,7 @@
           <div class="min-w-0">
             <p class="text-[12px] text-fg-muted">总缓存时长</p>
             <p class="text-[20px] font-semibold leading-tight text-fg tabular-nums">
-              {format_time(total_length)}
+              {storageLoading ? "加载中…" : storageError ? "—" : format_time(total_length)}
             </p>
           </div>
         </div>
@@ -373,7 +394,7 @@
               今日缓存直播数
             </p>
             <p class="text-[20px] font-semibold leading-tight text-fg tabular-nums">
-              {today_record_count}
+              {storageLoading ? "加载中…" : storageError ? "—" : today_record_count}
             </p>
           </div>
         </div>
@@ -506,11 +527,10 @@
           </div>
         {/each}
 
-        {#if loading}
-          <div class="flex justify-center py-4">
-            <div
-              class="h-6 w-6 animate-spin rounded-full border-b-2 border-accent"
-            ></div>
+        {#if loading || storageLoading}
+          <div role="status" class="flex items-center justify-center gap-2 py-4 text-[12px] text-fg-muted">
+            <Loader2 class="h-4 w-4 animate-spin motion-reduce:animate-none" />
+            {storageLoading ? "正在加载存储元数据…" : "正在加载录播记录…"}
           </div>
         {/if}
 

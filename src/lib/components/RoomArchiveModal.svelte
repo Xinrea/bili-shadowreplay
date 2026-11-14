@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { History, RefreshCw, X } from "lucide-svelte";
   import { loadRoomArchives } from "../archives";
+  import { getStorageInitializationStatus } from "../storage-initialization";
   import type { RecordItem } from "../db";
   import type { RecorderInfo } from "../interface";
   import { trapFocus } from "../focus-trap";
@@ -21,7 +22,19 @@
 
   async function refreshArchives() {
     loading = true;
+    let initializing = false;
     try {
+      const status = await getStorageInitializationStatus();
+      if (disposed) return;
+      initializing = status.loading;
+      if (initializing) {
+        loadError = "";
+        return;
+      }
+      if (status.error) {
+        loadError = `存储元数据加载失败：${status.error}，请重启应用重试。`;
+        return;
+      }
       const result = await loadRoomArchives(room.room_info, () => !disposed);
       if (disposed) return;
       archives = result;
@@ -29,7 +42,7 @@
     } catch (error) {
       if (!disposed) loadError = `录播记录加载失败：${String(error)}`;
     } finally {
-      if (!disposed) loading = false;
+      if (!disposed) loading = initializing;
     }
   }
 

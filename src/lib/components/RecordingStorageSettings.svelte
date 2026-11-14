@@ -10,6 +10,7 @@
   import { trapFocus } from "../focus-trap";
   import { pageVisibility } from "../page-visibility";
   import { openTaskCenter } from "../stores/tasks";
+  import { createStateRefresh, watchStateChanges } from "../state-refresh";
 
   let { onclose }: { onclose: () => void } = $props();
   const pageVisible = pageVisibility();
@@ -39,13 +40,18 @@
   let showAdd = $state(false);
   let newIdInput = $state<HTMLInputElement>();
   let catalogStatuses = $state<Record<string, { ready: boolean; writable: boolean; error: string | null }>>({});
+  let disposed = false;
+  let catalogRequest = 0;
+  const catalogRefresh = createStateRefresh(loadCatalogStatus);
 
   async function loadCatalogStatus(refresh = false) {
+    const request = ++catalogRequest;
     try {
       const statuses = await invoke<Array<{ alias: string; ready: boolean; writable: boolean; error: string | null }>>("get_storage_catalog_status", { refresh });
+      if (disposed || request !== catalogRequest) return;
       catalogStatuses = Array.isArray(statuses) ? Object.fromEntries(statuses.map(status => [status.alias, status])) : {};
     } catch {
-      catalogStatuses = {};
+      if (!disposed && request === catalogRequest) catalogStatuses = {};
     }
   }
 
@@ -251,7 +257,11 @@
     }
   }
 
-  onMount(() => { void load(); });
+  onMount(() => {
+    const stop = watchStateChanges(catalogRefresh, ["records-changed"]);
+    void load();
+    return () => { disposed = true; stop(); };
+  });
 </script>
 
 <svelte:window onkeydown={handleKeydown} />

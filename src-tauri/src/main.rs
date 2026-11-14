@@ -972,7 +972,6 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
     }
 
     let config = Arc::new(RwLock::new(config));
-    let config_clone = config.clone();
     let dbs = app.state::<tauri_plugin_sql::DbInstances>().inner();
     let events = EventBus::new();
     events.forward_to_app(app.handle().clone());
@@ -1065,26 +1064,6 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
         .await?,
     );
 
-    // try to rebuild archive table
-    let output_path = config_clone.read().await.output.clone();
-    if let Err(e) = try_rebuild_archives(&db, &recorder_manager).await {
-        log::warn!("Rebuilding archive table failed: {e}");
-    }
-    let _ = try_convert_live_covers(&db, &recorder_manager).await;
-    let _ = try_convert_clip_covers(&db, output_path.clone().into()).await;
-    let _ = try_add_parent_id_to_records(&db).await;
-    let _ = try_convert_entry_to_m3u8(&db, &recorder_manager).await;
-    recorder_manager
-        .archive_storage()
-        .start_catalogs(false)
-        .await?;
-    db.catalog_startup_blocked
-        .store(false, std::sync::atomic::Ordering::Release);
-    tauri::async_runtime::spawn(crate::handlers::project::create_legacy_projects(
-        db.clone(),
-        output_path.clone().into(),
-    ));
-
     let state = State {
         mcp_server: Arc::new(mcp::McpServer::default()),
         temp_storage,
@@ -1102,6 +1081,40 @@ async fn setup_app_state(app: &tauri::App) -> Result<Option<State>, Box<dyn std:
         .recorder_manager
         .on_material_created(crate::handlers::video::material_hook(&state));
     Ok(Some(state))
+}
+
+/// Remote scans and legacy conversions run only after State is registered and
+/// the desktop setup can return. Keep recorder startup blocked until cutover.
+#[cfg(feature = "gui")]
+async fn initialize_app_catalogs(state: State) {
+    let db = &state.db;
+    let manager = &state.recorder_manager;
+    let output_path = state.config.read().await.output.clone();
+    if let Err(error) = try_rebuild_archives(db, manager).await {
+        log::warn!("Rebuilding archive table failed: {error}");
+    }
+    let _ = try_convert_live_covers(db, manager).await;
+    let _ = try_convert_clip_covers(db, output_path.clone().into()).await;
+    let _ = try_add_parent_id_to_records(db).await;
+    let _ = try_convert_entry_to_m3u8(db, manager).await;
+    match manager.archive_storage().start_catalogs(false).await {
+        Ok(()) => {
+            db.catalog_startup_blocked
+                .store(false, std::sync::atomic::Ordering::Release);
+            tauri::async_runtime::spawn(crate::handlers::project::create_legacy_projects(
+                db.clone(),
+                output_path.into(),
+            ));
+        }
+        Err(error) => {
+            log::error!("Storage catalog initialization failed: {error}");
+            *db.catalog_startup_error
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error.to_string());
+        }
+    }
+    // Also emit on failure or an empty catalog, so every loading view settles.
+    db.notify_change(events::DataChange::Records);
 }
 
 #[cfg(feature = "gui")]
@@ -1194,6 +1207,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::account::get_qr,
         crate::handlers::config::get_config,
         crate::handlers::config::get_storage_catalog_status,
+        crate::handlers::config::get_storage_initialization_status,
         crate::handlers::config::request_settings,
         crate::handlers::config::get_mcp_server_status,
         crate::handlers::config::update_mcp_server,
@@ -1424,6 +1438,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 app.manage(state.clone());
+                tauri::async_runtime::spawn(initialize_app_catalogs(state.clone()));
                 state.mcp_server.restore(state.clone()).await;
                 Ok(())
             })

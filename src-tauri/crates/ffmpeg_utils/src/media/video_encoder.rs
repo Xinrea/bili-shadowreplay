@@ -386,6 +386,13 @@ impl VideoEncoderStage {
         frame: &mut frame::Video,
         packets: &mut EncodedPacketSink<'_>,
     ) -> Result<(), String> {
+        let encoder = self.encoder.as_ref().ok_or("视频编码器尚未创建")?;
+        if frame.width() != encoder.width()
+            || frame.height() != encoder.height()
+            || frame.format() != encoder.format()
+        {
+            return Err("视频滤镜输出格式发生变化，请将画面统一到固定尺寸和像素格式".into());
+        }
         unsafe {
             (*frame.as_mut_ptr()).pict_type = ffi::AVPictureType::AV_PICTURE_TYPE_NONE;
             (*frame.as_mut_ptr()).quality =

@@ -1010,11 +1010,8 @@ impl Job {
                             &template.buffer_args(binding.base, binding.rate)?,
                         )
                         .map_err(|e| util::error("创建共享图输入失败", e))?;
-                    if let DecodedFrame::Video(frame) = template {
-                        let matrix = frame
-                            .side_data(frame::side_data::Type::DisplayMatrix)
-                            .and_then(|s| crate::video_frame::display_matrix(s.data()))
-                            .or(binding.rotation);
+                    if matches!(template, DecodedFrame::Video(_)) {
+                        let matrix = template.rotation().or(binding.rotation);
                         filters.extend(crate::video_frame::rotation_filters(matrix));
                     }
                     if let Some(file) = &self.files[binding.input] {
@@ -1627,13 +1624,28 @@ impl Job {
             return Ok(false);
         };
         if let Some(mut frame) = frame {
-            let changed = match &self.bindings[index].template {
-                Some(old) => !old.matches(&frame)?,
-                None => true,
-            };
-            if changed {
-                self.bindings[index].template = Some(frame.reference()?);
-                self.configure_graph()?;
+            // Never rebuild a running shared graph: concat/xfade would lose
+            // their timeline and buffered frames while encoders retain theirs.
+            // Let video filters such as scale adapt to new frame properties in
+            // place. Unsupported changes (e.g. abuffer audio formats) fail at
+            // submission instead of publishing an incomplete composition.
+            if let Some(rotation) = frame.rotation() {
+                let binding = &self.bindings[index];
+                let initial = binding
+                    .template
+                    .as_ref()
+                    .and_then(DecodedFrame::rotation)
+                    .or(binding.rotation);
+                // Rotation is an explicit filter chain configured at startup,
+                // not a property buffer/scale can renegotiate for us.
+                if crate::video_frame::rotation_filters(Some(rotation))
+                    != crate::video_frame::rotation_filters(initial)
+                {
+                    return Err(format!(
+                        "共享滤镜图输入{}的旋转信息发生变化，请先单独转码该输入",
+                        binding.input
+                    ));
+                }
             }
             // Display matrices have already been consumed by the input rotation
             // filters. Keeping them on submitted frames would rotate output twice.

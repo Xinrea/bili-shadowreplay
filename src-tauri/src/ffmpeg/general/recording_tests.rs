@@ -101,6 +101,108 @@ fn settings() -> RenderSettings {
     }
 }
 
+async fn pcm(path: &Path) -> Vec<i16> {
+    let result = ffmpeg_command()
+        .args(["-v", "error", "-nostdin", "-i"])
+        .arg(path)
+        .args(["-vn", "-ac", "1", "-ar", "48000", "-f", "s16le", "-"])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(
+        result.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    result
+        .stdout
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|sample| i16::from_le_bytes(*sample))
+        .collect()
+}
+
+#[tokio::test]
+async fn whole_clip_normalization_does_not_insert_aac_preroll_at_joins() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut sources = Vec::new();
+    for index in 0..3 {
+        let source = directory.path().join(format!("{index}.mov"));
+        let size = if index == 1 { "90x160" } else { "192x144" };
+        cli(
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                &format!("color=c=blue:s={size}:r=20:d=1"),
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=48000:duration=1",
+                "-c:v",
+                "libx264",
+                "-threads:v",
+                "1",
+                "-c:a",
+                "pcm_f32le",
+            ],
+            &source,
+        )
+        .await;
+        sources.push(source);
+    }
+    let output = directory.path().join("joined.mp4");
+    concat_recordings_with_settings(
+        None::<&ProgressReporter>,
+        &sources,
+        &output,
+        Some(&settings()),
+        false,
+    )
+    .await
+    .unwrap();
+    let oracle = directory.path().join("continuous.m4a");
+    cli(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=3",
+            "-ac",
+            "2",
+            "-c:a",
+            "aac",
+        ],
+        &oracle,
+    )
+    .await;
+    let actual = pcm(&output).await;
+    let expected = pcm(&oracle).await;
+    assert_eq!(expected.len(), 144_000);
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "AAC pre-roll must not appear at joins"
+    );
+    let rms = (actual
+        .iter()
+        .zip(&expected)
+        .map(|(a, b)| (f64::from(*a) - f64::from(*b)).powi(2))
+        .sum::<f64>()
+        / actual.len() as f64)
+        .sqrt();
+    assert!(
+        rms < 100.0,
+        "audio differs from a continuously encoded tone: RMS {rms}"
+    );
+}
+
 #[tokio::test]
 async fn whole_clip_normalizes_each_changing_recording_before_joining() {
     let directory = tempfile::tempdir().unwrap();

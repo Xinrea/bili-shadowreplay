@@ -425,8 +425,10 @@ pub async fn concat_recordings_with_settings(
     };
     // Each recording may itself change format. Reinitializing its independent
     // encoder's filters is safe; reinitializing a shared concat graph is not.
-    // Encode each source once, then join the compatible results without encoding
-    // again. Pin the MP4 time base as source frame rates can differ.
+    // Encode video once, but retain lossless audio without encoder pre-roll.
+    // The final join copies video and encodes one continuous AAC stream instead
+    // of inserting each segment's AAC priming/edit list at the joins.
+    // Pin the MOV video time base as source frame rates can differ.
     let temp = std::sync::Arc::new(
         tempfile::tempdir_in(ensure_output_folder(output_path)?)
             .map_err(|e| format!("Failed to create normalization directory: {e}"))?,
@@ -439,13 +441,14 @@ pub async fn concat_recordings_with_settings(
     }
     let video = hwaccel::native_video_options(encoder, Some(&scale), None, Some(settings))?;
     let audio = ffmpeg_utils::AudioEncodeOptions {
+        encoder: "pcm_f32le".into(),
         sample_rate: Some(48000),
         channel_layout: Some("stereo".into()),
         ..Default::default()
     };
     let mut normalized = Vec::with_capacity(videos.len());
     for (index, (source, probe)) in videos.iter().zip(&inputs).enumerate() {
-        let target = temp.path().join(format!("normalized-{index}.mp4"));
+        let target = temp.path().join(format!("normalized-{index}.mov"));
         let mut plan = super::clip::single_input_plan(
             source,
             &target,
@@ -505,7 +508,7 @@ pub async fn concat_recordings_with_settings(
         &normalized,
         output_path,
         ffmpeg_utils::StreamMode::Copy,
-        ffmpeg_utils::StreamMode::Copy,
+        ffmpeg_utils::StreamMode::Audio(ffmpeg_utils::AudioEncodeOptions::default()),
         false,
         vec![ffmpeg_utils::MediaResourceLease::new(temp)],
     )

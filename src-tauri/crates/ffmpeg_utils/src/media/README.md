@@ -27,6 +27,18 @@ Multiple files do not form a filesystem transaction. Segment callers retain
 their partial-file guards, and resource leases outlive worker completion through
 publication so scratch directories cannot disappear too early.
 
+Shared graphs are configured once: rebuilding them midstream would reset
+concat/xfade timelines and discard buffered frames. They reject changes to
+input formats or rotation transforms before submitting frames to libavfilter.
+Forwarding changed dimensions is unsafe even when scale is present: pad,
+transpose and other filters retain their startup dimensions. Output frames must
+also match the encoder's fixed format. Failures do not publish partial output.
+Callers must normalize changing inputs separately. Whole-recording exports use
+independent video encodes and lossless PCM audio in temporary MOV files, then
+copy video and encode a single AAC stream at the join. This avoids inserting
+per-segment AAC pre-roll. Independent encodes retain their own format-change
+handling without resetting a composition.
+
 Encoder AVOptions are validated against the linked codec and unused options
 are rejected. Hardware readiness opens the actual configured encoder, feeds
 three synthetic frames and drains it. It is not inferred from registry

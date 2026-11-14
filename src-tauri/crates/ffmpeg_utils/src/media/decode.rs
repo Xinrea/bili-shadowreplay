@@ -61,7 +61,7 @@ impl DecodedFrame {
             total
         }
     }
-    pub(super) fn matches(&self, other: &Self) -> Result<bool, String> {
+    pub(super) fn matches_format(&self, other: &Self) -> Result<bool, String> {
         Ok(match (self, other) {
             (Self::Audio(a), Self::Audio(b)) => {
                 AudioFormat::from_frame(a)?.matches(&AudioFormat::from_frame(b)?)
@@ -73,13 +73,17 @@ impl DecodedFrame {
                     && a.aspect_ratio() == b.aspect_ratio()
                     && (*a.as_ptr()).colorspace == (*b.as_ptr()).colorspace
                     && (*a.as_ptr()).color_range == (*b.as_ptr()).color_range
-                    && a.side_data(frame::side_data::Type::DisplayMatrix)
-                        .and_then(|d| crate::video_frame::display_matrix(d.data()))
-                        == b.side_data(frame::side_data::Type::DisplayMatrix)
-                            .and_then(|d| crate::video_frame::display_matrix(d.data()))
             },
             _ => false,
         })
+    }
+    pub(super) fn rotation(&self) -> Option<[i32; 9]> {
+        match self {
+            Self::Video(frame) => frame
+                .side_data(frame::side_data::Type::DisplayMatrix)
+                .and_then(|data| crate::video_frame::display_matrix(data.data())),
+            Self::Audio(_) => None,
+        }
     }
     pub(super) fn buffer_args(&self, base: Rational, rate: Rational) -> Result<String, String> {
         match self {

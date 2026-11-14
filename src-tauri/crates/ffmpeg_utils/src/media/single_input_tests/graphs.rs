@@ -2,6 +2,8 @@
 //! single_input_tests module. CLI comparisons remain strict packet oracles.
 use super::*;
 
+mod recording_concat;
+
 fn video_options() -> VideoEncodeOptions {
     VideoEncodeOptions {
         threads: Some(1),

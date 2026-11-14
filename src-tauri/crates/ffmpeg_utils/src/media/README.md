@@ -27,14 +27,15 @@ Multiple files do not form a filesystem transaction. Segment callers retain
 their partial-file guards, and resource leases outlive worker completion through
 publication so scratch directories cannot disappear too early.
 
-Shared graphs are configured once, like CLI `-reinit_filter 0`: rebuilding them
-midstream would reset concat/xfade timelines and discard buffered frames.
-Video property changes flow through the existing filters (for example, scale
-and pad normalize a recording's changing resolution). Unsupported changes,
-including audio input format changes, new rotation transforms, or an output
-that no longer matches the encoder's fixed format, fail without publication.
-Callers needing those changes must normalize the affected input separately.
-Single-input encoding retains its independent format-change handling.
+Shared graphs are configured once: rebuilding them midstream would reset
+concat/xfade timelines and discard buffered frames. They reject changes to
+input formats or rotation transforms before submitting frames to libavfilter.
+Forwarding changed dimensions is unsafe even when scale is present: pad,
+transpose and other filters retain their startup dimensions. Output frames must
+also match the encoder's fixed format. Failures do not publish partial output.
+Callers must normalize changing inputs separately. Whole-recording exports use
+independent single-input encodes followed by stream-copy concat; the independent
+encodes retain their own format-change handling without resetting a composition.
 
 Encoder AVOptions are validated against the linked codec and unused options
 are rejected. Hardware readiness opens the actual configured encoder, feeds

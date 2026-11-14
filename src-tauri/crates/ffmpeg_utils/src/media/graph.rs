@@ -1626,11 +1626,22 @@ impl Job {
         if let Some(mut frame) = frame {
             // Never rebuild a running shared graph: concat/xfade would lose
             // their timeline and buffered frames while encoders retain theirs.
-            // Let video filters such as scale adapt to new frame properties in
-            // place. Unsupported changes (e.g. abuffer audio formats) fail at
-            // submission instead of publishing an incomplete composition.
+            // Do not forward changed properties either: pad/transpose and other
+            // filters retain dimensions negotiated at startup and can access
+            // buffers out of bounds. Normalize changing inputs independently.
+            let binding = &self.bindings[index];
+            if !binding
+                .template
+                .as_ref()
+                .ok_or("共享滤镜图输入没有初始格式")?
+                .matches_format(&frame)?
+            {
+                return Err(format!(
+                    "共享滤镜图输入{}的媒体格式发生变化，请先单独转码该输入",
+                    binding.input
+                ));
+            }
             if let Some(rotation) = frame.rotation() {
-                let binding = &self.bindings[index];
                 let initial = binding
                     .template
                     .as_ref()

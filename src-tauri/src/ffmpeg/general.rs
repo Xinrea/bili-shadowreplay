@@ -16,6 +16,9 @@ use crate::{
 #[cfg(test)]
 use ffmpeg_utils::ffmpeg_command;
 
+#[cfg(test)]
+mod recording_tests;
+
 /// Generate a random filename in hex
 #[cfg(test)]
 async fn random_filename() -> String {
@@ -355,7 +358,16 @@ async fn concat_videos_with_demuxer(
             ffmpeg_utils::StreamMode::Copy,
         )
     };
-    run_concat_demuxer(reporter, videos, output_path, video, audio, !should_encode).await
+    run_concat_demuxer(
+        reporter,
+        videos,
+        output_path,
+        video,
+        audio,
+        !should_encode,
+        Vec::new(),
+    )
+    .await
 }
 
 /// Use an actual source canvas, not independently maximized width and height.
@@ -395,53 +407,107 @@ pub async fn concat_recordings_with_settings(
     for video in videos {
         inputs.push(ffmpeg_utils::probe_media(video).await?);
     }
-    let Some(largest_canvas) = recording_normalization_canvas(&inputs) else {
+    let largest_canvas = recording_normalization_canvas(&inputs);
+    if largest_canvas.is_none() && (settings.is_none() || already_encoded) {
         return match settings {
-            Some(settings) if already_encoded => {
-                concat_encoded_videos(reporter, videos, output_path, settings).await
-            }
-            Some(settings) => {
-                concat_videos_with_settings(
-                    reporter,
-                    videos,
-                    output_path,
-                    None,
-                    None,
-                    Some(settings),
-                )
-                .await
-            }
+            Some(settings) => concat_encoded_videos(reporter, videos, output_path, settings).await,
             None if already_encoded => concat_videos(reporter, videos, output_path).await,
             None => concat_copy_videos(reporter, videos, output_path).await,
         };
-    };
+    }
+    let first = inputs.first().ok_or("No videos to concatenate")?;
     let defaults = crate::project::RenderSettings::default();
     let settings = settings.unwrap_or(&defaults);
     let dimensions = match settings.resolution {
-        crate::project::RenderResolution::Original => largest_canvas,
-        _ => hwaccel::output_dimensions_from_probe(&inputs[0], Some(settings)),
+        crate::project::RenderResolution::Original => largest_canvas
+            .unwrap_or_else(|| hwaccel::output_dimensions_from_probe(first, Some(settings))),
+        _ => hwaccel::output_dimensions_from_probe(first, Some(settings)),
     };
-    let silence: Vec<Option<f64>> = inputs
-        .iter()
-        .map(|input| {
-            input
-                .metadata
-                .audio_codec
-                .is_empty()
-                .then_some(input.metadata.duration)
-        })
-        .collect();
-    let filter = build_hardcut_concat_filter_for_canvas(videos.len(), true, &silence, dimensions);
-    let normalizing = reporter
-        .map(|reporter| reporter.stage(&format!("统一分辨率 {}×{}", dimensions.0, dimensions.1)));
-    encode_filter_concat(
-        normalizing.as_ref(),
-        videos,
+    // Each recording may itself change format. Reinitializing its independent
+    // encoder's filters is safe; reinitializing a shared concat graph is not.
+    // Encode each source once, then join the compatible results without encoding
+    // again. Pin the MP4 time base as source frame rates can differ.
+    let temp = std::sync::Arc::new(
+        tempfile::tempdir_in(ensure_output_folder(output_path)?)
+            .map_err(|e| format!("Failed to create normalization directory: {e}"))?,
+    );
+    let encoder = hwaccel::material_encoder(Some(settings)).await;
+    let mut scale = hwaccel::scale_pad_filter(dimensions.0, dimensions.1, false);
+    if !hwaccel::is_vaapi_encoder(encoder) {
+        scale.push(',');
+        scale.push_str(hwaccel::output_format_filter(encoder));
+    }
+    let video = hwaccel::native_video_options(encoder, Some(&scale), None, Some(settings))?;
+    let audio = ffmpeg_utils::AudioEncodeOptions {
+        sample_rate: Some(48000),
+        channel_layout: Some("stereo".into()),
+        ..Default::default()
+    };
+    let mut normalized = Vec::with_capacity(videos.len());
+    for (index, (source, probe)) in videos.iter().zip(&inputs).enumerate() {
+        let target = temp.path().join(format!("normalized-{index}.mp4"));
+        let mut plan = super::clip::single_input_plan(
+            source,
+            &target,
+            ffmpeg_utils::StreamMode::Video(video.clone()),
+            ffmpeg_utils::StreamMode::Audio(audio.clone()),
+        );
+        // Whole recordings carry video/audio, not automatic subtitle routes.
+        plan.routes.truncate(2);
+        plan.outputs[0]
+            .options
+            .insert("video_track_timescale".into(), "90000".into());
+        if probe.metadata.audio_codec.is_empty() {
+            let mut silence =
+                ffmpeg_utils::MediaInput::generated_audio(ffmpeg_utils::SilenceSource {
+                    sample_rate: 48000,
+                    channel_layout: "stereo".into(),
+                });
+            silence.duration = Some(probe.metadata.duration);
+            plan.inputs.push(silence);
+            plan.filter_graph = Some(ffmpeg_utils::FilterGraphPlan {
+                spec: "[silence]anull[outa]".into(),
+                inputs: vec![ffmpeg_utils::GraphInput {
+                    input: 1,
+                    selector: ffmpeg_utils::StreamSelector::FirstAudio,
+                    label: "silence".into(),
+                    required: true,
+                }],
+                outputs: vec![ffmpeg_utils::GraphOutput {
+                    label: "outa".into(),
+                    kind: ffmpeg_utils::MediaKind::Audio,
+                }],
+            });
+            plan.routes[1].source = ffmpeg_utils::StreamSource::Filter {
+                label: "outa".into(),
+            };
+        }
+        plan.resources
+            .push(ffmpeg_utils::MediaResourceLease::new(temp.clone()));
+        let stage = format!(
+            "统一分辨率 {}×{}：片段 {}/{}",
+            dimensions.0,
+            dimensions.1,
+            index + 1,
+            videos.len()
+        );
+        run_native_media(
+            plan,
+            ProgressMode::stage(stage, ProgressTotal::FirstInput),
+            "Normalize recording",
+            reporter,
+        )
+        .await?;
+        normalized.push(target);
+    }
+    run_concat_demuxer(
+        reporter,
+        &normalized,
         output_path,
-        filter,
-        ProgressTotal::AllInputs,
-        None,
-        Some(settings),
+        ffmpeg_utils::StreamMode::Copy,
+        ffmpeg_utils::StreamMode::Copy,
+        false,
+        vec![ffmpeg_utils::MediaResourceLease::new(temp)],
     )
     .await
 }
@@ -464,6 +530,7 @@ pub async fn concat_copy_videos(
         ffmpeg_utils::StreamMode::Copy,
         ffmpeg_utils::StreamMode::Copy,
         true,
+        Vec::new(),
     )
     .await
 }
@@ -475,6 +542,7 @@ async fn run_concat_demuxer(
     video: ffmpeg_utils::StreamMode,
     audio: ffmpeg_utils::StreamMode,
     copy_subtitles: bool,
+    resources: Vec<ffmpeg_utils::MediaResourceLease>,
 ) -> Result<(), String> {
     let output_folder = ensure_output_folder(output_path)?;
     let filelist = Builder::new()
@@ -505,6 +573,7 @@ async fn run_concat_demuxer(
     drop(filelist_writer);
 
     let mut plan = super::clip::single_input_plan(&filelist, output_path, video, audio);
+    plan.resources = resources;
     plan.inputs[0] = ffmpeg_utils::MediaInput::owned_file(filelist);
     plan.inputs[0].format = Some("concat".into());
     plan.inputs[0].options.insert("safe".into(), "0".into());

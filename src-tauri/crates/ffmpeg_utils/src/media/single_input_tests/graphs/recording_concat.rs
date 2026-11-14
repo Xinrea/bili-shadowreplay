@@ -1,5 +1,5 @@
-//! Reproductions for whole recordings: assemble HLS-like TS fragments, remux
-//! each recording, then normalize and concatenate through the native executor.
+//! Shared-graph boundaries for recorded fragments. Changing inputs must be
+//! encoded independently before entering a stateful composition graph.
 use super::*;
 
 fn fragment(path: &Path, size: &str, color: &str, duration: f64, start: f64, filter: &str) {
@@ -43,7 +43,7 @@ async fn remux(source: &Path, target: &Path) {
     .unwrap();
 }
 
-async fn join(sources: &[std::path::PathBuf], target: &Path) {
+async fn join(sources: &[std::path::PathBuf], target: &Path) -> Result<(), String> {
     let mut filters = Vec::new();
     let mut pads = String::new();
     let mut bindings = Vec::new();
@@ -71,7 +71,8 @@ async fn join(sources: &[std::path::PathBuf], target: &Path) {
         None,
     )
     .await
-    .unwrap();
+    .map(|_| ())
+    .map_err(|error| error.to_string())
 }
 
 fn assert_duration(target: &Path, expected: f64) {
@@ -149,7 +150,7 @@ async fn seven_recordings_with_different_sizes_and_origins_keep_the_full_duratio
 }
 
 #[tokio::test]
-async fn seven_recordings_with_repeated_format_changes_keep_every_frame() {
+async fn shared_concat_rejects_repeated_format_changes_without_publishing() {
     assert_seven_recordings(true).await;
 }
 
@@ -207,33 +208,41 @@ async fn assert_seven_recordings(change_formats: bool) {
         sources.push(mp4);
     }
     let target = directory.path().join("joined.mp4");
-    join(&sources, &target).await;
+    if change_formats {
+        fs::write(&target, b"previous complete recording").unwrap();
+        let error = join(&sources, &target).await.unwrap_err();
+        assert!(error.contains("媒体格式发生变化"), "{error}");
+        assert_eq!(fs::read(target).unwrap(), b"previous complete recording");
+        assert_clean(directory.path());
+        return;
+    }
+    join(&sources, &target).await.unwrap();
     assert_eq!(frame_colors(&target), (148, 80));
     assert_duration(&target, expected_duration);
 }
 
 #[tokio::test]
-async fn recording_with_an_early_sar_change_keeps_later_concat_content() {
+async fn shared_concat_rejects_an_early_sar_change() {
     assert_fragment_change("90x160", "setsar=2", 0.1).await;
 }
 
 #[tokio::test]
-async fn recording_with_an_early_resolution_change_keeps_later_concat_content() {
+async fn shared_concat_rejects_an_early_resolution_change() {
     assert_fragment_change("160x90", "setsar=1", 0.1).await;
 }
 
 #[tokio::test]
-async fn recording_with_a_late_resolution_change_keeps_buffered_content() {
+async fn shared_concat_rejects_a_late_resolution_change_without_publishing() {
     assert_fragment_change("160x90", "setsar=1", 1.9).await;
 }
 
 #[tokio::test]
-async fn recording_with_a_pixel_format_change_keeps_later_concat_content() {
+async fn shared_concat_rejects_a_pixel_format_change() {
     assert_fragment_change("90x160", "setsar=1,format=yuv444p", 0.1).await;
 }
 
 #[tokio::test]
-async fn recording_with_a_color_metadata_change_keeps_later_concat_content() {
+async fn shared_concat_rejects_a_color_metadata_change() {
     assert_fragment_change(
         "90x160",
         "setsar=1,setparams=colorspace=bt709:range=limited",
@@ -256,7 +265,12 @@ async fn assert_fragment_change(body_size: &str, body_filter: &str, change_at: f
     let second_head = directory.path().join("second-head.ts");
     let second_body = directory.path().join("second-body.ts");
     fragment(&first, "160x90", "red", 4.0, 30.0, "setsar=1");
-    fragment(&second_head, "90x160", "blue", change_at, 60.0, "setsar=1");
+    let head_filter = if body_filter.contains("setparams") {
+        "setsar=1,setparams=colorspace=bt470bg:range=limited"
+    } else {
+        "setsar=1"
+    };
+    fragment(&second_head, "90x160", "blue", change_at, 60.0, head_filter);
     fragment(
         &second_body,
         body_size,
@@ -287,7 +301,15 @@ async fn assert_fragment_change(body_size: &str, body_filter: &str, change_at: f
     assert_eq!(frame_colors(&sources[0]), (80, 0));
     assert_eq!(frame_colors(&sources[1]), (0, 40));
     let target = directory.path().join("joined.mp4");
-    join(&sources, &target).await;
+    if body_size != "90x160" || body_filter != "setsar=1" {
+        fs::write(&target, b"previous complete recording").unwrap();
+        let error = join(&sources, &target).await.unwrap_err();
+        assert!(error.contains("媒体格式发生变化"), "{error}");
+        assert_eq!(fs::read(target).unwrap(), b"previous complete recording");
+        assert_clean(directory.path());
+        return;
+    }
+    join(&sources, &target).await.unwrap();
     let colors = frame_colors(&target);
     assert_duration(&target, 6.0);
     assert_eq!(colors, (80, 40));
@@ -340,7 +362,7 @@ async fn unsupported_audio_change_fails_without_publishing_partial_concat() {
     .await
     .unwrap_err()
     .to_string();
-    assert!(error.contains("提交共享图输入失败"), "{error}");
+    assert!(error.contains("媒体格式发生变化"), "{error}");
     assert_eq!(fs::read(target).unwrap(), b"previous complete recording");
     assert_clean(directory.path());
 }
@@ -350,24 +372,56 @@ async fn unnormalized_video_change_fails_without_publishing_partial_output() {
     if !has_cli() {
         return;
     }
+    for (rotation, size, filter) in [
+        (0, "90x160", "setsar=1"),
+        (90, "90x160", "setsar=1"),
+        (180, "90x160", "setsar=1"),
+        (90, "160x90", "setsar=1,format=yuv444p"),
+    ] {
+        assert_unnormalized_change(rotation, size, filter).await;
+    }
+}
+
+async fn assert_unnormalized_change(rotation: i32, size: &str, filter: &str) {
     let directory = tempfile::tempdir().unwrap();
     let first = directory.path().join("first.ts");
     let second = directory.path().join("second.ts");
     fragment(&first, "160x90", "red", 1.0, 30.0, "setsar=1");
-    fragment(&second, "90x160", "blue", 1.0, 31.0, "setsar=1");
+    fragment(&second, size, "blue", 1.0, 31.0, filter);
     let source = directory.path().join("changed.ts");
     fs::write(
         &source,
         [fs::read(first).unwrap(), fs::read(second).unwrap()].concat(),
     )
     .unwrap();
+    let source = if rotation == 0 {
+        source
+    } else {
+        let rotated = directory.path().join("fixed-rotation.mp4");
+        cli(
+            &strings(&[
+                "-display_rotation",
+                &rotation.to_string(),
+                "-i",
+                source.to_str().unwrap(),
+                "-c",
+                "copy",
+            ]),
+            &rotated,
+        );
+        assert!(snapshot(&rotated).streams[0]
+            .side_data
+            .iter()
+            .any(|(kind, _)| kind == "DisplayMatrix"));
+        rotated
+    };
     let target = directory.path().join("kept.mp4");
     fs::write(&target, b"previous complete recording").unwrap();
     let error = execute_media_plan(
         graph_plan(
             vec![MediaInput::file(source)],
             vec![MediaOutput::file(&target)],
-            "[0:v]null[v]",
+            "[0:v]scale=160:120,setsar=1[v]",
             vec![binding(0, true)],
             vec![graph_route("v", 0, StreamMode::Video(video_options()))],
             vec![output("v", true)],
@@ -377,7 +431,7 @@ async fn unnormalized_video_change_fails_without_publishing_partial_output() {
     .await
     .unwrap_err()
     .to_string();
-    assert!(error.contains("视频滤镜输出格式发生变化"), "{error}");
+    assert!(error.contains("媒体格式发生变化"), "{error}");
     assert_eq!(fs::read(target).unwrap(), b"previous complete recording");
     assert_clean(directory.path());
 }

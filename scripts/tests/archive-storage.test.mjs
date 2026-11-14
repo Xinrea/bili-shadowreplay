@@ -15,9 +15,18 @@ const row = (live_id, storage_available = true) => ({
   storage_backend_id: `disk-${live_id}`, storage_available,
 });
 const plain = value => JSON.parse(JSON.stringify(value));
+const refreshModule = new vm.SourceTextModule(ts.transpileModule(await read("lib/state-refresh.ts"), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+}).outputText);
+await refreshModule.link(() => new vm.SyntheticModule(["listen"], function () {
+  this.setExport("listen", async () => () => {});
+}));
+await refreshModule.evaluate();
+
 async function handlers(path, state) {
   state = {
     storageLoading: false, storageError: "",
+    createStateRefresh: refreshModule.namespace.createStateRefresh,
     getStorageInitializationStatus: async () => ({ loading: false, error: null }),
     ...state,
   };
@@ -25,9 +34,17 @@ async function handlers(path, state) {
   const script = source.match(/<script lang="ts">([\s\S]*?)<\/script>/)[1];
   const parsed = ts.createSourceFile("component.ts", script, ts.ScriptTarget.Latest, true);
   const functions = parsed.statements.filter(ts.isFunctionDeclaration).map(node => node.getText(parsed)).join("\n");
+  const context = vm.createContext(Object.assign(state, recordingStorage));
   vm.runInContext(ts.transpileModule(functions, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
-  }).outputText, vm.createContext(Object.assign(state, recordingStorage)));
+  }).outputText, context);
+  if (path === "page/Summary.svelte") {
+    const refresh = parsed.statements.find(node => ts.isVariableStatement(node)
+      && node.declarationList.declarations.some(item => item.name.getText(parsed) === "stateRefresh"));
+    vm.runInContext(ts.transpileModule(refresh.getText(parsed), {
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+    }).outputText, context);
+  }
   return state;
 }
 
@@ -268,6 +285,67 @@ test("a failed dashboard record fetch releases loading and permits the next refr
   await state.loadMoreRecords();
   assert.equal(state.loading, false);
   assert.equal(state.recent_records[0].live_id, "retry");
+});
+
+for (const failure of ["get_archive_disk_usage", "get_recent_record", "cover"]) {
+  test(`manual dashboard refresh retries after ${failure} fails and preserves the last snapshot`, async () => {
+    let failing = true;
+    let reads = 0;
+    const previous = [row("previous")];
+    const state = await handlers("page/Summary.svelte", {
+      summary: {}, total: 0, online: 0, disk_usage: 0, account_count: 0,
+      total_length: 0, today_record_count: 0, offset: 1, hasMore: false,
+      recent_records: previous,
+      invoke: async command => {
+        if (failing && command === failure) throw new Error("temporary failure");
+        if (command === "get_recorder_list") return { count: 0, recorders: [] };
+        if (command === "get_recent_record") {
+          reads++;
+          return [row("latest"), row("older")];
+        }
+        return 0;
+      },
+      get_static_url: async () => {
+        if (failing && failure === "cover") throw new Error("temporary failure");
+        return "/cover";
+      },
+    });
+    await state.refreshRecords();
+    assert.match(state.storageError, /temporary failure/);
+    assert.equal(state.recent_records, previous);
+    assert.equal(state.offset, 1);
+    assert.equal(state.hasMore, false);
+
+    failing = false;
+    const before = reads;
+    await state.refreshRecords();
+    assert.equal(state.storageError, "");
+    assert.equal(reads, before + 1);
+    assert.equal(state.recent_records[0].live_id, "latest");
+    assert.equal(state.offset, 1);
+    assert.equal(state.hasMore, true);
+  });
+}
+
+test("manual dashboard refresh retains records while initialization is pending or failed", async () => {
+  for (const status of [{ loading: true, error: null }, { loading: false, error: "startup failed" }]) {
+    const previous = [row("previous")];
+    const state = await handlers("page/Summary.svelte", {
+      recent_records: previous, offset: 1, hasMore: false,
+      getStorageInitializationStatus: async () => status,
+      invoke: async command => {
+        if (command === "get_recorder_list") return { count: 0, recorders: [] };
+        assert.equal(command, "get_account_count", "pending or failed startup must not read recording data");
+        return 0;
+      },
+    });
+    await state.refreshRecords();
+    assert.equal(state.recent_records, previous);
+    assert.equal(state.offset, 1);
+    assert.equal(state.hasMore, false);
+    assert.equal(state.storageLoading, status.loading);
+    if (status.error) assert.match(state.storageError, /startup failed/);
+  }
 });
 
 for (const [path, refresh] of [

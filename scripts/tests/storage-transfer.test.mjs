@@ -56,6 +56,7 @@ const task = (extra = {}) => ({
   metadata: JSON.stringify({ source_backend_id: "A", target_backend_id: "B" }), ...extra,
 });
 function handlers(source, state) {
+  state = { catalogRequest: 0, disposed: false, ...state };
   const script = source.match(/<script lang="ts">([\s\S]*?)<\/script>/)[1];
   const parsed = ts.createSourceFile("component.ts", script, ts.ScriptTarget.Latest, true);
   const context = vm.createContext(state);
@@ -437,6 +438,7 @@ test("both settings views stay mounted with hidden/inert so background recovery 
     "../focus-trap": { trapFocus() {} },
     "../page-visibility": { pageVisibility: () => () => true },
     "../stores/tasks": { openTaskCenter() {} },
+    "../state-refresh": { createStateRefresh: () => ({}), watchStateChanges() {} },
   };
   // Render the real transfer child, including its initial recovery state, rather
   // than a marker that could miss a parent/child prop or compilation regression.

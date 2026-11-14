@@ -34,7 +34,7 @@ kache stats
 kache explain
 ```
 
-临时排查编译问题时，可以禁用 wrapper：Unix 使用 `RUSTC_WRAPPER= yarn tauri dev`；PowerShell 使用 `$env:RUSTC_WRAPPER=""` 后执行构建，结束后用 `Remove-Item Env:RUSTC_WRAPPER` 恢复默认配置。
+临时排查编译问题时，可以禁用 wrapper：Unix 使用 `RUSTC_WRAPPER= yarn tauri dev`。PowerShell 各版本通用的方式是暂时将 `.cargo/config.toml` 中的 `rustc-wrapper = "kache"` 改为 `rustc-wrapper = ""`；若已有 `RUSTC_WRAPPER` 环境变量，先记录其值并移除，避免覆盖文件配置。排查结束后恢复原配置和环境变量。不要在旧版 PowerShell 中用空字符串给环境变量赋值来停用 wrapper：这会删除变量，使 Cargo 继续使用仓库配置。
 
 GitHub Actions 的测试、Clippy 和桌面发布任务通过 `setup-kache` 安装相同版本，保留 `rust-cache` 用于 Cargo 构建目录和昂贵的原生依赖。kache 的本地存储按构建类型分组，每组上限 1 GiB；PR 只恢复缓存，main 和版本标签构建保存缓存，统计显示在 Job Summary 中。无需新增 Secrets。Docker 镜像构建和 Dev Container 也已安装相同版本；Docker 继续通过 cargo-chef 和镜像构建缓存复用依赖层。
 
